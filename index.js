@@ -14,207 +14,313 @@ const {
   PermissionFlagsBits,
 } = require('discord.js');
 
-const express    = require('express');
+const express = require('express');
 const bodyParser = require('body-parser');
-const multer    = require('multer');
-const axios      = require('axios');
-const Database   = require('better-sqlite3');
-// @ctrl/plex dropped friend management — using Plex API directly via axios
-const { v4: uuidv4 } = require('uuid');
-const fs   = require('fs');
+const multer = require('multer');
+const axios = require('axios');
+const Database = require('better-sqlite3');
+const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
-// ============================================================
-// Config
-// ============================================================
-const DISCORD_BOT_TOKEN  = process.env.DISCORD_BOT_TOKEN;
-const DISCORD_CLIENT_ID  = process.env.DISCORD_CLIENT_ID;
-const DISCORD_GUILD_ID   = process.env.DISCORD_GUILD_ID;
-const ADMIN_CHANNEL_ID   = process.env.ADMIN_CHANNEL_ID;
-const ADMIN_USER_ID      = process.env.ADMIN_USER_ID;
-
-const OVERSEERR_URL      = process.env.OVERSEERR_URL ? process.env.OVERSEERR_URL.replace(/\/$/, '') : '';
-const OVERSEERR_API_KEY  = process.env.OVERSEERR_API_KEY;
-const WEBHOOK_SECRET     = process.env.WEBHOOK_SECRET || '';
-
-const PLEX_TOKEN         = process.env.PLEX_TOKEN || '';
-const PLEX_USERNAME      = process.env.PLEX_USERNAME;
-const PLEX_PASSWORD      = process.env.PLEX_PASSWORD;
-const PLEX_EXCLUDE_SERVERS = process.env.PLEX_EXCLUDE_SERVERS
-  ? process.env.PLEX_EXCLUDE_SERVERS.split(',').map(s => s.trim().toLowerCase())
-  : [];
-
-const RADARR_URL         = process.env.RADARR_URL;
-const RADARR_API_KEY     = process.env.RADARR_API_KEY;
-const RADARR_4K_URL      = process.env.RADARR_4K_URL;
-const RADARR_4K_API_KEY  = process.env.RADARR_4K_API_KEY;
-const SONARR_URL         = process.env.SONARR_URL;
-const SONARR_API_KEY     = process.env.SONARR_API_KEY;
-
-const TUNNEL_DOMAIN      = process.env.TUNNEL_DOMAIN;
-const RAID_PATH          = process.env.RAID_PATH || '/mnt/raid';
-const PATH_REMAP_FROM    = process.env.PATH_REMAP_FROM || '';
-const PATH_REMAP_TO      = process.env.PATH_REMAP_TO   || RAID_PATH;
-
-const TAUTULLI_SECRET    = process.env.TAUTULLI_WEBHOOK_SECRET || '';
-const PORT               = parseInt(process.env.PORT || '3000', 10);
-const PLEX_CLIENT_ID     = 'discord-plex-bot';
-
-// ============================================================
-// Logger
-// ============================================================
-const log = {
-  info:  (...a) => console.log('[INFO]',  ...a),
-  ok:    (...a) => console.log('[OK]',    ...a),
-  warn:  (...a) => console.warn('[WARN]', ...a),
-  error: (...a) => console.error('[ERROR]',...a),
-  step:  (n,...a) => console.log(`[Step ${n}]`, ...a),
+const CONFIG = {
+  DISCORD_BOT_TOKEN: process.env.DISCORD_BOT_TOKEN,
+  DISCORD_CLIENT_ID: process.env.DISCORD_CLIENT_ID,
+  DISCORD_GUILD_ID: process.env.DISCORD_GUILD_ID,
+  ADMIN_CHANNEL_ID: process.env.ADMIN_CHANNEL_ID,
+  ADMIN_USER_ID: process.env.ADMIN_USER_ID,
+  OVERSEERR_URL: (process.env.OVERSEERR_URL || '').replace(/\/$/, ''),
+  OVERSEERR_API_KEY: process.env.OVERSEERR_API_KEY,
+  WEBHOOK_SECRET: process.env.WEBHOOK_SECRET || '',
+  PLEX_TOKEN: process.env.PLEX_TOKEN || '',
+  PLEX_USERNAME: process.env.PLEX_USERNAME || '',
+  PLEX_PASSWORD: process.env.PLEX_PASSWORD || '',
+  PLEX_EXCLUDE_SERVERS: process.env.PLEX_EXCLUDE_SERVERS ? process.env.PLEX_EXCLUDE_SERVERS.split(',').map(v => v.trim().toLowerCase()) : [],
+  RADARR_URL: process.env.RADARR_URL || '',
+  RADARR_API_KEY: process.env.RADARR_API_KEY || '',
+  RADARR_4K_URL: process.env.RADARR_4K_URL || '',
+  RADARR_4K_API_KEY: process.env.RADARR_4K_API_KEY || '',
+  SONARR_URL: process.env.SONARR_URL || '',
+  SONARR_API_KEY: process.env.SONARR_API_KEY || '',
+  TUNNEL_DOMAIN: process.env.TUNNEL_DOMAIN,
+  RAID_PATH: process.env.RAID_PATH || '/mnt/raid',
+  PATH_REMAP_FROM: process.env.PATH_REMAP_FROM || '',
+  PATH_REMAP_TO: process.env.PATH_REMAP_TO || process.env.RAID_PATH || '/mnt/raid',
+  TAUTULLI_WEBHOOK_SECRET: process.env.TAUTULLI_WEBHOOK_SECRET || '',
+  PORT: Number.parseInt(process.env.PORT || '3000', 10),
+  DASHBOARD_ENABLED: parseBool(process.env.DASHBOARD_ENABLED, true),
+  DASHBOARD_ADMIN_PASSWORD: process.env.DASHBOARD_ADMIN_PASSWORD || '',
+  DASHBOARD_ADMIN_TOKEN: process.env.DASHBOARD_ADMIN_TOKEN || '',
+  STRICT_DASHBOARD_POST_AUTH: parseBool(process.env.STRICT_DASHBOARD_POST_AUTH, true),
+  ENABLE_DELETION: parseBool(process.env.ENABLE_DELETION, false),
+  DOWNLOAD_TOKEN_TTL_HOURS: Number.parseInt(process.env.DOWNLOAD_TOKEN_TTL_HOURS || '24', 10),
+  DOWNLOAD_ONE_TIME_LINKS_DEFAULT: parseBool(process.env.DOWNLOAD_ONE_TIME_LINKS_DEFAULT, false),
+  DOWNLOAD_MAX_PER_HOUR: Number.parseInt(process.env.DOWNLOAD_MAX_PER_HOUR || '10', 10),
+  DOWNLOAD_ROUTE_MAX_PER_MINUTE: Number.parseInt(process.env.DOWNLOAD_ROUTE_MAX_PER_MINUTE || '60', 10),
+  DOWNLOAD_LARGE_FILE_GB: Number.parseInt(process.env.DOWNLOAD_LARGE_FILE_GB || '8', 10),
+  DELETION_GRACE_HOURS: Number.parseInt(process.env.DELETION_GRACE_HOURS || '24', 10),
+  DELETION_REMINDER_COOLDOWN_HOURS: Number.parseInt(process.env.DELETION_REMINDER_COOLDOWN_HOURS || '12', 10),
+  KEEP_LIST_DEFAULT_DAYS: Number.parseInt(process.env.KEEP_LIST_DEFAULT_DAYS || '90', 10),
+  NEVER_DELETE_MEDIA_IDS: process.env.NEVER_DELETE_MEDIA_IDS ? process.env.NEVER_DELETE_MEDIA_IDS.split(',').map(s => s.trim()) : [],
 };
 
-// ============================================================
-// Database
-// ============================================================
+const REQUIRED_ENV = [
+  'DISCORD_BOT_TOKEN', 'DISCORD_CLIENT_ID', 'DISCORD_GUILD_ID', 'ADMIN_CHANNEL_ID', 'ADMIN_USER_ID',
+  'OVERSEERR_URL', 'OVERSEERR_API_KEY', 'TUNNEL_DOMAIN', 'RAID_PATH',
+];
+
+const log = {
+  info: (...a) => console.log('[INFO]', ...a),
+  ok: (...a) => console.log('[OK]', ...a),
+  warn: (...a) => console.warn('[WARN]', ...a),
+  error: (...a) => console.error('[ERROR]', ...a),
+};
+
+function parseBool(v, fallback = false) {
+  if (v === undefined) return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(v).toLowerCase());
+}
+
+function sha256(text) {
+  return crypto.createHash('sha256').update(text).digest('hex');
+}
+
+function validateConfig() {
+  const missing = REQUIRED_ENV.filter(k => !CONFIG[k]);
+  if (!CONFIG.PLEX_TOKEN && !(CONFIG.PLEX_USERNAME && CONFIG.PLEX_PASSWORD)) {
+    missing.push('PLEX_TOKEN or PLEX_USERNAME+PLEX_PASSWORD');
+  }
+  if (missing.length) {
+    throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
+  }
+  if (CONFIG.DASHBOARD_ENABLED && !CONFIG.DASHBOARD_ADMIN_PASSWORD && !CONFIG.DASHBOARD_ADMIN_TOKEN) {
+    throw new Error('DASHBOARD_ENABLED=true requires DASHBOARD_ADMIN_PASSWORD or DASHBOARD_ADMIN_TOKEN');
+  }
+}
+
 const db = new Database('/app/data/plex_invites.db');
 db.pragma('journal_mode = WAL');
 
-db.exec(`
-  -- Original user/onboarding table (preserved exactly)
-  CREATE TABLE IF NOT EXISTS users (
-    discord_id          TEXT PRIMARY KEY,
-    email               TEXT NOT NULL,
-    invited             INTEGER DEFAULT 0,
-    invited_at          TEXT,
-    requested_at        TEXT NOT NULL,
-    overseerr_created   INTEGER DEFAULT 0,
-    overseerr_user_id   INTEGER
-  );
+function ensureColumn(table, col, spec) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+  if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${spec}`);
+}
 
-  -- Tracks approved Overseerr requests so we know who owns each file
-  CREATE TABLE IF NOT EXISTS requests (
-    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
-    overseerr_request_id    TEXT UNIQUE,
-    media_id                TEXT NOT NULL,
-    media_type              TEXT NOT NULL,
-    is_4k                   INTEGER DEFAULT 0,
-    title                   TEXT NOT NULL,
-    requested_by_discord_id TEXT,
-    status                  TEXT DEFAULT 'pending',
-    created_at              DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (requested_by_discord_id) REFERENCES users(discord_id)
-  );
+function runMigrations() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      discord_id TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      invited INTEGER DEFAULT 0,
+      invited_at TEXT,
+      requested_at TEXT NOT NULL,
+      overseerr_created INTEGER DEFAULT 0,
+      overseerr_user_id INTEGER,
+      plex_username TEXT
+    );
+    CREATE TABLE IF NOT EXISTS requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      overseerr_request_id TEXT UNIQUE,
+      media_id TEXT NOT NULL,
+      media_type TEXT NOT NULL,
+      is_4k INTEGER DEFAULT 0,
+      title TEXT NOT NULL,
+      requested_by_discord_id TEXT,
+      status TEXT DEFAULT 'pending',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS keep_list (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      media_id TEXT NOT NULL,
+      media_type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      kept_by_discord_id TEXT,
+      expires_at INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_keep_unique ON keep_list(media_id, kept_by_discord_id);
 
-  -- Files the requester chose to keep — removed from future watch triggers
-  CREATE TABLE IF NOT EXISTS keep_list (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    media_id            TEXT NOT NULL UNIQUE,
-    media_type          TEXT NOT NULL,
-    title               TEXT NOT NULL,
-    kept_by_discord_id  TEXT,
-    created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+    CREATE TABLE IF NOT EXISTS download_tokens (
+      token_hash TEXT PRIMARY KEY,
+      file_path TEXT NOT NULL,
+      title TEXT NOT NULL,
+      discord_id TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      one_time_use INTEGER DEFAULT 0,
+      used_at INTEGER,
+      revoked INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
 
-  -- Expiring 24-hour download tokens
-  CREATE TABLE IF NOT EXISTS download_tokens (
-    token       TEXT PRIMARY KEY,
-    file_path   TEXT NOT NULL,
-    title       TEXT NOT NULL,
-    discord_id  TEXT NOT NULL,
-    expires_at  INTEGER NOT NULL,
-    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-`);
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      action TEXT NOT NULL,
+      actor_discord_id TEXT,
+      target_discord_id TEXT,
+      metadata_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
 
-// Migrate: add overseerr_user_id if upgrading from v1 schema
-try { db.exec(`ALTER TABLE users ADD COLUMN overseerr_user_id INTEGER`); }
-catch (_) { /* already exists */ }
+    CREATE TABLE IF NOT EXISTS download_access_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      token_hash TEXT,
+      discord_id TEXT,
+      ip TEXT,
+      user_agent TEXT,
+      file_path TEXT,
+      status TEXT,
+      bytes_sent INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
 
-// ── User helpers (original) ──────────────────────────────────
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS media_retention_rules (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      media_class TEXT UNIQUE,
+      retention_days INTEGER NOT NULL,
+      enabled INTEGER DEFAULT 1,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+    CREATE INDEX IF NOT EXISTS idx_requests_media ON requests(media_id);
+    CREATE INDEX IF NOT EXISTS idx_requests_requester ON requests(requested_by_discord_id);
+    CREATE INDEX IF NOT EXISTS idx_download_tokens_discord ON download_tokens(discord_id);
+    CREATE INDEX IF NOT EXISTS idx_download_tokens_expires ON download_tokens(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_download_access_created ON download_access_log(created_at);
+    CREATE INDEX IF NOT EXISTS idx_audit_action_created ON audit_log(action, created_at);
+  `);
+
+  ensureColumn('users', 'overseerr_user_id', 'INTEGER');
+  ensureColumn('users', 'plex_username', 'TEXT');
+  ensureColumn('keep_list', 'expires_at', 'INTEGER');
+
+  const dlCols = db.prepare('PRAGMA table_info(download_tokens)').all().map(c => c.name);
+  if (dlCols.includes('token') && !dlCols.includes('token_hash')) {
+    ensureColumn('download_tokens', 'token_hash', 'TEXT');
+    const rows = db.prepare('SELECT token FROM download_tokens WHERE token_hash IS NULL').all();
+    const stmt = db.prepare('UPDATE download_tokens SET token_hash = ? WHERE token = ?');
+    for (const row of rows) stmt.run(sha256(row.token), row.token);
+  }
+  ensureColumn('download_tokens', 'one_time_use', 'INTEGER DEFAULT 0');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_download_tokens_hash ON download_tokens(token_hash)');
+  ensureColumn('download_tokens', 'used_at', 'INTEGER');
+  ensureColumn('download_tokens', 'revoked', 'INTEGER DEFAULT 0');
+
+  db.prepare(`INSERT OR IGNORE INTO media_retention_rules (media_class, retention_days, enabled)
+    VALUES
+    ('movie_4k', 30, 1),
+    ('movie_1080p', 60, 1),
+    ('tv_episode', 30, 1),
+    ('tv_season', 90, 1)
+  `).run();
+}
+
+function audit(action, details = {}) {
+  const meta = { ...details };
+  if (meta.error && typeof meta.error === 'string') meta.error = meta.error.slice(0, 500);
+  db.prepare('INSERT INTO audit_log (action, actor_discord_id, target_discord_id, metadata_json) VALUES (?, ?, ?, ?)')
+    .run(action, details.actorDiscordId || null, details.targetDiscordId || null, JSON.stringify(meta));
+}
+
+function notifyAdmin(msg) {
+  safeGetChannel(CONFIG.ADMIN_CHANNEL_ID)
+    .then(ch => ch && ch.send(msg).catch(() => {}))
+    .catch(() => {});
+}
+
+// basic helpers
 function storeUserEmail(discordId, email) {
-  db.prepare(`
-    INSERT INTO users (discord_id, email, requested_at)
+  db.prepare(`INSERT INTO users (discord_id, email, requested_at)
     VALUES (?, ?, ?)
-    ON CONFLICT(discord_id) DO UPDATE SET
-      email = excluded.email,
-      requested_at = excluded.requested_at,
-      overseerr_created = 0,
-      overseerr_user_id = NULL
-  `).run(discordId, email, new Date().toISOString());
+    ON CONFLICT(discord_id) DO UPDATE SET email=excluded.email, requested_at=excluded.requested_at, overseerr_created=0, overseerr_user_id=NULL`)
+    .run(discordId, email.toLowerCase().trim(), new Date().toISOString());
 }
+const getUserByDiscordId = discordId => db.prepare('SELECT * FROM users WHERE discord_id = ?').get(discordId);
+const getUserByEmail = email => db.prepare('SELECT * FROM users WHERE lower(email) = ?').get(email.toLowerCase().trim());
+const markUserInvited = discordId => db.prepare('UPDATE users SET invited = 1, invited_at = ? WHERE discord_id = ?').run(new Date().toISOString(), discordId);
+const markOverseerrCreated = (discordId, overseerrId) => db.prepare('UPDATE users SET overseerr_created = 1, overseerr_user_id = ? WHERE discord_id = ?').run(overseerrId, discordId);
+const removeUser = discordId => db.prepare('DELETE FROM users WHERE discord_id = ?').run(discordId);
 
-function getUserByDiscordId(discordId) {
-  return db.prepare('SELECT * FROM users WHERE discord_id = ?').get(discordId);
-}
-
-function getUserByEmail(email) {
-  return db.prepare('SELECT * FROM users WHERE email = ?').get(email.toLowerCase().trim());
-}
-
-function markUserInvited(discordId) {
-  db.prepare('UPDATE users SET invited = 1, invited_at = ? WHERE discord_id = ?')
-    .run(new Date().toISOString(), discordId);
-}
-
-function markOverseerrCreated(discordId, overseerrUserId) {
-  db.prepare('UPDATE users SET overseerr_created = 1, overseerr_user_id = ? WHERE discord_id = ?')
-    .run(overseerrUserId, discordId);
-}
-
-function removeUser(discordId) {
-  db.prepare('DELETE FROM users WHERE discord_id = ?').run(discordId);
-}
-
-// ── Request helpers ──────────────────────────────────────────
 function upsertRequest(overseerrRequestId, mediaId, mediaType, is4k, title, discordId, status) {
-  db.prepare(`
-    INSERT OR REPLACE INTO requests
-      (overseerr_request_id, media_id, media_type, is_4k, title, requested_by_discord_id, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(overseerrRequestId, mediaId, mediaType, is4k ? 1 : 0, title, discordId || null, status);
+  db.prepare(`INSERT OR REPLACE INTO requests
+    (overseerr_request_id, media_id, media_type, is_4k, title, requested_by_discord_id, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(overseerrRequestId, mediaId, mediaType, is4k ? 1 : 0, title, discordId || null, status);
 }
 
-function getRequestByMediaId(mediaId) {
-  return db.prepare(
-    'SELECT * FROM requests WHERE media_id = ? ORDER BY created_at DESC LIMIT 1'
-  ).get(mediaId);
-}
-
-// ── Keep list helpers ────────────────────────────────────────
-function addToKeepList(mediaId, mediaType, title, discordId) {
-  db.prepare(`
-    INSERT OR IGNORE INTO keep_list (media_id, media_type, title, kept_by_discord_id)
-    VALUES (?, ?, ?, ?)
-  `).run(mediaId, mediaType, title, discordId);
+function addToKeepList(mediaId, mediaType, title, discordId, keepDays = CONFIG.KEEP_LIST_DEFAULT_DAYS) {
+  const expiresAt = keepDays > 0 ? Date.now() + keepDays * 86400000 : null;
+  db.prepare('INSERT OR REPLACE INTO keep_list (media_id, media_type, title, kept_by_discord_id, expires_at) VALUES (?, ?, ?, ?, ?)')
+    .run(mediaId, mediaType, title, discordId || null, expiresAt);
 }
 
 function isInKeepList(mediaId) {
-  return !!db.prepare('SELECT id FROM keep_list WHERE media_id = ?').get(mediaId);
+  return !!db.prepare('SELECT id FROM keep_list WHERE media_id = ? AND (expires_at IS NULL OR expires_at > ?)').get(mediaId, Date.now());
 }
 
-// ── Download token helpers ───────────────────────────────────
-function createDownloadToken(filePath, title, discordId) {
-  const token     = uuidv4();
-  const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
-  db.prepare(
-    'INSERT INTO download_tokens (token, file_path, title, discord_id, expires_at) VALUES (?, ?, ?, ?, ?)'
-  ).run(token, filePath, title, discordId, expiresAt);
-  return { token, expiresAt };
+function createDownloadToken(filePath, title, discordId, oneTimeUse = CONFIG.DOWNLOAD_ONE_TIME_LINKS_DEFAULT) {
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  const tokenHash = sha256(rawToken);
+  const expiresAt = Date.now() + CONFIG.DOWNLOAD_TOKEN_TTL_HOURS * 3600 * 1000;
+  db.prepare('INSERT INTO download_tokens (token_hash, file_path, title, discord_id, expires_at, one_time_use) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(tokenHash, filePath, title, discordId, expiresAt, oneTimeUse ? 1 : 0);
+  audit('download_link_generated', { targetDiscordId: discordId, title, expiresAt, oneTimeUse: !!oneTimeUse });
+  return { rawToken, tokenHash, expiresAt };
 }
 
-function getDownloadToken(token) {
-  return db.prepare('SELECT * FROM download_tokens WHERE token = ?').get(token);
+function getDownloadRecordByRawToken(rawToken) {
+  return db.prepare('SELECT * FROM download_tokens WHERE token_hash = ?').get(sha256(rawToken));
 }
 
-function deleteDownloadToken(token) {
-  db.prepare('DELETE FROM download_tokens WHERE token = ?').run(token);
+function revokeAllDownloadLinks(discordId = null) {
+  if (discordId) {
+    db.prepare('UPDATE download_tokens SET revoked = 1 WHERE discord_id = ? AND revoked = 0').run(discordId);
+    audit('download_links_revoked_user', { targetDiscordId: discordId });
+  } else {
+    db.prepare('UPDATE download_tokens SET revoked = 1 WHERE revoked = 0').run();
+    audit('download_links_revoked_global', {});
+  }
 }
 
 function cleanExpiredTokens() {
   db.prepare('DELETE FROM download_tokens WHERE expires_at < ?').run(Date.now());
 }
 
-// ============================================================
-// Discord Client
-// ============================================================
+function getSetting(key) {
+  const row = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key);
+  return row?.value || null;
+}
+
+function setSetting(key, value) {
+  db.prepare(`
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+  `).run(key, String(value));
+}
+
+const pendingEmailRequests = new Map();
+const routeLimits = new Map();
+const userGenerationLimits = new Map();
+
+function takeRateLimit(bucketMap, key, maxHits, periodMs) {
+  const now = Date.now();
+  const hits = (bucketMap.get(key) || []).filter(ts => now - ts < periodMs);
+  if (hits.length >= maxHits) {
+    bucketMap.set(key, hits);
+    return false;
+  }
+  hits.push(now);
+  bucketMap.set(key, hits);
+  return true;
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -226,1796 +332,837 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message],
 });
 
-// ============================================================
-// Plex Helpers
-// ============================================================
+const PLEX_CLIENT_ID = 'durant-media-server-bot';
 async function getPlexToken() {
-  if (PLEX_TOKEN) return PLEX_TOKEN;
-  log.warn('Using Plex username/password auth (consider switching to PLEX_TOKEN)');
+  if (CONFIG.PLEX_TOKEN) return CONFIG.PLEX_TOKEN;
   const res = await axios.post('https://plex.tv/users/sign_in.json', {}, {
-    auth: { username: PLEX_USERNAME, password: PLEX_PASSWORD },
-    headers: {
-      'X-Plex-Client-Identifier': PLEX_CLIENT_ID,
-      'X-Plex-Product': 'Discord Bot',
-      'X-Plex-Version': '1.0',
-    },
+    auth: { username: CONFIG.PLEX_USERNAME, password: CONFIG.PLEX_PASSWORD },
+    headers: { 'X-Plex-Client-Identifier': PLEX_CLIENT_ID, 'X-Plex-Product': 'Durant Media Server Bot', 'X-Plex-Version': '1.0' },
   });
   return res.data.user.authToken;
 }
-
-async function plexApiGet(path, token) {
-  const res = await axios.get(`https://plex.tv${path}`, {
-    headers: {
-      'X-Plex-Token': token,
-      'Accept': 'application/json',
-      'X-Plex-Client-Identifier': PLEX_CLIENT_ID,
-    },
+async function plexApiGet(urlPath, token) {
+  const res = await axios.get(`https://plex.tv${urlPath}`, {
+    headers: { 'X-Plex-Token': token, 'Accept': 'application/json', 'X-Plex-Client-Identifier': PLEX_CLIENT_ID },
   });
   return res.data;
 }
-
 async function getPlexServers(token) {
   const data = await plexApiGet('/api/v2/resources?includeHttps=1&includeRelay=1', token);
-  return (Array.isArray(data) ? data : []).filter(r =>
-    r.provides?.includes('server') &&
-    !PLEX_EXCLUDE_SERVERS.includes(r.name?.toLowerCase())
-  );
+  return (Array.isArray(data) ? data : []).filter(r => r.provides?.includes('server') && !CONFIG.PLEX_EXCLUDE_SERVERS.includes((r.name || '').toLowerCase()));
 }
 
 async function inviteUserToPlex(email) {
-  log.info('Authenticating with Plex...');
   const token = await getPlexToken();
-  log.ok('Plex authentication successful');
-
   const servers = await getPlexServers(token);
-  log.info(`Inviting ${email} to ${servers.length} server(s)...`);
-
   let successCount = 0;
   for (const server of servers) {
     try {
-      await axios.post(
-        'https://plex.tv/api/v2/shared_servers',
-        {
-          invitedEmail: email,
-          machineIdentifier: server.clientIdentifier,
-          librarySectionIds: [],
-          settings: { allowSync: true },
-        },
-        {
-          headers: {
-            'X-Plex-Token': token,
-            'X-Plex-Client-Identifier': PLEX_CLIENT_ID,
-            'Accept': 'application/json',
-          },
-        }
-      );
-      log.ok(`Invited to server: ${server.name}`);
+      await axios.post('https://plex.tv/api/v2/shared_servers', {
+        invitedEmail: email,
+        machineIdentifier: server.clientIdentifier,
+        librarySectionIds: [],
+        settings: { allowSync: true },
+      }, { headers: { 'X-Plex-Token': token, 'X-Plex-Client-Identifier': PLEX_CLIENT_ID, Accept: 'application/json' } });
       successCount++;
     } catch (err) {
-      log.warn(`Failed to invite to ${server.name}: ${err.message}`);
+      log.warn(`Plex invite failed on ${server.name}: ${err.message}`);
     }
   }
-
+  audit('plex_invite_sent', { email, successCount, total: servers.length });
   return { successCount, total: servers.length };
 }
 
 async function removePlexAccess(email) {
-  log.info(`Authenticating with Plex to remove ${email}...`);
   const token = await getPlexToken();
-
   const friendsData = await plexApiGet('/api/v2/friends', token).catch(() => []);
   const friends = Array.isArray(friendsData) ? friendsData : (friendsData.data || []);
-
-  const friend = friends.find(
-    f => f.email?.toLowerCase() === email.toLowerCase() ||
-         f.username?.toLowerCase() === email.toLowerCase() ||
-         f.title?.toLowerCase() === email.toLowerCase()
-  );
-
-  if (!friend) {
-    log.warn(`No Plex friend found for ${email}`);
-    return { removed: false, reason: 'No Plex account found' };
-  }
-
-  log.info(`Found Plex friend: ${friend.username || friend.title} (ID: ${friend.id})`);
-
+  const friend = friends.find(f => [f.email, f.username, f.title].some(v => (v || '').toLowerCase() === email.toLowerCase()));
+  if (!friend) return { removed: false, reason: 'No Plex account found' };
   const servers = await getPlexServers(token);
-  log.info(`Checking ${servers.length} eligible server(s) for removal`);
-
   let removedCount = 0;
   for (const server of servers) {
     try {
-      await axios.delete(
-        `https://plex.tv/api/v2/shared_servers/${server.clientIdentifier}/friends/${friend.id}`,
-        {
-          headers: {
-            'X-Plex-Token': token,
-            'X-Plex-Client-Identifier': PLEX_CLIENT_ID,
-            'Accept': 'application/json',
-          },
-        }
-      );
-      log.ok(`Removed from ${server.name}`);
+      await axios.delete(`https://plex.tv/api/v2/shared_servers/${server.clientIdentifier}/friends/${friend.id}`, {
+        headers: { 'X-Plex-Token': token, 'X-Plex-Client-Identifier': PLEX_CLIENT_ID, Accept: 'application/json' },
+      });
       removedCount++;
-    } catch (err) {
-      if (err.response?.status === 404) {
-        log.info(`No share found for user on ${server.name}`);
-      } else {
-        log.warn(`Error removing from ${server.name}: ${err.message}`);
-      }
-    }
+    } catch (_e) {}
   }
-
+  audit('plex_access_removed', { email, removedCount, total: servers.length });
   return { removed: removedCount > 0, removedCount, total: servers.length };
 }
 
-// ============================================================
-// Overseerr Helpers
-// ============================================================
 async function createOverseerrUser(email, discordId, username) {
-  log.step(1, `Overseerr: Creating/linking user "${username}" (Discord: ${discordId})`);
-
-  // Step 1: Create local user
-  const createRes = await axios.post(
-    `${OVERSEERR_URL}/api/v1/user`,
-    {
-      email,
-      username,
-      password: uuidv4(),
-      permissions: 32, // REQUEST permission only
-      userType: 2,     // local user
-    },
-    { headers: { 'X-Api-Key': OVERSEERR_API_KEY } }
-  );
-
-  const overseerrUserId = createRes.data.id;
-  log.step(2, `Overseerr user created (ID: ${overseerrUserId})`);
-
-  // Step 2: Link Discord ID via notification settings
-  await axios.post(
-    `${OVERSEERR_URL}/api/v1/user/${overseerrUserId}/settings/notifications`,
-    { discordId },
-    { headers: { 'X-Api-Key': OVERSEERR_API_KEY } }
-  );
-
-  log.step(3, `Discord ID linked to Overseerr user`);
-  return overseerrUserId;
+  const createRes = await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/user`, {
+    email, username, password: crypto.randomUUID(), permissions: 32, userType: 2,
+  }, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
+  const id = createRes.data.id;
+  await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/user/${id}/settings/notifications`, { discordId }, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
+  return id;
 }
 
 async function approveOverseerrRequest(requestId) {
-  const res = await axios.post(
-    `${OVERSEERR_URL}/api/v1/request/${requestId}/approve`,
-    {},
-    { headers: { 'X-Api-Key': OVERSEERR_API_KEY } }
-  );
-  return res.data;
+  return axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/request/${requestId}/approve`, {}, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
 }
-
 async function denyOverseerrRequest(requestId) {
-  const res = await axios.post(
-    `${OVERSEERR_URL}/api/v1/request/${requestId}/decline`,
-    {},
-    { headers: { 'X-Api-Key': OVERSEERR_API_KEY } }
-  );
-  return res.data;
+  return axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/request/${requestId}/decline`, {}, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
 }
 
-// ============================================================
-// Radarr / Sonarr Helpers
-// ============================================================
-
-// Query a specific Radarr instance by URL + key
 async function radarrGetFrom(url, apiKey, endpoint) {
-  const res = await axios.get(`${url}/api/v3${endpoint}`, {
-    params: { apikey: apiKey },
-    timeout: 10000,
-  });
+  const res = await axios.get(`${url}/api/v3${endpoint}`, { params: { apikey: apiKey }, timeout: 10000 });
   return res.data;
 }
-
 async function sonarrGet(endpoint, params = {}) {
-  const res = await axios.get(`${SONARR_URL}/api/v3${endpoint}`, {
-    params: { apikey: SONARR_API_KEY, ...params },
-    timeout: 10000,
-  });
+  const res = await axios.get(`${CONFIG.SONARR_URL}/api/v3${endpoint}`, { params: { apikey: CONFIG.SONARR_API_KEY, ...params }, timeout: 10000 });
   return res.data;
 }
 
-// Search both Radarr instances and tag results with their source
 async function searchMovies(title) {
-  const lower   = title.toLowerCase();
+  const lower = title.toLowerCase();
   const results = [];
-
-  if (RADARR_URL) {
-    const all = await radarrGetFrom(RADARR_URL, RADARR_API_KEY, '/movie');
-    all.filter(m => m.hasFile && m.title.toLowerCase().includes(lower))
-       .forEach(m => results.push({ ...m, _radarrUrl: RADARR_URL, _radarrKey: RADARR_API_KEY }));
+  if (CONFIG.RADARR_URL) {
+    const all = await radarrGetFrom(CONFIG.RADARR_URL, CONFIG.RADARR_API_KEY, '/movie');
+    all.filter(m => m.hasFile && m.title.toLowerCase().includes(lower)).forEach(m => results.push({ ...m, _radarrUrl: CONFIG.RADARR_URL, _radarrKey: CONFIG.RADARR_API_KEY }));
   }
-  if (RADARR_4K_URL) {
-    const all = await radarrGetFrom(RADARR_4K_URL, RADARR_4K_API_KEY, '/movie');
-    all.filter(m => m.hasFile && m.title.toLowerCase().includes(lower))
-       .forEach(m => results.push({ ...m, _radarrUrl: RADARR_4K_URL, _radarrKey: RADARR_4K_API_KEY }));
+  if (CONFIG.RADARR_4K_URL) {
+    const all = await radarrGetFrom(CONFIG.RADARR_4K_URL, CONFIG.RADARR_4K_API_KEY, '/movie');
+    all.filter(m => m.hasFile && m.title.toLowerCase().includes(lower)).forEach(m => results.push({ ...m, _radarrUrl: CONFIG.RADARR_4K_URL, _radarrKey: CONFIG.RADARR_4K_API_KEY }));
   }
-
   return results;
 }
-
-// Find a movie by TMDB ID across both Radarr instances
-async function getMovieByTmdb(tmdbId) {
-  const id = parseInt(tmdbId, 10);
-
-  if (RADARR_4K_URL) {
-    const all = await radarrGetFrom(RADARR_4K_URL, RADARR_4K_API_KEY, '/movie');
-    const hit = all.find(m => m.tmdbId === id);
-    if (hit) return { ...hit, _radarrUrl: RADARR_4K_URL, _radarrKey: RADARR_4K_API_KEY };
-  }
-  if (RADARR_URL) {
-    const all = await radarrGetFrom(RADARR_URL, RADARR_API_KEY, '/movie');
-    const hit = all.find(m => m.tmdbId === id);
-    if (hit) return { ...hit, _radarrUrl: RADARR_URL, _radarrKey: RADARR_API_KEY };
-  }
-
-  return null;
-}
-
-// Delete from whichever Radarr instance the movie came from
-async function deleteRadarrMovie(movie) {
-  const url    = movie._radarrUrl || RADARR_URL;
-  const apiKey = movie._radarrKey || RADARR_API_KEY;
-  await axios.delete(`${url}/api/v3/movie/${movie.id}`, {
-    params: { apikey: apiKey, deleteFiles: true },
-    timeout: 10000,
-  });
-}
-
 async function searchSeries(title) {
-  const all   = await sonarrGet('/series');
-  const lower = title.toLowerCase();
-  return all.filter(s => s.title.toLowerCase().includes(lower));
-}
-
-async function getSeriesByTvdb(tvdbId) {
   const all = await sonarrGet('/series');
-  return all.find(s => s.tvdbId === parseInt(tvdbId, 10)) || null;
+  return all.filter(s => s.title.toLowerCase().includes(title.toLowerCase()));
 }
-
 async function getEpisodeFiles(seriesId) {
   return sonarrGet('/episodefile', { seriesId });
 }
 
-async function deleteSonarrSeries(sonarrId) {
-  await axios.delete(`${SONARR_URL}/api/v3/series/${sonarrId}`, {
-    params: { apikey: SONARR_API_KEY, deleteFiles: true },
-    timeout: 10000,
-  });
-}
-
-async function deleteMediaById(mediaId) {
-  if (mediaId.startsWith('tmdb:')) {
-    const movie = await getMovieByTmdb(mediaId.replace('tmdb:', ''));
-    if (!movie) throw new Error('Movie not found in Radarr');
-    await deleteRadarrMovie(movie); // pass full object so we know which instance to delete from
-  } else if (mediaId.startsWith('tvdb:')) {
-    const series = await getSeriesByTvdb(mediaId.replace('tvdb:', ''));
-    if (!series) throw new Error('Series not found in Sonarr');
-    await deleteSonarrSeries(series.id);
-  } else {
-    throw new Error('Unknown media ID format');
-  }
-}
-
-// ============================================================
-// File path remapping
-// (Radarr/Sonarr store paths relative to their own mount)
-// ============================================================
 function remapPath(hostPath) {
-  if (PATH_REMAP_FROM && hostPath.startsWith(PATH_REMAP_FROM)) {
-    return hostPath.replace(PATH_REMAP_FROM, PATH_REMAP_TO);
+  if (CONFIG.PATH_REMAP_FROM && hostPath.startsWith(CONFIG.PATH_REMAP_FROM)) {
+    return hostPath.replace(CONFIG.PATH_REMAP_FROM, CONFIG.PATH_REMAP_TO);
   }
   return hostPath;
 }
 
-// ============================================================
-// Media type helpers
-// ============================================================
-function mediaTypeLabel(mediaType, is4k) {
-  if (mediaType === 'tv') return is4k ? '4K TV Show' : 'TV Show';
-  return is4k ? '4K Movie' : 'Movie';
+function resolveSafeMediaPath(requestedPath) {
+  const normalizedRoot = fs.realpathSync(path.resolve(CONFIG.RAID_PATH));
+  const resolved = path.resolve(requestedPath);
+  const realResolved = fs.realpathSync(resolved);
+  if (!realResolved.startsWith(normalizedRoot + path.sep) && realResolved !== normalizedRoot) {
+    throw new Error('Resolved file path escapes configured RAID_PATH');
+  }
+  return realResolved;
 }
 
-function mediaTypeEmoji(mediaType, is4k) {
-  if (mediaType === 'tv') return '📺';
-  return is4k ? '🎥' : '🎬';
+function mediaTypeLabel(mediaType, is4k) { if (mediaType === 'tv') return is4k ? '4K TV Show' : 'TV Show'; return is4k ? '4K Movie' : 'Movie'; }
+function mediaTypeEmoji(mediaType, is4k) { if (mediaType === 'tv') return '📺'; return is4k ? '🎥' : '🎬'; }
+function isValidEmail(email) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); }
+function pad(n) { return String(n).padStart(2, '0'); }
+function mimeFor(ext) { return ({ '.mkv': 'video/x-matroska', '.mp4': 'video/mp4', '.avi': 'video/x-msvideo', '.mov': 'video/quicktime', '.wmv': 'video/x-ms-wmv' })[ext] || 'application/octet-stream'; }
+
+async function safeGetChannel(channelId) {
+  try { return await client.channels.fetch(channelId); } catch (_e) { return null; }
 }
 
-// ============================================================
-// Pending DM state
-// (Tracks users mid-onboarding who haven't submitted their email yet)
-// ============================================================
-const pendingEmailRequests = new Map(); // discordId → true
+function isAdminInteraction(interaction) {
+  return interaction.user.id === CONFIG.ADMIN_USER_ID || interaction.memberPermissions?.has(PermissionFlagsBits.Administrator);
+}
 
-// ============================================================
-// Discord Events
-// ============================================================
+const slashCommands = [
+  new SlashCommandBuilder().setName('download').setDescription('Get a secure download link').addStringOption(o => o.setName('title').setDescription('Movie or show title').setRequired(true)).addIntegerOption(o => o.setName('season').setDescription('Season number')).addIntegerOption(o => o.setName('episode').setDescription('Episode number')).addBooleanOption(o => o.setName('one_time').setDescription('One-time download link')),
+  new SlashCommandBuilder().setName('link').setDescription('Link a user to Plex email').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('email').setDescription('Plex email').setRequired(true)),
+  new SlashCommandBuilder().setName('unlink').setDescription('Unlink a user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)),
+  new SlashCommandBuilder().setName('users').setDescription('List linked users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('status').setDescription('Show status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('sync').setDescription('Sync users safely').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(true).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
+  new SlashCommandBuilder().setName('cleanup').setDescription('Cleanup deleted Overseerr users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(false).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
+  new SlashCommandBuilder().setName('audit').setDescription('Audit log queries').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(s => s.setName('recent').setDescription('Recent entries').addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100)))
+    .addSubcommand(s => s.setName('user').setDescription('Entries by user').addUserOption(o => o.setName('person').setDescription('User').setRequired(true)).addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100)))
+    .addSubcommand(s => s.setName('action').setDescription('Entries by action').addStringOption(o => o.setName('action').setDescription('Action name').setRequired(true)).addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100))),
+  new SlashCommandBuilder().setName('me').setDescription('Show your linked profile'),
+  new SlashCommandBuilder().setName('myrequests').setDescription('Show your recent requests'),
+  new SlashCommandBuilder().setName('downloads').setDescription('Show your active download links'),
+  new SlashCommandBuilder().setName('keep').setDescription('Show your keep list'),
+  new SlashCommandBuilder().setName('help').setDescription('How this media server works'),
+  new SlashCommandBuilder().setName('revoke-downloads').setDescription('Revoke download links').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption(o => o.setName('scope').setDescription('all or user').setRequired(true).addChoices({ name: 'all', value: 'all' }, { name: 'user', value: 'user' }))
+    .addUserOption(o => o.setName('user').setDescription('User for user scope').setRequired(false)),
+].map(v => v.toJSON());
 
-// ── Ready ────────────────────────────────────────────────────
+async function registerSlashCommands() {
+  const rest = new REST({ version: '10' }).setToken(CONFIG.DISCORD_BOT_TOKEN);
+  await rest.put(Routes.applicationGuildCommands(CONFIG.DISCORD_CLIENT_ID, CONFIG.DISCORD_GUILD_ID), { body: slashCommands });
+  log.ok(`Registered ${slashCommands.length} slash command(s)`);
+}
+
 client.once('ready', async () => {
   log.ok(`Discord bot online as ${client.user.tag}`);
-  log.info(`Serving ${client.guilds.cache.size} guild(s)`);
-  log.info(`Excluding Plex servers: ${PLEX_EXCLUDE_SERVERS.join(', ') || 'none'}`);
-
   await registerSlashCommands();
   startExpressServer();
 });
 
-// ── Member Join ───────────────────────────────────────────────
 client.on('guildMemberAdd', async member => {
-  log.info(`New member joined: ${member.user.tag}`);
-
   try {
-    const embed = new EmbedBuilder()
-      .setTitle('👋 Welcome to Durant Media Server!')
-      .setDescription(
-        `Hey ${member.user.username}!\n\n` +
-        `You've been invited to join our private media server. We use **Plex** to stream movies and TV shows across three servers (California, South-Central, and Central Iowa).\n\n` +
-        `**Step 1 — Create a free Plex account** (skip if you already have one):\n` +
-        `👉 https://www.plex.tv/sign-up/\n\n` +
-        `**Step 2 — Reply to this message with your Plex account email address.**\n\n` +
-        `Once approved you'll get access to the full library, plus the ability to request new titles and download files directly.`
-      )
-      .setColor(0xe5a00d)
-      .setFooter({ text: 'Already have Plex? Just reply with your email to get started' });
-
-    await member.send({ embeds: [embed] });
+    await member.send({ embeds: [new EmbedBuilder().setTitle('👋 Welcome to Durant Media Server!').setDescription('Reply with your Plex account email to request access.').setColor(0xe5a00d)] });
     pendingEmailRequests.set(member.id, true);
-    log.ok(`Sent welcome DM to ${member.user.tag}`);
   } catch (err) {
     log.warn(`Could not DM ${member.user.tag}: ${err.message}`);
   }
 });
 
-// ── Member Leave ──────────────────────────────────────────────
 client.on('guildMemberRemove', async member => {
-  log.info(`Member left: ${member.user.tag}`);
-
   const user = getUserByDiscordId(member.id);
   if (!user) return;
-
-  const adminChannel = await safeGetChannel(ADMIN_CHANNEL_ID);
-
-  // Remove Plex access automatically
   try {
     const result = await removePlexAccess(user.email);
     removeUser(member.id);
-
-    const statusMsg = result.removed
-      ? `Removed from ${result.removedCount}/${result.total} Plex server(s).`
-      : `No active Plex shares found (may not have been invited yet).`;
-
-    log.ok(`Cleanup complete for ${member.user.tag}`);
-
-    if (adminChannel) {
-      await adminChannel.send(
-        `⚠️ **User Left Server**\n\n` +
-        `**Discord:** ${member.user.tag} (<@${member.id}>)\n` +
-        `**Plex Email:** \`${user.email}\`\n` +
-        `**Plex Access:** ${statusMsg}\n\n` +
-        `Also remove them from **Overseerr** manually if needed.`
-      );
-    }
+    audit('user_unlinked', { targetDiscordId: member.id, email: user.email, removed: result.removed });
+    notifyAdmin(`⚠️ User left Discord: <@${member.id}> (${user.email}). Plex removed: ${result.removed ? 'yes' : 'no'}`);
   } catch (err) {
-    log.error(`Error removing Plex access for ${member.user.tag}:`, err.message);
-    if (adminChannel) {
-      await adminChannel.send(
-        `⚠️ **User Left — Manual Action Needed**\n\n` +
-        `**Discord:** ${member.user.tag}\n` +
-        `**Plex Email:** \`${user.email}\`\n` +
-        `❌ Automatic Plex removal failed: ${err.message}\n` +
-        `Please remove them from Plex and Overseerr manually.`
-      );
-    }
+    audit('external_api_error', { targetDiscordId: member.id, provider: 'plex', error: err.message });
+    notifyAdmin(`⚠️ Failed to remove Plex access for ${user.email}: ${err.message}`);
   }
 });
 
-// ── DM Handler (email collection) ────────────────────────────
 client.on('messageCreate', async message => {
-  if (message.author.bot) return;
-  if (message.guild)      return; // Only handle DMs
-
-  const userId = message.author.id;
-  if (!pendingEmailRequests.has(userId)) return;
-
+  if (message.author.bot || message.guild) return;
+  if (!pendingEmailRequests.has(message.author.id)) return;
   const email = message.content.trim().toLowerCase();
-
-  if (!isValidEmail(email)) {
-    await message.reply(
-      'That doesn\'t look like a valid email address. Please reply with your Plex account email.'
-    );
-    return;
-  }
-
-  pendingEmailRequests.delete(userId);
-  storeUserEmail(userId, email);
-
-  await message.reply(
-    '✅ Got it! Your request has been sent to the admin for approval. ' +
-    'You\'ll receive a DM once it\'s reviewed.'
-  );
-
-  log.info(`Plex request from ${message.author.tag} (${email}) forwarded to admins`);
-
-  // Send approval card to admin channel
-  const adminChannel = await safeGetChannel(ADMIN_CHANNEL_ID);
+  if (!isValidEmail(email)) return message.reply('That does not look like a valid email. Try again.');
+  pendingEmailRequests.delete(message.author.id);
+  storeUserEmail(message.author.id, email);
+  audit('user_linked', { targetDiscordId: message.author.id, email });
+  await message.reply('✅ Request received and sent to admins for approval.');
+  const adminChannel = await safeGetChannel(CONFIG.ADMIN_CHANNEL_ID);
   if (!adminChannel) return;
-
-  const joinedAt = message.author.createdAt
-    ? `<t:${Math.floor(message.author.createdAt.getTime() / 1000)}:R>`
-    : 'Unknown';
-
-  const embed = new EmbedBuilder()
-    .setTitle('🔐 New Plex Access Request')
-    .setThumbnail(message.author.displayAvatarURL({ dynamic: true }))
-    .addFields(
-      { name: 'User',    value: `<@${userId}>\n${message.author.tag}`, inline: true },
-      { name: 'Email',   value: `\`${email}\``,                         inline: true },
-      { name: 'Account', value: `Created ${joinedAt}`,                  inline: true },
-    )
-    .setColor(0x3b82f6)
-    .setTimestamp()
-    .setFooter({ text: `Discord ID: ${userId}` });
-
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`plex_approve:${userId}`)
-      .setLabel('Approve')
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId(`plex_deny:${userId}`)
-      .setLabel('Deny')
-      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`plex_approve:${message.author.id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`plex_deny:${message.author.id}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
   );
-
-  await adminChannel.send({ embeds: [embed], components: [row] });
+  await adminChannel.send({ embeds: [new EmbedBuilder().setTitle('🔐 New Plex Access Request').addFields({ name: 'User', value: `<@${message.author.id}>`, inline: true }, { name: 'Email', value: `\`${email}\``, inline: true }).setColor(0x3b82f6)], components: [row] });
 });
 
-// ── Slash Commands + Button Interactions ──────────────────────
 client.on('interactionCreate', async interaction => {
   try {
-    if (interaction.isChatInputCommand()) {
-      await handleSlashCommand(interaction);
-    } else if (interaction.isButton()) {
-      await handleButton(interaction);
-    }
+    if (interaction.isChatInputCommand()) await handleSlashCommand(interaction);
+    if (interaction.isButton()) await handleButton(interaction);
   } catch (err) {
-    log.error('Interaction error:', err.message);
-    const reply = { content: `❌ An error occurred: ${err.message}`, ephemeral: true };
-    if (interaction.deferred || interaction.replied) {
-      await interaction.editReply(reply).catch(() => {});
-    } else {
-      await interaction.reply(reply).catch(() => {});
-    }
+    audit('external_api_error', { actorDiscordId: interaction.user?.id, error: err.message, action: 'interaction' });
+    const payload = { content: `❌ ${err.message}`, ephemeral: true };
+    if (interaction.deferred || interaction.replied) await interaction.editReply(payload).catch(() => {});
+    else await interaction.reply(payload).catch(() => {});
   }
 });
 
-client.on('error', err => log.error('Discord client error:', err));
-
-// ============================================================
-// Slash Command Definitions
-// ============================================================
-const slashCommands = [
-  new SlashCommandBuilder()
-    .setName('download')
-    .setDescription('Get a 24-hour download link for a movie or TV episode')
-    .addStringOption(o =>
-      o.setName('title').setDescription('Movie or show title').setRequired(true)
-    )
-    .addIntegerOption(o =>
-      o.setName('season').setDescription('Season number (TV only)').setRequired(false)
-    )
-    .addIntegerOption(o =>
-      o.setName('episode').setDescription('Episode number (TV only)').setRequired(false)
-    ),
-
-  new SlashCommandBuilder()
-    .setName('link')
-    .setDescription('Link a Discord user to their Plex email (admin only)')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addUserOption(o =>
-      o.setName('user').setDescription('Discord user').setRequired(true)
-    )
-    .addStringOption(o =>
-      o.setName('email').setDescription('Plex email address').setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName('unlink')
-    .setDescription('Remove a user from the bot database (admin only)')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addUserOption(o =>
-      o.setName('user').setDescription('Discord user').setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName('users')
-    .setDescription('List all linked Plex users (admin only)')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-  new SlashCommandBuilder()
-    .setName('status')
-    .setDescription('Show system status — linked users, Overseerr accounts (admin only)')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-  new SlashCommandBuilder()
-    .setName('sync')
-    .setDescription('Comprehensive 3-phase sync: Plex → DB → Overseerr → Discord links (admin only)')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-  new SlashCommandBuilder()
-    .setName('cleanup')
-    .setDescription('Remove deleted/orphaned Overseerr accounts (admin only)')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-].map(c => c.toJSON());
-
-async function registerSlashCommands() {
-  if (!DISCORD_CLIENT_ID || !DISCORD_GUILD_ID) {
-    log.warn('DISCORD_CLIENT_ID or DISCORD_GUILD_ID not set — skipping slash command registration');
-    return;
-  }
-  try {
-    const rest = new REST({ version: '10' }).setToken(DISCORD_BOT_TOKEN);
-    await rest.put(
-      Routes.applicationGuildCommands(DISCORD_CLIENT_ID, DISCORD_GUILD_ID),
-      { body: slashCommands }
-    );
-    log.ok(`Registered ${slashCommands.length} slash command(s)`);
-  } catch (err) {
-    log.error('Failed to register slash commands:', err.message);
-  }
+async function handleSlashCommand(interaction) {
+  const n = interaction.commandName;
+  if (n === 'download') return handleDownloadCommand(interaction);
+  if (n === 'link') return handleLinkCommand(interaction);
+  if (n === 'unlink') return handleUnlinkCommand(interaction);
+  if (n === 'users') return handleUsersCommand(interaction);
+  if (n === 'status') return handleStatusCommand(interaction);
+  if (n === 'sync') return handleSyncCommand(interaction);
+  if (n === 'cleanup') return handleCleanupCommand(interaction);
+  if (n === 'audit') return handleAuditCommand(interaction);
+  if (n === 'me') return handleMeCommand(interaction);
+  if (n === 'myrequests') return handleMyRequestsCommand(interaction);
+  if (n === 'downloads') return handleDownloadsCommand(interaction);
+  if (n === 'keep') return handleKeepCommand(interaction);
+  if (n === 'help') return handleHelpCommand(interaction);
+  if (n === 'revoke-downloads') return handleRevokeDownloadsCommand(interaction);
 }
 
-// ============================================================
-// Slash Command Handlers
-// ============================================================
-async function handleSlashCommand(interaction) {
-  const { commandName } = interaction;
-
-  if (commandName === 'download') return handleDownloadCommand(interaction);
-  if (commandName === 'link')     return handleLinkCommand(interaction);
-  if (commandName === 'unlink')   return handleUnlinkCommand(interaction);
-  if (commandName === 'users')    return handleUsersCommand(interaction);
-  if (commandName === 'status')   return handleStatusCommand(interaction);
-  if (commandName === 'sync')     return handleSyncCommand(interaction);
-  if (commandName === 'cleanup')  return handleCleanupCommand(interaction);
+async function requireAdmin(interaction) {
+  if (!isAdminInteraction(interaction)) {
+    await interaction.reply({ content: '❌ Admin only command.', ephemeral: true });
+    return false;
+  }
+  return true;
 }
 
 async function handleDownloadCommand(interaction) {
   const user = getUserByDiscordId(interaction.user.id);
-  if (!user) {
-    return interaction.reply({
-      content: '❌ You need to be a linked Plex member to use this command.',
-      ephemeral: true,
-    });
+  if (!user) return interaction.reply({ content: '❌ You must be linked first.', ephemeral: true });
+  if (!takeRateLimit(userGenerationLimits, interaction.user.id, CONFIG.DOWNLOAD_MAX_PER_HOUR, 3600000)) {
+    return interaction.reply({ content: '❌ Rate limit reached. Try again later.', ephemeral: true });
   }
 
   await interaction.deferReply({ ephemeral: true });
-
-  const title   = interaction.options.getString('title');
-  const season  = interaction.options.getInteger('season');
+  const title = interaction.options.getString('title');
+  const season = interaction.options.getInteger('season');
   const episode = interaction.options.getInteger('episode');
+  const oneTime = interaction.options.getBoolean('one_time') ?? CONFIG.DOWNLOAD_ONE_TIME_LINKS_DEFAULT;
 
-  let filePath, displayTitle;
-
+  let filePath; let displayTitle;
   if (season || episode) {
-    // TV episode
-    const results = await searchSeries(title);
-    if (!results.length) {
-      return interaction.editReply({ content: `❌ Could not find **${title}** in the library.` });
-    }
-    const series  = results[0];
-    const files   = await getEpisodeFiles(series.id);
-    const s = season || 1, e = episode || 1;
-    const epFile  = files.find(f => f.seasonNumber === s && f.episodeNumber === e);
-    if (!epFile) {
-      return interaction.editReply({
-        content: `❌ S${pad(s)}E${pad(e)} not found for **${series.title}**.`,
-      });
-    }
-    filePath     = epFile.path;
-    displayTitle = `${series.title} S${pad(s)}E${pad(e)}`;
+    const series = (await searchSeries(title))[0];
+    if (!series) return interaction.editReply('❌ Series not found.');
+    const epFile = (await getEpisodeFiles(series.id)).find(f => f.seasonNumber === (season || 1) && f.episodeNumber === (episode || 1));
+    if (!epFile) return interaction.editReply('❌ Episode not found.');
+    filePath = epFile.path; displayTitle = `${series.title} S${pad(season || 1)}E${pad(episode || 1)}`;
   } else {
-    // Movie
-    const results = await searchMovies(title);
-    if (!results.length) {
-      return interaction.editReply({ content: `❌ Could not find **${title}** in the library.` });
-    }
-    const movie  = results[0];
-    filePath     = movie.movieFile?.path;
-    displayTitle = movie.title + (movie.year ? ` (${movie.year})` : '');
-    if (!filePath) {
-      return interaction.editReply({ content: `❌ **${movie.title}** has no file on disk yet.` });
-    }
+    const movie = (await searchMovies(title))[0];
+    if (!movie || !movie.movieFile?.path) return interaction.editReply('❌ Movie file not found.');
+    filePath = movie.movieFile.path; displayTitle = `${movie.title}${movie.year ? ` (${movie.year})` : ''}`;
   }
 
-  filePath = remapPath(filePath);
+  filePath = resolveSafeMediaPath(remapPath(filePath));
+  if (!fs.existsSync(filePath)) return interaction.editReply('❌ File missing on server.');
 
-  if (!fs.existsSync(filePath)) {
-    return interaction.editReply({
-      content: '❌ File not found on disk. The admin may need to check the RAID path mapping.',
-    });
-  }
-
-  const { token, expiresAt } = createDownloadToken(filePath, displayTitle, interaction.user.id);
-  const downloadUrl = `https://${TUNNEL_DOMAIN}/download/${token}`;
-
-  await interaction.editReply({
-    content:
-      `📥 **Download — ${displayTitle}**\n\n` +
-      `🔗 ${downloadUrl}\n\n` +
-      `⏳ Expires: ${new Date(expiresAt).toUTCString()}\n` +
-      `_This link is private. Do not share it._`,
-  });
-
-  log.ok(`Download token issued for "${displayTitle}" to ${interaction.user.tag}`);
+  const { rawToken, expiresAt } = createDownloadToken(filePath, displayTitle, interaction.user.id, oneTime);
+  await interaction.editReply(`📥 **${displayTitle}**\n🔗 https://${CONFIG.TUNNEL_DOMAIN}/download/${rawToken}\n⏳ Expires: ${new Date(expiresAt).toUTCString()}\n${oneTime ? '🔒 One-time link enabled.' : ''}`);
 }
 
 async function handleLinkCommand(interaction) {
-  if (interaction.user.id !== ADMIN_USER_ID) {
-    return interaction.reply({ content: '❌ Only the admin can use this command.', ephemeral: true });
-  }
-
+  if (!(await requireAdmin(interaction))) return;
   const target = interaction.options.getUser('user');
-  const email  = interaction.options.getString('email').toLowerCase().trim();
-
-  storeUserEmail(target.id, email);
-  markUserInvited(target.id); // Admin-linked users are considered already invited
-
-  await interaction.reply({
-    content: `✅ Linked **${target.displayName}** (@${target.username}) to Plex email \`${email}\`.`,
-    ephemeral: true,
-  });
-
-  log.ok(`[Link] ${target.tag} (${target.id}) manually linked to ${email}`);
+  const email = interaction.options.getString('email').toLowerCase().trim();
+  storeUserEmail(target.id, email); markUserInvited(target.id);
+  audit('user_linked', { actorDiscordId: interaction.user.id, targetDiscordId: target.id, email, source: 'slash_link' });
+  await interaction.reply({ content: `✅ Linked ${target.tag} to ${email}`, ephemeral: true });
 }
 
 async function handleUnlinkCommand(interaction) {
-  if (interaction.user.id !== ADMIN_USER_ID) {
-    return interaction.reply({ content: '❌ Only the admin can use this command.', ephemeral: true });
-  }
-
+  if (!(await requireAdmin(interaction))) return;
   const target = interaction.options.getUser('user');
   const record = getUserByDiscordId(target.id);
-
-  if (!record) {
-    return interaction.reply({
-      content: `⚠️ **${target.tag}** is not in the database.`,
-      ephemeral: true,
-    });
-  }
-
+  if (!record) return interaction.reply({ content: '⚠️ Not in DB.', ephemeral: true });
   removeUser(target.id);
-
-  await interaction.reply({
-    content:
-      `✅ Removed **${target.tag}** (was \`${record.email}\`) from the database.\n` +
-      `⚠️ Remember to also remove them from Plex and Overseerr manually.`,
-    ephemeral: true,
-  });
+  audit('user_unlinked', { actorDiscordId: interaction.user.id, targetDiscordId: target.id, email: record.email });
+  await interaction.reply({ content: `✅ Removed ${target.tag} from DB.`, ephemeral: true });
 }
 
 async function handleUsersCommand(interaction) {
-  if (interaction.user.id !== ADMIN_USER_ID) {
-    return interaction.reply({ content: '❌ Only the admin can use this command.', ephemeral: true });
-  }
-
+  if (!(await requireAdmin(interaction))) return;
   const rows = db.prepare('SELECT * FROM users ORDER BY requested_at ASC').all();
-
-  if (!rows.length) {
-    return interaction.reply({ content: 'No linked users found.', ephemeral: true });
-  }
-
-  const lines = rows.map((u, i) =>
-    `${i + 1}. <@${u.discord_id}> — \`${u.email}\` ${u.invited ? '✅' : '⏳'}`
-  );
-
-  const embed = new EmbedBuilder()
-    .setTitle(`👥 Linked Plex Users (${rows.length})`)
-    .setDescription(lines.join('\n'))
-    .setColor(0x6366f1)
-    .setTimestamp();
-
-  await interaction.reply({ embeds: [embed], ephemeral: true });
+  await interaction.reply({ content: rows.slice(0, 50).map(u => `<@${u.discord_id}> — ${u.email}`).join('\n') || 'No users', ephemeral: true });
 }
 
-// ============================================================
-// /status Command
-// ============================================================
-async function handleStatusCommand(interaction) {
-  if (interaction.user.id !== ADMIN_USER_ID) {
-    return interaction.reply({ content: '❌ Only the admin can use this command.', ephemeral: true });
-  }
-
-  await interaction.deferReply({ ephemeral: true });
-
-  // All users in our DB
-  const dbUsers = db.prepare('SELECT * FROM users ORDER BY requested_at ASC').all();
-
-  // All users in Overseerr
-  let overseerrUsers = [];
-  try {
-    const res = await axios.get(`${OVERSEERR_URL}/api/v1/user?take=100`, {
-      headers: { 'X-Api-Key': OVERSEERR_API_KEY },
-    });
-    overseerrUsers = res.data.results || [];
-  } catch (err) {
-    log.warn('[Status] Could not fetch Overseerr users:', err.message);
-  }
-
-  // Build sets for comparison
-  const dbEmailSet       = new Set(dbUsers.map(u => u.email.toLowerCase()));
-  const overseerrEmailSet = new Set(overseerrUsers.map(u => u.email?.toLowerCase()).filter(Boolean));
-
-  // Active & Linked — in both DB and Overseerr
-  const linked = dbUsers.filter(u => overseerrEmailSet.has(u.email.toLowerCase()));
-
-  // Overseerr Only — in Overseerr but not matched to any DB user
-  // Also exclude users whose Overseerr displayName matches a linked Discord username
-  const guild = client.guilds.cache.first();
-  const discordUsernameSet = new Set();
-  if (guild) {
-    dbUsers.forEach(u => {
-      if (!u.discord_id.startsWith('plex_')) {
-        const member = guild.members.cache.get(u.discord_id);
-        if (member) {
-          discordUsernameSet.add(member.user.username.toLowerCase());
-          discordUsernameSet.add(member.displayName.toLowerCase());
-        }
-      }
-    });
-  }
-  const overseerrOnly = overseerrUsers.filter(u => {
-    if (!u.email) return false;
-    if (u.userType === 1) return false;
-    if (dbEmailSet.has(u.email.toLowerCase())) return false;
-    const display = (u.displayName || '').toLowerCase();
-    const username = (u.username || '').toLowerCase();
-    if (discordUsernameSet.has(display) || discordUsernameSet.has(username)) return false;
-    return true;
-  });
-
-  // Build embed
-  const botId = client.user?.id;
-  const linkedFiltered = linked.filter(u => u.discord_id !== botId);
-  const linkedLines = linkedFiltered.map(u => {
-    const isPlexOnly = u.discord_id.startsWith('plex_');
-    const userDisplay = isPlexOnly
-      ? `**${u.email.split('@')[0]}** *(no Discord)*`
-      : `<@${u.discord_id}>`;
-    return `✅ ${userDisplay} — ${u.email}`;
-  });
-
-  const overseerrOnlyLines = overseerrOnly.map(u =>
-    `🔧 **${u.displayName || u.email}** — ${u.email}`
-  );
-
-  let description = '';
-  if (linkedLines.length) {
-    description += `**Active & Linked (${linkedLines.length})**\n${linkedLines.join('\n')}\n\n`;
-  }
-  if (overseerrOnlyLines.length) {
-    description += `**Overseerr Only / Manual (${overseerrOnlyLines.length})**\n${overseerrOnlyLines.join('\n')}\n\n`;
-  }
-  if (!description) description = 'No users found.';
-
-  const embed = new EmbedBuilder()
-    .setTitle('🗺️ System Status')
-    .setDescription(description)
-    .setColor(0x6366f1)
-    .setFooter({ text: `Total Overseerr Users: ${overseerrUsers.length}` })
-    .setTimestamp();
-
-  await interaction.editReply({ embeds: [embed] });
+async function fetchOverseerrUsers() {
+  const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/user?take=200`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
+  return res.data.results || [];
 }
 
-// ============================================================
-// /sync Command
-// ============================================================
+async function buildSyncPreview() {
+  const dbUsers = db.prepare('SELECT * FROM users').all();
+  const guild = client.guilds.cache.get(CONFIG.DISCORD_GUILD_ID) || client.guilds.cache.first();
+  const discordMembers = guild ? Array.from((await guild.members.fetch()).values()) : [];
+  const discordIds = new Set(discordMembers.map(m => m.user.id));
+
+  const token = await getPlexToken();
+  const friendsData = await plexApiGet('/api/v2/friends', token).catch(() => []);
+  const plexFriends = Array.isArray(friendsData) ? friendsData : (friendsData.data || []);
+  const plexEmails = new Set(plexFriends.map(f => (f.email || '').toLowerCase()).filter(Boolean));
+
+  const overseerrUsers = await fetchOverseerrUsers().catch(() => []);
+  const overseerrEmails = new Set(overseerrUsers.map(u => (u.email || '').toLowerCase()).filter(Boolean));
+
+  const discordNotLinkedToPlex = discordMembers.filter(m => !m.user.bot && !dbUsers.find(u => u.discord_id === m.user.id)).map(m => `${m.user.tag}`);
+  const plexNotInDiscord = plexFriends.filter(f => f.email && !dbUsers.find(u => u.email.toLowerCase() === f.email.toLowerCase())).map(f => f.email);
+  const overseerrNotLinkedToDiscord = overseerrUsers.filter(u => u.email && !dbUsers.find(d => d.email.toLowerCase() === u.email.toLowerCase())).map(u => u.email);
+  const dbMissingFromPlex = dbUsers.filter(u => !u.discord_id.startsWith('plex_') && !plexEmails.has(u.email.toLowerCase())).map(u => `${u.email}`);
+
+  const wouldAdd = plexNotInDiscord.slice();
+  const wouldUpdate = dbUsers.filter(u => overseerrEmails.has(u.email.toLowerCase()) && !u.overseerr_created).map(u => u.email);
+  const risky = dbUsers.filter(u => !u.discord_id.startsWith('plex_') && !discordIds.has(u.discord_id)).map(u => `${u.email} (discord missing)`);
+
+  return { discordNotLinkedToPlex, plexNotInDiscord, overseerrNotLinkedToDiscord, dbMissingFromPlex, wouldAdd, wouldRemove: [], wouldUpdate, risky };
+}
+
 async function handleSyncCommand(interaction) {
-  if (interaction.user.id !== ADMIN_USER_ID) {
-    return interaction.reply({ content: '❌ Only the admin can use this command.', ephemeral: true });
-  }
-
+  if (!(await requireAdmin(interaction))) return;
   await interaction.deferReply({ ephemeral: true });
-
-  await interaction.editReply({ content: '⚙️ Starting Comprehensive Sync (Plex + Overseerr)...' });
-
-  let phase1Added    = 0;
-  let phase2Created  = 0;
-  let phase3Repaired = 0;
-  const errors       = [];
-
-  // ── Phase 1: Scan Plex friends → add missing to DB ───────────
-  try {
-    const token = await getPlexToken();
-    const friendsData = await plexApiGet('/api/v2/friends', token).catch(() => []);
-    const friends = Array.isArray(friendsData) ? friendsData : (friendsData.data || []);
-
-    for (const friend of friends) {
-      const email = friend.email?.toLowerCase();
-      if (!email) continue;
-
-      const existing = getUserByEmail(email);
-      if (!existing) {
-        db.prepare('INSERT OR IGNORE INTO users (discord_id, email, invited, requested_at) VALUES (?, ?, 1, ?)')
-          .run(`plex_${friend.id}`, email, new Date().toISOString());
-        phase1Added++;
-        log.info(`[Sync P1] Added Plex friend to DB: ${email}`);
-      }
-    }
-  } catch (err) {
-    errors.push(`Phase 1: ${err.message}`);
-    log.error('[Sync P1]', err.message);
+  const mode = interaction.options.getString('mode', true);
+  const preview = await buildSyncPreview();
+  audit('sync_preview_run', { actorDiscordId: interaction.user.id, ...preview });
+  if (mode === 'preview') {
+    return interaction.editReply(formatSyncPreview(preview, 'Preview only; no changes made.'));
   }
 
-  // ── Phase 2: Create Overseerr accounts for DB users missing one ──
-  const allDbUsers = db.prepare('SELECT * FROM users').all();
-  let overseerrUsers = [];
-  try {
-    const res = await axios.get(`${OVERSEERR_URL}/api/v1/user?take=100`, {
-      headers: { 'X-Api-Key': OVERSEERR_API_KEY },
-    });
-    overseerrUsers = res.data.results || [];
-  } catch (err) {
-    errors.push(`Phase 2 fetch: ${err.message}`);
+  let added = 0; let updated = 0;
+  const token = await getPlexToken();
+  const friendsData = await plexApiGet('/api/v2/friends', token).catch(() => []);
+  const friends = Array.isArray(friendsData) ? friendsData : (friendsData.data || []);
+  for (const friend of friends) {
+    const email = (friend.email || '').toLowerCase();
+    if (!email || getUserByEmail(email)) continue;
+    db.prepare('INSERT OR IGNORE INTO users (discord_id, email, invited, requested_at) VALUES (?, ?, 1, ?)').run(`plex_${friend.id}`, email, new Date().toISOString());
+    added++;
   }
-
-  const overseerrEmailSet = new Set(overseerrUsers.map(u => u.email?.toLowerCase()).filter(Boolean));
-
-  for (const u of allDbUsers) {
-    if (overseerrEmailSet.has(u.email.toLowerCase())) continue;
-    if (u.overseerr_created) continue;
-
+  const dbUsers = db.prepare('SELECT * FROM users').all();
+  const overseerrUsers = await fetchOverseerrUsers().catch(() => []);
+  const overseerrEmailSet = new Set(overseerrUsers.map(u => (u.email || '').toLowerCase()));
+  for (const u of dbUsers) {
+    if (overseerrEmailSet.has(u.email.toLowerCase()) || u.discord_id.startsWith('plex_')) continue;
     try {
-      // Try to fetch Discord username for the account name
-      let username = u.email.split('@')[0];
-      if (u.discord_id && !u.discord_id.startsWith('plex_')) {
-        const discordUser = await client.users.fetch(u.discord_id).catch(() => null);
-        if (discordUser) username = discordUser.username;
-      }
-
-      const overseerrId = await createOverseerrUser(u.email, u.discord_id, username);
-      markOverseerrCreated(u.discord_id, overseerrId);
-      phase2Created++;
-      log.ok(`[Sync P2] Created Overseerr account for ${u.email}`);
+      const du = await client.users.fetch(u.discord_id).catch(() => null);
+      const id = await createOverseerrUser(u.email, u.discord_id, du?.username || u.email.split('@')[0]);
+      markOverseerrCreated(u.discord_id, id);
+      updated++;
     } catch (err) {
-      log.warn(`[Sync P2] Failed for ${u.email}: ${err.message}`);
+      audit('external_api_error', { actorDiscordId: interaction.user.id, provider: 'overseerr', error: err.message, targetDiscordId: u.discord_id });
     }
   }
-
-  // ── Phase 3: Repair Discord ID links in Overseerr ────────────
-  // Re-fetch after phase 2 creates
-  try {
-    const res = await axios.get(`${OVERSEERR_URL}/api/v1/user?take=100`, {
-      headers: { 'X-Api-Key': OVERSEERR_API_KEY },
-    });
-    overseerrUsers = res.data.results || [];
-  } catch (err) {
-    errors.push(`Phase 3 fetch: ${err.message}`);
-  }
-
-  for (const ou of overseerrUsers) {
-    if (!ou.email) continue;
-
-    const dbUser = getUserByEmail(ou.email);
-    if (!dbUser || dbUser.discord_id.startsWith('plex_')) continue;
-
-    // Check if Discord ID is missing or wrong in Overseerr
-    try {
-      const notifRes = await axios.get(
-        `${OVERSEERR_URL}/api/v1/user/${ou.id}/settings/notifications`,
-        { headers: { 'X-Api-Key': OVERSEERR_API_KEY } }
-      );
-      const currentDiscordId = notifRes.data.discordId;
-
-      if (currentDiscordId !== dbUser.discord_id) {
-        await axios.post(
-          `${OVERSEERR_URL}/api/v1/user/${ou.id}/settings/notifications`,
-          { discordId: dbUser.discord_id },
-          { headers: { 'X-Api-Key': OVERSEERR_API_KEY } }
-        );
-        phase3Repaired++;
-        log.ok(`[Sync P3] Repaired Discord link for ${ou.email}`);
-      }
-    } catch (err) {
-      log.warn(`[Sync P3] Failed for ${ou.email}: ${err.message}`);
-    }
-  }
-
-  // ── Results embed ─────────────────────────────────────────────
-  const embed = new EmbedBuilder()
-    .setTitle('✅ Comprehensive Sync Complete')
-    .addFields(
-      { name: 'Phase 1: Plex',    value: `Added ${phase1Added} users to DB`,        inline: true },
-      { name: 'Phase 2: Create',  value: `Created ${phase2Created} accounts`,        inline: true },
-      { name: 'Phase 3: Repair',  value: `Fixed ${phase3Repaired} Discord links`,    inline: true },
-    )
-    .setColor(0x22c55e)
-    .setTimestamp();
-
-  if (errors.length) {
-    embed.addFields({ name: '⚠️ Errors', value: errors.join('\n'), inline: false });
-    embed.setColor(0xf59e0b);
-  }
-
-  await interaction.editReply({ content: '', embeds: [embed] });
+  audit('sync_changes_applied', { actorDiscordId: interaction.user.id, added, updated });
+  await interaction.editReply(`${formatSyncPreview(preview, 'Apply completed.')}\n\nAdded to DB: ${added}\nOverseerr users created: ${updated}`);
 }
 
-// ============================================================
-// /status Command
-// ============================================================
-async function handleStatusCommand(interaction) {
-  if (interaction.user.id !== ADMIN_USER_ID) {
-    return interaction.reply({ content: '❌ Only the admin can use this command.', ephemeral: true });
-  }
-
-  await interaction.deferReply({ ephemeral: true });
-
-  const dbUsers = db.prepare('SELECT * FROM users ORDER BY requested_at ASC').all();
-
-  let overseerrUsers = [];
-  try {
-    const res = await axios.get(`${OVERSEERR_URL}/api/v1/user?take=100`, {
-      headers: { 'X-Api-Key': OVERSEERR_API_KEY },
-    });
-    overseerrUsers = res.data.results || [];
-  } catch (err) {
-    log.warn('[Status] Could not fetch Overseerr users:', err.message);
-  }
-
-  const dbEmailSet        = new Set(dbUsers.map(u => u.email.toLowerCase()));
-  const overseerrEmailSet = new Set(overseerrUsers.map(u => u.email?.toLowerCase()).filter(Boolean));
-
-  const linked         = dbUsers.filter(u => overseerrEmailSet.has(u.email.toLowerCase()));
-  const overseerrOnly  = overseerrUsers.filter(u =>
-    u.email && !dbEmailSet.has(u.email.toLowerCase()) && u.userType !== 1
-  );
-
-  const botId2 = client.user?.id;
-  const linkedLines       = linked.filter(u => u.discord_id !== botId2).map(u => {
-    const isPlexOnly = u.discord_id.startsWith('plex_');
-    const userDisplay = isPlexOnly
-      ? `**${u.email.split('@')[0]}** *(no Discord)*`
-      : `<@${u.discord_id}>`;
-    return `✅ ${userDisplay} — ${u.email}`;
-  });
-  const overseerrOnlyLines = overseerrOnly.map(u => `🔧 **${u.displayName || u.email}** — ${u.email}`);
-
-  let description = '';
-  if (linkedLines.length)        description += `**Active & Linked (${linkedLines.length})**\n${linkedLines.join('\n')}\n\n`;
-  if (overseerrOnlyLines.length) description += `**Overseerr Only / Manual (${overseerrOnlyLines.length})**\n${overseerrOnlyLines.join('\n')}\n\n`;
-  if (!description)              description = 'No users found.';
-
-  const embed = new EmbedBuilder()
-    .setTitle('🗺️ System Status')
-    .setDescription(description)
-    .setColor(0x6366f1)
-    .setFooter({ text: `Total Overseerr Users: ${overseerrUsers.length}` })
-    .setTimestamp();
-
-  await interaction.editReply({ embeds: [embed] });
+function formatSyncPreview(p, header) {
+  return `${header}\n\n` +
+    `Discord not linked to Plex: ${p.discordNotLinkedToPlex.length}\n` +
+    `Plex users not in Discord links: ${p.plexNotInDiscord.length}\n` +
+    `Overseerr users not linked to Discord: ${p.overseerrNotLinkedToDiscord.length}\n` +
+    `DB users missing from Plex: ${p.dbMissingFromPlex.length}\n` +
+    `Would add: ${p.wouldAdd.length}\nWould remove: ${p.wouldRemove.length}\nWould update: ${p.wouldUpdate.length}\nRisky changes: ${p.risky.length}`;
 }
 
-// ============================================================
-// /sync Command
-// ============================================================
-async function handleSyncCommand(interaction) {
-  if (interaction.user.id !== ADMIN_USER_ID) {
-    return interaction.reply({ content: '❌ Only the admin can use this command.', ephemeral: true });
-  }
-
-  await interaction.deferReply({ ephemeral: true });
-  await interaction.editReply({ content: '⚙️ Starting Comprehensive Sync (Plex + Overseerr)...' });
-
-  let phase1Added = 0, phase2Created = 0, phase3Repaired = 0;
-  const errors = [];
-
-  // ── Phase 1: Scan Plex friends → add missing to DB ──────────
-  try {
-    const token = await getPlexToken();
-    const friendsData = await plexApiGet('/api/v2/friends', token).catch(() => []);
-    const friends = Array.isArray(friendsData) ? friendsData : (friendsData.data || []);
-    for (const friend of friends) {
-      const email = friend.email?.toLowerCase();
-      if (!email) continue;
-      if (!getUserByEmail(email)) {
-        db.prepare('INSERT OR IGNORE INTO users (discord_id, email, invited, requested_at) VALUES (?, ?, 1, ?)')
-          .run(`plex_${friend.id}`, email, new Date().toISOString());
-        phase1Added++;
-        log.info(`[Sync P1] Added: ${email}`);
-      }
-    }
-  } catch (err) {
-    errors.push(`Phase 1: ${err.message}`);
-  }
-
-  // ── Phase 2: Create Overseerr accounts for unlinked DB users ─
-  const allDbUsers = db.prepare('SELECT * FROM users').all();
-  let overseerrUsers = [];
-  try {
-    const res = await axios.get(`${OVERSEERR_URL}/api/v1/user?take=100`, { headers: { 'X-Api-Key': OVERSEERR_API_KEY } });
-    overseerrUsers = res.data.results || [];
-  } catch (err) { errors.push(`Phase 2 fetch: ${err.message}`); }
-
-  const overseerrEmailSet = new Set(overseerrUsers.map(u => u.email?.toLowerCase()).filter(Boolean));
-
-  for (const u of allDbUsers) {
-    if (overseerrEmailSet.has(u.email.toLowerCase()) || u.overseerr_created) continue;
-    try {
-      let username = u.email.split('@')[0];
-      if (u.discord_id && !u.discord_id.startsWith('plex_')) {
-        const du = await client.users.fetch(u.discord_id).catch(() => null);
-        if (du) username = du.username;
-      }
-      const overseerrId = await createOverseerrUser(u.email, u.discord_id, username);
-      markOverseerrCreated(u.discord_id, overseerrId);
-      phase2Created++;
-      log.ok(`[Sync P2] Created Overseerr account: ${u.email}`);
-    } catch (err) {
-      log.warn(`[Sync P2] Failed for ${u.email}: ${err.message}`);
-    }
-  }
-
-  // ── Phase 3: Repair Discord ID links in Overseerr ───────────
-  try {
-    const res = await axios.get(`${OVERSEERR_URL}/api/v1/user?take=100`, { headers: { 'X-Api-Key': OVERSEERR_API_KEY } });
-    overseerrUsers = res.data.results || [];
-  } catch (err) { errors.push(`Phase 3 fetch: ${err.message}`); }
-
-  for (const ou of overseerrUsers) {
-    if (!ou.email) continue;
-    const dbUser = getUserByEmail(ou.email);
-    if (!dbUser || dbUser.discord_id.startsWith('plex_')) continue;
-    try {
-      const notifRes = await axios.get(
-        `${OVERSEERR_URL}/api/v1/user/${ou.id}/settings/notifications`,
-        { headers: { 'X-Api-Key': OVERSEERR_API_KEY } }
-      );
-      if (notifRes.data.discordId !== dbUser.discord_id) {
-        await axios.post(
-          `${OVERSEERR_URL}/api/v1/user/${ou.id}/settings/notifications`,
-          { discordId: dbUser.discord_id },
-          { headers: { 'X-Api-Key': OVERSEERR_API_KEY } }
-        );
-        phase3Repaired++;
-        log.ok(`[Sync P3] Repaired Discord link: ${ou.email}`);
-      }
-    } catch (err) {
-      log.warn(`[Sync P3] Failed for ${ou.email}: ${err.message}`);
-    }
-  }
-
-  const embed = new EmbedBuilder()
-    .setTitle('✅ Comprehensive Sync Complete')
-    .addFields(
-      { name: 'Phase 1: Plex',   value: `Added ${phase1Added} users to DB`,      inline: true },
-      { name: 'Phase 2: Create', value: `Created ${phase2Created} accounts`,      inline: true },
-      { name: 'Phase 3: Repair', value: `Fixed ${phase3Repaired} Discord links`,  inline: true },
-    )
-    .setColor(errors.length ? 0xf59e0b : 0x22c55e)
-    .setTimestamp();
-
-  if (errors.length) embed.addFields({ name: '⚠️ Errors', value: errors.join('\n') });
-
-  await interaction.editReply({ content: '', embeds: [embed] });
-}
-
-// ============================================================
-// /cleanup Command
-// ============================================================
 async function handleCleanupCommand(interaction) {
-  if (interaction.user.id !== ADMIN_USER_ID) {
-    return interaction.reply({ content: '❌ Only the admin can use this command.', ephemeral: true });
-  }
-
+  if (!(await requireAdmin(interaction))) return;
+  const mode = interaction.options.getString('mode') || 'preview';
   await interaction.deferReply({ ephemeral: true });
-
-  let overseerrUsers = [];
-  try {
-    const res = await axios.get(`${OVERSEERR_URL}/api/v1/user?take=100`, {
-      headers: { 'X-Api-Key': OVERSEERR_API_KEY },
-    });
-    overseerrUsers = res.data.results || [];
-  } catch (err) {
-    return interaction.editReply({ content: `❌ Could not fetch Overseerr users: ${err.message}` });
-  }
-
-  // Find deleted/orphaned accounts — display name starts with 'deleted_user' or email contains 'deleted_user'
-  const toDelete = overseerrUsers.filter(u =>
-    u.userType !== 1 && ( // never delete the admin
-      u.displayName?.toLowerCase().startsWith('deleted_user') ||
-      u.email?.toLowerCase().startsWith('deleted_user') ||
-      u.username?.toLowerCase().startsWith('deleted_user')
-    )
-  );
-
-  if (!toDelete.length) {
-    return interaction.editReply({ content: '✅ No deleted/orphaned accounts found.' });
-  }
-
+  const users = await fetchOverseerrUsers();
+  const toDelete = users.filter(u => u.userType !== 1 && ['displayName', 'email', 'username'].some(k => (u[k] || '').toLowerCase().startsWith('deleted_user')));
+  audit('cleanup_preview_run', { actorDiscordId: interaction.user.id, count: toDelete.length });
+  if (mode === 'preview') return interaction.editReply(`Preview: ${toDelete.length} accounts would be removed.`);
   let removed = 0;
-  const failed = [];
-
   for (const u of toDelete) {
-    try {
-      await axios.delete(`${OVERSEERR_URL}/api/v1/user/${u.id}`, {
-        headers: { 'X-Api-Key': OVERSEERR_API_KEY },
-      });
-      // Also remove from our DB if present
-      db.prepare('DELETE FROM users WHERE email = ?').run(u.email?.toLowerCase());
-      removed++;
-      log.ok(`[Cleanup] Removed Overseerr user: ${u.displayName} (${u.email})`);
-    } catch (err) {
-      failed.push(u.displayName || u.email);
-      log.warn(`[Cleanup] Failed to remove ${u.displayName}: ${err.message}`);
-    }
+    try { await axios.delete(`${CONFIG.OVERSEERR_URL}/api/v1/user/${u.id}`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } }); removed++; } catch (_e) {}
   }
-
-  const embed = new EmbedBuilder()
-    .setTitle('🧹 Cleanup Complete')
-    .addFields(
-      { name: 'Removed',  value: `${removed} account(s)`, inline: true },
-      { name: 'Failed',   value: `${failed.length} account(s)`, inline: true },
-    )
-    .setColor(removed > 0 ? 0x22c55e : 0x6366f1)
-    .setTimestamp();
-
-  if (failed.length) {
-    embed.addFields({ name: '⚠️ Failed', value: failed.join(', ') });
-  }
-
-  await interaction.editReply({ embeds: [embed] });
+  audit('cleanup_changes_applied', { actorDiscordId: interaction.user.id, removed, failed: toDelete.length - removed });
+  await interaction.editReply(`Cleanup complete. Removed ${removed}/${toDelete.length}.`);
 }
 
-// ============================================================
-// Button Handlers
-// ============================================================
+async function handleAuditCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  const sub = interaction.options.getSubcommand();
+  let rows = [];
+  if (sub === 'recent') {
+    const count = interaction.options.getInteger('count') || 25;
+    rows = db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT ?').all(count);
+  } else if (sub === 'user') {
+    const user = interaction.options.getUser('person', true);
+    const count = interaction.options.getInteger('count') || 25;
+    rows = db.prepare('SELECT * FROM audit_log WHERE actor_discord_id = ? OR target_discord_id = ? ORDER BY id DESC LIMIT ?').all(user.id, user.id, count);
+  } else {
+    const action = interaction.options.getString('action', true);
+    const count = interaction.options.getInteger('count') || 25;
+    rows = db.prepare('SELECT * FROM audit_log WHERE action = ? ORDER BY id DESC LIMIT ?').all(action, count);
+  }
+  await interaction.reply({ content: rows.map(r => `#${r.id} ${r.created_at} ${r.action}`).join('\n') || 'No rows', ephemeral: true });
+}
+
+async function handleMeCommand(interaction) {
+  const row = getUserByDiscordId(interaction.user.id);
+  if (!row) return interaction.reply({ content: 'You are not linked yet.', ephemeral: true });
+  await interaction.reply({ content: `Linked email: ${row.email}\nInvited: ${row.invited ? 'yes' : 'no'}\nOverseerr linked: ${row.overseerr_created ? 'yes' : 'no'}`, ephemeral: true });
+}
+async function handleMyRequestsCommand(interaction) {
+  const rows = db.prepare('SELECT * FROM requests WHERE requested_by_discord_id = ? ORDER BY id DESC LIMIT 15').all(interaction.user.id);
+  await interaction.reply({ content: rows.map(r => `${r.title} — ${r.status}`).join('\n') || 'No requests found.', ephemeral: true });
+}
+async function handleDownloadsCommand(interaction) {
+  const rows = db.prepare('SELECT title, expires_at, one_time_use, created_at, revoked FROM download_tokens WHERE discord_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 20').all(interaction.user.id, Date.now());
+  await interaction.reply({ content: rows.map(r => `${r.title} | expires ${new Date(r.expires_at).toUTCString()} | ${r.revoked ? 'revoked' : (r.one_time_use ? 'one-time' : 'multi-use')}`).join('\n') || 'No active links.', ephemeral: true });
+}
+async function handleKeepCommand(interaction) {
+  const rows = db.prepare('SELECT title, media_id, expires_at FROM keep_list WHERE kept_by_discord_id = ? ORDER BY created_at DESC LIMIT 20').all(interaction.user.id);
+  await interaction.reply({ content: rows.map(r => `${r.title} (${r.media_id})${r.expires_at ? ` expires ${new Date(r.expires_at).toUTCString()}` : ''}`).join('\n') || 'No keep entries.', ephemeral: true });
+}
+async function handleHelpCommand(interaction) {
+  await interaction.reply({ content: 'Use /download to fetch media links, /myrequests for Seerr requests, /me for account status. Admins approve onboarding and requests in the admin channel.', ephemeral: true });
+}
+async function handleRevokeDownloadsCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  const scope = interaction.options.getString('scope', true);
+  if (scope === 'all') {
+    revokeAllDownloadLinks();
+    audit('admin_command_executed', { actorDiscordId: interaction.user.id, command: 'revoke-downloads all' });
+    return interaction.reply({ content: '✅ Revoked all active download links.', ephemeral: true });
+  }
+  const user = interaction.options.getUser('user');
+  if (!user) return interaction.reply({ content: '❌ user is required for scope:user', ephemeral: true });
+  revokeAllDownloadLinks(user.id);
+  audit('admin_command_executed', { actorDiscordId: interaction.user.id, command: 'revoke-downloads user', targetDiscordId: user.id });
+  return interaction.reply({ content: `✅ Revoked active links for ${user.tag}.`, ephemeral: true });
+}
+
 async function handleButton(interaction) {
   const [action, ...parts] = interaction.customId.split(':');
+  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny'].includes(action) && !isAdminInteraction(interaction)) {
+    return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+  }
 
-  // ── Plex onboarding: Approve ──────────────────────────────
   if (action === 'plex_approve') {
     const targetDiscordId = parts[0];
-    if (interaction.user.id !== ADMIN_USER_ID) {
-      return interaction.reply({ content: '❌ Only the admin can approve requests.', ephemeral: true });
-    }
-
     await interaction.deferUpdate();
-
     const user = getUserByDiscordId(targetDiscordId);
-    if (!user) {
-      return interaction.editReply({ content: '❌ User not found in database.', components: [] });
-    }
-
-    let plexStatus     = '❌ Failed';
-    let overseerrStatus = '❌ Failed';
-
-    // Invite to Plex
-    try {
-      const result = await inviteUserToPlex(user.email);
-      plexStatus   = `✅ Invited to ${result.successCount}/${result.total} server(s)`;
-      markUserInvited(targetDiscordId);
-      log.ok(`Plex invite sent to ${user.email} for ${result.successCount}/${result.total} server(s)`);
-    } catch (err) {
-      log.error(`Plex invite failed for ${user.email}:`, err.message);
-      plexStatus = `❌ ${err.message}`;
-    }
-
-    // Create Overseerr user
-    try {
-      const discordUser  = await client.users.fetch(targetDiscordId);
-      const overseerrId  = await createOverseerrUser(user.email, targetDiscordId, discordUser.username);
-      markOverseerrCreated(targetDiscordId, overseerrId);
-      overseerrStatus = `✅ Created (ID: ${overseerrId})`;
-    } catch (err) {
-      log.error(`Overseerr user creation failed:`, err.message);
-      overseerrStatus = `❌ ${err.message}`;
-    }
-
-    // DM the approved user
-    try {
-      const discordUser = await client.users.fetch(targetDiscordId);
-      await discordUser.send(
-        `✅ **Your Plex access has been approved!**\n\n` +
-        `You should now have access to the Plex library. Sign in at https://plex.tv with \`${user.email}\`.\n\n` +
-        `You can also request movies and TV shows through Overseerr. ` +
-        `Use \`/download\` in Discord to download files directly without a Plex Pass.`
-      );
-    } catch (err) {
-      log.warn(`Could not DM approved user ${targetDiscordId}: ${err.message}`);
-    }
-
-    const discordUserFinal = await client.users.fetch(targetDiscordId).catch(() => null);
-    const approvedEmbed = new EmbedBuilder()
-      .setTitle('✅ Plex Approved + Overseerr Linked')
-      .setThumbnail(discordUserFinal?.displayAvatarURL({ dynamic: true }) || null)
-      .addFields(
-        { name: 'User',    value: `<@${targetDiscordId}>${discordUserFinal ? '\n' + discordUserFinal.tag : ''}`, inline: true },
-        { name: 'Email',   value: `\`${user.email}\``, inline: true },
-        { name: 'Plex',    value: plexStatus,             inline: false },
-        { name: 'Overseerr', value: overseerrStatus,      inline: false },
-      )
-      .setColor(0x22c55e)
-      .setTimestamp()
-      .setFooter({ text: `Approved by ${interaction.user.tag}` });
-
-    await interaction.editReply({ embeds: [approvedEmbed], components: [] });
+    if (!user) return interaction.editReply({ content: 'User not found.', components: [] });
+    let plexStatus = 'failed'; let overseerrStatus = 'failed';
+    try { const result = await inviteUserToPlex(user.email); markUserInvited(targetDiscordId); plexStatus = `ok (${result.successCount}/${result.total})`; } catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId }); }
+    try { const du = await client.users.fetch(targetDiscordId); const oid = await createOverseerrUser(user.email, targetDiscordId, du.username); markOverseerrCreated(targetDiscordId, oid); overseerrStatus = `ok (${oid})`; } catch (err) { audit('external_api_error', { provider: 'overseerr', error: err.message, targetDiscordId }); }
+    audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: 'plex_approve' });
+    await interaction.editReply({ content: `Approved <@${targetDiscordId}> | Plex: ${plexStatus} | Overseerr: ${overseerrStatus}`, components: [] });
     return;
   }
 
-  // ── Plex onboarding: Deny ─────────────────────────────────
   if (action === 'plex_deny') {
     const targetDiscordId = parts[0];
-    if (interaction.user.id !== ADMIN_USER_ID) {
-      return interaction.reply({ content: '❌ Only the admin can deny requests.', ephemeral: true });
-    }
-
-    await interaction.deferUpdate();
-
-    const user = getUserByDiscordId(targetDiscordId);
     removeUser(targetDiscordId);
-
-    // DM the denied user
-    try {
-      const discordUser = await client.users.fetch(targetDiscordId);
-      await discordUser.send(
-        '❌ Your Plex access request has been declined. ' +
-        'Contact the server admin if you believe this is a mistake.'
-      );
-    } catch (err) {
-      log.warn(`Could not DM denied user ${targetDiscordId}: ${err.message}`);
-    }
-
-    await interaction.editReply({
-      content: `❌ **Declined** <@${targetDiscordId}>${user ? ` (\`${user.email}\`)` : ''}.`,
-      components: [],
-    });
+    audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: 'plex_deny' });
+    await interaction.update({ content: `Declined <@${targetDiscordId}>`, components: [] });
     return;
   }
 
-  // ── Overseerr media request: Approve ─────────────────────
   if (action === 'overseerr_approve') {
-    const requestId = parts[0];
-    if (interaction.user.id !== ADMIN_USER_ID) {
-      return interaction.reply({ content: '❌ Only the admin can approve requests.', ephemeral: true });
-    }
-    await approveOverseerrRequest(requestId);
-    await interaction.update({
-      content: `✅ Request **#${requestId}** approved by <@${interaction.user.id}>.`,
-      components: [],
-    });
-    return;
+    await approveOverseerrRequest(parts[0]);
+    audit('request_approved', { actorDiscordId: interaction.user.id, requestId: parts[0] });
+    return interaction.update({ content: `✅ Request #${parts[0]} approved.`, components: [] });
   }
-
-  // ── Overseerr media request: Deny ────────────────────────
   if (action === 'overseerr_deny') {
-    const requestId = parts[0];
-    if (interaction.user.id !== ADMIN_USER_ID) {
-      return interaction.reply({ content: '❌ Only the admin can deny requests.', ephemeral: true });
-    }
-    await denyOverseerrRequest(requestId);
-    await interaction.update({
-      content: `❌ Request **#${requestId}** denied by <@${interaction.user.id}>.`,
-      components: [],
-    });
-    return;
+    await denyOverseerrRequest(parts[0]);
+    audit('request_denied', { actorDiscordId: interaction.user.id, requestId: parts[0] });
+    return interaction.update({ content: `❌ Request #${parts[0]} denied.`, components: [] });
   }
 
-  // ── Deletion: Yes, Delete ─────────────────────────────────
   if (action === 'delete_yes') {
     const [mediaId, encodedTitle, requestorId] = parts;
     const title = decodeURIComponent(encodedTitle);
-
-    if (interaction.user.id !== requestorId && interaction.user.id !== ADMIN_USER_ID) {
-      return interaction.reply({
-        content: '❌ Only the person who requested this can confirm deletion.',
-        ephemeral: true,
-      });
-    }
-
-    await interaction.deferUpdate();
-
-    await deleteMediaById(mediaId);
-
-    await interaction.editReply({
-      content:  `🗑️ **${title}** has been deleted from the server.`,
-      embeds:   [],
-      components: [],
-    });
-
-    log.ok(`Deleted "${title}" (${mediaId}) — confirmed by ${interaction.user.tag}`);
+    if (interaction.user.id !== requestorId && !isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Not allowed.', ephemeral: true });
+    if (!CONFIG.ENABLE_DELETION) return interaction.reply({ content: '⚠️ Deletion is disabled by config.', ephemeral: true });
+    if (CONFIG.NEVER_DELETE_MEDIA_IDS.includes(mediaId)) return interaction.reply({ content: '⚠️ This media is in never-delete override list.', ephemeral: true });
+    audit('keep_delete_decision_made', { actorDiscordId: interaction.user.id, requestorId, mediaId, decision: 'delete_now' });
+    await interaction.update({ content: `🗑️ Deletion confirmed for **${title}**.`, components: [] });
     return;
   }
 
-  // ── Deletion: No, Keep ────────────────────────────────────
   if (action === 'delete_no') {
     const [mediaId, encodedTitle, requestorId] = parts;
-    const title     = decodeURIComponent(encodedTitle);
-    const mediaType = mediaId.startsWith('tvdb:') ? 'tv' : 'movie';
-
-    if (interaction.user.id !== requestorId && interaction.user.id !== ADMIN_USER_ID) {
-      return interaction.reply({
-        content: '❌ Only the person who requested this can respond.',
-        ephemeral: true,
-      });
-    }
-
-    addToKeepList(mediaId, mediaType, title, requestorId);
-
-    // Notify admin
-    const adminChannel = await safeGetChannel(ADMIN_CHANNEL_ID);
-    if (adminChannel) {
-      await adminChannel.send(
-        `📌 **Keep Requested** — <@${requestorId}> chose to keep **${title}**.\n` +
-        `Removed from future watch triggers. Override manually if needed.`
-      );
-    }
-
-    await interaction.update({
-      content:    `📌 Got it — **${title}** will stay on the server.`,
-      embeds:     [],
-      components: [],
-    });
+    const title = decodeURIComponent(encodedTitle);
+    if (interaction.user.id !== requestorId && !isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Not allowed.', ephemeral: true });
+    addToKeepList(mediaId, mediaId.startsWith('tvdb:') ? 'tv' : 'movie', title, requestorId);
+    audit('keep_delete_decision_made', { actorDiscordId: interaction.user.id, requestorId, mediaId, decision: 'keep' });
+    await interaction.update({ content: `📌 Keeping **${title}**.`, components: [] });
     return;
+  }
+
+  if (action === 'delete_later') {
+    const [mediaId, _encodedTitle, requestorId] = parts;
+    if (interaction.user.id !== requestorId && !isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Not allowed.', ephemeral: true });
+    const nextPromptAt = Date.now() + CONFIG.DELETION_REMINDER_COOLDOWN_HOURS * 3600 * 1000;
+    setSetting(`delete_prompt_snooze:${mediaId}:${requestorId}`, String(nextPromptAt));
+    audit('keep_delete_decision_made', { actorDiscordId: interaction.user.id, requestorId, mediaId, decision: 'remind_later' });
+    await interaction.update({ content: `⏰ Reminder set for later.`, components: [] });
   }
 }
 
-// ============================================================
-// Express Server — Webhooks + File Downloads
-// ============================================================
+async function gatherHealth() {
+  const checks = { overall: 'ok', timestamp: new Date().toISOString() };
+  checks.discord = client.isReady() ? 'ok' : 'down';
+  try { db.prepare('SELECT 1').get(); checks.sqlite = 'ok'; } catch (_e) { checks.sqlite = 'down'; }
+  checks.raidPath = fs.existsSync(CONFIG.RAID_PATH) ? 'ok' : 'down';
+  checks.tunnelDomain = CONFIG.TUNNEL_DOMAIN ? 'configured' : 'missing';
+
+  async function apiCheck(name, fn) {
+    try {
+      const out = await fn();
+      checks[name] = out === 'skipped' ? 'skipped' : 'ok';
+    } catch (e) {
+      checks[name] = 'down';
+      audit('external_api_error', { provider: name, error: e.message });
+    }
+  }
+  await Promise.all([
+    apiCheck('plex', async () => { const t = await getPlexToken(); await plexApiGet('/api/v2/friends', t); }),
+    apiCheck('overseerr', async () => { await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/status`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY }, timeout: 5000 }); }),
+    apiCheck('radarr', async () => { if (!CONFIG.RADARR_URL) return 'skipped'; await axios.get(`${CONFIG.RADARR_URL}/api/v3/system/status`, { params: { apikey: CONFIG.RADARR_API_KEY }, timeout: 5000 }); }),
+    apiCheck('radarr4k', async () => { if (!CONFIG.RADARR_4K_URL) return 'skipped'; await axios.get(`${CONFIG.RADARR_4K_URL}/api/v3/system/status`, { params: { apikey: CONFIG.RADARR_4K_API_KEY }, timeout: 5000 }); }),
+    apiCheck('sonarr', async () => { if (!CONFIG.SONARR_URL) return 'skipped'; await axios.get(`${CONFIG.SONARR_URL}/api/v3/system/status`, { params: { apikey: CONFIG.SONARR_API_KEY }, timeout: 5000 }); }),
+  ]);
+
+  const failed = Object.entries(checks).filter(([k, v]) => !['overall', 'timestamp', 'tunnelDomain'].includes(k) && !['ok','configured','skipped'].includes(v));
+  checks.overall = failed.length ? 'degraded' : 'ok';
+  return checks;
+}
+
+function dashboardAuth(req, res, next) {
+  const allowQuery = true;
+  const pwd = req.headers['x-admin-password'] || (allowQuery ? req.query.password : undefined);
+  const token = req.headers['x-admin-token'] || (allowQuery ? req.query.token : undefined);
+  const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && pwd === CONFIG.DASHBOARD_ADMIN_PASSWORD;
+  const tokenOk = CONFIG.DASHBOARD_ADMIN_TOKEN && token === CONFIG.DASHBOARD_ADMIN_TOKEN;
+  if (!passOk && !tokenOk) return res.status(401).send('Unauthorized');
+
+  if (CONFIG.STRICT_DASHBOARD_POST_AUTH && req.method !== 'GET') {
+    const origin = req.get('origin');
+    const referer = req.get('referer');
+    if ((origin && !origin.includes(req.get('host'))) || (referer && !referer.includes(req.get('host')))) {
+      return res.status(403).send('Cross-site POST denied');
+    }
+  }
+  return next();
+}
+
 function startExpressServer() {
   const app = express();
   const upload = multer();
+  app.use((req, res, next) => { if (req.is('multipart/form-data')) return next(); bodyParser.json({ limit: '1mb' })(req, res, next); });
 
-  // Apply JSON parsing only to non-multipart routes
-  app.use((req, res, next) => {
-    if (req.is('multipart/form-data')) return next();
-    bodyParser.json()(req, res, next);
-  });
+  app.get('/health', async (_req, res) => res.json(await gatherHealth()));
 
-  // ── Overseerr Webhook ──────────────────────────────────────
-  // Seerr may send either JSON or multipart — handle both
   app.post('/webhook/overseerr', upload.any(), async (req, res) => {
-    if (WEBHOOK_SECRET) {
-      const sig = req.headers['x-webhook-secret'];
-      if (sig !== WEBHOOK_SECRET) return res.status(401).json({ error: 'Unauthorized' });
-    }
-
+    if (CONFIG.WEBHOOK_SECRET && req.headers['x-webhook-secret'] !== CONFIG.WEBHOOK_SECRET) return res.status(401).json({ error: 'Unauthorized' });
     res.sendStatus(200);
-
     try {
       let body = req.body;
-      if (typeof body.payload === 'string') {
-        body = JSON.parse(body.payload);
-      }
+      if (typeof body.payload === 'string') body = JSON.parse(body.payload);
+      audit('webhook_received', { source: 'overseerr', type: body.notification_type });
       await handleOverseerrWebhook(body);
-    } catch (err) {
-      log.error('[Webhook/Overseerr]', err.message);
-    }
+    } catch (err) { audit('external_api_error', { provider: 'overseerr_webhook', error: err.message }); }
   });
 
-  // ── Plex Webhook ───────────────────────────────────────────
-  // Plex sends multipart/form-data with a 'payload' JSON field.
-  // Fires from all three servers (Durant, Central Iowa, South-Central, California).
   app.post('/webhook/plex', upload.any(), async (req, res) => {
+    if (CONFIG.WEBHOOK_SECRET && req.headers['x-webhook-secret'] !== CONFIG.WEBHOOK_SECRET) return res.status(401).json({ error: 'Unauthorized' });
     res.sendStatus(200);
-
     try {
       const payload = JSON.parse(req.body.payload || '{}');
+      audit('webhook_received', { source: 'plex', event: payload.event });
       await handlePlexWebhook(payload);
-    } catch (err) {
-      log.error('[Webhook/Plex]', err.message);
-    }
+    } catch (err) { audit('external_api_error', { provider: 'plex_webhook', error: err.message }); }
   });
 
-  // ── Tautulli Webhook (kept for backwards compatibility) ────
   app.post('/webhook/tautulli', async (req, res) => {
-    if (TAUTULLI_SECRET) {
-      const sig = req.headers['x-tautulli-secret'];
-      if (sig !== TAUTULLI_SECRET) return res.status(401).json({ error: 'Unauthorized' });
-    }
-
+    if (CONFIG.TAUTULLI_WEBHOOK_SECRET && req.headers['x-tautulli-secret'] !== CONFIG.TAUTULLI_WEBHOOK_SECRET) return res.status(401).json({ error: 'Unauthorized' });
     res.sendStatus(200);
-
     try {
-      await handleTautulliWebhook(req.body);
+      audit('webhook_received', { source: 'tautulli', event: req.body?.event });
+      await handleTautulliWebhook(req.body || {});
     } catch (err) {
-      log.error('[Webhook/Tautulli]', err.message);
+      audit('external_api_error', { provider: 'tautulli_webhook', error: err.message });
     }
   });
 
-  // ── File Download ──────────────────────────────────────────
-  app.get('/download/:token', (req, res) => {
+  app.get('/download/:token', async (req, res) => {
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+    if (!takeRateLimit(routeLimits, ip, CONFIG.DOWNLOAD_ROUTE_MAX_PER_MINUTE, 60000)) {
+      return res.status(429).send('Too many requests.');
+    }
     cleanExpiredTokens();
+    const record = getDownloadRecordByRawToken(req.params.token);
+    if (!record || record.revoked) {
+      db.prepare('INSERT INTO download_access_log (token_hash, ip, user_agent, status) VALUES (?, ?, ?, ?)').run(sha256(req.params.token), ip, req.get('user-agent') || '', 'not_found_or_revoked');
+      return res.status(404).send('Link not found or revoked.');
+    }
+    if (Date.now() > record.expires_at) return res.status(410).send('This download link has expired.');
+    if (record.one_time_use && record.used_at) return res.status(410).send('This one-time link has already been used.');
 
-    const record = getDownloadToken(req.params.token);
-    if (!record)                       return res.status(404).send('Link not found or expired.');
-    if (Date.now() > record.expires_at) {
-      deleteDownloadToken(req.params.token);
-      return res.status(410).send('This download link has expired.');
+    const candidatePath = path.resolve(record.file_path);
+    if (!fs.existsSync(candidatePath)) return res.status(404).send('File not found on server.');
+
+    let filePath;
+    try {
+      filePath = resolveSafeMediaPath(candidatePath);
+    } catch (_e) {
+      db.prepare('INSERT INTO download_access_log (token_hash, discord_id, ip, user_agent, file_path, status) VALUES (?, ?, ?, ?, ?, ?)').run(record.token_hash, record.discord_id, ip, req.get('user-agent') || '', record.file_path, 'invalid_path');
+      return res.status(403).send('Invalid file path.');
     }
 
-    const filePath = record.file_path;
-    if (!fs.existsSync(filePath))      return res.status(404).send('File not found on server.');
+    const stat = fs.statSync(filePath);
+    if (stat.size >= CONFIG.DOWNLOAD_LARGE_FILE_GB * 1024 * 1024 * 1024) {
+      notifyAdmin(`📥 Large download started by <@${record.discord_id}>: ${record.title} (${(stat.size / (1024 ** 3)).toFixed(2)} GB)`);
+    }
 
-    const stat     = fs.statSync(filePath);
+    if (record.one_time_use) {
+      db.prepare('UPDATE download_tokens SET used_at = ? WHERE token_hash = ?').run(Date.now(), record.token_hash);
+    }
+
     const fileSize = stat.size;
     const fileName = path.basename(filePath);
     const mimeType = mimeFor(path.extname(filePath).toLowerCase());
 
+    res.on('finish', () => {
+      db.prepare('INSERT INTO download_access_log (token_hash, discord_id, ip, user_agent, file_path, status, bytes_sent) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(record.token_hash, record.discord_id, ip, req.get('user-agent') || '', filePath, `http_${res.statusCode}`, Number(res.getHeader('Content-Length')) || 0);
+      audit('download_completed_or_failed', { targetDiscordId: record.discord_id, title: record.title, status: res.statusCode });
+    });
+
     const range = req.headers.range;
+    db.prepare('INSERT INTO download_access_log (token_hash, discord_id, ip, user_agent, file_path, status) VALUES (?, ?, ?, ?, ?, ?)').run(record.token_hash, record.discord_id, ip, req.get('user-agent') || '', filePath, 'download_started');
+    audit('download_started', { targetDiscordId: record.discord_id, title: record.title });
+
     if (range) {
       const [startStr, endStr] = range.replace(/bytes=/, '').split('-');
-      const start     = parseInt(startStr, 10);
-      const end       = endStr ? parseInt(endStr, 10) : fileSize - 1;
-      const chunkSize = end - start + 1;
-
+      const start = Number.parseInt(startStr, 10);
+      const end = endStr ? Number.parseInt(endStr, 10) : fileSize - 1;
       res.writeHead(206, {
-        'Content-Range':       `bytes ${start}-${end}/${fileSize}`,
-        'Accept-Ranges':       'bytes',
-        'Content-Length':      chunkSize,
-        'Content-Type':        mimeType,
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': end - start + 1,
+        'Content-Type': mimeType,
         'Content-Disposition': `attachment; filename="${fileName}"`,
       });
       fs.createReadStream(filePath, { start, end }).pipe(res);
     } else {
       res.writeHead(200, {
-        'Content-Length':      fileSize,
-        'Content-Type':        mimeType,
-        'Accept-Ranges':       'bytes',
+        'Content-Length': fileSize,
+        'Content-Type': mimeType,
+        'Accept-Ranges': 'bytes',
         'Content-Disposition': `attachment; filename="${fileName}"`,
       });
       fs.createReadStream(filePath).pipe(res);
     }
-
-    log.ok(`Serving "${record.title}" (${fileName})`);
   });
 
-  // ── Health check ───────────────────────────────────────────
-  app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'homepage.html')));
+  if (CONFIG.DASHBOARD_ENABLED) {
+    app.get('/admin', dashboardAuth, async (_req, res) => {
+      const authSuffix = _req.query.token
+        ? `?token=${encodeURIComponent(String(_req.query.token))}`
+        : (_req.query.password ? `?password=${encodeURIComponent(String(_req.query.password))}` : '');
+      const pendingPlex = db.prepare('SELECT * FROM users WHERE invited = 0 ORDER BY requested_at DESC LIMIT 25').all();
+      const pendingRequests = db.prepare('SELECT * FROM requests WHERE status = ? ORDER BY id DESC LIMIT 25').all('pending');
+      const linkedUsers = db.prepare('SELECT discord_id, email, invited, requested_at FROM users ORDER BY requested_at DESC LIMIT 100').all();
+      const recentDownloads = db.prepare('SELECT * FROM download_access_log ORDER BY id DESC LIMIT 25').all();
+      const keepDecisions = db.prepare("SELECT * FROM audit_log WHERE action = 'keep_delete_decision_made' ORDER BY id DESC LIMIT 25").all();
+      const auditRows = db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 50').all();
+      const health = await gatherHealth();
 
-  app.get('/health', (_, res) => res.json({ status: 'ok', uptime: process.uptime() }));
+      res.type('html').send(`<!doctype html><html><body style="font-family: sans-serif; padding: 16px;">
+      <h1>Durant Media Server Bot Admin Dashboard</h1>
+      <p><a href="/admin/health${authSuffix}">Admin Health JSON</a></p>
+      <h2>Health</h2><pre>${escapeHtml(JSON.stringify(health, null, 2))}</pre>
+      <h2>Manual Actions</h2>
+      <ul>
+        <li><a href="/admin/action/sync-preview${authSuffix}">Run Sync Preview</a></li>
+        <li><a href="/admin/action/cleanup-preview${authSuffix}">Run Cleanup Preview</a></li>
+      </ul>
+      <form method="post" action="/admin/action/revoke-all${authSuffix}"><button type="submit">Revoke All Active Download Links</button></form>
+      <h2>Pending Plex Users</h2><pre>${escapeHtml(JSON.stringify(pendingPlex, null, 2))}</pre>
+      <h2>Pending Media Requests</h2><pre>${escapeHtml(JSON.stringify(pendingRequests, null, 2))}</pre>
+      <h2>Linked Users</h2><pre>${escapeHtml(JSON.stringify(linkedUsers, null, 2))}</pre>
+      <h2>Recent Downloads</h2><pre>${escapeHtml(JSON.stringify(recentDownloads, null, 2))}</pre>
+      <h2>Keep/Delete Decisions</h2><pre>${escapeHtml(JSON.stringify(keepDecisions, null, 2))}</pre>
+      <h2>Recent Audit Logs</h2><pre>${escapeHtml(JSON.stringify(auditRows, null, 2))}</pre>
+      </body></html>`);
+    });
 
-  app.listen(PORT, () => log.ok(`Express server listening on port ${PORT}`));
+    app.get('/admin/health', dashboardAuth, async (_req, res) => res.json(await gatherHealth()));
+    app.get('/admin/action/sync-preview', dashboardAuth, async (_req, res) => res.json(await buildSyncPreview()));
+    app.get('/admin/action/cleanup-preview', dashboardAuth, async (_req, res) => {
+      const users = await fetchOverseerrUsers().catch(() => []);
+      const toDelete = users.filter(u => u.userType !== 1 && ['displayName', 'email', 'username'].some(k => (u[k] || '').toLowerCase().startsWith('deleted_user')));
+      res.json({ wouldRemove: toDelete.length, users: toDelete.map(u => ({ id: u.id, email: u.email, username: u.username })) });
+    });
+    app.post('/admin/action/revoke-all', dashboardAuth, (_req, res) => { revokeAllDownloadLinks(); res.json({ ok: true }); });
+    app.post('/admin/action/revoke-user/:discordId', dashboardAuth, (req, res) => { revokeAllDownloadLinks(req.params.discordId); res.json({ ok: true, discordId: req.params.discordId }); });
+  }
+
+  app.get('/', (_req, res) => res.send('Durant Media Server Bot is running.'));
+  app.listen(CONFIG.PORT, () => log.ok(`Express server listening on port ${CONFIG.PORT}`));
 }
 
-// ============================================================
-// Overseerr Webhook Handler
-// ============================================================
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
+}
+
 async function handleOverseerrWebhook(body) {
-  const { notification_type, subject, message, media, request } = body;
+  const { notification_type, subject, media, request } = body;
   if (!notification_type || !media) return;
-
   const titleMatch = subject?.match(/^.+? - (.+)$/);
-  const title      = titleMatch ? titleMatch[1] : (subject || 'Unknown Title');
-
-  const is4k     = media.is4k || false;
-  const label    = mediaTypeLabel(media.media_type, is4k);
-  const emoji    = mediaTypeEmoji(media.media_type, is4k);
-
-  const mediaId  = media.media_type === 'tv'
-    ? `tvdb:${media.tvdbId}`
-    : `tmdb:${media.tmdbId}`;
-
-  // Resolve requester Discord ID from DB
-  const requesterEmail     = request?.requestedBy_email;
-  const dbUser             = requesterEmail ? getUserByEmail(requesterEmail) : null;
+  const title = titleMatch ? titleMatch[1] : (subject || 'Unknown Title');
+  const is4k = !!media.is4k;
+  const mediaId = media.media_type === 'tv' ? `tvdb:${media.tvdbId}` : `tmdb:${media.tmdbId}`;
+  const requesterEmail = request?.requestedBy_email;
+  const dbUser = requesterEmail ? getUserByEmail(requesterEmail) : null;
   const requesterDiscordId = request?.requestedBy_settings_discordId || dbUser?.discord_id || null;
 
-  // ── New request pending approval ──────────────────────────
   if (notification_type === 'MEDIA_PENDING') {
-    const adminChannel = await safeGetChannel(ADMIN_CHANNEL_ID);
-    if (!adminChannel) return;
-
-    // Fetch poster + extra details from Seerr
-    let posterUrl = null;
-    let overview  = message || null;
-    let year      = null;
-    try {
-      const mediaEndpoint = media.media_type === 'tv'
-        ? `${OVERSEERR_URL}/api/v1/tv/${media.tvdbId}`
-        : `${OVERSEERR_URL}/api/v1/movie/${media.tmdbId}`;
-      const mediaRes = await axios.get(mediaEndpoint, {
-        headers: { 'X-Api-Key': OVERSEERR_API_KEY },
-      });
-      const md = mediaRes.data;
-      if (md.posterPath) {
-        posterUrl = `https://image.tmdb.org/t/p/w200${md.posterPath}`;
-      }
-      if (md.overview)    overview = md.overview;
-      if (md.releaseDate) year = md.releaseDate.slice(0, 4);
-      if (md.firstAirDate) year = md.firstAirDate.slice(0, 4);
-    } catch (err) {
-      log.warn('[Overseerr] Could not fetch media details:', err.message);
+    const adminChannel = await safeGetChannel(CONFIG.ADMIN_CHANNEL_ID);
+    if (adminChannel) {
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`overseerr_approve:${request.request_id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`overseerr_deny:${request.request_id}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
+      );
+      await adminChannel.send({ embeds: [new EmbedBuilder().setTitle(`${mediaTypeEmoji(media.media_type, is4k)} New Request`).setDescription(`**${title}**`).addFields({ name: 'Requested By', value: requesterDiscordId ? `<@${requesterDiscordId}>` : (requesterEmail || 'Unknown'), inline: true }).setColor(0x3b82f6)], components: [row] });
     }
-
-    // Resolve requester display
-    const requesterDisplay = requesterDiscordId
-      ? `<@${requesterDiscordId}>`
-      : (requesterEmail || 'Unknown');
-
-    const displayTitle = year ? `${title} (${year})` : title;
-
-    const embed = new EmbedBuilder()
-      .setTitle(`${emoji} New Request — ${label}`)
-      .setDescription(`**${displayTitle}**${overview ? `
-
-${overview.slice(0, 200)}${overview.length > 200 ? '…' : ''}` : ''}`)
-      .addFields(
-        { name: 'Requested By', value: requesterDisplay,       inline: true },
-        { name: 'Type',         value: label,                  inline: true },
-      )
-      .setColor(0x3b82f6)
-      .setTimestamp();
-
-    if (posterUrl) embed.setThumbnail(posterUrl);
-
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`overseerr_approve:${request.request_id}`)
-        .setLabel('Approve')
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId(`overseerr_deny:${request.request_id}`)
-        .setLabel('Deny')
-        .setStyle(ButtonStyle.Danger),
-    );
-
-    await adminChannel.send({ embeds: [embed], components: [row] });
+    audit('seerr_request_received', { requestId: request?.request_id, requesterDiscordId, title, mediaId });
   }
 
-  // Store request ownership in DB for all relevant events
   if (['MEDIA_PENDING', 'MEDIA_APPROVED', 'MEDIA_AVAILABLE'].includes(notification_type)) {
-    const status = notification_type === 'MEDIA_APPROVED' ? 'approved'
-      : notification_type === 'MEDIA_AVAILABLE' ? 'available'
-      : 'pending';
-
-    upsertRequest(
-      request?.request_id?.toString() || null,
-      mediaId,
-      media.media_type,
-      is4k,
-      title,
-      requesterDiscordId,
-      status,
-    );
+    const status = notification_type === 'MEDIA_APPROVED' ? 'approved' : notification_type === 'MEDIA_AVAILABLE' ? 'available' : 'pending';
+    upsertRequest(String(request?.request_id || ''), mediaId, media.media_type, is4k, title, requesterDiscordId, status);
   }
 
-  // ── Media now available — DM the requester ─────────────────
   if (notification_type === 'MEDIA_AVAILABLE' && requesterDiscordId) {
     try {
-      const discordUser = await client.users.fetch(requesterDiscordId);
-      await discordUser.send(
-        `✅ **${title}** (${label}) is now available on Plex!\n` +
-        `Use \`/download title:${title}\` in Discord to download it directly.`
-      );
-    } catch (err) {
-      log.warn('[Overseerr] Could not DM requester:', err.message);
-    }
+      const user = await client.users.fetch(requesterDiscordId);
+      await user.send(`✅ **${title}** is now available on Plex.`);
+      audit('media_available_notification_sent', { targetDiscordId: requesterDiscordId, title });
+    } catch (_e) {}
   }
 }
 
-// ============================================================
-// Plex Webhook Handler
-// Fires from all Plex servers on media.scrobble (90% watched)
-// ============================================================
 async function handlePlexWebhook(payload) {
   const { event, Account, Metadata } = payload;
-
-  // Only care about scrobble (90% watched)
-  if (event !== 'media.scrobble') return;
-  if (!Account || !Metadata)       return;
-
-  const userEmail  = Account.title; // Plex uses username here; email lookup below
-  const mediaType  = Metadata.type; // 'movie' or 'episode'
-  const title      = Metadata.title;
-  const showTitle  = mediaType === 'episode'
-    ? (Metadata.grandparentTitle || title)
-    : title;
-
-  // Resolve resolution from Metadata streams
+  if (event !== 'media.scrobble' || !Account || !Metadata) return;
+  const mediaType = Metadata.type;
+  const title = mediaType === 'episode' ? (Metadata.grandparentTitle || Metadata.title) : Metadata.title;
   const videoStream = Metadata.Media?.[0]?.Part?.[0]?.Stream?.find(s => s.streamType === 1);
-  const resolution  = videoStream?.displayTitle || '';
-  const is4k        = resolution.toLowerCase().includes('4k') ||
-                      resolution.toLowerCase().includes('2160');
+  const resolution = (videoStream?.displayTitle || '').toLowerCase();
+  const is4k = resolution.includes('4k') || resolution.includes('2160');
+  if (mediaType === 'movie' && !is4k) return;
 
-  // Only prompt for 4K movies and TV shows (any res)
-  if (mediaType === 'movie' && !is4k) {
-    log.info(`[Plex] Skipping non-4K movie "${showTitle}" — no deletion prompt`);
-    return;
-  }
-
-  // Resolve media ID from TMDB/TVDB GUIDs
-  let mediaId;
   const guids = Metadata.Guid || [];
+  const mediaId = mediaType === 'movie' ? `tmdb:${(guids.find(g => g.id?.startsWith('tmdb://'))?.id || '').replace('tmdb://', '')}` : `tvdb:${(guids.find(g => g.id?.startsWith('tvdb://'))?.id || '').replace('tvdb://', '')}`;
+  if (!mediaId || mediaId.endsWith(':')) return;
+  if (isInKeepList(mediaId) || CONFIG.NEVER_DELETE_MEDIA_IDS.includes(mediaId)) return;
 
-  if (mediaType === 'movie') {
-    const tmdbGuid = guids.find(g => g.id?.startsWith('tmdb://'));
-    if (!tmdbGuid) return;
-    mediaId = `tmdb:${tmdbGuid.id.replace('tmdb://', '')}`;
-  } else if (mediaType === 'episode') {
-    const tvdbGuid = guids.find(g => g.id?.startsWith('tvdb://'));
-    if (!tvdbGuid) return;
-    mediaId = `tvdb:${tvdbGuid.id.replace('tvdb://', '')}`;
-  } else {
-    return;
-  }
+  const reqRow = db.prepare('SELECT * FROM requests WHERE media_id = ? ORDER BY created_at DESC LIMIT 1').get(mediaId);
+  if (!reqRow?.requested_by_discord_id) return;
+  const snoozeUntil = Number(getSetting(`delete_prompt_snooze:${mediaId}:${reqRow.requested_by_discord_id}`) || '0');
+  if (snoozeUntil > Date.now()) return;
 
-  // Skip if on the keep list
-  if (isInKeepList(mediaId)) {
-    log.info(`[Plex] ${mediaId} is in keep list — skipping`);
-    return;
-  }
-
-  // Only prompt if the file was requested by someone
-  const request = getRequestByMediaId(mediaId);
-  if (!request || !request.requested_by_discord_id) {
-    log.info(`[Plex] ${mediaId} has no known requester — skipping deletion prompt`);
-    return;
-  }
-
-  // Match watcher to requester — check both by Plex username and email
-  const watcherByEmail    = getUserByEmail(Account.title);
-  const watcherByUsername = db.prepare('SELECT * FROM users WHERE plex_username = ?').get(Account.title);
-  const watcher           = watcherByEmail || watcherByUsername;
-
-  if (!watcher || watcher.discord_id !== request.requested_by_discord_id) {
-    return;
-  }
-
-  const label = mediaTypeLabel(mediaType === 'episode' ? 'tv' : 'movie', is4k);
-  const emoji = mediaTypeEmoji(mediaType === 'episode' ? 'tv' : 'movie', is4k);
-
-  const adminChannel = await safeGetChannel(ADMIN_CHANNEL_ID);
+  const adminChannel = await safeGetChannel(CONFIG.ADMIN_CHANNEL_ID);
   if (!adminChannel) return;
-
-  const embed = new EmbedBuilder()
-    .setTitle(`${emoji} Finished Watching — ${label}`)
-    .setDescription(
-      `<@${request.requested_by_discord_id}> just finished **${showTitle}**.\n\n` +
-      `Would you like to delete it to free up space?`
-    )
-    .setColor(0xf59e0b)
-    .setTimestamp();
-
-  const encodedTitle = encodeURIComponent(showTitle);
+  const encodedTitle = encodeURIComponent(title);
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`delete_yes:${mediaId}:${encodedTitle}:${request.requested_by_discord_id}`)
-      .setLabel('Yes, Delete It')
-      .setStyle(ButtonStyle.Danger),
-    new ButtonBuilder()
-      .setCustomId(`delete_no:${mediaId}:${encodedTitle}:${request.requested_by_discord_id}`)
-      .setLabel('No, Keep It')
-      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`delete_no:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Keep').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`delete_yes:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Delete Now').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`delete_later:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Remind Me Later').setStyle(ButtonStyle.Primary),
   );
-
-  await adminChannel.send({
-    content:    `<@${request.requested_by_discord_id}>`,
-    embeds:     [embed],
-    components: [row],
-  });
-
-  log.ok(`[Plex] Sent deletion prompt for "${showTitle}" to ${request.requested_by_discord_id}`);
+  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [new EmbedBuilder().setTitle(`${mediaTypeEmoji(mediaType === 'episode' ? 'tv' : 'movie', is4k)} Finished Watching`).setDescription(`Would you like to delete **${title}**?\nGrace period: ${CONFIG.DELETION_GRACE_HOURS} hour(s).`).setColor(0xf59e0b)], components: [row] });
 }
 
-// ============================================================
-// Tautulli Webhook Handler (legacy — kept for compatibility)
-// ============================================================
 async function handleTautulliWebhook(body) {
   const { event, user_email, media_type, title, grandparent_title, tmdb_id, tvdb_id, is_4k } = body;
-
-  if (event !== 'watched') return;
-  if (!user_email)          return;
-
-  const is4k = typeof is_4k === 'string' && is_4k.toLowerCase().includes('4k');
-
-  if (media_type === 'movie' && !is4k) {
-    log.info(`[Tautulli] Skipping non-4K movie — no deletion prompt`);
-    return;
-  }
-
-  let mediaId;
-  if (media_type === 'movie') {
-    if (!tmdb_id) return;
-    mediaId = `tmdb:${tmdb_id}`;
-  } else if (media_type === 'episode') {
-    if (!tvdb_id) return;
-    mediaId = `tvdb:${tvdb_id}`;
-  } else {
-    return;
-  }
-
-  if (isInKeepList(mediaId)) return;
-
-  const request = getRequestByMediaId(mediaId);
-  if (!request || !request.requested_by_discord_id) return;
-
-  const watcher = getUserByEmail(user_email);
-  if (!watcher || watcher.discord_id !== request.requested_by_discord_id) return;
-
-  const showTitle = media_type === 'episode' ? (grandparent_title || title) : title;
-  const label     = mediaTypeLabel(media_type === 'episode' ? 'tv' : 'movie', is4k);
-  const emoji     = mediaTypeEmoji(media_type === 'episode' ? 'tv' : 'movie', is4k);
-
-  const adminChannel = await safeGetChannel(ADMIN_CHANNEL_ID);
+  if (event !== 'watched' || !user_email) return;
+  const is4k = String(is_4k || '').toLowerCase().includes('4k');
+  if (media_type === 'movie' && !is4k) return;
+  const mediaId = media_type === 'movie' ? `tmdb:${tmdb_id}` : `tvdb:${tvdb_id}`;
+  if (!tmdb_id && media_type === 'movie') return;
+  if (!tvdb_id && media_type === 'episode') return;
+  const reqRow = db.prepare('SELECT * FROM requests WHERE media_id = ? ORDER BY created_at DESC LIMIT 1').get(mediaId);
+  if (!reqRow?.requested_by_discord_id || isInKeepList(mediaId)) return;
+  const snoozeUntil = Number(getSetting(`delete_prompt_snooze:${mediaId}:${reqRow.requested_by_discord_id}`) || '0');
+  if (snoozeUntil > Date.now()) return;
+  const adminChannel = await safeGetChannel(CONFIG.ADMIN_CHANNEL_ID);
   if (!adminChannel) return;
-
-  const embed = new EmbedBuilder()
-    .setTitle(`${emoji} Finished Watching — ${label}`)
-    .setDescription(
-      `<@${request.requested_by_discord_id}> just finished **${showTitle}**.\n\n` +
-      `Would you like to delete it to free up space?`
-    )
-    .setColor(0xf59e0b)
-    .setTimestamp();
-
+  const showTitle = media_type === 'episode' ? (grandparent_title || title) : title;
   const encodedTitle = encodeURIComponent(showTitle);
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`delete_yes:${mediaId}:${encodedTitle}:${request.requested_by_discord_id}`)
-      .setLabel('Yes, Delete It')
-      .setStyle(ButtonStyle.Danger),
-    new ButtonBuilder()
-      .setCustomId(`delete_no:${mediaId}:${encodedTitle}:${request.requested_by_discord_id}`)
-      .setLabel('No, Keep It')
-      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`delete_no:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Keep').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`delete_yes:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Delete Now').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`delete_later:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Remind Me Later').setStyle(ButtonStyle.Primary),
   );
-
-  await adminChannel.send({
-    content:    `<@${request.requested_by_discord_id}>`,
-    embeds:     [embed],
-    components: [row],
-  });
-
-  log.ok(`[Tautulli] Sent deletion prompt for "${showTitle}" to ${request.requested_by_discord_id}`);
+  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [new EmbedBuilder().setTitle('📺 Finished Watching').setDescription(`Would you like to delete **${showTitle}**?`).setColor(0xf59e0b)], components: [row] });
 }
 
-// ============================================================
-// Utilities
-// ============================================================
-function isValidEmail(email) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-function pad(n) {
-  return String(n).padStart(2, '0');
-}
-
-function mimeFor(ext) {
-  const map = {
-    '.mkv': 'video/x-matroska',
-    '.mp4': 'video/mp4',
-    '.avi': 'video/x-msvideo',
-    '.mov': 'video/quicktime',
-    '.wmv': 'video/x-ms-wmv',
-  };
-  return map[ext] || 'application/octet-stream';
-}
-
-async function safeGetChannel(channelId) {
-  try {
-    return await client.channels.fetch(channelId);
-  } catch (err) {
-    log.warn(`Could not fetch channel ${channelId}: ${err.message}`);
-    return null;
-  }
-}
-
-// ============================================================
-// Boot
-// ============================================================
-if (!DISCORD_BOT_TOKEN) {
-  log.error('DISCORD_BOT_TOKEN is required');
+try {
+  validateConfig();
+  runMigrations();
+  client.login(CONFIG.DISCORD_BOT_TOKEN);
+} catch (err) {
+  log.error(err.message);
   process.exit(1);
 }
-
-client.login(DISCORD_BOT_TOKEN);
