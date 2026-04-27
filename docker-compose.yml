@@ -1,0 +1,32 @@
+version: "3.9"
+services:
+  durant-media-server-bot:
+    build: .
+    container_name: durant-media-server-bot
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+    volumes:
+      - durant_bot_data:/app/data
+      - ${MEDIA_HOST_PATH:-/mnt/raid}:/mnt/raid:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # Optional Cloudflare Tunnel sidecar
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: durant-media-server-bot-tunnel
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:-}
+    restart: unless-stopped
+    profiles: ["tunnel"]
+
+volumes:
+  durant_bot_data:
