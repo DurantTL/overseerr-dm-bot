@@ -26,11 +26,15 @@ This repo's `docker-compose.yml` loads both files, each optional:
 
 ```yaml
 env_file:
-  - path: stack.env   # written by Portainer from UI vars
-    required: false
   - path: .env        # manual / docker-compose CLI deployments
     required: false
+  - path: stack.env   # written by Portainer from UI vars — listed last so it wins
+    required: false
 ```
+
+Compose keeps the **last** duplicate value across `env_file` entries, so
+`stack.env` is listed last: if both files exist, the values entered in
+Portainer take precedence over a stale local `.env`.
 
 **Important:** if you set *any* variable in the Portainer UI, Portainer
 generates `stack.env` and that becomes the effective source — a `.env` you
