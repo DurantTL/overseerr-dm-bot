@@ -907,7 +907,7 @@ function dashboardAuth(req, res, next) {
 
 function startExpressServer() {
   const app = express();
-  const upload = multer();
+  const upload = multer({ limits: { fileSize: 5 * 1024 * 1024, files: 5 } });
   app.use((req, res, next) => { if (req.is('multipart/form-data')) return next(); bodyParser.json({ limit: '1mb' })(req, res, next); });
 
   app.get('/health', async (_req, res) => res.json(await gatherHealth()));
@@ -1059,6 +1059,15 @@ function startExpressServer() {
   }
 
   app.get('/', (_req, res) => res.send('Durant Media Server Bot is running.'));
+
+  app.use((err, req, res, next) => {
+    if (err && err.name === 'MulterError') {
+      log.warn(`Multer error on ${req.path}: ${err.message}`);
+      return res.sendStatus(200);
+    }
+    next(err);
+  });
+
   app.listen(CONFIG.PORT, () => log.ok(`Express server listening on port ${CONFIG.PORT}`));
 }
 
@@ -1157,6 +1166,14 @@ async function handleTautulliWebhook(body) {
   );
   await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [new EmbedBuilder().setTitle('📺 Finished Watching').setDescription(`Would you like to delete **${showTitle}**?`).setColor(0xf59e0b)], components: [row] });
 }
+
+function shutdown(sig) {
+  log.info(`Received ${sig}, shutting down`);
+  try { db.pragma('wal_checkpoint(TRUNCATE)'); db.close(); } catch (_e) {}
+  try { client.destroy(); } catch (_e) {}
+  process.exit(0);
+}
+['SIGTERM', 'SIGINT'].forEach(s => process.on(s, () => shutdown(s)));
 
 try {
   validateConfig();
