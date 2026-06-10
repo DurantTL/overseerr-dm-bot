@@ -1,0 +1,16 @@
+node_modules
+npm-debug.log*
+.env
+.env.*
+!.env.example
+stack.env
+.git
+.gitignore
+.github
+*.md
+!README.md
+data
+backups
+*.db
+*.db-wal
+*.db-shm
