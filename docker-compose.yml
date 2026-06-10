@@ -4,9 +4,11 @@ services:
     container_name: durant-media-server-bot
     init: true
     env_file:
-      - path: stack.env
-        required: false
+      # Compose keeps the LAST duplicate value, so stack.env (written by
+      # Portainer from UI vars) must come after .env to take precedence.
       - path: .env
+        required: false
+      - path: stack.env
         required: false
     ports:
       - "3000:3000"
