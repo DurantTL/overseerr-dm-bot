@@ -50,18 +50,23 @@ Do not split variables across both — you will get confusing partial config.
 
 ## 3. One-time stack setup
 
-1. In Portainer go to **Stacks → Add stack**.
-2. Name it (e.g. `durant-media-server-bot`).
-3. Choose **Git Repository** as the build method.
-4. Repository URL: this repo's HTTPS URL; reference: your deploy branch
+1. Make sure the image exists and is pullable first: push to `main` so
+   `build-image.yml` publishes the GHCR image, then make the package Public (or
+   `docker login ghcr.io` on the host) — see section 5.
+2. In Portainer go to **Stacks → Add stack**.
+3. Name it (e.g. `durant-media-server-bot`).
+4. Choose **Git Repository** as the build method (this only fetches the compose
+   file; the bot itself runs the prebuilt GHCR image rather than being built by
+   Portainer).
+5. Repository URL: this repo's HTTPS URL; reference: your deploy branch
    (e.g. `refs/heads/main`).
-5. **Compose path:** `docker-compose.yml`.
-6. Under *Environment variables*, click **Load variables from .env file** and
+6. **Compose path:** `docker-compose.yml`.
+7. Under *Environment variables*, click **Load variables from .env file** and
    upload your filled-in env file (or add the variables manually). Make sure
    every required variable from `.env.example` is present.
-7. (Optional) To run the Cloudflare tunnel sidecar, set
+8. (Optional) To run the Cloudflare tunnel sidecar, set
    `CLOUDFLARE_TUNNEL_TOKEN` and enable the `tunnel` compose profile.
-8. Click **Deploy the stack**.
+9. Click **Deploy the stack**.
 
 ## 4. Verify the deployment
 
@@ -81,50 +86,59 @@ Portainer for `Express server listening` and a successful Discord login.
 
 ## 5. Redeploying after a code change
 
-### Manual
-
-Push your change to the deploy branch, then in Portainer open the stack and
-click **Pull and redeploy**. Portainer fetches the latest commit, rebuilds the
-image, and recreates the container. The SQLite database lives in the
-`durant_bot_data` named volume, so it survives redeploys.
+The stack runs a **prebuilt image** pulled from the GitHub Container Registry
+(GHCR), just like the `cloudflared` sidecar pulls its image. Updates flow
+registry-first: GitHub builds the image, your host pulls it. Nothing needs
+inbound access to the host or to Portainer.
 
 ### Automatic (recommended)
 
-You can have Portainer redeploy on every push so you never click **Pull and
-redeploy** again. This repo ships a GitHub Actions workflow
-(`.github/workflows/portainer-redeploy.yml`) that calls Portainer's REST API to
-pull the latest commit and recreate the stack on each push to the deploy branch.
+On every push to the deploy branch, the GitHub Actions workflow
+(`.github/workflows/build-image.yml`) builds the image and pushes it to:
 
-> **Why the API and not Portainer's built-in webhook?** Portainer's UI
-> *Automatic updates* (webhook **and** scheduled polling) are a **Business
-> Edition** feature. The API endpoint this workflow uses
-> (`PUT /api/stacks/{id}/git/redeploy`) is core functionality and works on
-> **Community Edition**.
+```
+ghcr.io/duranttl/overseerr-dm-bot:latest      # always the newest build
+ghcr.io/duranttl/overseerr-dm-bot:sha-<commit> # immutable, for rollbacks
+```
 
-One-time setup — add these as GitHub repository secrets under **Settings →
-Secrets and variables → Actions**:
+Your host's **Watchtower** then notices the new `:latest` digest and recreates
+the bot container automatically — no manual step, no Portainer exposure. The
+container carries the `com.centurylinklabs.watchtower.enable=true` label so it
+works whether or not your Watchtower runs in label-enable mode.
 
-| Secret | Value |
-| --- | --- |
-| `PORTAINER_URL` | Your Portainer base URL, e.g. `https://portainer.example.com` (no trailing slash) |
-| `PORTAINER_API_KEY` | Portainer → **My account → Access tokens → Add access token** |
-| `PORTAINER_STACK_ID` | The stack's numeric id (shown in the stack's URL in Portainer) |
-| `PORTAINER_ENDPOINT_ID` | The environment's numeric id (usually `1` for a local Docker environment) |
+**One-time setup:**
 
-Now every push to the deploy branch triggers a redeploy automatically. You can
-also redeploy on demand from the repo's **Actions** tab via the workflow's
-**Run workflow** button. If you deploy from a branch other than `main`, edit the
-`branches:` list in the workflow file to match.
+1. Push to `main` once so the workflow runs and creates the package.
+2. The GHCR package starts **private**. Make the host able to pull it by either:
+   - **Public (simplest):** GitHub → your profile → **Packages** →
+     `overseerr-dm-bot` → **Package settings** → set visibility to **Public**, or
+   - **Private:** `docker login ghcr.io` on the host with a PAT that has
+     `read:packages`, and give Watchtower the same credentials (a mounted
+     `~/.docker/config.json` or `REPO_USER`/`REPO_PASS`).
 
-A few requirements:
+No GitHub secrets are required — the workflow authenticates to GHCR with the
+built-in `GITHUB_TOKEN`. To rebuild on demand, use the workflow's **Run
+workflow** button on the repo's **Actions** tab. If you deploy from a branch
+other than `main`, edit the `branches:` list in the workflow file to match.
 
-- Portainer must be reachable from GitHub's runners (a public hostname or a
-  tunnel — e.g. point a Cloudflare tunnel at the Portainer UI). If Portainer is
-  not internet-reachable, this approach can't work; trigger redeploys manually
-  or run the workflow from a self-hosted runner that can reach Portainer.
-- The redeploy pulls the latest commit on the branch Portainer is tracking, so
-  keep Portainer's configured reference (`refs/heads/<branch>`) aligned with the
-  branch the workflow runs on.
+### Manual
+
+Pin a specific build by setting `BOT_IMAGE_TAG` (e.g. `sha-abc1234`) in your env
+and pulling, or just pull the latest:
+
+```bash
+docker compose pull durant-media-server-bot && docker compose up -d
+```
+
+In Portainer, **Pull and redeploy** on the stack does the same. The SQLite
+database lives in the `durant_bot_data` named volume, so it survives every
+update.
+
+### Rolling back
+
+Set `BOT_IMAGE_TAG=sha-<good-commit>` (the immutable per-commit tag) and
+redeploy. Because Watchtower only tracks the tag you reference, pinning to a
+`sha-` tag also freezes auto-updates until you move back to `latest`.
 
 ## 6. Database backups
 
