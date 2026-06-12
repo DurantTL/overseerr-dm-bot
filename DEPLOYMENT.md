@@ -81,10 +81,41 @@ Portainer for `Express server listening` and a successful Discord login.
 
 ## 5. Redeploying after a code change
 
+### Manual
+
 Push your change to the deploy branch, then in Portainer open the stack and
 click **Pull and redeploy**. Portainer fetches the latest commit, rebuilds the
 image, and recreates the container. The SQLite database lives in the
 `durant_bot_data` named volume, so it survives redeploys.
+
+### Automatic (webhook — recommended)
+
+You can have Portainer redeploy on every push so you never click **Pull and
+redeploy** again. This repo ships a GitHub Actions workflow
+(`.github/workflows/portainer-redeploy.yml`) that pings Portainer's stack
+webhook on each push to the deploy branch.
+
+One-time setup:
+
+1. In Portainer open the stack → **Automatic updates** → enable **Webhook**.
+   Copy the generated URL (looks like
+   `https://<portainer-host>/api/stacks/webhooks/<uuid>`).
+   - Portainer must be reachable from GitHub's runners (a public hostname or a
+     tunnel). For a host that isn't internet-reachable, use **Polling** instead
+     (same *Automatic updates* panel — Portainer checks Git every N minutes; no
+     GitHub secret or workflow needed).
+2. In GitHub: **Settings → Secrets and variables → Actions → New repository
+   secret**, name it `PORTAINER_WEBHOOK_URL`, and paste the URL.
+
+Now every push to the deploy branch triggers a redeploy automatically. You can
+also redeploy on demand from the repo's **Actions** tab via the workflow's
+**Run workflow** button. If you deploy from a branch other than `main`, edit the
+`branches:` list in the workflow file to match.
+
+> The webhook tells Portainer to **pull and redeploy the latest commit on the
+> branch Portainer is tracking** — it doesn't pass a specific SHA. Keep
+> Portainer's configured reference (`refs/heads/<branch>`) the same as the
+> branch the workflow runs on so they stay in sync.
 
 ## 6. Database backups
 

@@ -1,0 +1,41 @@
+name: Trigger Portainer redeploy
+
+# Pings Portainer's stack webhook on every push to the deploy branch so the
+# stack pulls the new commit and recreates the container automatically.
+#
+# Setup (one time):
+#   1. In Portainer open the stack → enable "Automatic updates" → "Webhook".
+#      Copy the generated URL (looks like
+#      https://<portainer-host>/api/stacks/webhooks/<uuid>).
+#   2. In GitHub: Settings → Secrets and variables → Actions → New repository
+#      secret, named PORTAINER_WEBHOOK_URL, paste that URL.
+# That's it — pushes to the branch below now redeploy the stack.
+
+on:
+  push:
+    branches:
+      - main # deploy branch; change if you deploy from a different branch
+  workflow_dispatch: # allow manual redeploys from the Actions tab
+
+concurrency:
+  group: portainer-redeploy
+  cancel-in-progress: false
+
+jobs:
+  redeploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Portainer webhook
+        env:
+          WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
+        run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "::error::PORTAINER_WEBHOOK_URL secret is not set. See the setup steps in this workflow file."
+            exit 1
+          fi
+          echo "Triggering Portainer redeploy for ${GITHUB_SHA}..."
+          status=$(curl --silent --show-error --fail-with-body \
+            --retry 3 --retry-delay 5 --retry-all-errors \
+            --output /dev/stderr --write-out "%{http_code}" \
+            -X POST "$WEBHOOK_URL")
+          echo "Portainer responded with HTTP ${status}"
