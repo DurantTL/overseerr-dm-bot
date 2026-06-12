@@ -1,15 +1,19 @@
 name: Trigger Portainer redeploy
 
-# Pings Portainer's stack webhook on every push to the deploy branch so the
-# stack pulls the new commit and recreates the container automatically.
+# Tells Portainer to pull the latest commit and recreate the stack on every
+# push to the deploy branch, using Portainer's REST API.
 #
-# Setup (one time):
-#   1. In Portainer open the stack → enable "Automatic updates" → "Webhook".
-#      Copy the generated URL (looks like
-#      https://<portainer-host>/api/stacks/webhooks/<uuid>).
-#   2. In GitHub: Settings → Secrets and variables → Actions → New repository
-#      secret, named PORTAINER_WEBHOOK_URL, paste that URL.
-# That's it — pushes to the branch below now redeploy the stack.
+# This uses the core API (PUT /api/stacks/{id}/git/redeploy), which works on
+# Portainer Community Edition. The built-in "Automatic updates" webhook/polling
+# in Portainer's UI is a Business Edition feature, so CE uses this API call
+# instead.
+#
+# Setup (one time): add these as GitHub repository secrets under
+# Settings -> Secrets and variables -> Actions:
+#   PORTAINER_URL          e.g. https://portainer.example.com (no trailing slash)
+#   PORTAINER_API_KEY      Portainer -> My account -> Access tokens -> Add token
+#   PORTAINER_STACK_ID     numeric stack id (visible in the stack's URL)
+#   PORTAINER_ENDPOINT_ID  numeric environment id (usually 1 for a local Docker env)
 
 on:
   push:
@@ -25,17 +29,35 @@ jobs:
   redeploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Call Portainer webhook
+      - name: Redeploy stack via Portainer API
         env:
-          WEBHOOK_URL: ${{ secrets.PORTAINER_WEBHOOK_URL }}
+          PORTAINER_URL: ${{ secrets.PORTAINER_URL }}
+          PORTAINER_API_KEY: ${{ secrets.PORTAINER_API_KEY }}
+          STACK_ID: ${{ secrets.PORTAINER_STACK_ID }}
+          ENDPOINT_ID: ${{ secrets.PORTAINER_ENDPOINT_ID }}
         run: |
-          if [ -z "$WEBHOOK_URL" ]; then
-            echo "::error::PORTAINER_WEBHOOK_URL secret is not set. See the setup steps in this workflow file."
+          missing=""
+          [ -z "$PORTAINER_URL" ] && missing="$missing PORTAINER_URL"
+          [ -z "$PORTAINER_API_KEY" ] && missing="$missing PORTAINER_API_KEY"
+          [ -z "$STACK_ID" ] && missing="$missing PORTAINER_STACK_ID"
+          [ -z "$ENDPOINT_ID" ] && missing="$missing PORTAINER_ENDPOINT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required secret(s):$missing. See the setup notes in this workflow file."
             exit 1
           fi
-          echo "Triggering Portainer redeploy for ${GITHUB_SHA}..."
-          status=$(curl --silent --show-error --fail-with-body \
+
+          url="${PORTAINER_URL%/}/api/stacks/${STACK_ID}/git/redeploy?endpointId=${ENDPOINT_ID}"
+          echo "Redeploying Portainer stack ${STACK_ID} to ${GITHUB_SHA}..."
+          status=$(curl --silent --show-error \
             --retry 3 --retry-delay 5 --retry-all-errors \
             --output /dev/stderr --write-out "%{http_code}" \
-            -X POST "$WEBHOOK_URL")
+            -X PUT "$url" \
+            -H "X-API-Key: ${PORTAINER_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"RepullImageAndRedeploy": true}')
+          echo ""
           echo "Portainer responded with HTTP ${status}"
+          case "$status" in
+            2*) echo "Redeploy triggered successfully." ;;
+            *)  echo "::error::Portainer redeploy failed (HTTP ${status})."; exit 1 ;;
+          esac
