@@ -787,21 +787,54 @@ async function handleSyncCommand(interaction) {
     return interaction.editReply(formatSyncPreview(preview, 'Preview only; no changes made.'));
   }
 
-  let added = 0; let updated = 0;
+  let added = 0; let updated = 0; let repaired = 0;
+  const isPlaceholderKey = key => key.startsWith('__placeholder__:');
+  const beforeCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
+
+  // Add Plex friends not already represented in the DB, matching on canonical email exactly as
+  // buildSyncPreview does. Raw lowercase comparison previously re-touched gmail dot/plus variants
+  // every run, so the same friend churned in and out — canonical keys make the match stick.
+  const existingCanon = new Set(
+    db.prepare('SELECT * FROM users').all()
+      .filter(u => u.discord_id !== CONFIG.DISCORD_CLIENT_ID)
+      .map(u => canonicalizeEmail(u.email))
+      .filter(Boolean),
+  );
   const token = await getPlexToken();
   const friendsData = await plexApiGet('/api/v2/friends', token).catch(() => []);
   const friends = Array.isArray(friendsData) ? friendsData : (friendsData.data || []);
   for (const friend of friends) {
-    const email = (friend.email || '').toLowerCase();
-    if (!email || getUserByEmail(email)) continue;
+    const email = (friend.email || '').trim().toLowerCase();
+    if (!email) continue;
+    const key = canonicalizeEmail(friend.email);
+    if (!key || existingCanon.has(key)) continue;
     db.prepare('INSERT OR IGNORE INTO users (discord_id, email, invited, requested_at) VALUES (?, ?, 1, ?)').run(`plex_${friend.id}`, email, new Date().toISOString());
+    existingCanon.add(key);
     added++;
   }
+
+  // Reconcile Discord-linked rows against Overseerr on canonical keys. A canonical match that we
+  // haven't flagged yet is a "repair" (link the existing Overseerr user, no API write); a true
+  // absence is an "add" (create the Overseerr user). Skip synthetic plex_ rows, the bot's own
+  // account, and placeholder (@plex.local) rows — none of those map to a real Overseerr login.
   const dbUsers = db.prepare('SELECT * FROM users').all();
   const overseerrUsers = await fetchOverseerrUsers().catch(() => []);
-  const overseerrEmailSet = new Set(overseerrUsers.map(u => (u.email || '').toLowerCase()));
+  const overseerrByCanon = new Map();
+  for (const ou of overseerrUsers) {
+    const key = canonicalizeEmail(ou.email);
+    if (key && !overseerrByCanon.has(key)) overseerrByCanon.set(key, ou);
+  }
   for (const u of dbUsers) {
-    if (overseerrEmailSet.has(u.email.toLowerCase()) || u.discord_id.startsWith('plex_')) continue;
+    if (u.discord_id === CONFIG.DISCORD_CLIENT_ID || u.discord_id.startsWith('plex_')) continue;
+    const key = canonicalizeEmail(u.email);
+    if (!key || isPlaceholderKey(key)) continue;
+    if (overseerrByCanon.has(key)) {
+      if (!u.overseerr_created) {
+        markOverseerrCreated(u.discord_id, overseerrByCanon.get(key).id ?? null);
+        repaired++;
+      }
+      continue;
+    }
     try {
       const du = await client.users.fetch(u.discord_id).catch(() => null);
       const id = await createOverseerrUser(u.email, u.discord_id, du?.username || u.email.split('@')[0]);
@@ -811,8 +844,9 @@ async function handleSyncCommand(interaction) {
       audit('external_api_error', { actorDiscordId: interaction.user.id, provider: 'overseerr', error: err.message, targetDiscordId: u.discord_id });
     }
   }
-  audit('sync_changes_applied', { actorDiscordId: interaction.user.id, added, updated });
-  await interaction.editReply(`${formatSyncPreview(preview, 'Apply completed.')}\n\nAdded to DB: ${added}\nOverseerr users created: ${updated}`);
+  const afterCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
+  audit('sync_changes_applied', { actorDiscordId: interaction.user.id, added, updated, repaired, beforeCount, afterCount });
+  await interaction.editReply(`${formatSyncPreview(preview, 'Apply completed.')}\n\nAdded to DB: ${added}\nOverseerr users created: ${updated}\nLinks repaired: ${repaired}`);
 }
 
 // Store a long canonical-email key under a short deterministic handle so it fits Discord's 100-char customId limit.
