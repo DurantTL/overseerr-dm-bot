@@ -702,7 +702,6 @@ async function handleStatusCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
   await interaction.deferReply({ ephemeral: true });
   const health = await gatherHealth();
-  const totalUsers = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
   const invitedUsers = db.prepare('SELECT COUNT(*) AS c FROM users WHERE invited = 1').get().c;
   const pendingRequests = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get().c;
   const activeLinks = db.prepare('SELECT COUNT(*) AS c FROM download_tokens WHERE revoked = 0 AND expires_at > ?').get(Date.now()).c;
@@ -710,22 +709,50 @@ async function handleStatusCommand(interaction) {
   const integrationKeys = ['discord', 'sqlite', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'raidPath', 'tunnelDomain'];
   const integrationLines = integrationKeys.filter(k => health[k] !== undefined).map(k => `${statusEmoji(health[k])} ${k}: ${health[k]}`);
 
-  // Cheap (DB-only) counts of fixable sync issues — surfaced so admins know to run /sync-fix.
+  // Categorize DB rows: real Discord-linked, plex_-only synthetic, and @plex.local placeholders
+  // (collapsed to a count once acknowledged). Also tally fixable issues so admins know to run /sync-fix.
   const allUsers = db.prepare('SELECT discord_id, email FROM users').all().filter(u => u.discord_id !== CONFIG.DISCORD_CLIENT_ID);
   const canonCounts = new Map();
-  let placeholderCount = 0;
+  const dbCanon = new Set();
+  let discordLinked = 0; let plexOnly = 0; let placeholderCount = 0; let placeholderAcked = 0;
   for (const u of allUsers) {
     const key = canonicalizeEmail(u.email);
     if (key.startsWith('__placeholder__:')) {
-      if (!getSetting(`placeholder_ack:${u.discord_id}`)) placeholderCount++;
+      placeholderCount++;
+      if (getSetting(`placeholder_ack:${u.discord_id}`)) placeholderAcked++;
       continue;
     }
+    dbCanon.add(key);
     canonCounts.set(key, (canonCounts.get(key) || 0) + 1);
+    if (u.discord_id.startsWith('plex_')) plexOnly++; else discordLinked++;
   }
+  const placeholderUnacked = placeholderCount - placeholderAcked;
   const duplicateCount = Array.from(canonCounts.values()).filter(n => n > 1).length;
-  const fixableLine = (duplicateCount || placeholderCount)
-    ? `${duplicateCount} duplicate-email · ${placeholderCount} placeholder — run /sync-fix`
+  const fixableLine = (duplicateCount || placeholderUnacked)
+    ? `${duplicateCount} duplicate-email · ${placeholderUnacked} placeholder — run /sync-fix`
     : 'none';
+
+  // Reconcile DB vs Overseerr on canonical keys; when they differ, name the unmatched side.
+  const overseerrUsers = await fetchOverseerrUsers().catch(() => null);
+  let reconcileLine;
+  if (overseerrUsers === null) {
+    reconcileLine = `DB users: ${allUsers.length} · Overseerr: unavailable`;
+  } else {
+    const oCanon = new Set(overseerrUsers.map(u => canonicalizeEmail(u.email)).filter(Boolean));
+    const oNotInDb = [...oCanon].filter(k => !dbCanon.has(k)).length;
+    const dbNotInO = [...dbCanon].filter(k => !oCanon.has(k)).length;
+    reconcileLine = `DB users: ${allUsers.length} · Overseerr users: ${overseerrUsers.length}`;
+    const notes = [];
+    if (oNotInDb) notes.push(`${oNotInDb} Overseerr user${oNotInDb === 1 ? '' : 's'} not in DB`);
+    if (dbNotInO) notes.push(`${dbNotInO} DB user${dbNotInO === 1 ? '' : 's'} not in Overseerr`);
+    if (notes.length) reconcileLine += `\n${notes.join(' · ')}`;
+  }
+
+  const usersSummary = [
+    `**Discord-linked:** ${discordLinked} (${invitedUsers} invited)`,
+    `**Plex-only:** ${plexOnly}`,
+    `**Placeholder:** ${placeholderCount}${placeholderCount ? ` (${placeholderAcked} acknowledged)` : ''}`,
+  ].join('\n');
 
   const embed = new EmbedBuilder()
     .setTitle('📊 Durant Media Server Status')
@@ -733,9 +760,10 @@ async function handleStatusCommand(interaction) {
     .setDescription(`Overall: **${String(health.overall).toUpperCase()}**`)
     .addFields(
       { name: 'Integrations', value: integrationLines.join('\n') || 'none', inline: false },
-      { name: 'Linked users', value: `${totalUsers} (${invitedUsers} invited)`, inline: true },
+      { name: 'Users', value: usersSummary, inline: true },
       { name: 'Pending requests', value: `${pendingRequests}`, inline: true },
       { name: 'Active download links', value: `${activeLinks}`, inline: true },
+      { name: 'DB ↔ Overseerr', value: reconcileLine, inline: false },
       { name: 'Fixable sync issues', value: fixableLine, inline: false },
     );
   audit('status_checked', { actorDiscordId: interaction.user.id, overall: health.overall });
