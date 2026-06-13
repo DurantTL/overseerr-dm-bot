@@ -459,6 +459,21 @@ function resolveSafeMediaPath(requestedPath) {
 function mediaTypeLabel(mediaType, is4k) { if (mediaType === 'tv') return is4k ? '4K TV Show' : 'TV Show'; return is4k ? '4K Movie' : 'Movie'; }
 function mediaTypeEmoji(mediaType, is4k) { if (mediaType === 'tv') return '📺'; return is4k ? '🎥' : '🎬'; }
 function isValidEmail(email) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); }
+function canonicalizeEmail(raw) {
+  const email = String(raw || '').trim().toLowerCase();
+  const [local, domain] = email.split('@');
+  if (!domain) return email;
+  if (domain === 'plex.local') return `__placeholder__:${email}`;
+  if (domain === 'gmail.com' || domain === 'googlemail.com') {
+    return `${local.split('+')[0].replace(/\./g, '')}@gmail.com`;
+  }
+  return `${local.split('+')[0]}@${domain}`;
+}
+function statusEmoji(v) {
+  if (['ok', 'configured'].includes(v)) return '✅';
+  if (v === 'skipped') return '⏭️';
+  return '❌';
+}
 function pad(n) { return String(n).padStart(2, '0'); }
 function mimeFor(ext) { return ({ '.mkv': 'video/x-matroska', '.mp4': 'video/mp4', '.avi': 'video/x-msvideo', '.mov': 'video/quicktime', '.wmv': 'video/x-ms-wmv' })[ext] || 'application/octet-stream'; }
 
@@ -477,6 +492,7 @@ const slashCommands = [
   new SlashCommandBuilder().setName('users').setDescription('List linked users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('status').setDescription('Show status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('sync').setDescription('Sync users safely').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(true).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
+  new SlashCommandBuilder().setName('sync-fix').setDescription('Resolve sync issues found in the preview').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('target').setDescription('Category to fix').setRequired(true).addChoices({ name: 'placeholders', value: 'placeholders' }, { name: 'duplicates', value: 'duplicates' }, { name: 'orphans', value: 'orphans' })),
   new SlashCommandBuilder().setName('cleanup').setDescription('Cleanup deleted Overseerr users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(false).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
   new SlashCommandBuilder().setName('audit').setDescription('Audit log queries').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('recent').setDescription('Recent entries').addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100)))
@@ -565,6 +581,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'users') return handleUsersCommand(interaction);
   if (n === 'status') return handleStatusCommand(interaction);
   if (n === 'sync') return handleSyncCommand(interaction);
+  if (n === 'sync-fix') return handleSyncFixCommand(interaction);
   if (n === 'cleanup') return handleCleanupCommand(interaction);
   if (n === 'audit') return handleAuditCommand(interaction);
   if (n === 'me') return handleMeCommand(interaction);
@@ -641,35 +658,123 @@ async function handleUsersCommand(interaction) {
   await interaction.reply({ content: rows.slice(0, 50).map(u => `<@${u.discord_id}> — ${u.email}`).join('\n') || 'No users', ephemeral: true });
 }
 
+async function handleStatusCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ ephemeral: true });
+  const health = await gatherHealth();
+  const totalUsers = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
+  const invitedUsers = db.prepare('SELECT COUNT(*) AS c FROM users WHERE invited = 1').get().c;
+  const pendingRequests = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get().c;
+  const activeLinks = db.prepare('SELECT COUNT(*) AS c FROM download_tokens WHERE revoked = 0 AND expires_at > ?').get(Date.now()).c;
+
+  const integrationKeys = ['discord', 'sqlite', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'raidPath', 'tunnelDomain'];
+  const integrationLines = integrationKeys.filter(k => health[k] !== undefined).map(k => `${statusEmoji(health[k])} ${k}: ${health[k]}`);
+
+  // Cheap (DB-only) counts of fixable sync issues — surfaced so admins know to run /sync-fix.
+  const allUsers = db.prepare('SELECT discord_id, email FROM users').all().filter(u => u.discord_id !== CONFIG.DISCORD_CLIENT_ID);
+  const canonCounts = new Map();
+  let placeholderCount = 0;
+  for (const u of allUsers) {
+    const key = canonicalizeEmail(u.email);
+    if (key.startsWith('__placeholder__:')) {
+      if (!getSetting(`placeholder_ack:${u.discord_id}`)) placeholderCount++;
+      continue;
+    }
+    canonCounts.set(key, (canonCounts.get(key) || 0) + 1);
+  }
+  const duplicateCount = Array.from(canonCounts.values()).filter(n => n > 1).length;
+  const fixableLine = (duplicateCount || placeholderCount)
+    ? `${duplicateCount} duplicate-email · ${placeholderCount} placeholder — run /sync-fix`
+    : 'none';
+
+  const embed = new EmbedBuilder()
+    .setTitle('📊 Durant Media Server Status')
+    .setColor(health.overall === 'ok' ? 0x22c55e : 0xf59e0b)
+    .setDescription(`Overall: **${String(health.overall).toUpperCase()}**`)
+    .addFields(
+      { name: 'Integrations', value: integrationLines.join('\n') || 'none', inline: false },
+      { name: 'Linked users', value: `${totalUsers} (${invitedUsers} invited)`, inline: true },
+      { name: 'Pending requests', value: `${pendingRequests}`, inline: true },
+      { name: 'Active download links', value: `${activeLinks}`, inline: true },
+      { name: 'Fixable sync issues', value: fixableLine, inline: false },
+    );
+  audit('status_checked', { actorDiscordId: interaction.user.id, overall: health.overall });
+  await interaction.editReply({ embeds: [embed] });
+}
+
 async function fetchOverseerrUsers() {
   const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/user?take=200`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
   return res.data.results || [];
 }
 
 async function buildSyncPreview() {
-  const dbUsers = db.prepare('SELECT * FROM users').all();
+  // Exclude the bot's own account from all matching.
+  const dbUsers = db.prepare('SELECT * FROM users').all().filter(u => u.discord_id !== CONFIG.DISCORD_CLIENT_ID);
   const guild = client.guilds.cache.get(CONFIG.DISCORD_GUILD_ID) || client.guilds.cache.first();
-  const discordMembers = guild ? Array.from((await guild.members.fetch()).values()) : [];
+  const discordMembers = guild ? Array.from((await guild.members.fetch()).values()).filter(m => !m.user.bot) : [];
   const discordIds = new Set(discordMembers.map(m => m.user.id));
 
   const token = await getPlexToken();
   const friendsData = await plexApiGet('/api/v2/friends', token).catch(() => []);
   const plexFriends = Array.isArray(friendsData) ? friendsData : (friendsData.data || []);
-  const plexEmails = new Set(plexFriends.map(f => (f.email || '').toLowerCase()).filter(Boolean));
+  const plexEmails = new Set(plexFriends.map(f => canonicalizeEmail(f.email)).filter(Boolean));
 
   const overseerrUsers = await fetchOverseerrUsers().catch(() => []);
-  const overseerrEmails = new Set(overseerrUsers.map(u => (u.email || '').toLowerCase()).filter(Boolean));
+  const overseerrEmails = new Set(overseerrUsers.map(u => canonicalizeEmail(u.email)).filter(Boolean));
 
-  const discordNotLinkedToPlex = discordMembers.filter(m => !m.user.bot && !dbUsers.find(u => u.discord_id === m.user.id)).map(m => `${m.user.tag}`);
-  const plexNotInDiscord = plexFriends.filter(f => f.email && !dbUsers.find(u => u.email.toLowerCase() === f.email.toLowerCase())).map(f => f.email);
-  const overseerrNotLinkedToDiscord = overseerrUsers.filter(u => u.email && !dbUsers.find(d => d.email.toLowerCase() === u.email.toLowerCase())).map(u => u.email);
-  const dbMissingFromPlex = dbUsers.filter(u => !u.discord_id.startsWith('plex_') && !plexEmails.has(u.email.toLowerCase())).map(u => `${u.email}`);
+  const isPlaceholderKey = key => key.startsWith('__placeholder__:');
+  const isAcked = discordId => !!getSetting(`placeholder_ack:${discordId}`);
+
+  // Canonical email -> Discord IDs map for the DB, used for matching and duplicate detection.
+  const dbCanonSet = new Set(dbUsers.map(u => canonicalizeEmail(u.email)).filter(Boolean));
+  const placeholderDiscordIds = new Set(dbUsers.filter(u => isPlaceholderKey(canonicalizeEmail(u.email))).map(u => u.discord_id));
+
+  const discordNotLinkedToPlex = discordMembers.filter(m => !dbUsers.find(u => u.discord_id === m.user.id)).map(m => `${m.user.tag}`);
+  const plexNotInDiscord = plexFriends.filter(f => f.email && !dbCanonSet.has(canonicalizeEmail(f.email))).map(f => f.email);
+  const overseerrNotLinkedToDiscord = overseerrUsers.filter(u => u.email && !dbCanonSet.has(canonicalizeEmail(u.email))).map(u => u.email);
+
+  // Placeholder accounts (e.g. @plex.local) are valid Plex managed/home users — keep them out of missing/risky.
+  const unmatchablePlaceholders = dbUsers
+    .filter(u => isPlaceholderKey(canonicalizeEmail(u.email)) && !isAcked(u.discord_id))
+    .map(u => ({ discord_id: u.discord_id, email: u.email, invited: u.invited, overseerr_created: u.overseerr_created, requested_at: u.requested_at }));
+
+  const dbMissingFromPlex = dbUsers
+    .filter(u => !u.discord_id.startsWith('plex_') && !placeholderDiscordIds.has(u.discord_id) && !plexEmails.has(canonicalizeEmail(u.email)))
+    .map(u => `${u.email}`);
 
   const wouldAdd = plexNotInDiscord.slice();
-  const wouldUpdate = dbUsers.filter(u => overseerrEmails.has(u.email.toLowerCase()) && !u.overseerr_created).map(u => u.email);
-  const risky = dbUsers.filter(u => !u.discord_id.startsWith('plex_') && !discordIds.has(u.discord_id)).map(u => `${u.email} (discord missing)`);
+  const wouldUpdate = dbUsers.filter(u => overseerrEmails.has(canonicalizeEmail(u.email)) && !u.overseerr_created).map(u => u.email);
 
-  return { discordNotLinkedToPlex, plexNotInDiscord, overseerrNotLinkedToDiscord, dbMissingFromPlex, wouldAdd, wouldRemove: [], wouldUpdate, risky };
+  const orphanRows = dbUsers.filter(u => !u.discord_id.startsWith('plex_') && !placeholderDiscordIds.has(u.discord_id) && !isAcked(u.discord_id) && !discordIds.has(u.discord_id));
+  const risky = orphanRows.map(u => `${u.email} (discord missing)`);
+  const orphans = orphanRows.map(u => ({ discord_id: u.discord_id, email: u.email, invited: u.invited, overseerr_created: u.overseerr_created, requested_at: u.requested_at }));
+
+  // Duplicate canonical emails mapped to more than one Discord ID (placeholders excluded — they share a key space).
+  const canonToRows = new Map();
+  for (const u of dbUsers) {
+    const key = canonicalizeEmail(u.email);
+    if (isPlaceholderKey(key)) continue;
+    if (!canonToRows.has(key)) canonToRows.set(key, []);
+    canonToRows.get(key).push(u.discord_id);
+  }
+  const duplicateEmails = Array.from(canonToRows.entries())
+    .filter(([, ids]) => ids.length > 1)
+    .map(([canonicalEmail, discordIds]) => ({ canonicalEmail, discordIds }));
+
+  // Suggested links for plex_ friends with no real Discord link (preview only — never auto-linked in apply).
+  const suggestedLinks = [];
+  for (const f of plexFriends) {
+    if (!dbUsers.find(u => u.discord_id === `plex_${f.id}`)) continue;
+    const name = String(f.username || f.title || '').toLowerCase().trim();
+    if (!name) continue;
+    const match = discordMembers.find(m => {
+      const uname = String(m.user.username || '').toLowerCase();
+      return uname && (uname === name || uname.includes(name) || name.includes(uname));
+    });
+    if (match) suggestedLinks.push({ plexFriend: f.username || f.title, plexId: f.id, discordTag: match.user.tag, discordId: match.user.id });
+  }
+
+  return { discordNotLinkedToPlex, plexNotInDiscord, overseerrNotLinkedToDiscord, dbMissingFromPlex, wouldAdd, wouldRemove: [], wouldUpdate, risky, unmatchablePlaceholders, duplicateEmails, orphans, suggestedLinks };
 }
 
 async function handleSyncCommand(interaction) {
@@ -710,13 +815,100 @@ async function handleSyncCommand(interaction) {
   await interaction.editReply(`${formatSyncPreview(preview, 'Apply completed.')}\n\nAdded to DB: ${added}\nOverseerr users created: ${updated}`);
 }
 
+// Store a long canonical-email key under a short deterministic handle so it fits Discord's 100-char customId limit.
+function pendingFixKey(prefix, value) {
+  const key = `${prefix}_${sha256(value).slice(0, 8)}`;
+  setSetting(`syncfix_pending:${key}`, value);
+  return key;
+}
+
+async function handleSyncFixCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ ephemeral: true });
+  const target = interaction.options.getString('target', true);
+  // Recompute fresh — never trust stale state.
+  const preview = await buildSyncPreview();
+  audit('sync_fix_opened', { actorDiscordId: interaction.user.id, target });
+
+  if (target === 'duplicates') {
+    if (!preview.duplicateEmails.length) return interaction.editReply('✅ No duplicate-email users to fix.');
+    const embeds = []; const components = [];
+    for (const dup of preview.duplicateEmails.slice(0, 5)) {
+      const key = pendingFixKey('dup', dup.canonicalEmail);
+      const rows = dup.discordIds.map(id => getUserByDiscordId(id)).filter(Boolean);
+      const embed = new EmbedBuilder()
+        .setTitle('Duplicate email')
+        .setColor(0xf59e0b)
+        .setDescription(`Canonical: \`${dup.canonicalEmail}\`\n\n` + rows.map(r => `• <@${r.discord_id}> (\`${r.discord_id}\`) — ${r.email} | invited: ${r.invited ? 'yes' : 'no'} | seerr: ${r.overseerr_created ? 'yes' : 'no'} | ${r.requested_at}`).join('\n'));
+      const row = new ActionRowBuilder();
+      for (const r of rows.slice(0, 5)) {
+        row.addComponents(new ButtonBuilder().setCustomId(`syncfix_keepdup:${key}:${r.discord_id}`).setLabel(`Keep ${r.discord_id}`.slice(0, 80)).setStyle(ButtonStyle.Primary));
+      }
+      embeds.push(embed); components.push(row);
+    }
+    return interaction.editReply({ content: `Found ${preview.duplicateEmails.length} duplicate-email group(s). Pick which row survives — the others are removed:`, embeds, components });
+  }
+
+  if (target === 'placeholders') {
+    if (!preview.unmatchablePlaceholders.length) return interaction.editReply('✅ No placeholder accounts to review.');
+    const embeds = []; const components = [];
+    for (const ph of preview.unmatchablePlaceholders.slice(0, 5)) {
+      const embed = new EmbedBuilder()
+        .setTitle('Placeholder account')
+        .setColor(0x3b82f6)
+        .setDescription(`<@${ph.discord_id}> (\`${ph.discord_id}\`) — ${ph.email}\nInvited: ${ph.invited ? 'yes' : 'no'} | Seerr: ${ph.overseerr_created ? 'yes' : 'no'} | ${ph.requested_at}\n\nUsually a valid Plex managed/home user. Default action is to acknowledge.`);
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`syncfix_ackph:${ph.discord_id}`).setLabel('Dismiss (acknowledge)').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`syncfix_rmph:${ph.discord_id}`).setLabel('Remove from DB').setStyle(ButtonStyle.Danger),
+      );
+      embeds.push(embed); components.push(row);
+    }
+    return interaction.editReply({ content: `Found ${preview.unmatchablePlaceholders.length} placeholder account(s):`, embeds, components });
+  }
+
+  if (target === 'orphans') {
+    if (!preview.orphans.length) return interaction.editReply('✅ No orphaned DB users to review.');
+    const embeds = []; const components = [];
+    for (const o of preview.orphans.slice(0, 5)) {
+      const embed = new EmbedBuilder()
+        .setTitle('Orphaned DB user')
+        .setColor(0xf59e0b)
+        .setDescription(`<@${o.discord_id}> (\`${o.discord_id}\`) is no longer in the guild — ${o.email}\nInvited: ${o.invited ? 'yes' : 'no'} | Seerr: ${o.overseerr_created ? 'yes' : 'no'} | ${o.requested_at}`);
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`syncfix_rmorphan:${o.discord_id}`).setLabel('Remove from DB').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`syncfix_keeporphan:${o.discord_id}`).setLabel('Keep').setStyle(ButtonStyle.Secondary),
+      );
+      embeds.push(embed); components.push(row);
+    }
+    return interaction.editReply({ content: `Found ${preview.orphans.length} orphaned DB user(s):`, embeds, components });
+  }
+
+  return interaction.editReply('❌ Unknown target.');
+}
+
+function syncFixHints(p) {
+  const hints = [];
+  if (p.duplicateEmails?.length) hints.push(`${p.duplicateEmails.length} duplicate-email user(s) — run /sync-fix duplicates to resolve`);
+  if (p.unmatchablePlaceholders?.length) hints.push(`${p.unmatchablePlaceholders.length} placeholder account(s) — run /sync-fix placeholders to review`);
+  if (p.risky?.length) hints.push(`${p.risky.length} orphaned DB user(s) — run /sync-fix orphans to review`);
+  if (p.suggestedLinks?.length) {
+    const pairs = p.suggestedLinks.slice(0, 10).map(s => `  • ${s.plexFriend} → ${s.discordTag} (${s.discordId})`);
+    hints.push(`Suggested links (review manually, never auto-applied):\n${pairs.join('\n')}`);
+  }
+  return hints.length ? `\n\n${hints.join('\n')}` : '';
+}
+
 function formatSyncPreview(p, header) {
   return `${header}\n\n` +
     `Discord not linked to Plex: ${p.discordNotLinkedToPlex.length}\n` +
     `Plex users not in Discord links: ${p.plexNotInDiscord.length}\n` +
     `Overseerr users not linked to Discord: ${p.overseerrNotLinkedToDiscord.length}\n` +
     `DB users missing from Plex: ${p.dbMissingFromPlex.length}\n` +
-    `Would add: ${p.wouldAdd.length}\nWould remove: ${p.wouldRemove.length}\nWould update: ${p.wouldUpdate.length}\nRisky changes: ${p.risky.length}`;
+    `Unmatchable placeholders: ${p.unmatchablePlaceholders?.length || 0}\n` +
+    `Duplicate-email users: ${p.duplicateEmails?.length || 0}\n` +
+    `Suggested links: ${p.suggestedLinks?.length || 0}\n` +
+    `Would add: ${p.wouldAdd.length}\nWould remove: ${p.wouldRemove.length}\nWould update: ${p.wouldUpdate.length}\nRisky changes: ${p.risky.length}` +
+    syncFixHints(p);
 }
 
 async function handleCleanupCommand(interaction) {
@@ -772,7 +964,32 @@ async function handleKeepCommand(interaction) {
   await interaction.reply({ content: rows.map(r => `${r.title} (${r.media_id})${r.expires_at ? ` expires ${new Date(r.expires_at).toUTCString()}` : ''}`).join('\n') || 'No keep entries.', ephemeral: true });
 }
 async function handleHelpCommand(interaction) {
-  await interaction.reply({ content: 'Use /download to fetch media links, /myrequests for Seerr requests, /me for account status. Admins approve onboarding and requests in the admin channel.', ephemeral: true });
+  const userCommands = [
+    '`/download` — Get a secure download link for a movie or episode',
+    '`/me` — Show your linked profile and access status',
+    '`/myrequests` — Show your recent Seerr requests',
+    '`/downloads` — Show your active download links',
+    '`/keep` — Show your keep list (media saved from cleanup)',
+    '`/help` — Show this help message',
+  ];
+  let content = '**How Durant Media Server works**\n' +
+    'DM the bot your Plex account email → an admin approves → you get Plex + Seerr (request) access.\n\n' +
+    '**Commands**\n' + userCommands.join('\n');
+  if (isAdminInteraction(interaction)) {
+    const adminCommands = [
+      '`/link` — Link a Discord user to a Plex email',
+      '`/unlink` — Remove a user from the DB',
+      '`/users` — List linked users',
+      '`/status` — Show system health and stats',
+      '`/sync` — Preview or apply user sync',
+      '`/sync-fix` — Resolve duplicate / placeholder / orphan records',
+      '`/cleanup` — Remove deleted Overseerr users',
+      '`/audit` — Query the audit log',
+      '`/revoke-downloads` — Revoke active download links',
+    ];
+    content += '\n\n**Admin commands**\n' + adminCommands.join('\n');
+  }
+  await interaction.reply({ content, ephemeral: true });
 }
 async function handleRevokeDownloadsCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
@@ -825,6 +1042,64 @@ async function handleButton(interaction) {
     await denyOverseerrRequest(parts[0]);
     audit('request_denied', { actorDiscordId: interaction.user.id, requestId: parts[0] });
     return interaction.update({ content: `❌ Request #${parts[0]} denied.`, components: [] });
+  }
+
+  if (action === 'syncfix_keepdup') {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const [key, keepDiscordId] = parts;
+    const canonicalEmail = getSetting(`syncfix_pending:${key}`);
+    if (!canonicalEmail) return interaction.reply({ content: '❌ This action expired. Re-run /sync-fix duplicates.', ephemeral: true });
+    // Re-validate against the live DB — the row set may have changed since the embed was posted.
+    const dupUsers = db.prepare('SELECT * FROM users').all().filter(u => canonicalizeEmail(u.email) === canonicalEmail);
+    const keeper = dupUsers.find(u => u.discord_id === keepDiscordId);
+    if (!keeper) return interaction.reply({ content: '❌ Selected row no longer exists. Re-run /sync-fix duplicates.', ephemeral: true });
+    if (dupUsers.length <= 1) return interaction.reply({ content: 'ℹ️ Already resolved — only one row remains for this email.', ephemeral: true });
+    const removedDiscordIds = [];
+    for (const u of dupUsers) {
+      if (u.discord_id === keepDiscordId) continue;
+      removeUser(u.discord_id);
+      removedDiscordIds.push(u.discord_id);
+    }
+    audit('sync_fix_duplicate_resolved', { actorDiscordId: interaction.user.id, canonicalEmail, keptDiscordId: keepDiscordId, removedDiscordIds });
+    return interaction.reply({ content: `✅ Kept <@${keepDiscordId}> for \`${canonicalEmail}\`. Removed ${removedDiscordIds.length} duplicate row(s)${removedDiscordIds.length ? `: ${removedDiscordIds.map(id => `\`${id}\``).join(', ')}` : ''}.`, ephemeral: true });
+  }
+
+  if (action === 'syncfix_ackph') {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const discordId = parts[0];
+    const user = getUserByDiscordId(discordId);
+    if (!user) return interaction.reply({ content: '⚠️ Row no longer exists in DB.', ephemeral: true });
+    setSetting(`placeholder_ack:${discordId}`, '1');
+    audit('sync_fix_placeholder_acknowledged', { actorDiscordId: interaction.user.id, targetDiscordId: discordId, email: user.email });
+    return interaction.reply({ content: `✅ Acknowledged <@${discordId}> (${user.email}). Hidden from future /sync-fix placeholders.`, ephemeral: true });
+  }
+
+  if (action === 'syncfix_rmph') {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const discordId = parts[0];
+    const user = getUserByDiscordId(discordId);
+    if (!user) return interaction.reply({ content: '⚠️ Row no longer exists in DB.', ephemeral: true });
+    removeUser(discordId);
+    audit('sync_fix_placeholder_removed', { actorDiscordId: interaction.user.id, targetDiscordId: discordId, email: user.email });
+    return interaction.reply({ content: `🗑️ Removed placeholder <@${discordId}> (${user.email}) from DB.`, ephemeral: true });
+  }
+
+  if (action === 'syncfix_rmorphan') {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const discordId = parts[0];
+    const user = getUserByDiscordId(discordId);
+    if (!user) return interaction.reply({ content: '⚠️ Row no longer exists in DB.', ephemeral: true });
+    removeUser(discordId);
+    audit('sync_fix_orphan_removed', { actorDiscordId: interaction.user.id, targetDiscordId: discordId, email: user.email });
+    return interaction.reply({ content: `🗑️ Removed orphaned user <@${discordId}> (${user.email}) from DB.`, ephemeral: true });
+  }
+
+  if (action === 'syncfix_keeporphan') {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const discordId = parts[0];
+    const user = getUserByDiscordId(discordId);
+    audit('sync_fix_orphan_kept', { actorDiscordId: interaction.user.id, targetDiscordId: discordId, email: user?.email });
+    return interaction.reply({ content: `✅ Keeping <@${discordId}>${user ? ` (${user.email})` : ''} in DB.`, ephemeral: true });
   }
 
   if (action === 'delete_yes') {
