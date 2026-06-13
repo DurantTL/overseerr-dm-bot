@@ -307,7 +307,26 @@ function setSetting(key, value) {
   `).run(key, String(value));
 }
 
+// Pending onboarding is mirrored in app_settings (pending_email:<discordId>) so it survives
+// restarts — including Watchtower's nightly update — mid-onboarding. The Map is a hot cache,
+// rehydrated from the DB at startup.
 const pendingEmailRequests = new Map();
+function setPendingEmail(discordId) {
+  pendingEmailRequests.set(discordId, true);
+  setSetting(`pending_email:${discordId}`, '1');
+}
+function hasPendingEmail(discordId) {
+  return pendingEmailRequests.has(discordId) || !!getSetting(`pending_email:${discordId}`);
+}
+function clearPendingEmail(discordId) {
+  pendingEmailRequests.delete(discordId);
+  db.prepare('DELETE FROM app_settings WHERE key = ?').run(`pending_email:${discordId}`);
+}
+function rehydratePendingEmails() {
+  const rows = db.prepare("SELECT key FROM app_settings WHERE key LIKE 'pending_email:%'").all();
+  for (const r of rows) pendingEmailRequests.set(r.key.slice('pending_email:'.length), true);
+  if (rows.length) log.info(`Rehydrated ${rows.length} pending onboarding request(s)`);
+}
 const routeLimits = new Map();
 const userGenerationLimits = new Map();
 
@@ -556,6 +575,7 @@ async function registerSlashCommands() {
 
 client.once('ready', async () => {
   log.ok(`Discord bot online as ${client.user.tag}`);
+  rehydratePendingEmails();
   await registerSlashCommands();
   startExpressServer();
 });
@@ -563,7 +583,7 @@ client.once('ready', async () => {
 client.on('guildMemberAdd', async member => {
   try {
     await member.send({ embeds: [new EmbedBuilder().setTitle('👋 Welcome to Durant Media Server!').setDescription('Reply with your Plex account email to request access.').setColor(0xe5a00d)] });
-    pendingEmailRequests.set(member.id, true);
+    setPendingEmail(member.id);
   } catch (err) {
     log.warn(`Could not DM ${member.user.tag}: ${err.message}`);
   }
@@ -572,6 +592,20 @@ client.on('guildMemberAdd', async member => {
 client.on('guildMemberRemove', async member => {
   const user = getUserByDiscordId(member.id);
   if (!user) return;
+
+  // Notify-only by default: leaving Discord never silently revokes Plex. The admin gets a
+  // one-click "Revoke Plex" button. Set AUTO_REMOVE_PLEX_ON_LEAVE=true for the old behavior.
+  if (!CONFIG.AUTO_REMOVE_PLEX_ON_LEAVE) {
+    audit('user_left_guild', { targetDiscordId: member.id, email: user.email, autoRemoved: false });
+    const adminChannel = await safeGetChannel(CONFIG.ADMIN_CHANNEL_ID);
+    if (!adminChannel) return;
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`revoke_plex:${member.id}`).setLabel('Revoke Plex').setStyle(ButtonStyle.Danger),
+    );
+    await adminChannel.send({ embeds: [new EmbedBuilder().setTitle('👋 User left Discord').setDescription(`<@${member.id}> (${user.email}) left the server.\nPlex access was **not** auto-revoked.`).setColor(0xf59e0b)], components: [row] }).catch(() => {});
+    return;
+  }
+
   try {
     const result = await removePlexAccess(user.email);
     removeUser(member.id);
@@ -585,10 +619,10 @@ client.on('guildMemberRemove', async member => {
 
 client.on('messageCreate', async message => {
   if (message.author.bot || message.guild) return;
-  if (!pendingEmailRequests.has(message.author.id)) return;
+  if (!hasPendingEmail(message.author.id)) return;
   const email = message.content.trim().toLowerCase();
   if (!isValidEmail(email)) return message.reply('That does not look like a valid email. Try again.');
-  pendingEmailRequests.delete(message.author.id);
+  clearPendingEmail(message.author.id);
   storeUserEmail(message.author.id, email);
   audit('user_linked', { targetDiscordId: message.author.id, email });
   await message.reply('✅ Request received and sent to admins for approval.');
@@ -1019,7 +1053,8 @@ async function handleSyncFixCommand(interaction) {
         .setColor(0xf59e0b)
         .setDescription(`<@${o.discord_id}> (\`${o.discord_id}\`) is no longer in the guild — ${o.email}\nInvited: ${o.invited ? 'yes' : 'no'} | Seerr: ${o.overseerr_created ? 'yes' : 'no'} | ${o.requested_at}`);
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`syncfix_rmorphan:${o.discord_id}`).setLabel('Remove from DB').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`syncfix_rmorphan:${o.discord_id}`).setLabel('Remove from DB').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`syncfix_rmorphan_revoke:${o.discord_id}`).setLabel('Remove + revoke Plex').setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId(`syncfix_keeporphan:${o.discord_id}`).setLabel('Keep').setStyle(ButtonStyle.Secondary),
       );
       embeds.push(embed); components.push(row);
@@ -1263,12 +1298,40 @@ async function handleButton(interaction) {
     return interaction.reply({ content: `🗑️ Removed orphaned user <@${discordId}> (${user.email}) from DB.`, ephemeral: true });
   }
 
+  if (action === 'syncfix_rmorphan_revoke') {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const discordId = parts[0];
+    const user = getUserByDiscordId(discordId);
+    if (!user) return interaction.reply({ content: '⚠️ Row no longer exists in DB.', ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    let removed = false;
+    try { const r = await removePlexAccess(user.email); removed = r.removed; }
+    catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId: discordId }); }
+    removeUser(discordId);
+    audit('sync_fix_orphan_removed', { actorDiscordId: interaction.user.id, targetDiscordId: discordId, email: user.email, plexRevoked: removed });
+    return interaction.editReply({ content: `🗑️ Removed <@${discordId}> (${user.email}) from DB and revoked Plex: ${removed ? 'yes' : 'no'}.` });
+  }
+
   if (action === 'syncfix_keeporphan') {
     if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
     const discordId = parts[0];
     const user = getUserByDiscordId(discordId);
     audit('sync_fix_orphan_kept', { actorDiscordId: interaction.user.id, targetDiscordId: discordId, email: user?.email });
     return interaction.reply({ content: `✅ Keeping <@${discordId}>${user ? ` (${user.email})` : ''} in DB.`, ephemeral: true });
+  }
+
+  if (action === 'revoke_plex') {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const discordId = parts[0];
+    const user = getUserByDiscordId(discordId);
+    if (!user) return interaction.update({ content: 'ℹ️ User already removed from DB.', components: [] });
+    await interaction.deferUpdate();
+    let removed = false;
+    try { const r = await removePlexAccess(user.email); removed = r.removed; }
+    catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId: discordId }); }
+    removeUser(discordId);
+    audit('user_unlinked', { actorDiscordId: interaction.user.id, targetDiscordId: discordId, email: user.email, removed, source: 'revoke_plex_button' });
+    return interaction.editReply({ content: `🗑️ Revoked Plex for <@${discordId}> (${user.email}) and removed from DB. Removed: ${removed ? 'yes' : 'no'}.`, components: [] });
   }
 
   if (['syncfix_mergekeep', 'syncfix_mergeadopt', 'syncfix_mergedismiss'].includes(action)) {
