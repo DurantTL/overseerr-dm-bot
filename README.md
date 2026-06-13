@@ -112,7 +112,7 @@ Slash commands are registered automatically on bot startup using `DISCORD_CLIENT
 - [ ] Discord bot appears online in your server.
 - [ ] Slash commands appear in the configured guild.
 - [ ] `GET /health` returns `overall: ok` or `degraded` only for expected unavailable services; optional integrations may show `skipped`.
-- [ ] `GET /admin` without auth returns HTTP `401`.
+- [ ] `GET /admin` without auth: API/curl callers get HTTP `401`; a browser is redirected to `/admin/login`.
 - [ ] `POST /webhook/plex` with invalid secret returns HTTP `401` (when `WEBHOOK_SECRET` is set).
 - [ ] `/download` creates links that work and only hashed tokens are stored in `download_tokens`.
 - [ ] `./scripts/backup-db.sh` creates a backup file.
@@ -178,9 +178,12 @@ Recommended cron (host):
 Checks include Discord, SQLite, Plex, Seerr/Overseerr, Radarr, Radarr-4K, Sonarr, RAID path, and tunnel domain configuration.
 
 ## Admin Dashboard
-- Route: `GET /admin`
-- Auth: `x-admin-password` or `x-admin-token` headers (or query params for GET requests).
-- Shows pending users/requests, linked users, recent downloads, keep/delete decisions, audit logs, health, and safe action links.
+- Route: `GET /admin` (themed, dark UI).
+- Login: visit `/admin/login` and enter `DASHBOARD_ADMIN_PASSWORD` (or `DASHBOARD_ADMIN_TOKEN`). A signed, HttpOnly session cookie is set so the password never appears in the URL; sessions last `SESSION_TTL_HOURS` (default 12). A **Log out** button is in the top bar.
+- Login is rate limited (5 attempts / 15 min per IP) to slow brute-force guessing.
+- The old `?password=` / `?token=` query-string auth has been **removed** (it leaked credentials into history and logs). For scripts/automation, use the `x-admin-password` or `x-admin-token` request headers — these still work.
+- Shows overall status, summary stat cards, color-coded integration health badges, and readable tables for pending users/requests, linked users, recent downloads, keep/delete decisions, and audit logs, plus safe action buttons (revoke-all asks for confirmation).
+- Configure the cookie signing secret with `SESSION_SECRET` (optional; derived from your admin credentials if unset).
 
 ## Security Notes
 - Raw download tokens are never stored in SQLite.
