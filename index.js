@@ -532,7 +532,7 @@ const slashCommands = [
   new SlashCommandBuilder().setName('users').setDescription('List linked users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('status').setDescription('Show status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('sync').setDescription('Sync users safely').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(true).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
-  new SlashCommandBuilder().setName('sync-fix').setDescription('Resolve sync issues found in the preview').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('target').setDescription('Category to fix').setRequired(true).addChoices({ name: 'placeholders', value: 'placeholders' }, { name: 'duplicates', value: 'duplicates' }, { name: 'orphans', value: 'orphans' })),
+  new SlashCommandBuilder().setName('sync-fix').setDescription('Resolve sync issues found in the preview').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('target').setDescription('Category to fix').setRequired(true).addChoices({ name: 'placeholders', value: 'placeholders' }, { name: 'duplicates', value: 'duplicates' }, { name: 'orphans', value: 'orphans' }, { name: 'mergeemails', value: 'mergeemails' })),
   new SlashCommandBuilder().setName('cleanup').setDescription('Cleanup deleted Overseerr users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(false).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
   new SlashCommandBuilder().setName('audit').setDescription('Audit log queries').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('recent').setDescription('Recent entries').addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100)))
@@ -814,7 +814,49 @@ async function buildSyncPreview() {
     if (match) suggestedLinks.push({ plexFriend: f.username || f.title, plexId: f.id, discordTag: match.user.tag, discordId: match.user.id });
   }
 
-  return { discordNotLinkedToPlex, plexNotInDiscord, overseerrNotLinkedToDiscord, dbMissingFromPlex, wouldAdd, wouldRemove: [], wouldUpdate, risky, unmatchablePlaceholders, duplicateEmails, orphans, suggestedLinks };
+  // Multi-email merge candidates: a plex_ synthetic row that is likely the same human as an
+  // existing Discord-linked row. Suggestion-only — never auto-applied. Two heuristics:
+  //   A) the Plex friend's username/title fuzzy-matches the Discord member's username
+  //   B) same email domain and the local parts are token-reorderings (split on . and _)
+  // Dismissed pairs are remembered via multiemail_ack:<discordId>:<canonicalPlexEmail>.
+  const discordLinkedRows = dbUsers.filter(u => !u.discord_id.startsWith('plex_') && !isPlaceholderKey(canonicalizeEmail(u.email)));
+  const memberById = new Map(discordMembers.map(m => [m.user.id, m.user]));
+  const tokenKey = email => {
+    const [local, domain] = String(email || '').toLowerCase().split('@');
+    if (!domain) return null;
+    const tokens = local.split('+')[0].split(/[._]+/).filter(Boolean).sort();
+    if (!tokens.length) return null;
+    return `${tokens.join('.')}@${domain}`;
+  };
+  const emailMergeCandidates = [];
+  const seenMergePairs = new Set();
+  for (const p of dbUsers) {
+    if (!p.discord_id.startsWith('plex_')) continue;
+    const pCanon = canonicalizeEmail(p.email);
+    if (isPlaceholderKey(pCanon)) continue;
+    const plexId = p.discord_id.slice('plex_'.length);
+    const friend = plexFriends.find(f => String(f.id) === plexId);
+    const plexName = String(friend?.username || friend?.title || '').toLowerCase().trim();
+    const pToken = tokenKey(p.email);
+    for (const d of discordLinkedRows) {
+      if (canonicalizeEmail(d.email) === pCanon) continue; // same canonical → a duplicate, handled elsewhere
+      let reason = null;
+      const uname = String(memberById.get(d.discord_id)?.username || '').toLowerCase();
+      if (plexName && uname && (uname === plexName || uname.includes(plexName) || plexName.includes(uname))) reason = 'username-match';
+      if (!reason) {
+        const dToken = tokenKey(d.email);
+        if (pToken && dToken && pToken === dToken) reason = 'token-reorder';
+      }
+      if (!reason) continue;
+      if (getSetting(`multiemail_ack:${d.discord_id}:${pCanon}`)) continue;
+      const pairKey = `${d.discord_id}|${p.discord_id}`;
+      if (seenMergePairs.has(pairKey)) continue;
+      seenMergePairs.add(pairKey);
+      emailMergeCandidates.push({ keptDiscordId: d.discord_id, discordEmail: d.email, plexDiscordId: p.discord_id, plexEmail: p.email, reason });
+    }
+  }
+
+  return { discordNotLinkedToPlex, plexNotInDiscord, overseerrNotLinkedToDiscord, dbMissingFromPlex, wouldAdd, wouldRemove: [], wouldUpdate, risky, unmatchablePlaceholders, duplicateEmails, orphans, suggestedLinks, emailMergeCandidates };
 }
 
 async function handleSyncCommand(interaction) {
@@ -957,6 +999,29 @@ async function handleSyncFixCommand(interaction) {
     return interaction.editReply({ content: `Found ${preview.orphans.length} orphaned DB user(s):`, embeds, components });
   }
 
+  if (target === 'mergeemails') {
+    if (!preview.emailMergeCandidates.length) return interaction.editReply('✅ No multi-email merge candidates found.');
+    const embeds = []; const components = [];
+    for (const c of preview.emailMergeCandidates.slice(0, 5)) {
+      const key = pendingFixKey('merge', `${c.keptDiscordId}|${c.plexDiscordId}`);
+      const embed = new EmbedBuilder()
+        .setTitle('Possible same person — multiple emails')
+        .setColor(0xf59e0b)
+        .setDescription(
+          `Heuristic: **${c.reason}** (suggestion only)\n\n` +
+          `**Discord row:** <@${c.keptDiscordId}> (\`${c.keptDiscordId}\`) — ${c.discordEmail}\n` +
+          `**Plex row:** \`${c.plexDiscordId}\` — ${c.plexEmail}\n\n` +
+          'Pick the surviving email. The Discord row\'s email is sometimes the wrong one.');
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`syncfix_mergekeep:${key}`).setLabel('Merge — keep Discord email').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`syncfix_mergeadopt:${key}`).setLabel('Merge — adopt Plex email').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`syncfix_mergedismiss:${key}`).setLabel('Not the same — dismiss').setStyle(ButtonStyle.Secondary),
+      );
+      embeds.push(embed); components.push(row);
+    }
+    return interaction.editReply({ content: `Found ${preview.emailMergeCandidates.length} merge candidate(s). Suggestions only — nothing is applied until you click:`, embeds, components });
+  }
+
   return interaction.editReply('❌ Unknown target.');
 }
 
@@ -965,6 +1030,7 @@ function syncFixHints(p) {
   if (p.duplicateEmails?.length) hints.push(`${p.duplicateEmails.length} duplicate-email user(s) — run /sync-fix duplicates to resolve`);
   if (p.unmatchablePlaceholders?.length) hints.push(`${p.unmatchablePlaceholders.length} placeholder account(s) — run /sync-fix placeholders to review`);
   if (p.risky?.length) hints.push(`${p.risky.length} orphaned DB user(s) — run /sync-fix orphans to review`);
+  if (p.emailMergeCandidates?.length) hints.push(`${p.emailMergeCandidates.length} multi-email merge candidate(s) — run /sync-fix mergeemails to review`);
   if (p.suggestedLinks?.length) {
     const pairs = p.suggestedLinks.slice(0, 10).map(s => `  • ${s.plexFriend} → ${s.discordTag} (${s.discordId})`);
     hints.push(`Suggested links (review manually, never auto-applied):\n${pairs.join('\n')}`);
@@ -980,6 +1046,7 @@ function formatSyncPreview(p, header) {
     `DB users missing from Plex: ${p.dbMissingFromPlex.length}\n` +
     `Unmatchable placeholders: ${p.unmatchablePlaceholders?.length || 0}\n` +
     `Duplicate-email users: ${p.duplicateEmails?.length || 0}\n` +
+    `Email-merge candidates: ${p.emailMergeCandidates?.length || 0}\n` +
     `Suggested links: ${p.suggestedLinks?.length || 0}\n` +
     `Would add: ${p.wouldAdd.length}\nWould remove: ${p.wouldRemove.length}\nWould update: ${p.wouldUpdate.length}\nRisky changes: ${p.risky.length}` +
     syncFixHints(p);
@@ -1174,6 +1241,37 @@ async function handleButton(interaction) {
     const user = getUserByDiscordId(discordId);
     audit('sync_fix_orphan_kept', { actorDiscordId: interaction.user.id, targetDiscordId: discordId, email: user?.email });
     return interaction.reply({ content: `✅ Keeping <@${discordId}>${user ? ` (${user.email})` : ''} in DB.`, ephemeral: true });
+  }
+
+  if (['syncfix_mergekeep', 'syncfix_mergeadopt', 'syncfix_mergedismiss'].includes(action)) {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const stored = getSetting(`syncfix_pending:${parts[0]}`);
+    if (!stored) return interaction.reply({ content: '❌ This action expired. Re-run /sync-fix mergeemails.', ephemeral: true });
+    const [keptDiscordId, plexDiscordId] = stored.split('|');
+    // Re-validate against the live DB — rows may have changed since the embed was posted.
+    const discordRow = getUserByDiscordId(keptDiscordId);
+    const plexRow = getUserByDiscordId(plexDiscordId);
+
+    if (action === 'syncfix_mergedismiss') {
+      if (plexRow) setSetting(`multiemail_ack:${keptDiscordId}:${canonicalizeEmail(plexRow.email)}`, '1');
+      audit('sync_fix_email_merge_dismissed', { actorDiscordId: interaction.user.id, keptDiscordId, plexDiscordId });
+      return interaction.reply({ content: `✅ Dismissed — won't suggest merging <@${keptDiscordId}> with \`${plexDiscordId}\` again.`, ephemeral: true });
+    }
+
+    if (!discordRow) return interaction.reply({ content: '❌ Discord row no longer exists. Re-run /sync-fix mergeemails.', ephemeral: true });
+    if (!plexRow) return interaction.reply({ content: '❌ Plex row no longer exists. Re-run /sync-fix mergeemails.', ephemeral: true });
+
+    const mergedEmails = [discordRow.email, plexRow.email];
+    let adoptedEmail = null;
+    let finalEmail = discordRow.email;
+    if (action === 'syncfix_mergeadopt') {
+      adoptedEmail = plexRow.email;
+      finalEmail = plexRow.email;
+      db.prepare('UPDATE users SET email = ? WHERE discord_id = ?').run(plexRow.email, keptDiscordId);
+    }
+    removeUser(plexDiscordId);
+    audit('sync_fix_email_merged', { actorDiscordId: interaction.user.id, keptDiscordId, mergedEmails, adoptedEmail, finalEmail });
+    return interaction.reply({ content: `✅ Merged onto <@${keptDiscordId}> with \`${finalEmail}\`${adoptedEmail ? ' (adopted Plex email)' : ''}. Removed plex row \`${plexDiscordId}\`.`, ephemeral: true });
   }
 
   if (action === 'delete_yes') {
