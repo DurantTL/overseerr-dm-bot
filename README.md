@@ -54,6 +54,8 @@ See `.env.example` for full values.
 - `SONARR_URL`, `SONARR_API_KEY`
 - `PATH_REMAP_FROM`, `PATH_REMAP_TO`
 - `DOWNLOAD_*`, `ENABLE_DELETION`, `KEEP_LIST_DEFAULT_DAYS`, `NEVER_DELETE_MEDIA_IDS`
+- `DELETION_DRY_RUN` (default `true`) — when deletion is confirmed, logs the exact file paths and API call that would fire and skips the real delete API. Flip to `false` only after reviewing real prompts.
+- `AUTO_REMOVE_PLEX_ON_LEAVE` (default `false`) — when `false`, a member leaving Discord only notifies the admin channel with a one-click **Revoke Plex** button instead of silently revoking. Multi-email merges in `/sync-fix mergeemails` are resolved per-row from the admin embed (no env key).
 - `DELETION_GRACE_HOURS`, `DELETION_REMINDER_COOLDOWN_HOURS`
 - `DASHBOARD_ENABLED`, `DASHBOARD_ADMIN_PASSWORD`, `DASHBOARD_ADMIN_TOKEN`, `STRICT_DASHBOARD_POST_AUTH`
 
