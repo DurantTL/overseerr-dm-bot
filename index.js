@@ -53,6 +53,8 @@ const CONFIG = {
   DASHBOARD_ADMIN_TOKEN: process.env.DASHBOARD_ADMIN_TOKEN || '',
   STRICT_DASHBOARD_POST_AUTH: parseBool(process.env.STRICT_DASHBOARD_POST_AUTH, true),
   ENABLE_DELETION: parseBool(process.env.ENABLE_DELETION, false),
+  DELETION_DRY_RUN: parseBool(process.env.DELETION_DRY_RUN, true),
+  AUTO_REMOVE_PLEX_ON_LEAVE: parseBool(process.env.AUTO_REMOVE_PLEX_ON_LEAVE, false),
   DOWNLOAD_TOKEN_TTL_HOURS: Number.parseInt(process.env.DOWNLOAD_TOKEN_TTL_HOURS || '24', 10),
   DOWNLOAD_ONE_TIME_LINKS_DEFAULT: parseBool(process.env.DOWNLOAD_ONE_TIME_LINKS_DEFAULT, false),
   DOWNLOAD_MAX_PER_HOUR: Number.parseInt(process.env.DOWNLOAD_MAX_PER_HOUR || '10', 10),
@@ -437,6 +439,44 @@ async function searchSeries(title) {
 }
 async function getEpisodeFiles(seriesId) {
   return sonarrGet('/episodefile', { seriesId });
+}
+
+// Resolve a stored mediaId (tmdb:/tvdb:) to the concrete Radarr movie or Sonarr episode files
+// behind it, so deletion can report exact paths in dry-run and issue the right API call when live.
+async function resolveDeletableMedia(mediaId) {
+  if (mediaId.startsWith('tmdb:')) {
+    const tmdbId = Number(mediaId.slice('tmdb:'.length));
+    const sources = [
+      { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, label: 'radarr' },
+      { url: CONFIG.RADARR_4K_URL, key: CONFIG.RADARR_4K_API_KEY, label: 'radarr-4k' },
+    ].filter(s => s.url);
+    for (const s of sources) {
+      const all = await radarrGetFrom(s.url, s.key, '/movie').catch(() => []);
+      const movie = all.find(m => m.tmdbId === tmdbId);
+      if (movie) {
+        return {
+          found: true, kind: 'movie', source: s, movie,
+          paths: movie.movieFile?.path ? [movie.movieFile.path] : [],
+          apiCall: `DELETE ${s.url}/api/v3/movie/${movie.id}?deleteFiles=true (${s.label})`,
+        };
+      }
+    }
+    return { found: false, kind: 'movie' };
+  }
+  if (mediaId.startsWith('tvdb:')) {
+    if (!CONFIG.SONARR_URL) return { found: false, kind: 'tv' };
+    const tvdbId = Number(mediaId.slice('tvdb:'.length));
+    const all = await sonarrGet('/series').catch(() => []);
+    const series = all.find(s => s.tvdbId === tvdbId);
+    if (!series) return { found: false, kind: 'tv' };
+    const files = await getEpisodeFiles(series.id).catch(() => []);
+    return {
+      found: true, kind: 'tv', series, files,
+      paths: files.map(f => f.path),
+      apiCall: `DELETE ${CONFIG.SONARR_URL}/api/v3/episodefile/{id} ×${files.length}`,
+    };
+  }
+  return { found: false, kind: 'unknown' };
 }
 
 function remapPath(hostPath) {
@@ -1142,9 +1182,47 @@ async function handleButton(interaction) {
     if (interaction.user.id !== requestorId && !isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Not allowed.', ephemeral: true });
     if (!CONFIG.ENABLE_DELETION) return interaction.reply({ content: '⚠️ Deletion is disabled by config.', ephemeral: true });
     if (CONFIG.NEVER_DELETE_MEDIA_IDS.includes(mediaId)) return interaction.reply({ content: '⚠️ This media is in never-delete override list.', ephemeral: true });
+    if (isInKeepList(mediaId)) return interaction.reply({ content: '⚠️ This media is in the keep list — not deleting.', ephemeral: true });
     audit('keep_delete_decision_made', { actorDiscordId: interaction.user.id, requestorId, mediaId, decision: 'delete_now' });
-    await interaction.update({ content: `🗑️ Deletion confirmed for **${title}**.`, components: [] });
-    return;
+    await interaction.deferUpdate();
+
+    let resolved;
+    try {
+      resolved = await resolveDeletableMedia(mediaId);
+    } catch (err) {
+      audit('external_api_error', { provider: 'arr', error: err.message, mediaId, action: 'delete_resolve' });
+      return interaction.editReply({ content: `❌ Could not resolve **${title}** for deletion: ${err.message}`, components: [] });
+    }
+    if (!resolved.found) {
+      audit('deletion_dry_run', { actorDiscordId: interaction.user.id, requestorId, mediaId, title, result: 'not_found' });
+      return interaction.editReply({ content: `⚠️ Could not find **${title}** in Radarr/Sonarr — nothing to delete.`, components: [] });
+    }
+
+    if (CONFIG.DELETION_DRY_RUN) {
+      audit('deletion_dry_run', { actorDiscordId: interaction.user.id, requestorId, mediaId, title, kind: resolved.kind, paths: resolved.paths, apiCall: resolved.apiCall });
+      const fileList = resolved.paths.length ? resolved.paths.slice(0, 5).map(p => `• \`${p}\``).join('\n') : '• (no files on disk)';
+      return interaction.editReply({ content: `🧪 **Dry-run** — would delete **${title}** (${resolved.kind}, ${resolved.paths.length} file(s)).\n${fileList}\nWould call: \`${resolved.apiCall}\`\n\nSet \`DELETION_DRY_RUN=false\` to perform real deletes.`, components: [] });
+    }
+
+    try {
+      let detail;
+      if (resolved.kind === 'movie') {
+        await axios.delete(`${resolved.source.url}/api/v3/movie/${resolved.movie.id}`, { params: { apikey: resolved.source.key, deleteFiles: true } });
+        detail = `Radarr movie #${resolved.movie.id} deleted with files.`;
+      } else {
+        let n = 0;
+        for (const f of resolved.files) {
+          await axios.delete(`${CONFIG.SONARR_URL}/api/v3/episodefile/${f.id}`, { params: { apikey: CONFIG.SONARR_API_KEY } });
+          n++;
+        }
+        detail = `Sonarr episode files deleted: ${n}/${resolved.files.length}.`;
+      }
+      audit('media_deleted', { actorDiscordId: interaction.user.id, requestorId, mediaId, title, kind: resolved.kind, paths: resolved.paths, apiCall: resolved.apiCall });
+      return interaction.editReply({ content: `🗑️ Deleted **${title}**. ${detail}`, components: [] });
+    } catch (err) {
+      audit('external_api_error', { provider: 'arr', error: err.message, mediaId, action: 'delete' });
+      return interaction.editReply({ content: `❌ Delete failed for **${title}**: ${err.message}`, components: [] });
+    }
   }
 
   if (action === 'delete_no') {
