@@ -52,6 +52,8 @@ const CONFIG = {
   DASHBOARD_ADMIN_PASSWORD: process.env.DASHBOARD_ADMIN_PASSWORD || '',
   DASHBOARD_ADMIN_TOKEN: process.env.DASHBOARD_ADMIN_TOKEN || '',
   STRICT_DASHBOARD_POST_AUTH: parseBool(process.env.STRICT_DASHBOARD_POST_AUTH, true),
+  SESSION_SECRET: process.env.SESSION_SECRET || '',
+  SESSION_TTL_HOURS: Number.parseInt(process.env.SESSION_TTL_HOURS || '12', 10),
   ENABLE_DELETION: parseBool(process.env.ENABLE_DELETION, false),
   DELETION_DRY_RUN: parseBool(process.env.DELETION_DRY_RUN, true),
   AUTO_REMOVE_PLEX_ON_LEAVE: parseBool(process.env.AUTO_REMOVE_PLEX_ON_LEAVE, false),
@@ -85,6 +87,63 @@ function parseBool(v, fallback = false) {
 
 function sha256(text) {
   return crypto.createHash('sha256').update(text).digest('hex');
+}
+
+// Centralized embed palette so every notification shares one consistent look.
+const COLORS = {
+  PLEX: 0xe5a00d,    // brand amber/gold — onboarding & welcome
+  INFO: 0x3b82f6,    // blue — neutral notifications / new requests
+  WARN: 0xf59e0b,    // amber — attention needed / decisions
+  SUCCESS: 0x22c55e, // green — completed / available / healthy
+  DANGER: 0xef4444,  // red — failures / destructive
+};
+
+// Wrap EmbedBuilder so every embed gets a uniform footer + timestamp.
+function brandedEmbed(color) {
+  const e = new EmbedBuilder().setFooter({ text: 'Durant Media Server' }).setTimestamp();
+  if (color !== undefined) e.setColor(color);
+  return e;
+}
+
+// Secret used to sign dashboard session cookies. Falls back to a value derived from the
+// existing admin credentials so sessions stay valid across restarts without extra config.
+function sessionSecret() {
+  if (CONFIG.SESSION_SECRET) return CONFIG.SESSION_SECRET;
+  return sha256(`session:${CONFIG.DASHBOARD_ADMIN_PASSWORD || CONFIG.DASHBOARD_ADMIN_TOKEN || 'durant'}`);
+}
+
+// Signed, stateless session token: base64url(payload).hmac. No external cookie/session deps.
+function signSession(ttlMs) {
+  const payload = Buffer.from(JSON.stringify({ exp: Date.now() + ttlMs })).toString('base64url');
+  const sig = crypto.createHmac('sha256', sessionSecret()).update(payload).digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+function verifySession(token) {
+  if (!token || typeof token !== 'string' || !token.includes('.')) return false;
+  const [payload, sig] = token.split('.');
+  const expected = crypto.createHmac('sha256', sessionSecret()).update(payload).digest('base64url');
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return false;
+  try {
+    const { exp } = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    return typeof exp === 'number' && Date.now() < exp;
+  } catch (_e) {
+    return false;
+  }
+}
+
+// Minimal cookie parser — pulls a single named cookie from the request header.
+function readCookie(req, name) {
+  const header = req.headers.cookie;
+  if (!header) return undefined;
+  for (const part of header.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    if (part.slice(0, idx).trim() === name) return decodeURIComponent(part.slice(idx + 1).trim());
+  }
+  return undefined;
 }
 
 function validateConfig() {
@@ -582,7 +641,9 @@ client.once('ready', async () => {
 
 client.on('guildMemberAdd', async member => {
   try {
-    await member.send({ embeds: [new EmbedBuilder().setTitle('👋 Welcome to Durant Media Server!').setDescription('Reply with your Plex account email to request access.').setColor(0xe5a00d)] });
+    await member.send({ embeds: [brandedEmbed(COLORS.PLEX)
+      .setTitle('👋 Welcome to Durant Media Server!')
+      .setDescription('Glad to have you here! To request access, just **reply to this message with the email on your Plex account**.\n\nOnce an admin approves you, you\'ll get a Plex invite and a DM confirming you\'re all set. 🍿')] });
     setPendingEmail(member.id);
   } catch (err) {
     log.warn(`Could not DM ${member.user.tag}: ${err.message}`);
@@ -602,7 +663,7 @@ client.on('guildMemberRemove', async member => {
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`revoke_plex:${member.id}`).setLabel('Revoke Plex').setStyle(ButtonStyle.Danger),
     );
-    await adminChannel.send({ embeds: [new EmbedBuilder().setTitle('👋 User left Discord').setDescription(`<@${member.id}> (${user.email}) left the server.\nPlex access was **not** auto-revoked.`).setColor(0xf59e0b)], components: [row] }).catch(() => {});
+    await adminChannel.send({ embeds: [brandedEmbed(COLORS.WARN).setTitle('👋 User left Discord').setDescription(`<@${member.id}> (${user.email}) left the server.\nPlex access was **not** auto-revoked.`)], components: [row] }).catch(() => {});
     return;
   }
 
@@ -625,14 +686,19 @@ client.on('messageCreate', async message => {
   clearPendingEmail(message.author.id);
   storeUserEmail(message.author.id, email);
   audit('user_linked', { targetDiscordId: message.author.id, email });
-  await message.reply('✅ Request received and sent to admins for approval.');
+  await message.reply('✅ Thanks! Your request has been sent to the admins for approval. You\'ll get a DM here as soon as you\'re approved.');
   const adminChannel = await safeGetChannel(CONFIG.ADMIN_CHANNEL_ID);
   if (!adminChannel) return;
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`plex_approve:${message.author.id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`plex_deny:${message.author.id}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
   );
-  await adminChannel.send({ embeds: [new EmbedBuilder().setTitle('🔐 New Plex Access Request').addFields({ name: 'User', value: `<@${message.author.id}>`, inline: true }, { name: 'Email', value: `\`${email}\``, inline: true }).setColor(0x3b82f6)], components: [row] });
+  const requestEmbed = brandedEmbed(COLORS.INFO)
+    .setTitle('🔐 New Plex Access Request')
+    .addFields({ name: 'User', value: `<@${message.author.id}>`, inline: true }, { name: 'Email', value: `\`${email}\``, inline: true });
+  const avatarUrl = message.author.displayAvatarURL?.();
+  if (avatarUrl) requestEmbed.setThumbnail(avatarUrl);
+  await adminChannel.send({ embeds: [requestEmbed], components: [row] });
 });
 
 client.on('interactionCreate', async interaction => {
@@ -788,9 +854,8 @@ async function handleStatusCommand(interaction) {
     `**Placeholder:** ${placeholderCount}${placeholderCount ? ` (${placeholderAcked} acknowledged)` : ''}`,
   ].join('\n');
 
-  const embed = new EmbedBuilder()
+  const embed = brandedEmbed(health.overall === 'ok' ? COLORS.SUCCESS : COLORS.WARN)
     .setTitle('📊 Durant Media Server Status')
-    .setColor(health.overall === 'ok' ? 0x22c55e : 0xf59e0b)
     .setDescription(`Overall: **${String(health.overall).toUpperCase()}**`)
     .addFields(
       { name: 'Integrations', value: integrationLines.join('\n') || 'none', inline: false },
@@ -1014,9 +1079,8 @@ async function handleSyncFixCommand(interaction) {
     for (const dup of preview.duplicateEmails.slice(0, 5)) {
       const key = pendingFixKey('dup', dup.canonicalEmail);
       const rows = dup.discordIds.map(id => getUserByDiscordId(id)).filter(Boolean);
-      const embed = new EmbedBuilder()
+      const embed = brandedEmbed(COLORS.WARN)
         .setTitle('Duplicate email')
-        .setColor(0xf59e0b)
         .setDescription(`Canonical: \`${dup.canonicalEmail}\`\n\n` + rows.map(r => `• <@${r.discord_id}> (\`${r.discord_id}\`) — ${r.email} | invited: ${r.invited ? 'yes' : 'no'} | seerr: ${r.overseerr_created ? 'yes' : 'no'} | ${r.requested_at}`).join('\n'));
       const row = new ActionRowBuilder();
       for (const r of rows.slice(0, 5)) {
@@ -1031,9 +1095,8 @@ async function handleSyncFixCommand(interaction) {
     if (!preview.unmatchablePlaceholders.length) return interaction.editReply('✅ No placeholder accounts to review.');
     const embeds = []; const components = [];
     for (const ph of preview.unmatchablePlaceholders.slice(0, 5)) {
-      const embed = new EmbedBuilder()
+      const embed = brandedEmbed(COLORS.INFO)
         .setTitle('Placeholder account')
-        .setColor(0x3b82f6)
         .setDescription(`<@${ph.discord_id}> (\`${ph.discord_id}\`) — ${ph.email}\nInvited: ${ph.invited ? 'yes' : 'no'} | Seerr: ${ph.overseerr_created ? 'yes' : 'no'} | ${ph.requested_at}\n\nUsually a valid Plex managed/home user. Default action is to acknowledge.`);
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`syncfix_ackph:${ph.discord_id}`).setLabel('Dismiss (acknowledge)').setStyle(ButtonStyle.Secondary),
@@ -1048,9 +1111,8 @@ async function handleSyncFixCommand(interaction) {
     if (!preview.orphans.length) return interaction.editReply('✅ No orphaned DB users to review.');
     const embeds = []; const components = [];
     for (const o of preview.orphans.slice(0, 5)) {
-      const embed = new EmbedBuilder()
+      const embed = brandedEmbed(COLORS.WARN)
         .setTitle('Orphaned DB user')
-        .setColor(0xf59e0b)
         .setDescription(`<@${o.discord_id}> (\`${o.discord_id}\`) is no longer in the guild — ${o.email}\nInvited: ${o.invited ? 'yes' : 'no'} | Seerr: ${o.overseerr_created ? 'yes' : 'no'} | ${o.requested_at}`);
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`syncfix_rmorphan:${o.discord_id}`).setLabel('Remove from DB').setStyle(ButtonStyle.Secondary),
@@ -1067,9 +1129,8 @@ async function handleSyncFixCommand(interaction) {
     const embeds = []; const components = [];
     for (const c of preview.emailMergeCandidates.slice(0, 5)) {
       const key = pendingFixKey('merge', `${c.keptDiscordId}|${c.plexDiscordId}`);
-      const embed = new EmbedBuilder()
+      const embed = brandedEmbed(COLORS.WARN)
         .setTitle('Possible same person — multiple emails')
-        .setColor(0xf59e0b)
         .setDescription(
           `Heuristic: **${c.reason}** (suggestion only)\n\n` +
           `**Discord row:** <@${c.keptDiscordId}> (\`${c.keptDiscordId}\`) — ${c.discordEmail}\n` +
@@ -1464,12 +1525,21 @@ async function gatherHealth() {
 }
 
 function dashboardAuth(req, res, next) {
-  const allowQuery = true;
-  const pwd = req.headers['x-admin-password'] || (allowQuery ? req.query.password : undefined);
-  const token = req.headers['x-admin-token'] || (allowQuery ? req.query.token : undefined);
+  // Primary path for humans: a valid signed session cookie set at /admin/login.
+  // Header auth stays for scripts/automation (e.g. scripts/smoke-test.sh).
+  // The old ?password= URL path is gone — it leaked credentials into history and logs.
+  const sessionOk = verifySession(readCookie(req, 'dm_session'));
+  const pwd = req.headers['x-admin-password'];
+  const token = req.headers['x-admin-token'];
   const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && pwd === CONFIG.DASHBOARD_ADMIN_PASSWORD;
   const tokenOk = CONFIG.DASHBOARD_ADMIN_TOKEN && token === CONFIG.DASHBOARD_ADMIN_TOKEN;
-  if (!passOk && !tokenOk) return res.status(401).send('Unauthorized');
+  if (!sessionOk && !passOk && !tokenOk) {
+    // Browsers hitting a page get sent to the login form; API/non-GET callers get 401.
+    if (req.method === 'GET' && (req.headers.accept || '').includes('text/html')) {
+      return res.redirect('/admin/login');
+    }
+    return res.status(401).send('Unauthorized');
+  }
 
   if (CONFIG.STRICT_DASHBOARD_POST_AUTH && req.method !== 'GET') {
     const origin = req.get('origin');
@@ -1592,35 +1662,87 @@ function startExpressServer() {
   });
 
   if (CONFIG.DASHBOARD_ENABLED) {
+    const loginLimits = new Map();
+    const adminForm = express.urlencoded({ extended: false, limit: '16kb' });
+
+    app.get('/admin/login', (req, res) => {
+      if (verifySession(readCookie(req, 'dm_session'))) return res.redirect('/admin');
+      res.type('html').send(renderLogin(!!req.query.error));
+    });
+
+    app.post('/admin/login', adminForm, (req, res) => {
+      const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+      if (!takeRateLimit(loginLimits, ip, 5, 15 * 60000)) {
+        return res.status(429).type('html').send(renderLogin(false, 'Too many attempts. Try again in a few minutes.'));
+      }
+      const pwd = req.body?.password || '';
+      const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && pwd === CONFIG.DASHBOARD_ADMIN_PASSWORD;
+      const tokenOk = CONFIG.DASHBOARD_ADMIN_TOKEN && pwd === CONFIG.DASHBOARD_ADMIN_TOKEN;
+      if (!passOk && !tokenOk) {
+        audit('dashboard_login_failed', { ip });
+        return res.redirect('/admin/login?error=1');
+      }
+      const ttlMs = CONFIG.SESSION_TTL_HOURS * 3600000;
+      const secure = req.secure || (req.headers['x-forwarded-proto'] || '').includes('https');
+      res.setHeader('Set-Cookie', `dm_session=${signSession(ttlMs)}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=${Math.floor(ttlMs / 1000)}${secure ? '; Secure' : ''}`);
+      audit('dashboard_login_success', { ip });
+      res.redirect('/admin');
+    });
+
+    app.post('/admin/logout', (req, res) => {
+      res.setHeader('Set-Cookie', 'dm_session=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0');
+      res.redirect('/admin/login');
+    });
+
     app.get('/admin', dashboardAuth, async (_req, res) => {
-      const authSuffix = _req.query.token
-        ? `?token=${encodeURIComponent(String(_req.query.token))}`
-        : (_req.query.password ? `?password=${encodeURIComponent(String(_req.query.password))}` : '');
       const pendingPlex = db.prepare('SELECT * FROM users WHERE invited = 0 ORDER BY requested_at DESC LIMIT 25').all();
       const pendingRequests = db.prepare('SELECT * FROM requests WHERE status = ? ORDER BY id DESC LIMIT 25').all('pending');
       const linkedUsers = db.prepare('SELECT discord_id, email, invited, requested_at FROM users ORDER BY requested_at DESC LIMIT 100').all();
       const recentDownloads = db.prepare('SELECT * FROM download_access_log ORDER BY id DESC LIMIT 25').all();
       const keepDecisions = db.prepare("SELECT * FROM audit_log WHERE action = 'keep_delete_decision_made' ORDER BY id DESC LIMIT 25").all();
       const auditRows = db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 50').all();
+      const linkedTotal = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
+      const activeLinks = db.prepare('SELECT COUNT(*) AS c FROM download_tokens WHERE revoked = 0 AND expires_at > ?').get(Date.now()).c;
       const health = await gatherHealth();
 
-      res.type('html').send(`<!doctype html><html><body style="font-family: sans-serif; padding: 16px;">
-      <h1>Durant Media Server Bot Admin Dashboard</h1>
-      <p><a href="/admin/health${authSuffix}">Admin Health JSON</a></p>
-      <h2>Health</h2><pre>${escapeHtml(JSON.stringify(health, null, 2))}</pre>
-      <h2>Manual Actions</h2>
-      <ul>
-        <li><a href="/admin/action/sync-preview${authSuffix}">Run Sync Preview</a></li>
-        <li><a href="/admin/action/cleanup-preview${authSuffix}">Run Cleanup Preview</a></li>
-      </ul>
-      <form method="post" action="/admin/action/revoke-all${authSuffix}"><button type="submit">Revoke All Active Download Links</button></form>
-      <h2>Pending Plex Users</h2><pre>${escapeHtml(JSON.stringify(pendingPlex, null, 2))}</pre>
-      <h2>Pending Media Requests</h2><pre>${escapeHtml(JSON.stringify(pendingRequests, null, 2))}</pre>
-      <h2>Linked Users</h2><pre>${escapeHtml(JSON.stringify(linkedUsers, null, 2))}</pre>
-      <h2>Recent Downloads</h2><pre>${escapeHtml(JSON.stringify(recentDownloads, null, 2))}</pre>
-      <h2>Keep/Delete Decisions</h2><pre>${escapeHtml(JSON.stringify(keepDecisions, null, 2))}</pre>
-      <h2>Recent Audit Logs</h2><pre>${escapeHtml(JSON.stringify(auditRows, null, 2))}</pre>
-      </body></html>`);
+      const stats = [
+        renderStat('Pending Plex users', pendingPlex.length),
+        renderStat('Pending requests', pendingRequests.length),
+        renderStat('Linked users', linkedTotal),
+        renderStat('Active download links', activeLinks),
+      ].join('');
+
+      const body = `
+        <div class="overall ${health.overall === 'ok' ? 'ok' : 'warn'}">Overall status: <strong>${escapeHtml(String(health.overall).toUpperCase())}</strong></div>
+        <div class="stats">${stats}</div>
+        <div class="card">
+          <h2>Integrations</h2>
+          <div class="badges">${renderHealthBadges(health)}</div>
+        </div>
+        <div class="card">
+          <h2>Manual Actions</h2>
+          <div class="actions">
+            <a class="btn" href="/admin/health">Health JSON</a>
+            <a class="btn" href="/admin/action/sync-preview">Run Sync Preview</a>
+            <a class="btn" href="/admin/action/cleanup-preview">Run Cleanup Preview</a>
+            <button class="btn danger" type="button" onclick="revokeAll()">Revoke All Download Links</button>
+          </div>
+        </div>
+        ${renderSection('Pending Plex Users', pendingPlex)}
+        ${renderSection('Pending Media Requests', pendingRequests)}
+        ${renderSection('Linked Users', linkedUsers)}
+        ${renderSection('Recent Downloads', recentDownloads)}
+        ${renderSection('Keep/Delete Decisions', keepDecisions)}
+        ${renderSection('Recent Audit Logs', auditRows)}
+        <script>
+          async function revokeAll() {
+            if (!confirm('Revoke ALL active download links? This cannot be undone.')) return;
+            const r = await fetch('/admin/action/revoke-all', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+            alert(r.ok ? 'All active download links revoked.' : 'Failed: ' + r.status);
+            if (r.ok) location.reload();
+          }
+        </script>`;
+      res.type('html').send(renderPage('Admin Dashboard', body, true));
     });
 
     app.get('/admin/health', dashboardAuth, async (_req, res) => res.json(await gatherHealth()));
@@ -1651,6 +1773,117 @@ function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
 }
 
+// ---- Dashboard rendering (dark Plex/Overseerr-style theme, all inline, no build step) ----
+
+const DASHBOARD_CSS = `
+  :root { --bg:#1b1b1d; --panel:#26282c; --panel2:#2e3035; --accent:#e5a00d; --text:#e8e8ea; --muted:#9aa0a6; --border:#3a3d42; --ok:#22c55e; --warn:#f59e0b; --down:#ef4444; --skip:#6b7280; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); }
+  .topbar { position:sticky; top:0; z-index:10; display:flex; align-items:center; justify-content:space-between; padding:14px 20px; background:#141416; border-bottom:1px solid var(--border); }
+  .topbar h1 { margin:0; font-size:18px; }
+  .topbar .brand { color:var(--accent); }
+  .container { max-width:1100px; margin:0 auto; padding:20px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px 18px; margin-bottom:18px; }
+  .card h2 { margin:0 0 12px; font-size:15px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .overall { padding:12px 16px; border-radius:10px; margin-bottom:18px; font-size:15px; }
+  .overall.ok { background:rgba(34,197,94,.12); border:1px solid var(--ok); }
+  .overall.warn { background:rgba(245,158,11,.12); border:1px solid var(--warn); }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:18px; }
+  .stat { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
+  .stat .n { font-size:26px; font-weight:700; color:var(--accent); }
+  .stat .l { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .badges { display:flex; flex-wrap:wrap; gap:8px; }
+  .badge { display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:999px; font-size:13px; background:var(--panel2); border:1px solid var(--border); }
+  .dot { width:9px; height:9px; border-radius:50%; }
+  .dot.ok { background:var(--ok); } .dot.warn { background:var(--warn); } .dot.down { background:var(--down); } .dot.skip { background:var(--skip); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); white-space:nowrap; max-width:340px; overflow:hidden; text-overflow:ellipsis; }
+  th { color:var(--muted); font-weight:600; text-transform:uppercase; font-size:11px; letter-spacing:.04em; }
+  tbody tr:nth-child(odd) { background:rgba(255,255,255,.02); }
+  .table-wrap { overflow-x:auto; }
+  .muted { color:var(--muted); font-style:italic; }
+  .actions { display:flex; flex-wrap:wrap; gap:10px; }
+  .btn { display:inline-block; padding:9px 14px; border-radius:8px; background:var(--panel2); color:var(--text); border:1px solid var(--border); text-decoration:none; font-size:13px; cursor:pointer; }
+  .btn:hover { border-color:var(--accent); }
+  .btn.danger { border-color:var(--down); color:#fca5a5; }
+  .btn.primary { background:var(--accent); color:#1b1b1d; border-color:var(--accent); font-weight:600; }
+  form.logout { margin:0; }
+  .login-wrap { min-height:100vh; display:flex; align-items:center; justify-content:center; }
+  .login-card { width:100%; max-width:360px; background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:28px; }
+  .login-card h1 { margin:0 0 4px; font-size:20px; }
+  .login-card h1 .brand { color:var(--accent); }
+  .login-card p { margin:0 0 20px; color:var(--muted); font-size:13px; }
+  .login-card label { display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
+  .login-card input { width:100%; padding:11px 12px; border-radius:8px; border:1px solid var(--border); background:#1b1b1d; color:var(--text); font-size:14px; margin-bottom:16px; }
+  .login-card .btn.primary { width:100%; text-align:center; }
+  .error { background:rgba(239,68,68,.12); border:1px solid var(--down); color:#fca5a5; padding:10px 12px; border-radius:8px; font-size:13px; margin-bottom:16px; }
+`;
+
+function renderPage(title, bodyHtml, showLogout = false) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title)} — Durant Media Server</title>
+  <style>${DASHBOARD_CSS}</style></head><body>
+  <div class="topbar">
+    <h1><span class="brand">Durant</span> Media Server — ${escapeHtml(title)}</h1>
+    ${showLogout ? '<form class="logout" method="post" action="/admin/logout"><button class="btn" type="submit">Log out</button></form>' : ''}
+  </div>
+  <div class="container">${bodyHtml}</div>
+  </body></html>`;
+}
+
+function renderLogin(isError, message) {
+  const banner = message ? `<div class="error">${escapeHtml(message)}</div>`
+    : (isError ? '<div class="error">Incorrect password. Please try again.</div>' : '');
+  const body = `<div class="login-wrap"><div class="login-card">
+    <h1><span class="brand">Durant</span> Media Server</h1>
+    <p>Admin dashboard login</p>
+    ${banner}
+    <form method="post" action="/admin/login">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autofocus autocomplete="current-password" required>
+      <button class="btn primary" type="submit">Log in</button>
+    </form>
+  </div></div>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login — Durant Media Server</title><style>${DASHBOARD_CSS}</style></head>
+  <body>${body}</body></html>`;
+}
+
+function renderStat(label, value) {
+  return `<div class="stat"><div class="n">${escapeHtml(String(value))}</div><div class="l">${escapeHtml(label)}</div></div>`;
+}
+
+function healthClass(v) {
+  if (['ok', 'configured'].includes(v)) return 'ok';
+  if (v === 'skipped') return 'skip';
+  if (v === 'down' || v === 'missing') return 'down';
+  return 'warn';
+}
+
+function renderHealthBadges(health) {
+  const keys = ['discord', 'sqlite', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'raidPath', 'tunnelDomain'];
+  return keys.filter(k => health[k] !== undefined)
+    .map(k => `<span class="badge"><span class="dot ${healthClass(health[k])}"></span>${escapeHtml(k)}: ${escapeHtml(String(health[k]))}</span>`)
+    .join('');
+}
+
+function renderTable(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return '<p class="muted">No records.</p>';
+  const cols = Object.keys(rows[0]);
+  const head = cols.map(c => `<th>${escapeHtml(c)}</th>`).join('');
+  const bodyRows = rows.map(r => `<tr>${cols.map(c => {
+    const v = r[c];
+    return `<td title="${escapeHtml(v == null ? '' : String(v))}">${escapeHtml(v == null ? '' : String(v))}</td>`;
+  }).join('')}</tr>`).join('');
+  return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${bodyRows}</tbody></table></div>`;
+}
+
+function renderSection(title, rows) {
+  return `<div class="card"><h2>${escapeHtml(title)}</h2>${renderTable(rows)}</div>`;
+}
+
 async function handleOverseerrWebhook(body) {
   const { notification_type, subject, media, request } = body;
   if (!notification_type || !media) return;
@@ -1669,7 +1902,7 @@ async function handleOverseerrWebhook(body) {
         new ButtonBuilder().setCustomId(`overseerr_approve:${request.request_id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId(`overseerr_deny:${request.request_id}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
       );
-      await adminChannel.send({ embeds: [new EmbedBuilder().setTitle(`${mediaTypeEmoji(media.media_type, is4k)} New Request`).setDescription(`**${title}**`).addFields({ name: 'Requested By', value: requesterDiscordId ? `<@${requesterDiscordId}>` : (requesterEmail || 'Unknown'), inline: true }).setColor(0x3b82f6)], components: [row] });
+      await adminChannel.send({ embeds: [brandedEmbed(COLORS.INFO).setTitle(`${mediaTypeEmoji(media.media_type, is4k)} New Request`).setDescription(`**${title}**`).addFields({ name: 'Requested By', value: requesterDiscordId ? `<@${requesterDiscordId}>` : (requesterEmail || 'Unknown'), inline: true }, { name: 'Quality', value: is4k ? '4K' : 'HD', inline: true })], components: [row] });
     }
     audit('seerr_request_received', { requestId: request?.request_id, requesterDiscordId, title, mediaId });
   }
@@ -1682,7 +1915,9 @@ async function handleOverseerrWebhook(body) {
   if (notification_type === 'MEDIA_AVAILABLE' && requesterDiscordId) {
     try {
       const user = await client.users.fetch(requesterDiscordId);
-      await user.send(`✅ **${title}** is now available on Plex.`);
+      await user.send({ embeds: [brandedEmbed(COLORS.SUCCESS)
+        .setTitle('✅ Now Available on Plex')
+        .setDescription(`**${title}** is ready to watch — enjoy! 🍿\n\nWant something else? Use \`/download\` or request more anytime.`)] });
       audit('media_available_notification_sent', { targetDiscordId: requesterDiscordId, title });
     } catch (_e) {}
   }
@@ -1716,7 +1951,7 @@ async function handlePlexWebhook(payload) {
     new ButtonBuilder().setCustomId(`delete_yes:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Delete Now').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(`delete_later:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Remind Me Later').setStyle(ButtonStyle.Primary),
   );
-  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [new EmbedBuilder().setTitle(`${mediaTypeEmoji(mediaType === 'episode' ? 'tv' : 'movie', is4k)} Finished Watching`).setDescription(`Would you like to delete **${title}**?\nGrace period: ${CONFIG.DELETION_GRACE_HOURS} hour(s).`).setColor(0xf59e0b)], components: [row] });
+  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [brandedEmbed(COLORS.WARN).setTitle(`${mediaTypeEmoji(mediaType === 'episode' ? 'tv' : 'movie', is4k)} Finished Watching`).setDescription(`Looks like you finished **${title}**. Should we keep it or free up space?\n\n⏳ Auto-deletes in ${CONFIG.DELETION_GRACE_HOURS} hour(s) unless you choose **Keep**.`)], components: [row] });
 }
 
 async function handleTautulliWebhook(body) {
@@ -1740,7 +1975,7 @@ async function handleTautulliWebhook(body) {
     new ButtonBuilder().setCustomId(`delete_yes:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Delete Now').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(`delete_later:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Remind Me Later').setStyle(ButtonStyle.Primary),
   );
-  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [new EmbedBuilder().setTitle('📺 Finished Watching').setDescription(`Would you like to delete **${showTitle}**?`).setColor(0xf59e0b)], components: [row] });
+  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [brandedEmbed(COLORS.WARN).setTitle('📺 Finished Watching').setDescription(`Looks like you finished **${showTitle}**. Keep it, or free up space?`)], components: [row] });
 }
 
 function shutdown(sig) {
