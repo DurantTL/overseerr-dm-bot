@@ -52,6 +52,9 @@ See `.env.example` for full values.
 - `RADARR_URL`, `RADARR_API_KEY`
 - `RADARR_4K_URL`, `RADARR_4K_API_KEY`
 - `SONARR_URL`, `SONARR_API_KEY`
+- `PROWLARR_URL`, `PROWLARR_API_KEY` — adds Prowlarr to `/status` and dashboard health checks
+- `BYPARR_URL` — adds Byparr (`/health` endpoint) to health checks
+- `STUCK_CHECK_MINUTES` (default `10`), `STUCK_AFTER_MINUTES` (default `45`), `STUCK_ALERT_COOLDOWN_HOURS` (default `6`) — stuck-download watchdog: when a queue item makes no progress for `STUCK_AFTER_MINUTES` (e.g. no seeders), the admin channel gets an alert with **Remove & Try Another Release** (blocklist + auto re-search), **Remove Only**, and **Ignore** buttons. Set `STUCK_CHECK_MINUTES=0` to disable.
 - `PATH_REMAP_FROM`, `PATH_REMAP_TO`
 - `DOWNLOAD_*`, `ENABLE_DELETION`, `KEEP_LIST_DEFAULT_DAYS`, `NEVER_DELETE_MEDIA_IDS`
 - `DELETION_DRY_RUN` (default `true`) — when deletion is confirmed, logs the exact file paths and API call that would fire and skips the real delete API. Flip to `false` only after reviewing real prompts.
