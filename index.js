@@ -42,6 +42,17 @@ const CONFIG = {
   RADARR_4K_API_KEY: process.env.RADARR_4K_API_KEY || '',
   SONARR_URL: process.env.SONARR_URL || '',
   SONARR_API_KEY: process.env.SONARR_API_KEY || '',
+  PROWLARR_URL: process.env.PROWLARR_URL || '',
+  PROWLARR_API_KEY: process.env.PROWLARR_API_KEY || '',
+  BYPARR_URL: process.env.BYPARR_URL || '',
+  STUCK_CHECK_MINUTES: Number.parseInt(process.env.STUCK_CHECK_MINUTES || '10', 10),
+  STUCK_AFTER_MINUTES: Number.parseInt(process.env.STUCK_AFTER_MINUTES || '45', 10),
+  STUCK_ALERT_COOLDOWN_HOURS: Number.parseInt(process.env.STUCK_ALERT_COOLDOWN_HOURS || '6', 10),
+  JANITOR_CHECK_MINUTES: Number.parseInt(process.env.JANITOR_CHECK_MINUTES || '60', 10),
+  RETENTION_ENFORCEMENT: parseBool(process.env.RETENTION_ENFORCEMENT, false),
+  RETENTION_CHECK_HOURS: Number.parseInt(process.env.RETENTION_CHECK_HOURS || '24', 10),
+  RETENTION_MAX_DELETES_PER_RUN: Number.parseInt(process.env.RETENTION_MAX_DELETES_PER_RUN || '10', 10),
+  DISK_SPACE_WARN_GB: Number.parseInt(process.env.DISK_SPACE_WARN_GB || '100', 10),
   TUNNEL_DOMAIN: process.env.TUNNEL_DOMAIN,
   RAID_PATH: process.env.RAID_PATH || '/mnt/raid',
   PATH_REMAP_FROM: process.env.PATH_REMAP_FROM || '',
@@ -87,6 +98,20 @@ function parseBool(v, fallback = false) {
 
 function sha256(text) {
   return crypto.createHash('sha256').update(text).digest('hex');
+}
+
+// Constant-time string comparison for secrets (webhook secrets, admin credentials).
+function safeEqual(a, b) {
+  const ba = Buffer.from(String(a ?? ''));
+  const bb = Buffer.from(String(b ?? ''));
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
+
+// A real Discord user ID (snowflake). Rows like plex_12345 and stray junk must never be
+// mentioned as <@...> or DM'd.
+function isSnowflake(id) {
+  return /^\d{17,20}$/.test(String(id || ''));
 }
 
 // Centralized embed palette so every notification shares one consistent look.
@@ -240,6 +265,18 @@ function runMigrations() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS pending_deletions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      media_id TEXT NOT NULL UNIQUE,
+      media_type TEXT,
+      title TEXT,
+      requestor_discord_id TEXT,
+      prompt_sent_at INTEGER,
+      delete_after INTEGER NOT NULL,
+      status TEXT DEFAULT 'pending',
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS media_retention_rules (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       media_class TEXT UNIQUE,
@@ -273,6 +310,10 @@ function runMigrations() {
   ensureColumn('download_tokens', 'used_at', 'INTEGER');
   ensureColumn('download_tokens', 'revoked', 'INTEGER DEFAULT 0');
 
+  // Old code stored '' when a webhook had no request id; those rows collided on the UNIQUE
+  // column and overwrote each other. NULL is allowed to repeat.
+  db.prepare("UPDATE requests SET overseerr_request_id = NULL WHERE overseerr_request_id = ''").run();
+
   db.prepare(`INSERT OR IGNORE INTO media_retention_rules (media_class, retention_days, enabled)
     VALUES
     ('movie_4k', 30, 1),
@@ -303,16 +344,42 @@ function storeUserEmail(discordId, email) {
     .run(discordId, email.toLowerCase().trim(), new Date().toISOString());
 }
 const getUserByDiscordId = discordId => db.prepare('SELECT * FROM users WHERE discord_id = ?').get(discordId);
-const getUserByEmail = email => db.prepare('SELECT * FROM users WHERE lower(email) = ?').get(email.toLowerCase().trim());
+// Canonical-email lookup (gmail dots/plus-tags collapse). Prefers rows with a real Discord
+// snowflake over synthetic plex_ rows so notifications reach the actual person.
+function getUserByCanonicalEmail(email) {
+  const key = canonicalizeEmail(email);
+  if (!key || key.startsWith('__placeholder__:')) return null;
+  const matches = db.prepare('SELECT * FROM users').all().filter(u => canonicalizeEmail(u.email) === key);
+  return matches.find(u => isSnowflake(u.discord_id)) || matches[0] || null;
+}
 const markUserInvited = discordId => db.prepare('UPDATE users SET invited = 1, invited_at = ? WHERE discord_id = ?').run(new Date().toISOString(), discordId);
 const markOverseerrCreated = (discordId, overseerrId) => db.prepare('UPDATE users SET overseerr_created = 1, overseerr_user_id = ? WHERE discord_id = ?').run(overseerrId, discordId);
 const removeUser = discordId => db.prepare('DELETE FROM users WHERE discord_id = ?').run(discordId);
 
 function upsertRequest(overseerrRequestId, mediaId, mediaType, is4k, title, discordId, status) {
-  db.prepare(`INSERT OR REPLACE INTO requests
-    (overseerr_request_id, media_id, media_type, is_4k, title, requested_by_discord_id, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(overseerrRequestId, mediaId, mediaType, is4k ? 1 : 0, title, discordId || null, status);
+  // Later webhook events (approved/available) often arrive without requestedBy fields.
+  // INSERT OR REPLACE used to wipe the original requester (breaking keep/delete attribution),
+  // and '' request ids from those events all collided on the UNIQUE column. COALESCE keeps
+  // the first known requester; missing request ids fall back to updating the media row.
+  const reqId = overseerrRequestId ? String(overseerrRequestId) : null;
+  if (reqId) {
+    db.prepare(`INSERT INTO requests (overseerr_request_id, media_id, media_type, is_4k, title, requested_by_discord_id, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(overseerr_request_id) DO UPDATE SET
+        status = excluded.status,
+        title = excluded.title,
+        requested_by_discord_id = COALESCE(excluded.requested_by_discord_id, requests.requested_by_discord_id)`)
+      .run(reqId, mediaId, mediaType, is4k ? 1 : 0, title, discordId || null, status);
+    return;
+  }
+  const updated = db.prepare(`UPDATE requests SET status = ?,
+      requested_by_discord_id = COALESCE(?, requested_by_discord_id)
+    WHERE media_id = ?`).run(status, discordId || null, mediaId);
+  if (!updated.changes) {
+    db.prepare(`INSERT INTO requests (overseerr_request_id, media_id, media_type, is_4k, title, requested_by_discord_id, status)
+      VALUES (NULL, ?, ?, ?, ?, ?, ?)`)
+      .run(mediaId, mediaType, is4k ? 1 : 0, title, discordId || null, status);
+  }
 }
 
 function addToKeepList(mediaId, mediaType, title, discordId, keepDays = CONFIG.KEEP_LIST_DEFAULT_DAYS) {
@@ -323,6 +390,28 @@ function addToKeepList(mediaId, mediaType, title, discordId, keepDays = CONFIG.K
 
 function isInKeepList(mediaId) {
   return !!db.prepare('SELECT id FROM keep_list WHERE media_id = ? AND (expires_at IS NULL OR expires_at > ?)').get(mediaId, Date.now());
+}
+
+// The "Finished Watching" prompt promises auto-deletion after the grace period; these rows are
+// what the janitor sweep actually enforces. Re-prompting the same media resets the clock.
+function recordPendingDeletion(mediaId, mediaType, title, requestorDiscordId) {
+  const now = Date.now();
+  db.prepare(`INSERT INTO pending_deletions (media_id, media_type, title, requestor_discord_id, prompt_sent_at, delete_after, status, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
+    ON CONFLICT(media_id) DO UPDATE SET
+      title = excluded.title,
+      requestor_discord_id = excluded.requestor_discord_id,
+      prompt_sent_at = excluded.prompt_sent_at,
+      delete_after = excluded.delete_after,
+      status = 'pending',
+      updated_at = CURRENT_TIMESTAMP`)
+    .run(mediaId, mediaType, title, requestorDiscordId || null, now, now + CONFIG.DELETION_GRACE_HOURS * 3600000);
+}
+function markPendingDeletion(mediaId, status) {
+  db.prepare('UPDATE pending_deletions SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE media_id = ?').run(status, mediaId);
+}
+function postponePendingDeletion(mediaId, deleteAfterMs) {
+  db.prepare("UPDATE pending_deletions SET delete_after = ?, status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE media_id = ?").run(deleteAfterMs, mediaId);
 }
 
 function createDownloadToken(filePath, title, discordId, oneTimeUse = CONFIG.DOWNLOAD_ONE_TIME_LINKS_DEFAULT) {
@@ -388,6 +477,18 @@ function rehydratePendingEmails() {
 }
 const routeLimits = new Map();
 const userGenerationLimits = new Map();
+
+// Keyed by client IP / user id, these maps only ever grew. Drop buckets whose newest hit is
+// older than an hour so a scan of unique IPs can't slowly eat memory.
+const RATE_LIMIT_MAPS = [routeLimits, userGenerationLimits];
+setInterval(() => {
+  const cutoff = Date.now() - 3600000;
+  for (const map of RATE_LIMIT_MAPS) {
+    for (const [key, hits] of map) {
+      if (!hits.length || hits[hits.length - 1] < cutoff) map.delete(key);
+    }
+  }
+}, 600000).unref();
 
 function takeRateLimit(bucketMap, key, maxHits, periodMs) {
   const now = Date.now();
@@ -498,6 +599,283 @@ async function sonarrGet(endpoint, params = {}) {
   return res.data;
 }
 
+// The configured *arr instances, used for queue reads and stuck-download actions.
+function arrSources() {
+  const sources = [];
+  if (CONFIG.RADARR_URL) sources.push({ kind: 'movie', label: 'radarr', url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY });
+  if (CONFIG.RADARR_4K_URL) sources.push({ kind: 'movie', label: 'radarr-4k', url: CONFIG.RADARR_4K_URL, key: CONFIG.RADARR_4K_API_KEY });
+  if (CONFIG.SONARR_URL) sources.push({ kind: 'tv', label: 'sonarr', url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY });
+  return sources;
+}
+const arrSourceByLabel = label => arrSources().find(s => s.label === label) || null;
+
+// Normalized view of every active download across Radarr / Radarr-4K / Sonarr.
+async function fetchArrQueues() {
+  const items = [];
+  for (const s of arrSources()) {
+    try {
+      const params = s.kind === 'movie'
+        ? { pageSize: 200, includeMovie: true }
+        : { pageSize: 200, includeSeries: true, includeEpisode: true };
+      const res = await axios.get(`${s.url}/api/v3/queue`, { params, headers: { 'X-Api-Key': s.key }, timeout: 10000 });
+      for (const r of res.data.records || []) {
+        const displayTitle = s.kind === 'movie'
+          ? (r.movie?.title || r.title || 'Unknown')
+          : `${r.series?.title || r.title || 'Unknown'}${r.episode ? ` S${pad(r.episode.seasonNumber)}E${pad(r.episode.episodeNumber)}` : ''}`;
+        items.push({
+          source: s,
+          queueId: r.id,
+          title: displayTitle,
+          size: r.size || 0,
+          sizeleft: r.sizeleft || 0,
+          timeleft: r.timeleft || null,
+          status: r.status || '',
+          trackedStatus: r.trackedDownloadStatus || '',
+          trackedState: r.trackedDownloadState || '',
+          messages: (r.statusMessages || []).flatMap(m => m.messages || []).slice(0, 3),
+        });
+      }
+    } catch (err) {
+      audit('external_api_error', { provider: s.label, error: err.message, action: 'queue_fetch' });
+    }
+  }
+  return items;
+}
+
+function queuePercent(item) {
+  if (!item.size) return 0;
+  return Math.max(0, Math.min(100, Math.round(((item.size - item.sizeleft) / item.size) * 100)));
+}
+function progressBar(pct) {
+  const filled = Math.round(pct / 10);
+  return '▰'.repeat(filled) + '▱'.repeat(10 - filled);
+}
+function queueItemLooksUnhealthy(item) {
+  return item.trackedStatus === 'warning' || item.status === 'warning' || item.status === 'failed' || item.messages.length > 0;
+}
+
+// ---- Stuck-download watchdog ----
+// Downloads with no seeders (or import problems) sit in the queue forever with frozen
+// progress. Track byte movement per queue item; when one hasn't moved for
+// STUCK_AFTER_MINUTES (or the *arr flags it), alert the admin channel with one-click
+// actions: remove+blocklist+search another release, remove only, or ignore.
+const stuckTracker = new Map(); // `${label}:${queueId}` -> { sizeleft, since, alertedAt }
+
+async function sweepStuckDownloads() {
+  const items = await fetchArrQueues();
+  const now = Date.now();
+  const seen = new Set();
+  for (const item of items) {
+    const key = `${item.source.label}:${item.queueId}`;
+    seen.add(key);
+    if (getSetting(`stuck_ignore:${key}`)) continue;
+
+    let entry = stuckTracker.get(key);
+    if (!entry || entry.sizeleft !== item.sizeleft) {
+      entry = { sizeleft: item.sizeleft, since: now, alertedAt: entry?.alertedAt || 0 };
+      stuckTracker.set(key, entry);
+      continue; // progress (or first sighting) — nothing to flag yet
+    }
+
+    const unhealthy = queueItemLooksUnhealthy(item);
+    const shouldBeMoving = item.status === 'downloading' || item.trackedState === 'downloading';
+    const frozenMs = now - entry.since;
+    if (!(unhealthy || shouldBeMoving)) continue;
+    if (frozenMs < CONFIG.STUCK_AFTER_MINUTES * 60000) continue;
+    if (now - entry.alertedAt < CONFIG.STUCK_ALERT_COOLDOWN_HOURS * 3600000) continue;
+
+    entry.alertedAt = now;
+    const pct = queuePercent(item);
+    const embed = brandedEmbed(COLORS.WARN)
+      .setTitle('🧊 Download Stuck')
+      .setDescription(`**${item.title}** hasn't moved in ${Math.round(frozenMs / 60000)} minutes.`)
+      .addFields(
+        { name: 'Progress', value: `${progressBar(pct)} ${pct}%`, inline: true },
+        { name: 'Source', value: item.source.label, inline: true },
+        { name: 'Status', value: item.trackedStatus || item.status || 'unknown', inline: true },
+      );
+    if (item.messages.length) embed.addFields({ name: 'Reported problems', value: item.messages.map(m => `• ${m}`).join('\n').slice(0, 1000), inline: false });
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`stuck_retry:${key}`).setLabel('Remove & Try Another Release').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`stuck_rm:${key}`).setLabel('Remove Only').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`stuck_ignore:${key}`).setLabel('Ignore').setStyle(ButtonStyle.Secondary),
+    );
+    notifyAdmin({ embeds: [embed], components: [row] });
+    audit('stuck_download_detected', { label: item.source.label, queueId: item.queueId, title: item.title, frozenMinutes: Math.round(frozenMs / 60000) });
+  }
+
+  // Forget items that left the queue, and clear their ignore flags so a future
+  // download reusing the same queue id can't be silently ignored.
+  for (const key of stuckTracker.keys()) {
+    if (!seen.has(key)) stuckTracker.delete(key);
+  }
+  const ignoreRows = db.prepare("SELECT key FROM app_settings WHERE key LIKE 'stuck_ignore:%'").all();
+  for (const r of ignoreRows) {
+    if (!seen.has(r.key.slice('stuck_ignore:'.length))) db.prepare('DELETE FROM app_settings WHERE key = ?').run(r.key);
+  }
+}
+
+// ---- Janitor: grace-period auto-delete, retention rules, disk-space alerts ----
+
+// Free/total space of every volume the *arrs can see, deduped by path across instances.
+async function fetchDiskSpace() {
+  const seen = new Map();
+  const sources = arrSources();
+  for (const s of sources) {
+    try {
+      const res = await axios.get(`${s.url}/api/v3/diskspace`, { headers: { 'X-Api-Key': s.key }, timeout: 8000 });
+      for (const d of res.data || []) {
+        if (!seen.has(d.path)) seen.set(d.path, d);
+      }
+    } catch (err) {
+      audit('external_api_error', { provider: s.label, error: err.message, action: 'diskspace' });
+    }
+  }
+  return [...seen.values()].filter(d => (d.totalSpace || 0) > 10 * 1024 ** 3);
+}
+const gb = bytes => bytes / (1024 ** 3);
+const fmtSpace = bytes => gb(bytes) >= 1024 ? `${(gb(bytes) / 1024).toFixed(2)} TB` : `${gb(bytes).toFixed(0)} GB`;
+
+// Enforce the "Auto-deletes in N hours unless you choose Keep" promise. Every guard rail is
+// re-checked at execution time: deletion enabled, keep list, never-delete list.
+async function sweepGraceDeletions() {
+  if (!CONFIG.ENABLE_DELETION) return;
+  const due = db.prepare("SELECT * FROM pending_deletions WHERE status = 'pending' AND delete_after < ?").all(Date.now());
+  for (const row of due) {
+    if (isInKeepList(row.media_id) || CONFIG.NEVER_DELETE_MEDIA_IDS.includes(row.media_id)) {
+      markPendingDeletion(row.media_id, 'kept');
+      continue;
+    }
+    const result = await executeDeletion(row.media_id, row.title, { requestorId: row.requestor_discord_id, reason: 'grace_expired' });
+    if (result.outcome === 'error') continue; // transient *arr failure — retry next sweep
+    if (result.outcome === 'not_found') { markPendingDeletion(row.media_id, 'cancelled'); continue; }
+    if (result.outcome === 'dry_run') {
+      markPendingDeletion(row.media_id, 'dry_run');
+      notifyAdmin({ embeds: [brandedEmbed(COLORS.WARN)
+        .setTitle('🧪 Janitor Dry-Run')
+        .setDescription(`Grace period expired for **${row.title}** — would have deleted ${result.paths.length} file(s).\nSet \`DELETION_DRY_RUN=false\` to let the janitor delete for real.`)] });
+      continue;
+    }
+    markPendingDeletion(row.media_id, 'deleted');
+    notifyAdmin({ embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle('🧹 Auto-Deleted After Grace Period')
+      .setDescription(`**${row.title}** — no response to the keep prompt within ${CONFIG.DELETION_GRACE_HOURS}h.\n${result.detail}`)] });
+    await dmUser(row.requestor_discord_id, { embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle('🧹 Freed Up Space')
+      .setDescription(`**${row.title}** was removed since we didn't hear back on the keep prompt.\nWant it back? Just request it again anytime!`)] });
+  }
+}
+
+// Age-based cleanup driven by the media_retention_rules table: movie_4k / movie_1080p apply to
+// the matching Radarr instance, tv_episode to Sonarr episode files. (tv_season is reserved.)
+// Deletes oldest-first, capped per run, and honors keep list / never-delete / kept decisions.
+async function sweepRetentionRules() {
+  const rules = Object.fromEntries(db.prepare('SELECT media_class, retention_days FROM media_retention_rules WHERE enabled = 1').all().map(r => [r.media_class, r.retention_days]));
+  const now = Date.now();
+  const candidates = [];
+
+  const movieSources = [
+    { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, rule: rules.movie_1080p },
+    { url: CONFIG.RADARR_4K_URL, key: CONFIG.RADARR_4K_API_KEY, rule: rules.movie_4k },
+  ].filter(s => s.url && s.rule > 0);
+  for (const s of movieSources) {
+    const movies = await radarrGetFrom(s.url, s.key, '/movie').catch(() => []);
+    for (const m of movies) {
+      if (!m.hasFile || !m.movieFile?.dateAdded) continue;
+      const ageDays = (now - Date.parse(m.movieFile.dateAdded)) / 86400000;
+      if (ageDays < s.rule) continue;
+      candidates.push({ kind: 'movie', mediaId: `tmdb:${m.tmdbId}`, title: `${m.title}${m.year ? ` (${m.year})` : ''}`, ageDays, sizeBytes: m.movieFile.size || 0 });
+    }
+  }
+
+  if (CONFIG.SONARR_URL && rules.tv_episode > 0) {
+    const seriesList = await sonarrGet('/series').catch(() => []);
+    for (const series of seriesList) {
+      const files = await getEpisodeFiles(series.id).catch(() => []);
+      const old = files.filter(f => f.dateAdded && (now - Date.parse(f.dateAdded)) / 86400000 >= rules.tv_episode);
+      if (!old.length) continue;
+      const oldest = Math.max(...old.map(f => (now - Date.parse(f.dateAdded)) / 86400000));
+      // Only the aged episode files are deleted — never the whole series.
+      candidates.push({ kind: 'tv', mediaId: `tvdb:${series.tvdbId}`, title: `${series.title} (${old.length} old episode file(s))`, ageDays: oldest, sizeBytes: old.reduce((a, f) => a + (f.size || 0), 0), fileIds: old.map(f => f.id) });
+    }
+  }
+
+  // Skip items mid-grace-flow ('pending'); expired keep protection is governed by the
+  // keep_list expiry itself, so a historical 'kept' status doesn't block forever.
+  const eligible = candidates
+    .filter(c => !isInKeepList(c.mediaId) && !CONFIG.NEVER_DELETE_MEDIA_IDS.includes(c.mediaId))
+    .filter(c => !db.prepare("SELECT id FROM pending_deletions WHERE media_id = ? AND status = 'pending'").get(c.mediaId))
+    .sort((a, b) => b.ageDays - a.ageDays)
+    .slice(0, CONFIG.RETENTION_MAX_DELETES_PER_RUN);
+  if (!eligible.length) return;
+
+  const totalGb = gb(eligible.reduce((a, c) => a + c.sizeBytes, 0)).toFixed(1);
+  const list = eligible.map(c => `• **${c.title}** — ${Math.round(c.ageDays)}d old`).join('\n').slice(0, 3500);
+
+  if (CONFIG.DELETION_DRY_RUN) {
+    audit('retention_dry_run', { count: eligible.length, items: eligible.map(c => c.mediaId) });
+    notifyAdmin({ embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle('🧪 Retention Dry-Run')
+      .setDescription(`These ${eligible.length} item(s) exceed their retention rules (~${totalGb} GB):\n${list}\n\nSet \`DELETION_DRY_RUN=false\` to enforce for real.`)] });
+    return;
+  }
+
+  let deleted = 0;
+  const done = [];
+  for (const c of eligible) {
+    if (c.kind === 'movie') {
+      const result = await executeDeletion(c.mediaId, c.title, { reason: 'retention_rule' });
+      if (result.outcome === 'deleted') { deleted++; done.push(c); }
+      continue;
+    }
+    // TV: delete only the aged episode files, never the series (executeDeletion would wipe all files).
+    let n = 0;
+    for (const id of c.fileIds) {
+      try {
+        await axios.delete(`${CONFIG.SONARR_URL}/api/v3/episodefile/${id}`, { params: { apikey: CONFIG.SONARR_API_KEY } });
+        n++;
+      } catch (err) {
+        audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'retention_delete', episodeFileId: id });
+      }
+    }
+    if (n) {
+      deleted++;
+      done.push(c);
+      audit('media_deleted', { mediaId: c.mediaId, title: c.title, reason: 'retention_rule', filesDeleted: n, filesAttempted: c.fileIds.length });
+    }
+  }
+  audit('retention_enforced', { deleted, attempted: eligible.length });
+  notifyAdmin({ embeds: [brandedEmbed(COLORS.SUCCESS)
+    .setTitle('🧹 Retention Cleanup')
+    .setDescription(`Deleted ${deleted}/${eligible.length} item(s) past their retention window (~${totalGb} GB):\n${done.map(c => `• **${c.title}**`).join('\n').slice(0, 3500) || '(none)'}`)] });
+}
+
+async function sweepDiskSpace() {
+  if (CONFIG.DISK_SPACE_WARN_GB <= 0) return;
+  const disks = await fetchDiskSpace();
+  const low = disks.filter(d => gb(d.freeSpace || 0) < CONFIG.DISK_SPACE_WARN_GB);
+  if (!low.length) { db.prepare('DELETE FROM app_settings WHERE key = ?').run('disk_alert_last'); return; }
+  const last = Number(getSetting('disk_alert_last') || '0');
+  if (Date.now() - last < 24 * 3600000) return;
+  setSetting('disk_alert_last', String(Date.now()));
+  notifyAdmin({ embeds: [brandedEmbed(COLORS.DANGER)
+    .setTitle('💾 Low Disk Space')
+    .setDescription(low.map(d => `**${d.path}** — ${fmtSpace(d.freeSpace)} free of ${fmtSpace(d.totalSpace)}`).join('\n') + `\n\nThreshold: ${CONFIG.DISK_SPACE_WARN_GB} GB. Consider \`/queue\`, retention rules, or manual cleanup.`)] });
+  audit('disk_space_alert', { disks: low.map(d => ({ path: d.path, freeGb: Math.round(gb(d.freeSpace)) })) });
+}
+
+async function janitorSweep() {
+  await sweepGraceDeletions().catch(err => log.warn(`Grace sweep failed: ${err.message}`));
+  await sweepDiskSpace().catch(err => log.warn(`Disk sweep failed: ${err.message}`));
+  if (CONFIG.RETENTION_ENFORCEMENT) {
+    const last = Number(getSetting('retention_last_run') || '0');
+    if (Date.now() - last >= CONFIG.RETENTION_CHECK_HOURS * 3600000) {
+      setSetting('retention_last_run', String(Date.now()));
+      await sweepRetentionRules().catch(err => log.warn(`Retention sweep failed: ${err.message}`));
+    }
+  }
+}
+
 async function searchMovies(title) {
   const lower = title.toLowerCase();
   const results = [];
@@ -557,6 +935,46 @@ async function resolveDeletableMedia(mediaId) {
   return { found: false, kind: 'unknown' };
 }
 
+// Shared deletion core used by the Delete Now button and the janitor sweep. Honors
+// DELETION_DRY_RUN. Callers are responsible for the guard rails (ENABLE_DELETION,
+// keep list, never-delete list) and for recording the pending_deletions outcome.
+async function executeDeletion(mediaId, title, ctx = {}) {
+  let resolved;
+  try {
+    resolved = await resolveDeletableMedia(mediaId);
+  } catch (err) {
+    audit('external_api_error', { provider: 'arr', error: err.message, mediaId, action: 'delete_resolve', ...ctx });
+    return { outcome: 'error', error: err.message };
+  }
+  if (!resolved.found) {
+    audit('deletion_dry_run', { mediaId, title, result: 'not_found', ...ctx });
+    return { outcome: 'not_found' };
+  }
+  if (CONFIG.DELETION_DRY_RUN) {
+    audit('deletion_dry_run', { mediaId, title, kind: resolved.kind, paths: resolved.paths, apiCall: resolved.apiCall, ...ctx });
+    return { outcome: 'dry_run', kind: resolved.kind, paths: resolved.paths, apiCall: resolved.apiCall };
+  }
+  try {
+    let detail;
+    if (resolved.kind === 'movie') {
+      await axios.delete(`${resolved.source.url}/api/v3/movie/${resolved.movie.id}`, { params: { apikey: resolved.source.key, deleteFiles: true } });
+      detail = `Radarr movie #${resolved.movie.id} deleted with files.`;
+    } else {
+      let n = 0;
+      for (const f of resolved.files) {
+        await axios.delete(`${CONFIG.SONARR_URL}/api/v3/episodefile/${f.id}`, { params: { apikey: CONFIG.SONARR_API_KEY } });
+        n++;
+      }
+      detail = `Sonarr episode files deleted: ${n}/${resolved.files.length}.`;
+    }
+    audit('media_deleted', { mediaId, title, kind: resolved.kind, paths: resolved.paths, apiCall: resolved.apiCall, ...ctx });
+    return { outcome: 'deleted', kind: resolved.kind, paths: resolved.paths, detail };
+  } catch (err) {
+    audit('external_api_error', { provider: 'arr', error: err.message, mediaId, action: 'delete', ...ctx });
+    return { outcome: 'error', error: err.message };
+  }
+}
+
 function remapPath(hostPath) {
   if (CONFIG.PATH_REMAP_FROM && hostPath.startsWith(CONFIG.PATH_REMAP_FROM)) {
     return hostPath.replace(CONFIG.PATH_REMAP_FROM, CONFIG.PATH_REMAP_TO);
@@ -587,6 +1005,10 @@ function canonicalizeEmail(raw) {
   }
   return `${local.split('+')[0]}@${domain}`;
 }
+function requestStatusBadge(status) {
+  return ({ pending: '⏳ Pending', approved: '🚀 Approved', available: '✅ Available', declined: '🚫 Declined' })[status] || `▫️ ${status}`;
+}
+function discordTimestamp(ms, style = 'R') { return `<t:${Math.floor(ms / 1000)}:${style}>`; }
 function statusEmoji(v) {
   if (['ok', 'configured'].includes(v)) return '✅';
   if (v === 'skipped') return '⏭️';
@@ -616,6 +1038,7 @@ const slashCommands = [
     .addSubcommand(s => s.setName('recent').setDescription('Recent entries').addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100)))
     .addSubcommand(s => s.setName('user').setDescription('Entries by user').addUserOption(o => o.setName('person').setDescription('User').setRequired(true)).addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100)))
     .addSubcommand(s => s.setName('action').setDescription('Entries by action').addStringOption(o => o.setName('action').setDescription('Action name').setRequired(true)).addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100))),
+  new SlashCommandBuilder().setName('queue').setDescription('Show what is downloading right now'),
   new SlashCommandBuilder().setName('me').setDescription('Show your linked profile'),
   new SlashCommandBuilder().setName('myrequests').setDescription('Show your recent requests'),
   new SlashCommandBuilder().setName('downloads').setDescription('Show your active download links'),
@@ -637,6 +1060,14 @@ client.once('ready', async () => {
   rehydratePendingEmails();
   await registerSlashCommands();
   startExpressServer();
+  if (CONFIG.STUCK_CHECK_MINUTES > 0 && arrSources().length) {
+    setInterval(() => sweepStuckDownloads().catch(err => log.warn(`Stuck-download sweep failed: ${err.message}`)), CONFIG.STUCK_CHECK_MINUTES * 60000).unref();
+    log.ok(`Stuck-download watchdog running every ${CONFIG.STUCK_CHECK_MINUTES} min (threshold ${CONFIG.STUCK_AFTER_MINUTES} min)`);
+  }
+  if (CONFIG.JANITOR_CHECK_MINUTES > 0) {
+    setInterval(() => janitorSweep(), CONFIG.JANITOR_CHECK_MINUTES * 60000).unref();
+    log.ok(`Janitor running every ${CONFIG.JANITOR_CHECK_MINUTES} min (grace deletes: ${CONFIG.ENABLE_DELETION ? 'on' : 'off'}, retention: ${CONFIG.RETENTION_ENFORCEMENT ? 'on' : 'off'}, dry-run: ${CONFIG.DELETION_DRY_RUN ? 'on' : 'off'})`);
+  }
 });
 
 client.on('guildMemberAdd', async member => {
@@ -724,6 +1155,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'sync-fix') return handleSyncFixCommand(interaction);
   if (n === 'cleanup') return handleCleanupCommand(interaction);
   if (n === 'audit') return handleAuditCommand(interaction);
+  if (n === 'queue') return handleQueueCommand(interaction);
   if (n === 'me') return handleMeCommand(interaction);
   if (n === 'myrequests') return handleMyRequestsCommand(interaction);
   if (n === 'downloads') return handleDownloadsCommand(interaction);
@@ -770,7 +1202,21 @@ async function handleDownloadCommand(interaction) {
   if (!fs.existsSync(filePath)) return interaction.editReply('❌ File missing on server.');
 
   const { rawToken, expiresAt } = createDownloadToken(filePath, displayTitle, interaction.user.id, oneTime);
-  await interaction.editReply(`📥 **${displayTitle}**\n🔗 https://${CONFIG.TUNNEL_DOMAIN}/download/${rawToken}\n⏳ Expires: ${new Date(expiresAt).toUTCString()}\n${oneTime ? '🔒 One-time link enabled.' : ''}`);
+  const url = `https://${CONFIG.TUNNEL_DOMAIN}/download/${rawToken}`;
+  let sizeLine = '';
+  try { sizeLine = `${(fs.statSync(filePath).size / (1024 ** 3)).toFixed(2)} GB`; } catch (_e) {}
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle('📥 Download Ready')
+    .setDescription(`**${displayTitle}**`)
+    .addFields(
+      { name: 'Expires', value: `<t:${Math.floor(expiresAt / 1000)}:R>`, inline: true },
+      { name: 'Link type', value: oneTime ? '🔒 One-time use' : '♻️ Multi-use', inline: true },
+    );
+  if (sizeLine) embed.addFields({ name: 'Size', value: sizeLine, inline: true });
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setLabel('Download').setStyle(ButtonStyle.Link).setURL(url),
+  );
+  await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
 async function handleLinkCommand(interaction) {
@@ -795,7 +1241,13 @@ async function handleUnlinkCommand(interaction) {
 async function handleUsersCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
   const rows = db.prepare('SELECT * FROM users ORDER BY requested_at ASC').all();
-  await interaction.reply({ content: rows.slice(0, 50).map(u => `<@${u.discord_id}> — ${u.email}`).join('\n') || 'No users', ephemeral: true });
+  const line = u => `${u.invited ? '✅' : '⏳'} ${isSnowflake(u.discord_id) ? `<@${u.discord_id}>` : `\`${u.discord_id}\``} — \`${u.email}\``;
+  const shown = rows.slice(0, 50);
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle(`👥 Linked Users (${rows.length})`)
+    .setDescription(shown.map(line).join('\n') || 'No users yet.');
+  if (rows.length > shown.length) embed.setFooter({ text: `Durant Media Server · Showing ${shown.length} of ${rows.length}` });
+  await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 
 async function handleStatusCommand(interaction) {
@@ -806,7 +1258,7 @@ async function handleStatusCommand(interaction) {
   const pendingRequests = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get().c;
   const activeLinks = db.prepare('SELECT COUNT(*) AS c FROM download_tokens WHERE revoked = 0 AND expires_at > ?').get(Date.now()).c;
 
-  const integrationKeys = ['discord', 'sqlite', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'raidPath', 'tunnelDomain'];
+  const integrationKeys = ['discord', 'sqlite', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'prowlarr', 'byparr', 'raidPath', 'tunnelDomain'];
   const integrationLines = integrationKeys.filter(k => health[k] !== undefined).map(k => `${statusEmoji(health[k])} ${k}: ${health[k]}`);
 
   // Categorize DB rows: real Discord-linked, plex_-only synthetic, and @plex.local placeholders
@@ -854,6 +1306,13 @@ async function handleStatusCommand(interaction) {
     `**Placeholder:** ${placeholderCount}${placeholderCount ? ` (${placeholderAcked} acknowledged)` : ''}`,
   ].join('\n');
 
+  const disks = await fetchDiskSpace().catch(() => []);
+  const storageLines = disks.map(d => {
+    const lowFlag = gb(d.freeSpace || 0) < CONFIG.DISK_SPACE_WARN_GB ? ' ⚠️' : '';
+    const pctUsed = d.totalSpace ? Math.round(((d.totalSpace - d.freeSpace) / d.totalSpace) * 100) : 0;
+    return `\`${d.path}\` — ${fmtSpace(d.freeSpace)} free of ${fmtSpace(d.totalSpace)} (${pctUsed}% used)${lowFlag}`;
+  });
+
   const embed = brandedEmbed(health.overall === 'ok' ? COLORS.SUCCESS : COLORS.WARN)
     .setTitle('📊 Durant Media Server Status')
     .setDescription(`Overall: **${String(health.overall).toUpperCase()}**`)
@@ -862,6 +1321,7 @@ async function handleStatusCommand(interaction) {
       { name: 'Users', value: usersSummary, inline: true },
       { name: 'Pending requests', value: `${pendingRequests}`, inline: true },
       { name: 'Active download links', value: `${activeLinks}`, inline: true },
+      { name: 'Storage', value: storageLines.join('\n') || 'No *arr diskspace data', inline: false },
       { name: 'DB ↔ Overseerr', value: reconcileLine, inline: false },
       { name: 'Fixable sync issues', value: fixableLine, inline: false },
     );
@@ -1211,35 +1671,92 @@ async function handleAuditCommand(interaction) {
   await interaction.reply({ content: rows.map(r => `#${r.id} ${r.created_at} ${r.action}`).join('\n') || 'No rows', ephemeral: true });
 }
 
+async function handleQueueCommand(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const items = await fetchArrQueues();
+  if (!items.length) {
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle('📭 Download Queue')
+      .setDescription('Nothing downloading right now — the queue is clear.')] });
+  }
+  const lines = items.slice(0, 12).map(i => {
+    const pct = queuePercent(i);
+    const flag = queueItemLooksUnhealthy(i) ? ' ⚠️' : '';
+    const eta = i.timeleft ? ` · ETA \`${i.timeleft}\`` : '';
+    const size = i.size ? ` · ${(i.size / (1024 ** 3)).toFixed(1)} GB` : '';
+    return `**${i.title}**${flag}\n└ ${progressBar(pct)} ${pct}%${eta}${size}`;
+  });
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle(`⬇️ Download Queue (${items.length})`)
+    .setDescription(lines.join('\n'));
+  if (items.length > 12) embed.setFooter({ text: `Durant Media Server · Showing 12 of ${items.length}` });
+  if (items.some(queueItemLooksUnhealthy)) {
+    embed.addFields({ name: 'Legend', value: '⚠️ = the *arr reports a problem with this download (stalled, missing, import issue)', inline: false });
+  }
+  await interaction.editReply({ embeds: [embed] });
+}
+
 async function handleMeCommand(interaction) {
   const row = getUserByDiscordId(interaction.user.id);
-  if (!row) return interaction.reply({ content: 'You are not linked yet.', ephemeral: true });
-  await interaction.reply({ content: `Linked email: ${row.email}\nInvited: ${row.invited ? 'yes' : 'no'}\nOverseerr linked: ${row.overseerr_created ? 'yes' : 'no'}`, ephemeral: true });
+  if (!row) {
+    return interaction.reply({ embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle('👤 Not Linked Yet')
+      .setDescription('You aren\'t linked to a Plex account yet.\nDM me your Plex email to request access!')], ephemeral: true });
+  }
+  const requestCount = db.prepare('SELECT COUNT(*) AS c FROM requests WHERE requested_by_discord_id = ?').get(interaction.user.id).c;
+  const embed = brandedEmbed(COLORS.PLEX)
+    .setTitle('👤 Your Profile')
+    .setThumbnail(interaction.user.displayAvatarURL?.() || null)
+    .addFields(
+      { name: 'Plex email', value: `\`${row.email}\``, inline: false },
+      { name: 'Plex invite', value: row.invited ? '✅ Sent' : '⏳ Pending approval', inline: true },
+      { name: 'Requests (Seerr)', value: row.overseerr_created ? '✅ Enabled' : '❌ Not set up', inline: true },
+      { name: 'Total requests', value: `${requestCount}`, inline: true },
+    );
+  await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 async function handleMyRequestsCommand(interaction) {
   const rows = db.prepare('SELECT * FROM requests WHERE requested_by_discord_id = ? ORDER BY id DESC LIMIT 15').all(interaction.user.id);
-  await interaction.reply({ content: rows.map(r => `${r.title} — ${r.status}`).join('\n') || 'No requests found.', ephemeral: true });
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle('🎬 Your Recent Requests')
+    .setDescription(rows.length
+      ? rows.map(r => `${requestStatusBadge(r.status)} — **${r.title}** (${mediaTypeLabel(r.media_type, r.is_4k)})`).join('\n')
+      : 'No requests yet. Request something in Overseerr and it\'ll show up here!');
+  await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 async function handleDownloadsCommand(interaction) {
   const rows = db.prepare('SELECT title, expires_at, one_time_use, created_at, revoked FROM download_tokens WHERE discord_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 20').all(interaction.user.id, Date.now());
-  await interaction.reply({ content: rows.map(r => `${r.title} | expires ${new Date(r.expires_at).toUTCString()} | ${r.revoked ? 'revoked' : (r.one_time_use ? 'one-time' : 'multi-use')}`).join('\n') || 'No active links.', ephemeral: true });
+  const active = rows.filter(r => !r.revoked);
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle('📥 Your Active Download Links')
+    .setDescription(active.length
+      ? active.map(r => `**${r.title}**\n└ ${r.one_time_use ? '🔒 one-time' : '♻️ multi-use'} · expires ${discordTimestamp(r.expires_at)}`).join('\n')
+      : 'No active links. Use `/download` to create one.');
+  await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 async function handleKeepCommand(interaction) {
   const rows = db.prepare('SELECT title, media_id, expires_at FROM keep_list WHERE kept_by_discord_id = ? ORDER BY created_at DESC LIMIT 20').all(interaction.user.id);
-  await interaction.reply({ content: rows.map(r => `${r.title} (${r.media_id})${r.expires_at ? ` expires ${new Date(r.expires_at).toUTCString()}` : ''}`).join('\n') || 'No keep entries.', ephemeral: true });
+  const embed = brandedEmbed(COLORS.SUCCESS)
+    .setTitle('📌 Your Keep List')
+    .setDescription(rows.length
+      ? rows.map(r => `**${r.title}**${r.expires_at ? ` — protected until ${discordTimestamp(r.expires_at, 'D')}` : ' — protected'}`).join('\n')
+      : 'Nothing on your keep list. Media you choose to **Keep** shows up here, protected from cleanup.');
+  await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 async function handleHelpCommand(interaction) {
   const userCommands = [
     '`/download` — Get a secure download link for a movie or episode',
     '`/me` — Show your linked profile and access status',
     '`/myrequests` — Show your recent Seerr requests',
+    '`/queue` — See what\'s downloading right now (progress + ETA)',
     '`/downloads` — Show your active download links',
     '`/keep` — Show your keep list (media saved from cleanup)',
     '`/help` — Show this help message',
   ];
-  let content = '**How Durant Media Server works**\n' +
-    'DM the bot your Plex account email → an admin approves → you get Plex + Seerr (request) access.\n\n' +
-    '**Commands**\n' + userCommands.join('\n');
+  const embed = brandedEmbed(COLORS.PLEX)
+    .setTitle('🎬 Durant Media Server — Help')
+    .setDescription('DM the bot your Plex account email → an admin approves → you get Plex + Seerr (request) access.')
+    .addFields({ name: 'Commands', value: userCommands.join('\n'), inline: false });
   if (isAdminInteraction(interaction)) {
     const adminCommands = [
       '`/link` — Link a Discord user to a Plex email',
@@ -1252,9 +1769,9 @@ async function handleHelpCommand(interaction) {
       '`/audit` — Query the audit log',
       '`/revoke-downloads` — Revoke active download links',
     ];
-    content += '\n\n**Admin commands**\n' + adminCommands.join('\n');
+    embed.addFields({ name: 'Admin commands', value: adminCommands.join('\n'), inline: false });
   }
-  await interaction.reply({ content, ephemeral: true });
+  await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 async function handleRevokeDownloadsCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
@@ -1271,6 +1788,18 @@ async function handleRevokeDownloadsCommand(interaction) {
   return interaction.reply({ content: `✅ Revoked active links for ${user.tag}.`, ephemeral: true });
 }
 
+// customIds look like `delete_yes:tmdb:123:My%20Title:1234567890`. mediaId itself contains a
+// ':' (tmdb:/tvdb: prefix), so naive positional destructuring shifted every field — requestorId
+// ended up holding the encoded title, which silently broke the permission check and made the
+// media lookup fail. The title is URI-encoded (':' becomes %3A) and the requestor is a plain
+// snowflake, so parsing from the end is unambiguous.
+function parseDeleteCustomId(parts) {
+  const requestorId = parts[parts.length - 1];
+  const encodedTitle = parts[parts.length - 2];
+  const mediaId = parts.slice(0, -2).join(':');
+  return { mediaId, title: decodeURIComponent(encodedTitle), requestorId };
+}
+
 async function handleButton(interaction) {
   const [action, ...parts] = interaction.customId.split(':');
   if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny'].includes(action) && !isAdminInteraction(interaction)) {
@@ -1282,11 +1811,21 @@ async function handleButton(interaction) {
     await interaction.deferUpdate();
     const user = getUserByDiscordId(targetDiscordId);
     if (!user) return interaction.editReply({ content: 'User not found.', components: [] });
-    let plexStatus = 'failed'; let overseerrStatus = 'failed';
-    try { const result = await inviteUserToPlex(user.email); markUserInvited(targetDiscordId); plexStatus = `ok (${result.successCount}/${result.total})`; } catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId }); }
+    let plexStatus = 'failed'; let overseerrStatus = 'failed'; let plexOk = false;
+    try { const result = await inviteUserToPlex(user.email); markUserInvited(targetDiscordId); plexOk = result.successCount > 0; plexStatus = `ok (${result.successCount}/${result.total})`; } catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId }); }
     try { const du = await client.users.fetch(targetDiscordId); const oid = await createOverseerrUser(user.email, targetDiscordId, du.username); markOverseerrCreated(targetDiscordId, oid); overseerrStatus = `ok (${oid})`; } catch (err) { audit('external_api_error', { provider: 'overseerr', error: err.message, targetDiscordId }); }
     audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: 'plex_approve' });
-    await interaction.editReply({ content: `Approved <@${targetDiscordId}> | Plex: ${plexStatus} | Overseerr: ${overseerrStatus}`, components: [] });
+    // The welcome DM promises a confirmation — deliver it.
+    await dmUser(targetDiscordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle('🎉 You\'re In!')
+      .setDescription(`Your access request was approved!\n\n${plexOk ? `📬 A Plex invite was sent to \`${user.email}\` — accept it and you're set.` : `⚠️ Your Plex invite to \`${user.email}\` hit a snag — an admin is on it.`}\n\nOnce you're in, use \`/help\` here to see everything I can do. 🍿`)] });
+    await interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle('✅ Access Approved')
+      .addFields(
+        { name: 'User', value: `<@${targetDiscordId}>`, inline: true },
+        { name: 'Plex', value: plexStatus, inline: true },
+        { name: 'Overseerr', value: overseerrStatus, inline: true },
+      )], components: [] });
     return;
   }
 
@@ -1294,7 +1833,12 @@ async function handleButton(interaction) {
     const targetDiscordId = parts[0];
     removeUser(targetDiscordId);
     audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: 'plex_deny' });
-    await interaction.update({ content: `Declined <@${targetDiscordId}>`, components: [] });
+    await dmUser(targetDiscordId, { embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle('Access Request Declined')
+      .setDescription('Sorry — your Plex access request was declined. Reach out to an admin if you think this was a mistake.')] });
+    await interaction.update({ embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle('🚫 Access Declined')
+      .setDescription(`Declined <@${targetDiscordId}>`)], components: [] });
     return;
   }
 
@@ -1426,9 +1970,43 @@ async function handleButton(interaction) {
     return interaction.reply({ content: `✅ Merged onto <@${keptDiscordId}> with \`${finalEmail}\`${adoptedEmail ? ' (adopted Plex email)' : ''}. Removed plex row \`${plexDiscordId}\`.`, ephemeral: true });
   }
 
+  if (['stuck_retry', 'stuck_rm', 'stuck_ignore'].includes(action)) {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const [label, queueId] = parts;
+    const itemName = interaction.message.embeds?.[0]?.description || 'this download';
+
+    if (action === 'stuck_ignore') {
+      setSetting(`stuck_ignore:${label}:${queueId}`, '1');
+      audit('stuck_download_ignored', { actorDiscordId: interaction.user.id, label, queueId });
+      return interaction.update({ embeds: [brandedEmbed(COLORS.INFO)
+        .setTitle('🙈 Ignoring Stuck Download')
+        .setDescription(`${itemName}\n\nNo more alerts for this item while it stays in the queue.`)], components: [] });
+    }
+
+    const src = arrSourceByLabel(label);
+    if (!src) return interaction.reply({ content: `❌ ${label} is not configured anymore.`, ephemeral: true });
+    await interaction.deferUpdate();
+    const retry = action === 'stuck_retry';
+    try {
+      await axios.delete(`${src.url}/api/v3/queue/${queueId}`, {
+        params: { removeFromClient: true, blocklist: retry, skipRedownload: !retry },
+        headers: { 'X-Api-Key': src.key },
+        timeout: 15000,
+      });
+      audit('stuck_download_removed', { actorDiscordId: interaction.user.id, label, queueId, blocklisted: retry });
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+        .setTitle(retry ? '🔁 Removed — Searching for Another Release' : '🗑️ Removed From Queue')
+        .setDescription(`${itemName}\n\n${retry ? 'The release was blocklisted and a search for a replacement was triggered.' : 'Removed without blocklisting; nothing new was grabbed.'}`)], components: [] });
+    } catch (err) {
+      audit('external_api_error', { provider: label, error: err.message, action: 'stuck_remove', queueId });
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.DANGER)
+        .setTitle('❌ Remove Failed')
+        .setDescription(`${itemName}\n\n${err.message}\n(It may have already finished or been removed.)`)], components: [] });
+    }
+  }
+
   if (action === 'delete_yes') {
-    const [mediaId, encodedTitle, requestorId] = parts;
-    const title = decodeURIComponent(encodedTitle);
+    const { mediaId, title, requestorId } = parseDeleteCustomId(parts);
     if (interaction.user.id !== requestorId && !isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Not allowed.', ephemeral: true });
     if (!CONFIG.ENABLE_DELETION) return interaction.reply({ content: '⚠️ Deletion is disabled by config.', ephemeral: true });
     if (CONFIG.NEVER_DELETE_MEDIA_IDS.includes(mediaId)) return interaction.reply({ content: '⚠️ This media is in never-delete override list.', ephemeral: true });
@@ -1436,60 +2014,36 @@ async function handleButton(interaction) {
     audit('keep_delete_decision_made', { actorDiscordId: interaction.user.id, requestorId, mediaId, decision: 'delete_now' });
     await interaction.deferUpdate();
 
-    let resolved;
-    try {
-      resolved = await resolveDeletableMedia(mediaId);
-    } catch (err) {
-      audit('external_api_error', { provider: 'arr', error: err.message, mediaId, action: 'delete_resolve' });
-      return interaction.editReply({ content: `❌ Could not resolve **${title}** for deletion: ${err.message}`, components: [] });
+    const result = await executeDeletion(mediaId, title, { actorDiscordId: interaction.user.id, requestorId, reason: 'user_button' });
+    if (result.outcome === 'error') return interaction.editReply({ content: `❌ Delete failed for **${title}**: ${result.error}`, components: [] });
+    if (result.outcome === 'not_found') { markPendingDeletion(mediaId, 'cancelled'); return interaction.editReply({ content: `⚠️ Could not find **${title}** in Radarr/Sonarr — nothing to delete.`, components: [] }); }
+    if (result.outcome === 'dry_run') {
+      markPendingDeletion(mediaId, 'dry_run');
+      const fileList = result.paths.length ? result.paths.slice(0, 5).map(p => `• \`${p}\``).join('\n') : '• (no files on disk)';
+      return interaction.editReply({ content: `🧪 **Dry-run** — would delete **${title}** (${result.kind}, ${result.paths.length} file(s)).\n${fileList}\nWould call: \`${result.apiCall}\`\n\nSet \`DELETION_DRY_RUN=false\` to perform real deletes.`, components: [] });
     }
-    if (!resolved.found) {
-      audit('deletion_dry_run', { actorDiscordId: interaction.user.id, requestorId, mediaId, title, result: 'not_found' });
-      return interaction.editReply({ content: `⚠️ Could not find **${title}** in Radarr/Sonarr — nothing to delete.`, components: [] });
-    }
-
-    if (CONFIG.DELETION_DRY_RUN) {
-      audit('deletion_dry_run', { actorDiscordId: interaction.user.id, requestorId, mediaId, title, kind: resolved.kind, paths: resolved.paths, apiCall: resolved.apiCall });
-      const fileList = resolved.paths.length ? resolved.paths.slice(0, 5).map(p => `• \`${p}\``).join('\n') : '• (no files on disk)';
-      return interaction.editReply({ content: `🧪 **Dry-run** — would delete **${title}** (${resolved.kind}, ${resolved.paths.length} file(s)).\n${fileList}\nWould call: \`${resolved.apiCall}\`\n\nSet \`DELETION_DRY_RUN=false\` to perform real deletes.`, components: [] });
-    }
-
-    try {
-      let detail;
-      if (resolved.kind === 'movie') {
-        await axios.delete(`${resolved.source.url}/api/v3/movie/${resolved.movie.id}`, { params: { apikey: resolved.source.key, deleteFiles: true } });
-        detail = `Radarr movie #${resolved.movie.id} deleted with files.`;
-      } else {
-        let n = 0;
-        for (const f of resolved.files) {
-          await axios.delete(`${CONFIG.SONARR_URL}/api/v3/episodefile/${f.id}`, { params: { apikey: CONFIG.SONARR_API_KEY } });
-          n++;
-        }
-        detail = `Sonarr episode files deleted: ${n}/${resolved.files.length}.`;
-      }
-      audit('media_deleted', { actorDiscordId: interaction.user.id, requestorId, mediaId, title, kind: resolved.kind, paths: resolved.paths, apiCall: resolved.apiCall });
-      return interaction.editReply({ content: `🗑️ Deleted **${title}**. ${detail}`, components: [] });
-    } catch (err) {
-      audit('external_api_error', { provider: 'arr', error: err.message, mediaId, action: 'delete' });
-      return interaction.editReply({ content: `❌ Delete failed for **${title}**: ${err.message}`, components: [] });
-    }
+    markPendingDeletion(mediaId, 'deleted');
+    return interaction.editReply({ content: `🗑️ Deleted **${title}**. ${result.detail}`, components: [] });
   }
 
   if (action === 'delete_no') {
-    const [mediaId, encodedTitle, requestorId] = parts;
-    const title = decodeURIComponent(encodedTitle);
+    const { mediaId, title, requestorId } = parseDeleteCustomId(parts);
     if (interaction.user.id !== requestorId && !isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Not allowed.', ephemeral: true });
     addToKeepList(mediaId, mediaId.startsWith('tvdb:') ? 'tv' : 'movie', title, requestorId);
+    markPendingDeletion(mediaId, 'kept');
     audit('keep_delete_decision_made', { actorDiscordId: interaction.user.id, requestorId, mediaId, decision: 'keep' });
     await interaction.update({ content: `📌 Keeping **${title}**.`, components: [] });
     return;
   }
 
   if (action === 'delete_later') {
-    const [mediaId, _encodedTitle, requestorId] = parts;
+    const { mediaId, requestorId } = parseDeleteCustomId(parts);
     if (interaction.user.id !== requestorId && !isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Not allowed.', ephemeral: true });
     const nextPromptAt = Date.now() + CONFIG.DELETION_REMINDER_COOLDOWN_HOURS * 3600 * 1000;
     setSetting(`delete_prompt_snooze:${mediaId}:${requestorId}`, String(nextPromptAt));
+    // Give a fresh grace window after the reminder fires, so snoozing never means
+    // waking up to an already-deleted file.
+    postponePendingDeletion(mediaId, nextPromptAt + CONFIG.DELETION_GRACE_HOURS * 3600000);
     audit('keep_delete_decision_made', { actorDiscordId: interaction.user.id, requestorId, mediaId, decision: 'remind_later' });
     await interaction.update({ content: `⏰ Reminder set for later.`, components: [] });
   }
@@ -1517,6 +2071,8 @@ async function gatherHealth() {
     apiCheck('radarr', async () => { if (!CONFIG.RADARR_URL) return 'skipped'; await axios.get(`${CONFIG.RADARR_URL}/api/v3/system/status`, { params: { apikey: CONFIG.RADARR_API_KEY }, timeout: 5000 }); }),
     apiCheck('radarr4k', async () => { if (!CONFIG.RADARR_4K_URL) return 'skipped'; await axios.get(`${CONFIG.RADARR_4K_URL}/api/v3/system/status`, { params: { apikey: CONFIG.RADARR_4K_API_KEY }, timeout: 5000 }); }),
     apiCheck('sonarr', async () => { if (!CONFIG.SONARR_URL) return 'skipped'; await axios.get(`${CONFIG.SONARR_URL}/api/v3/system/status`, { params: { apikey: CONFIG.SONARR_API_KEY }, timeout: 5000 }); }),
+    apiCheck('prowlarr', async () => { if (!CONFIG.PROWLARR_URL) return 'skipped'; await axios.get(`${CONFIG.PROWLARR_URL}/api/v1/system/status`, { headers: { 'X-Api-Key': CONFIG.PROWLARR_API_KEY }, timeout: 5000 }); }),
+    apiCheck('byparr', async () => { if (!CONFIG.BYPARR_URL) return 'skipped'; await axios.get(`${CONFIG.BYPARR_URL}/health`, { timeout: 5000 }); }),
   ]);
 
   const failed = Object.entries(checks).filter(([k, v]) => !['overall', 'timestamp', 'tunnelDomain'].includes(k) && !['ok','configured','skipped'].includes(v));
@@ -1531,8 +2087,8 @@ function dashboardAuth(req, res, next) {
   const sessionOk = verifySession(readCookie(req, 'dm_session'));
   const pwd = req.headers['x-admin-password'];
   const token = req.headers['x-admin-token'];
-  const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && pwd === CONFIG.DASHBOARD_ADMIN_PASSWORD;
-  const tokenOk = CONFIG.DASHBOARD_ADMIN_TOKEN && token === CONFIG.DASHBOARD_ADMIN_TOKEN;
+  const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && safeEqual(pwd, CONFIG.DASHBOARD_ADMIN_PASSWORD);
+  const tokenOk = CONFIG.DASHBOARD_ADMIN_TOKEN && safeEqual(token, CONFIG.DASHBOARD_ADMIN_TOKEN);
   if (!sessionOk && !passOk && !tokenOk) {
     // Browsers hitting a page get sent to the login form; API/non-GET callers get 401.
     if (req.method === 'GET' && (req.headers.accept || '').includes('text/html')) {
@@ -1542,9 +2098,12 @@ function dashboardAuth(req, res, next) {
   }
 
   if (CONFIG.STRICT_DASHBOARD_POST_AUTH && req.method !== 'GET') {
-    const origin = req.get('origin');
-    const referer = req.get('referer');
-    if ((origin && !origin.includes(req.get('host'))) || (referer && !referer.includes(req.get('host')))) {
+    // Exact host match. Substring matching allowed e.g. https://myhost.com.evil.net through.
+    const sameHost = headerValue => {
+      if (!headerValue) return true; // header absent — nothing to compare
+      try { return new URL(headerValue).host === req.get('host'); } catch (_e) { return false; }
+    };
+    if (!sameHost(req.get('origin')) || !sameHost(req.get('referer'))) {
       return res.status(403).send('Cross-site POST denied');
     }
   }
@@ -1553,13 +2112,14 @@ function dashboardAuth(req, res, next) {
 
 function startExpressServer() {
   const app = express();
+  app.disable('x-powered-by');
   const upload = multer({ limits: { fileSize: 5 * 1024 * 1024, files: 5 } });
   app.use((req, res, next) => { if (req.is('multipart/form-data')) return next(); bodyParser.json({ limit: '1mb' })(req, res, next); });
 
   app.get('/health', async (_req, res) => res.json(await gatherHealth()));
 
   app.post('/webhook/overseerr', upload.any(), async (req, res) => {
-    if (CONFIG.WEBHOOK_SECRET && req.headers['x-webhook-secret'] !== CONFIG.WEBHOOK_SECRET) return res.status(401).json({ error: 'Unauthorized' });
+    if (CONFIG.WEBHOOK_SECRET && !safeEqual(req.headers['x-webhook-secret'], CONFIG.WEBHOOK_SECRET)) return res.status(401).json({ error: 'Unauthorized' });
     res.sendStatus(200);
     try {
       let body = req.body;
@@ -1570,7 +2130,7 @@ function startExpressServer() {
   });
 
   app.post('/webhook/plex', upload.any(), async (req, res) => {
-    if (CONFIG.WEBHOOK_SECRET && req.headers['x-webhook-secret'] !== CONFIG.WEBHOOK_SECRET) return res.status(401).json({ error: 'Unauthorized' });
+    if (CONFIG.WEBHOOK_SECRET && !safeEqual(req.headers['x-webhook-secret'], CONFIG.WEBHOOK_SECRET)) return res.status(401).json({ error: 'Unauthorized' });
     res.sendStatus(200);
     try {
       const payload = JSON.parse(req.body.payload || '{}');
@@ -1580,7 +2140,7 @@ function startExpressServer() {
   });
 
   app.post('/webhook/tautulli', async (req, res) => {
-    if (CONFIG.TAUTULLI_WEBHOOK_SECRET && req.headers['x-tautulli-secret'] !== CONFIG.TAUTULLI_WEBHOOK_SECRET) return res.status(401).json({ error: 'Unauthorized' });
+    if (CONFIG.TAUTULLI_WEBHOOK_SECRET && !safeEqual(req.headers['x-tautulli-secret'], CONFIG.TAUTULLI_WEBHOOK_SECRET)) return res.status(401).json({ error: 'Unauthorized' });
     res.sendStatus(200);
     try {
       audit('webhook_received', { source: 'tautulli', event: req.body?.event });
@@ -1639,9 +2199,22 @@ function startExpressServer() {
     audit('download_started', { targetDiscordId: record.discord_id, title: record.title });
 
     if (range) {
-      const [startStr, endStr] = range.replace(/bytes=/, '').split('-');
-      const start = Number.parseInt(startStr, 10);
-      const end = endStr ? Number.parseInt(endStr, 10) : fileSize - 1;
+      // Validate before touching the filesystem: a malformed header (NaN start, start > end,
+      // start past EOF) used to reach createReadStream and throw mid-response.
+      const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+      let start; let end;
+      if (m && m[1] === '' && m[2] !== '') {
+        // suffix form: last N bytes
+        start = Math.max(fileSize - Number.parseInt(m[2], 10), 0);
+        end = fileSize - 1;
+      } else {
+        start = m && m[1] !== '' ? Number.parseInt(m[1], 10) : NaN;
+        end = m && m[2] !== '' ? Math.min(Number.parseInt(m[2], 10), fileSize - 1) : fileSize - 1;
+      }
+      if (!m || Number.isNaN(start) || start > end || start >= fileSize) {
+        res.writeHead(416, { 'Content-Range': `bytes */${fileSize}` });
+        return res.end();
+      }
       res.writeHead(206, {
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
         'Accept-Ranges': 'bytes',
@@ -1663,6 +2236,7 @@ function startExpressServer() {
 
   if (CONFIG.DASHBOARD_ENABLED) {
     const loginLimits = new Map();
+    RATE_LIMIT_MAPS.push(loginLimits);
     const adminForm = express.urlencoded({ extended: false, limit: '16kb' });
 
     app.get('/admin/login', (req, res) => {
@@ -1676,8 +2250,8 @@ function startExpressServer() {
         return res.status(429).type('html').send(renderLogin(false, 'Too many attempts. Try again in a few minutes.'));
       }
       const pwd = req.body?.password || '';
-      const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && pwd === CONFIG.DASHBOARD_ADMIN_PASSWORD;
-      const tokenOk = CONFIG.DASHBOARD_ADMIN_TOKEN && pwd === CONFIG.DASHBOARD_ADMIN_TOKEN;
+      const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && safeEqual(pwd, CONFIG.DASHBOARD_ADMIN_PASSWORD);
+      const tokenOk = CONFIG.DASHBOARD_ADMIN_TOKEN && safeEqual(pwd, CONFIG.DASHBOARD_ADMIN_TOKEN);
       if (!passOk && !tokenOk) {
         audit('dashboard_login_failed', { ip });
         return res.redirect('/admin/login?error=1');
@@ -1863,7 +2437,7 @@ function healthClass(v) {
 }
 
 function renderHealthBadges(health) {
-  const keys = ['discord', 'sqlite', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'raidPath', 'tunnelDomain'];
+  const keys = ['discord', 'sqlite', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'prowlarr', 'byparr', 'raidPath', 'tunnelDomain'];
   return keys.filter(k => health[k] !== undefined)
     .map(k => `<span class="badge"><span class="dot ${healthClass(health[k])}"></span>${escapeHtml(k)}: ${escapeHtml(String(health[k]))}</span>`)
     .join('');
@@ -1884,6 +2458,44 @@ function renderSection(title, rows) {
   return `<div class="card"><h2>${escapeHtml(title)}</h2>${renderTable(rows)}</div>`;
 }
 
+// Resolve who actually made an Overseerr request.
+//
+// The old logic trusted `requestedBy_settings_discordId` from the webhook payload first.
+// If the webhook template is configured with {{notifyuser_*}} variables (or the request was
+// placed via the admin API key), that field carries the ADMIN's identity for every event —
+// which is how every request ended up attributed to the server owner. Our own DB, keyed by
+// the requester's email, is the source of truth; the webhook field is only a fallback, and
+// anything that isn't a real snowflake (or is the bot itself) is ignored.
+function resolveRequester(request) {
+  const email = (request?.requestedBy_email || '').trim() || null;
+  const dbUser = email ? getUserByCanonicalEmail(email) : null;
+  if (dbUser && isSnowflake(dbUser.discord_id)) {
+    return { discordId: dbUser.discord_id, email, source: 'db-email' };
+  }
+  const hookId = String(request?.requestedBy_settings_discordId || '').trim();
+  if (isSnowflake(hookId) && hookId !== CONFIG.DISCORD_CLIENT_ID) {
+    return { discordId: hookId, email, source: 'webhook' };
+  }
+  return { discordId: null, email, source: 'none' };
+}
+
+// Poster URL from the webhook payload ({{image}} in the Overseerr template), if sane.
+function posterUrl(body) {
+  const url = String(body?.image || '').trim();
+  return /^https:\/\//.test(url) ? url : null;
+}
+
+async function dmUser(discordId, payload) {
+  if (!isSnowflake(discordId)) return false;
+  try {
+    const user = await client.users.fetch(discordId);
+    await user.send(payload);
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
 async function handleOverseerrWebhook(body) {
   const { notification_type, subject, media, request } = body;
   if (!notification_type || !media) return;
@@ -1891,35 +2503,95 @@ async function handleOverseerrWebhook(body) {
   const title = titleMatch ? titleMatch[1] : (subject || 'Unknown Title');
   const is4k = !!media.is4k;
   const mediaId = media.media_type === 'tv' ? `tvdb:${media.tvdbId}` : `tmdb:${media.tmdbId}`;
-  const requesterEmail = request?.requestedBy_email;
-  const dbUser = requesterEmail ? getUserByEmail(requesterEmail) : null;
-  const requesterDiscordId = request?.requestedBy_settings_discordId || dbUser?.discord_id || null;
+  const requester = resolveRequester(request);
+  let requesterDiscordId = requester.discordId;
+  // Later events (approved/declined/available) often arrive without requestedBy_* fields.
+  // The DB row keeps the original requester (COALESCE in upsertRequest), so fall back to it —
+  // otherwise the approval/decline/available DMs silently never fire for those payloads.
+  if (!requesterDiscordId) {
+    const stored = request?.request_id
+      ? db.prepare('SELECT requested_by_discord_id FROM requests WHERE overseerr_request_id = ?').get(String(request.request_id))
+      : db.prepare('SELECT requested_by_discord_id FROM requests WHERE media_id = ? ORDER BY id DESC LIMIT 1').get(mediaId);
+    if (isSnowflake(stored?.requested_by_discord_id)) {
+      requesterDiscordId = stored.requested_by_discord_id;
+      requester.source = 'db-request';
+    }
+  }
+  const poster = posterUrl(body);
+  const requesterLine = requesterDiscordId
+    ? `<@${requesterDiscordId}>${requester.email ? ` · \`${requester.email}\`` : ''}`
+    : (requester.email ? `\`${requester.email}\`` : 'Unknown');
 
-  if (notification_type === 'MEDIA_PENDING') {
+  if (['MEDIA_PENDING', 'MEDIA_AUTO_APPROVED'].includes(notification_type)) {
     const adminChannel = await safeGetChannel(CONFIG.ADMIN_CHANNEL_ID);
     if (adminChannel) {
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`overseerr_approve:${request.request_id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`overseerr_deny:${request.request_id}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
-      );
-      await adminChannel.send({ embeds: [brandedEmbed(COLORS.INFO).setTitle(`${mediaTypeEmoji(media.media_type, is4k)} New Request`).setDescription(`**${title}**`).addFields({ name: 'Requested By', value: requesterDiscordId ? `<@${requesterDiscordId}>` : (requesterEmail || 'Unknown'), inline: true }, { name: 'Quality', value: is4k ? '4K' : 'HD', inline: true })], components: [row] });
+      const autoApproved = notification_type === 'MEDIA_AUTO_APPROVED';
+      const embed = brandedEmbed(autoApproved ? COLORS.SUCCESS : COLORS.INFO)
+        .setTitle(`${mediaTypeEmoji(media.media_type, is4k)} ${autoApproved ? 'Request Auto-Approved' : 'New Request'}`)
+        .setDescription(`**${title}**`)
+        .addFields(
+          { name: 'Requested by', value: requesterLine, inline: true },
+          { name: 'Type', value: mediaTypeLabel(media.media_type, is4k), inline: true },
+          { name: 'Status', value: autoApproved ? '✅ Auto-approved' : '⏳ Awaiting approval', inline: true },
+        );
+      if (poster) embed.setThumbnail(poster);
+      if (request?.request_id) embed.setFooter({ text: `Durant Media Server · Request #${request.request_id}` });
+      // Requestrr submits through Seerr as its configured default user unless per-user mapping
+      // is enabled. When everything resolves to the admin, surface it instead of silently
+      // pinning requests on the server owner.
+      if (requesterDiscordId === CONFIG.ADMIN_USER_ID) {
+        embed.addFields({ name: '⚠️ Attribution', value: 'Resolved to the admin account. If someone else requested this (e.g. via Requestrr without per-user mapping), Seerr recorded the wrong requester.', inline: false });
+      }
+      const components = [];
+      if (!autoApproved && request?.request_id) {
+        components.push(new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`overseerr_approve:${request.request_id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId(`overseerr_deny:${request.request_id}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
+        ));
+      }
+      await adminChannel.send({ embeds: [embed], components });
     }
-    audit('seerr_request_received', { requestId: request?.request_id, requesterDiscordId, title, mediaId });
+    audit('seerr_request_received', { requestId: request?.request_id, requesterDiscordId, requesterSource: requester.source, title, mediaId });
   }
 
-  if (['MEDIA_PENDING', 'MEDIA_APPROVED', 'MEDIA_AVAILABLE'].includes(notification_type)) {
-    const status = notification_type === 'MEDIA_APPROVED' ? 'approved' : notification_type === 'MEDIA_AVAILABLE' ? 'available' : 'pending';
-    upsertRequest(String(request?.request_id || ''), mediaId, media.media_type, is4k, title, requesterDiscordId, status);
+  if (['MEDIA_PENDING', 'MEDIA_AUTO_APPROVED', 'MEDIA_APPROVED', 'MEDIA_AVAILABLE', 'MEDIA_DECLINED'].includes(notification_type)) {
+    const status = { MEDIA_PENDING: 'pending', MEDIA_AUTO_APPROVED: 'approved', MEDIA_APPROVED: 'approved', MEDIA_AVAILABLE: 'available', MEDIA_DECLINED: 'declined' }[notification_type];
+    upsertRequest(request?.request_id, mediaId, media.media_type, is4k, title, requesterDiscordId, status);
+  }
+
+  if (['MEDIA_APPROVED', 'MEDIA_AUTO_APPROVED'].includes(notification_type) && requesterDiscordId) {
+    const embed = brandedEmbed(COLORS.SUCCESS)
+      .setTitle('🎉 Request Approved')
+      .setDescription(`**${title}** was approved and is being grabbed now.\nYou'll get another DM the moment it's ready to watch.`);
+    if (poster) embed.setThumbnail(poster);
+    await dmUser(requesterDiscordId, { embeds: [embed] });
+  }
+
+  if (notification_type === 'MEDIA_DECLINED' && requesterDiscordId) {
+    const embed = brandedEmbed(COLORS.DANGER)
+      .setTitle('🚫 Request Declined')
+      .setDescription(`Sorry — your request for **${title}** was declined.\nReach out to an admin if you think this was a mistake.`);
+    if (poster) embed.setThumbnail(poster);
+    await dmUser(requesterDiscordId, { embeds: [embed] });
+  }
+
+  if (notification_type === 'MEDIA_FAILED') {
+    const embed = brandedEmbed(COLORS.DANGER)
+      .setTitle('⚠️ Request Failed')
+      .setDescription(`**${title}** failed to process in ${media.media_type === 'tv' ? 'Sonarr' : 'Radarr'}.`)
+      .addFields({ name: 'Requested by', value: requesterLine, inline: true });
+    if (poster) embed.setThumbnail(poster);
+    notifyAdmin({ embeds: [embed] });
+    audit('seerr_request_failed', { requestId: request?.request_id, requesterDiscordId, title, mediaId });
   }
 
   if (notification_type === 'MEDIA_AVAILABLE' && requesterDiscordId) {
-    try {
-      const user = await client.users.fetch(requesterDiscordId);
-      await user.send({ embeds: [brandedEmbed(COLORS.SUCCESS)
-        .setTitle('✅ Now Available on Plex')
-        .setDescription(`**${title}** is ready to watch — enjoy! 🍿\n\nWant something else? Use \`/download\` or request more anytime.`)] });
-      audit('media_available_notification_sent', { targetDiscordId: requesterDiscordId, title });
-    } catch (_e) {}
+    const embed = brandedEmbed(COLORS.SUCCESS)
+      .setTitle('🍿 Now Available on Plex')
+      .setDescription(`**${title}** is ready to watch — enjoy!\n\nWant something else? Use \`/download\` or request more anytime.`);
+    if (poster) embed.setImage(poster);
+    const sent = await dmUser(requesterDiscordId, { embeds: [embed] });
+    if (sent) audit('media_available_notification_sent', { targetDiscordId: requesterDiscordId, title });
   }
 }
 
@@ -1939,7 +2611,7 @@ async function handlePlexWebhook(payload) {
   if (isInKeepList(mediaId) || CONFIG.NEVER_DELETE_MEDIA_IDS.includes(mediaId)) return;
 
   const reqRow = db.prepare('SELECT * FROM requests WHERE media_id = ? ORDER BY created_at DESC LIMIT 1').get(mediaId);
-  if (!reqRow?.requested_by_discord_id) return;
+  if (!isSnowflake(reqRow?.requested_by_discord_id)) return;
   const snoozeUntil = Number(getSetting(`delete_prompt_snooze:${mediaId}:${reqRow.requested_by_discord_id}`) || '0');
   if (snoozeUntil > Date.now()) return;
 
@@ -1951,7 +2623,9 @@ async function handlePlexWebhook(payload) {
     new ButtonBuilder().setCustomId(`delete_yes:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Delete Now').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(`delete_later:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Remind Me Later').setStyle(ButtonStyle.Primary),
   );
-  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [brandedEmbed(COLORS.WARN).setTitle(`${mediaTypeEmoji(mediaType === 'episode' ? 'tv' : 'movie', is4k)} Finished Watching`).setDescription(`Looks like you finished **${title}**. Should we keep it or free up space?\n\n⏳ Auto-deletes in ${CONFIG.DELETION_GRACE_HOURS} hour(s) unless you choose **Keep**.`)], components: [row] });
+  const autoLine = CONFIG.ENABLE_DELETION ? `\n\n⏳ Auto-deletes in ${CONFIG.DELETION_GRACE_HOURS} hour(s) unless you choose **Keep**.` : '';
+  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [brandedEmbed(COLORS.WARN).setTitle(`${mediaTypeEmoji(mediaType === 'episode' ? 'tv' : 'movie', is4k)} Finished Watching`).setDescription(`Looks like you finished **${title}**. Should we keep it or free up space?${autoLine}`)], components: [row] });
+  recordPendingDeletion(mediaId, mediaType === 'episode' ? 'tv' : 'movie', title, reqRow.requested_by_discord_id);
 }
 
 async function handleTautulliWebhook(body) {
@@ -1963,7 +2637,7 @@ async function handleTautulliWebhook(body) {
   if (!tmdb_id && media_type === 'movie') return;
   if (!tvdb_id && media_type === 'episode') return;
   const reqRow = db.prepare('SELECT * FROM requests WHERE media_id = ? ORDER BY created_at DESC LIMIT 1').get(mediaId);
-  if (!reqRow?.requested_by_discord_id || isInKeepList(mediaId)) return;
+  if (!isSnowflake(reqRow?.requested_by_discord_id) || isInKeepList(mediaId)) return;
   const snoozeUntil = Number(getSetting(`delete_prompt_snooze:${mediaId}:${reqRow.requested_by_discord_id}`) || '0');
   if (snoozeUntil > Date.now()) return;
   const adminChannel = await safeGetChannel(CONFIG.ADMIN_CHANNEL_ID);
@@ -1975,7 +2649,9 @@ async function handleTautulliWebhook(body) {
     new ButtonBuilder().setCustomId(`delete_yes:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Delete Now').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(`delete_later:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Remind Me Later').setStyle(ButtonStyle.Primary),
   );
-  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [brandedEmbed(COLORS.WARN).setTitle('📺 Finished Watching').setDescription(`Looks like you finished **${showTitle}**. Keep it, or free up space?`)], components: [row] });
+  const tautulliAutoLine = CONFIG.ENABLE_DELETION ? `\n\n⏳ Auto-deletes in ${CONFIG.DELETION_GRACE_HOURS} hour(s) unless you choose **Keep**.` : '';
+  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [brandedEmbed(COLORS.WARN).setTitle('📺 Finished Watching').setDescription(`Looks like you finished **${showTitle}**. Keep it, or free up space?${tautulliAutoLine}`)], components: [row] });
+  recordPendingDeletion(mediaId, media_type === 'episode' ? 'tv' : 'movie', showTitle, reqRow.requested_by_discord_id);
 }
 
 function shutdown(sig) {

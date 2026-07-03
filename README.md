@@ -52,6 +52,13 @@ See `.env.example` for full values.
 - `RADARR_URL`, `RADARR_API_KEY`
 - `RADARR_4K_URL`, `RADARR_4K_API_KEY`
 - `SONARR_URL`, `SONARR_API_KEY`
+- `PROWLARR_URL`, `PROWLARR_API_KEY` — adds Prowlarr to `/status` and dashboard health checks
+- `BYPARR_URL` — adds Byparr (`/health` endpoint) to health checks
+- `STUCK_CHECK_MINUTES` (default `10`), `STUCK_AFTER_MINUTES` (default `45`), `STUCK_ALERT_COOLDOWN_HOURS` (default `6`) — stuck-download watchdog: when a queue item makes no progress for `STUCK_AFTER_MINUTES` (e.g. no seeders), the admin channel gets an alert with **Remove & Try Another Release** (blocklist + auto re-search), **Remove Only**, and **Ignore** buttons. Set `STUCK_CHECK_MINUTES=0` to disable.
+- `JANITOR_CHECK_MINUTES` (default `60`) — janitor sweep interval; `0` disables. The janitor:
+  1. **Grace deletes** — enforces the "Finished Watching" prompt's auto-delete promise: if nobody clicks Keep/Delete within `DELETION_GRACE_HOURS`, the media is deleted (requires `ENABLE_DELETION=true`; honors `DELETION_DRY_RUN`, keep list, and never-delete list). Requester gets a DM; admin channel gets a report. "Remind Me Later" restarts the grace window after the reminder.
+  2. **Disk-space alerts** — warns the admin channel (24h cooldown) when any *arr-visible volume drops below `DISK_SPACE_WARN_GB` (default `100`, `0` disables). `/status` also shows a Storage section.
+  3. **Retention rules** — with `RETENTION_ENFORCEMENT=true`, enforces the `media_retention_rules` table (`movie_4k`/`movie_1080p` → matching Radarr, `tv_episode` → Sonarr) every `RETENTION_CHECK_HOURS` (default `24`), deleting oldest-first, at most `RETENTION_MAX_DELETES_PER_RUN` (default `10`) per run. Dry-run posts a "would delete" digest instead.
 - `PATH_REMAP_FROM`, `PATH_REMAP_TO`
 - `DOWNLOAD_*`, `ENABLE_DELETION`, `KEEP_LIST_DEFAULT_DAYS`, `NEVER_DELETE_MEDIA_IDS`
 - `DELETION_DRY_RUN` (default `true`) — when deletion is confirmed, logs the exact file paths and API call that would fire and skips the real delete API. Flip to `false` only after reviewing real prompts.
@@ -101,6 +108,41 @@ Compose defaults:
 - Seerr: `POST /webhook/overseerr`
 - Plex: `POST /webhook/plex` (uses `WEBHOOK_SECRET` when set)
 - Tautulli (legacy): `POST /webhook/tautulli`
+
+### Seerr webhook JSON payload (important for correct requester attribution)
+The bot resolves who made a request from its own DB first (matching `requestedBy_email`
+against linked users on canonical email), and only falls back to the Discord ID in the
+payload. Make sure the Seerr webhook JSON template includes the `{{request}}` block and
+`{{image}}` — and uses the **`requestedBy_*`** variables, *not* `notifyuser_*` (those
+resolve to whoever receives the notification, typically the admin, which makes every
+request look like it came from the server owner):
+
+```json
+{
+  "notification_type": "{{notification_type}}",
+  "event": "{{event}}",
+  "subject": "{{subject}}",
+  "message": "{{message}}",
+  "image": "{{image}}",
+  "{{media}}": {
+    "media_type": "{{media_type}}",
+    "tmdbId": "{{media_tmdbid}}",
+    "tvdbId": "{{media_tvdbid}}",
+    "status": "{{media_status}}",
+    "status4k": "{{media_status4k}}"
+  },
+  "{{request}}": {
+    "request_id": "{{request_id}}",
+    "requestedBy_email": "{{requestedBy_email}}",
+    "requestedBy_username": "{{requestedBy_username}}",
+    "requestedBy_avatar": "{{requestedBy_avatar}}",
+    "requestedBy_settings_discordId": "{{requestedBy_settings_discordId}}"
+  }
+}
+```
+
+Enable at least: Request Pending Approval, Request Approved, Request Automatically
+Approved, Request Declined, Request Available, Request Processing Failed.
 
 ## Discord Command Registration
 Slash commands are registered automatically on bot startup using `DISCORD_CLIENT_ID` + `DISCORD_GUILD_ID`.
