@@ -42,6 +42,12 @@ const CONFIG = {
   RADARR_4K_API_KEY: process.env.RADARR_4K_API_KEY || '',
   SONARR_URL: process.env.SONARR_URL || '',
   SONARR_API_KEY: process.env.SONARR_API_KEY || '',
+  PROWLARR_URL: process.env.PROWLARR_URL || '',
+  PROWLARR_API_KEY: process.env.PROWLARR_API_KEY || '',
+  BYPARR_URL: process.env.BYPARR_URL || '',
+  STUCK_CHECK_MINUTES: Number.parseInt(process.env.STUCK_CHECK_MINUTES || '10', 10),
+  STUCK_AFTER_MINUTES: Number.parseInt(process.env.STUCK_AFTER_MINUTES || '45', 10),
+  STUCK_ALERT_COOLDOWN_HOURS: Number.parseInt(process.env.STUCK_ALERT_COOLDOWN_HOURS || '6', 10),
   TUNNEL_DOMAIN: process.env.TUNNEL_DOMAIN,
   RAID_PATH: process.env.RAID_PATH || '/mnt/raid',
   PATH_REMAP_FROM: process.env.PATH_REMAP_FROM || '',
@@ -554,6 +560,122 @@ async function sonarrGet(endpoint, params = {}) {
   return res.data;
 }
 
+// The configured *arr instances, used for queue reads and stuck-download actions.
+function arrSources() {
+  const sources = [];
+  if (CONFIG.RADARR_URL) sources.push({ kind: 'movie', label: 'radarr', url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY });
+  if (CONFIG.RADARR_4K_URL) sources.push({ kind: 'movie', label: 'radarr-4k', url: CONFIG.RADARR_4K_URL, key: CONFIG.RADARR_4K_API_KEY });
+  if (CONFIG.SONARR_URL) sources.push({ kind: 'tv', label: 'sonarr', url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY });
+  return sources;
+}
+const arrSourceByLabel = label => arrSources().find(s => s.label === label) || null;
+
+// Normalized view of every active download across Radarr / Radarr-4K / Sonarr.
+async function fetchArrQueues() {
+  const items = [];
+  for (const s of arrSources()) {
+    try {
+      const params = s.kind === 'movie'
+        ? { pageSize: 200, includeMovie: true }
+        : { pageSize: 200, includeSeries: true, includeEpisode: true };
+      const res = await axios.get(`${s.url}/api/v3/queue`, { params, headers: { 'X-Api-Key': s.key }, timeout: 10000 });
+      for (const r of res.data.records || []) {
+        const displayTitle = s.kind === 'movie'
+          ? (r.movie?.title || r.title || 'Unknown')
+          : `${r.series?.title || r.title || 'Unknown'}${r.episode ? ` S${pad(r.episode.seasonNumber)}E${pad(r.episode.episodeNumber)}` : ''}`;
+        items.push({
+          source: s,
+          queueId: r.id,
+          title: displayTitle,
+          size: r.size || 0,
+          sizeleft: r.sizeleft || 0,
+          timeleft: r.timeleft || null,
+          status: r.status || '',
+          trackedStatus: r.trackedDownloadStatus || '',
+          trackedState: r.trackedDownloadState || '',
+          messages: (r.statusMessages || []).flatMap(m => m.messages || []).slice(0, 3),
+        });
+      }
+    } catch (err) {
+      audit('external_api_error', { provider: s.label, error: err.message, action: 'queue_fetch' });
+    }
+  }
+  return items;
+}
+
+function queuePercent(item) {
+  if (!item.size) return 0;
+  return Math.max(0, Math.min(100, Math.round(((item.size - item.sizeleft) / item.size) * 100)));
+}
+function progressBar(pct) {
+  const filled = Math.round(pct / 10);
+  return '▰'.repeat(filled) + '▱'.repeat(10 - filled);
+}
+function queueItemLooksUnhealthy(item) {
+  return item.trackedStatus === 'warning' || item.status === 'warning' || item.status === 'failed' || item.messages.length > 0;
+}
+
+// ---- Stuck-download watchdog ----
+// Downloads with no seeders (or import problems) sit in the queue forever with frozen
+// progress. Track byte movement per queue item; when one hasn't moved for
+// STUCK_AFTER_MINUTES (or the *arr flags it), alert the admin channel with one-click
+// actions: remove+blocklist+search another release, remove only, or ignore.
+const stuckTracker = new Map(); // `${label}:${queueId}` -> { sizeleft, since, alertedAt }
+
+async function sweepStuckDownloads() {
+  const items = await fetchArrQueues();
+  const now = Date.now();
+  const seen = new Set();
+  for (const item of items) {
+    const key = `${item.source.label}:${item.queueId}`;
+    seen.add(key);
+    if (getSetting(`stuck_ignore:${key}`)) continue;
+
+    let entry = stuckTracker.get(key);
+    if (!entry || entry.sizeleft !== item.sizeleft) {
+      entry = { sizeleft: item.sizeleft, since: now, alertedAt: entry?.alertedAt || 0 };
+      stuckTracker.set(key, entry);
+      continue; // progress (or first sighting) — nothing to flag yet
+    }
+
+    const unhealthy = queueItemLooksUnhealthy(item);
+    const shouldBeMoving = item.status === 'downloading' || item.trackedState === 'downloading';
+    const frozenMs = now - entry.since;
+    if (!(unhealthy || shouldBeMoving)) continue;
+    if (frozenMs < CONFIG.STUCK_AFTER_MINUTES * 60000) continue;
+    if (now - entry.alertedAt < CONFIG.STUCK_ALERT_COOLDOWN_HOURS * 3600000) continue;
+
+    entry.alertedAt = now;
+    const pct = queuePercent(item);
+    const embed = brandedEmbed(COLORS.WARN)
+      .setTitle('🧊 Download Stuck')
+      .setDescription(`**${item.title}** hasn't moved in ${Math.round(frozenMs / 60000)} minutes.`)
+      .addFields(
+        { name: 'Progress', value: `${progressBar(pct)} ${pct}%`, inline: true },
+        { name: 'Source', value: item.source.label, inline: true },
+        { name: 'Status', value: item.trackedStatus || item.status || 'unknown', inline: true },
+      );
+    if (item.messages.length) embed.addFields({ name: 'Reported problems', value: item.messages.map(m => `• ${m}`).join('\n').slice(0, 1000), inline: false });
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`stuck_retry:${key}`).setLabel('Remove & Try Another Release').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`stuck_rm:${key}`).setLabel('Remove Only').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`stuck_ignore:${key}`).setLabel('Ignore').setStyle(ButtonStyle.Secondary),
+    );
+    notifyAdmin({ embeds: [embed], components: [row] });
+    audit('stuck_download_detected', { label: item.source.label, queueId: item.queueId, title: item.title, frozenMinutes: Math.round(frozenMs / 60000) });
+  }
+
+  // Forget items that left the queue, and clear their ignore flags so a future
+  // download reusing the same queue id can't be silently ignored.
+  for (const key of stuckTracker.keys()) {
+    if (!seen.has(key)) stuckTracker.delete(key);
+  }
+  const ignoreRows = db.prepare("SELECT key FROM app_settings WHERE key LIKE 'stuck_ignore:%'").all();
+  for (const r of ignoreRows) {
+    if (!seen.has(r.key.slice('stuck_ignore:'.length))) db.prepare('DELETE FROM app_settings WHERE key = ?').run(r.key);
+  }
+}
+
 async function searchMovies(title) {
   const lower = title.toLowerCase();
   const results = [];
@@ -676,6 +798,7 @@ const slashCommands = [
     .addSubcommand(s => s.setName('recent').setDescription('Recent entries').addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100)))
     .addSubcommand(s => s.setName('user').setDescription('Entries by user').addUserOption(o => o.setName('person').setDescription('User').setRequired(true)).addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100)))
     .addSubcommand(s => s.setName('action').setDescription('Entries by action').addStringOption(o => o.setName('action').setDescription('Action name').setRequired(true)).addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100))),
+  new SlashCommandBuilder().setName('queue').setDescription('Show what is downloading right now'),
   new SlashCommandBuilder().setName('me').setDescription('Show your linked profile'),
   new SlashCommandBuilder().setName('myrequests').setDescription('Show your recent requests'),
   new SlashCommandBuilder().setName('downloads').setDescription('Show your active download links'),
@@ -697,6 +820,10 @@ client.once('ready', async () => {
   rehydratePendingEmails();
   await registerSlashCommands();
   startExpressServer();
+  if (CONFIG.STUCK_CHECK_MINUTES > 0 && arrSources().length) {
+    setInterval(() => sweepStuckDownloads().catch(err => log.warn(`Stuck-download sweep failed: ${err.message}`)), CONFIG.STUCK_CHECK_MINUTES * 60000).unref();
+    log.ok(`Stuck-download watchdog running every ${CONFIG.STUCK_CHECK_MINUTES} min (threshold ${CONFIG.STUCK_AFTER_MINUTES} min)`);
+  }
 });
 
 client.on('guildMemberAdd', async member => {
@@ -784,6 +911,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'sync-fix') return handleSyncFixCommand(interaction);
   if (n === 'cleanup') return handleCleanupCommand(interaction);
   if (n === 'audit') return handleAuditCommand(interaction);
+  if (n === 'queue') return handleQueueCommand(interaction);
   if (n === 'me') return handleMeCommand(interaction);
   if (n === 'myrequests') return handleMyRequestsCommand(interaction);
   if (n === 'downloads') return handleDownloadsCommand(interaction);
@@ -886,7 +1014,7 @@ async function handleStatusCommand(interaction) {
   const pendingRequests = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get().c;
   const activeLinks = db.prepare('SELECT COUNT(*) AS c FROM download_tokens WHERE revoked = 0 AND expires_at > ?').get(Date.now()).c;
 
-  const integrationKeys = ['discord', 'sqlite', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'raidPath', 'tunnelDomain'];
+  const integrationKeys = ['discord', 'sqlite', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'prowlarr', 'byparr', 'raidPath', 'tunnelDomain'];
   const integrationLines = integrationKeys.filter(k => health[k] !== undefined).map(k => `${statusEmoji(health[k])} ${k}: ${health[k]}`);
 
   // Categorize DB rows: real Discord-linked, plex_-only synthetic, and @plex.local placeholders
@@ -1291,6 +1419,31 @@ async function handleAuditCommand(interaction) {
   await interaction.reply({ content: rows.map(r => `#${r.id} ${r.created_at} ${r.action}`).join('\n') || 'No rows', ephemeral: true });
 }
 
+async function handleQueueCommand(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const items = await fetchArrQueues();
+  if (!items.length) {
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle('📭 Download Queue')
+      .setDescription('Nothing downloading right now — the queue is clear.')] });
+  }
+  const lines = items.slice(0, 12).map(i => {
+    const pct = queuePercent(i);
+    const flag = queueItemLooksUnhealthy(i) ? ' ⚠️' : '';
+    const eta = i.timeleft ? ` · ETA \`${i.timeleft}\`` : '';
+    const size = i.size ? ` · ${(i.size / (1024 ** 3)).toFixed(1)} GB` : '';
+    return `**${i.title}**${flag}\n└ ${progressBar(pct)} ${pct}%${eta}${size}`;
+  });
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle(`⬇️ Download Queue (${items.length})`)
+    .setDescription(lines.join('\n'));
+  if (items.length > 12) embed.setFooter({ text: `Durant Media Server · Showing 12 of ${items.length}` });
+  if (items.some(queueItemLooksUnhealthy)) {
+    embed.addFields({ name: 'Legend', value: '⚠️ = the *arr reports a problem with this download (stalled, missing, import issue)', inline: false });
+  }
+  await interaction.editReply({ embeds: [embed] });
+}
+
 async function handleMeCommand(interaction) {
   const row = getUserByDiscordId(interaction.user.id);
   if (!row) {
@@ -1343,6 +1496,7 @@ async function handleHelpCommand(interaction) {
     '`/download` — Get a secure download link for a movie or episode',
     '`/me` — Show your linked profile and access status',
     '`/myrequests` — Show your recent Seerr requests',
+    '`/queue` — See what\'s downloading right now (progress + ETA)',
     '`/downloads` — Show your active download links',
     '`/keep` — Show your keep list (media saved from cleanup)',
     '`/help` — Show this help message',
@@ -1564,6 +1718,41 @@ async function handleButton(interaction) {
     return interaction.reply({ content: `✅ Merged onto <@${keptDiscordId}> with \`${finalEmail}\`${adoptedEmail ? ' (adopted Plex email)' : ''}. Removed plex row \`${plexDiscordId}\`.`, ephemeral: true });
   }
 
+  if (['stuck_retry', 'stuck_rm', 'stuck_ignore'].includes(action)) {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const [label, queueId] = parts;
+    const itemName = interaction.message.embeds?.[0]?.description || 'this download';
+
+    if (action === 'stuck_ignore') {
+      setSetting(`stuck_ignore:${label}:${queueId}`, '1');
+      audit('stuck_download_ignored', { actorDiscordId: interaction.user.id, label, queueId });
+      return interaction.update({ embeds: [brandedEmbed(COLORS.INFO)
+        .setTitle('🙈 Ignoring Stuck Download')
+        .setDescription(`${itemName}\n\nNo more alerts for this item while it stays in the queue.`)], components: [] });
+    }
+
+    const src = arrSourceByLabel(label);
+    if (!src) return interaction.reply({ content: `❌ ${label} is not configured anymore.`, ephemeral: true });
+    await interaction.deferUpdate();
+    const retry = action === 'stuck_retry';
+    try {
+      await axios.delete(`${src.url}/api/v3/queue/${queueId}`, {
+        params: { removeFromClient: true, blocklist: retry, skipRedownload: !retry },
+        headers: { 'X-Api-Key': src.key },
+        timeout: 15000,
+      });
+      audit('stuck_download_removed', { actorDiscordId: interaction.user.id, label, queueId, blocklisted: retry });
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+        .setTitle(retry ? '🔁 Removed — Searching for Another Release' : '🗑️ Removed From Queue')
+        .setDescription(`${itemName}\n\n${retry ? 'The release was blocklisted and a search for a replacement was triggered.' : 'Removed without blocklisting; nothing new was grabbed.'}`)], components: [] });
+    } catch (err) {
+      audit('external_api_error', { provider: label, error: err.message, action: 'stuck_remove', queueId });
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.DANGER)
+        .setTitle('❌ Remove Failed')
+        .setDescription(`${itemName}\n\n${err.message}\n(It may have already finished or been removed.)`)], components: [] });
+    }
+  }
+
   if (action === 'delete_yes') {
     const { mediaId, title, requestorId } = parseDeleteCustomId(parts);
     if (interaction.user.id !== requestorId && !isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Not allowed.', ephemeral: true });
@@ -1653,6 +1842,8 @@ async function gatherHealth() {
     apiCheck('radarr', async () => { if (!CONFIG.RADARR_URL) return 'skipped'; await axios.get(`${CONFIG.RADARR_URL}/api/v3/system/status`, { params: { apikey: CONFIG.RADARR_API_KEY }, timeout: 5000 }); }),
     apiCheck('radarr4k', async () => { if (!CONFIG.RADARR_4K_URL) return 'skipped'; await axios.get(`${CONFIG.RADARR_4K_URL}/api/v3/system/status`, { params: { apikey: CONFIG.RADARR_4K_API_KEY }, timeout: 5000 }); }),
     apiCheck('sonarr', async () => { if (!CONFIG.SONARR_URL) return 'skipped'; await axios.get(`${CONFIG.SONARR_URL}/api/v3/system/status`, { params: { apikey: CONFIG.SONARR_API_KEY }, timeout: 5000 }); }),
+    apiCheck('prowlarr', async () => { if (!CONFIG.PROWLARR_URL) return 'skipped'; await axios.get(`${CONFIG.PROWLARR_URL}/api/v1/system/status`, { headers: { 'X-Api-Key': CONFIG.PROWLARR_API_KEY }, timeout: 5000 }); }),
+    apiCheck('byparr', async () => { if (!CONFIG.BYPARR_URL) return 'skipped'; await axios.get(`${CONFIG.BYPARR_URL}/health`, { timeout: 5000 }); }),
   ]);
 
   const failed = Object.entries(checks).filter(([k, v]) => !['overall', 'timestamp', 'tunnelDomain'].includes(k) && !['ok','configured','skipped'].includes(v));
@@ -2017,7 +2208,7 @@ function healthClass(v) {
 }
 
 function renderHealthBadges(health) {
-  const keys = ['discord', 'sqlite', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'raidPath', 'tunnelDomain'];
+  const keys = ['discord', 'sqlite', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'prowlarr', 'byparr', 'raidPath', 'tunnelDomain'];
   return keys.filter(k => health[k] !== undefined)
     .map(k => `<span class="badge"><span class="dot ${healthClass(health[k])}"></span>${escapeHtml(k)}: ${escapeHtml(String(health[k]))}</span>`)
     .join('');
