@@ -2084,7 +2084,19 @@ async function handleOverseerrWebhook(body) {
   const is4k = !!media.is4k;
   const mediaId = media.media_type === 'tv' ? `tvdb:${media.tvdbId}` : `tmdb:${media.tmdbId}`;
   const requester = resolveRequester(request);
-  const requesterDiscordId = requester.discordId;
+  let requesterDiscordId = requester.discordId;
+  // Later events (approved/declined/available) often arrive without requestedBy_* fields.
+  // The DB row keeps the original requester (COALESCE in upsertRequest), so fall back to it —
+  // otherwise the approval/decline/available DMs silently never fire for those payloads.
+  if (!requesterDiscordId) {
+    const stored = request?.request_id
+      ? db.prepare('SELECT requested_by_discord_id FROM requests WHERE overseerr_request_id = ?').get(String(request.request_id))
+      : db.prepare('SELECT requested_by_discord_id FROM requests WHERE media_id = ? ORDER BY id DESC LIMIT 1').get(mediaId);
+    if (isSnowflake(stored?.requested_by_discord_id)) {
+      requesterDiscordId = stored.requested_by_discord_id;
+      requester.source = 'db-request';
+    }
+  }
   const poster = posterUrl(body);
   const requesterLine = requesterDiscordId
     ? `<@${requesterDiscordId}>${requester.email ? ` · \`${requester.email}\`` : ''}`
