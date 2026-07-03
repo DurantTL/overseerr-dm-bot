@@ -48,6 +48,11 @@ const CONFIG = {
   STUCK_CHECK_MINUTES: Number.parseInt(process.env.STUCK_CHECK_MINUTES || '10', 10),
   STUCK_AFTER_MINUTES: Number.parseInt(process.env.STUCK_AFTER_MINUTES || '45', 10),
   STUCK_ALERT_COOLDOWN_HOURS: Number.parseInt(process.env.STUCK_ALERT_COOLDOWN_HOURS || '6', 10),
+  JANITOR_CHECK_MINUTES: Number.parseInt(process.env.JANITOR_CHECK_MINUTES || '60', 10),
+  RETENTION_ENFORCEMENT: parseBool(process.env.RETENTION_ENFORCEMENT, false),
+  RETENTION_CHECK_HOURS: Number.parseInt(process.env.RETENTION_CHECK_HOURS || '24', 10),
+  RETENTION_MAX_DELETES_PER_RUN: Number.parseInt(process.env.RETENTION_MAX_DELETES_PER_RUN || '10', 10),
+  DISK_SPACE_WARN_GB: Number.parseInt(process.env.DISK_SPACE_WARN_GB || '100', 10),
   TUNNEL_DOMAIN: process.env.TUNNEL_DOMAIN,
   RAID_PATH: process.env.RAID_PATH || '/mnt/raid',
   PATH_REMAP_FROM: process.env.PATH_REMAP_FROM || '',
@@ -260,6 +265,18 @@ function runMigrations() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS pending_deletions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      media_id TEXT NOT NULL UNIQUE,
+      media_type TEXT,
+      title TEXT,
+      requestor_discord_id TEXT,
+      prompt_sent_at INTEGER,
+      delete_after INTEGER NOT NULL,
+      status TEXT DEFAULT 'pending',
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS media_retention_rules (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       media_class TEXT UNIQUE,
@@ -373,6 +390,28 @@ function addToKeepList(mediaId, mediaType, title, discordId, keepDays = CONFIG.K
 
 function isInKeepList(mediaId) {
   return !!db.prepare('SELECT id FROM keep_list WHERE media_id = ? AND (expires_at IS NULL OR expires_at > ?)').get(mediaId, Date.now());
+}
+
+// The "Finished Watching" prompt promises auto-deletion after the grace period; these rows are
+// what the janitor sweep actually enforces. Re-prompting the same media resets the clock.
+function recordPendingDeletion(mediaId, mediaType, title, requestorDiscordId) {
+  const now = Date.now();
+  db.prepare(`INSERT INTO pending_deletions (media_id, media_type, title, requestor_discord_id, prompt_sent_at, delete_after, status, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
+    ON CONFLICT(media_id) DO UPDATE SET
+      title = excluded.title,
+      requestor_discord_id = excluded.requestor_discord_id,
+      prompt_sent_at = excluded.prompt_sent_at,
+      delete_after = excluded.delete_after,
+      status = 'pending',
+      updated_at = CURRENT_TIMESTAMP`)
+    .run(mediaId, mediaType, title, requestorDiscordId || null, now, now + CONFIG.DELETION_GRACE_HOURS * 3600000);
+}
+function markPendingDeletion(mediaId, status) {
+  db.prepare('UPDATE pending_deletions SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE media_id = ?').run(status, mediaId);
+}
+function postponePendingDeletion(mediaId, deleteAfterMs) {
+  db.prepare("UPDATE pending_deletions SET delete_after = ?, status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE media_id = ?").run(deleteAfterMs, mediaId);
 }
 
 function createDownloadToken(filePath, title, discordId, oneTimeUse = CONFIG.DOWNLOAD_ONE_TIME_LINKS_DEFAULT) {
@@ -676,6 +715,167 @@ async function sweepStuckDownloads() {
   }
 }
 
+// ---- Janitor: grace-period auto-delete, retention rules, disk-space alerts ----
+
+// Free/total space of every volume the *arrs can see, deduped by path across instances.
+async function fetchDiskSpace() {
+  const seen = new Map();
+  const sources = arrSources();
+  for (const s of sources) {
+    try {
+      const res = await axios.get(`${s.url}/api/v3/diskspace`, { headers: { 'X-Api-Key': s.key }, timeout: 8000 });
+      for (const d of res.data || []) {
+        if (!seen.has(d.path)) seen.set(d.path, d);
+      }
+    } catch (err) {
+      audit('external_api_error', { provider: s.label, error: err.message, action: 'diskspace' });
+    }
+  }
+  return [...seen.values()].filter(d => (d.totalSpace || 0) > 10 * 1024 ** 3);
+}
+const gb = bytes => bytes / (1024 ** 3);
+const fmtSpace = bytes => gb(bytes) >= 1024 ? `${(gb(bytes) / 1024).toFixed(2)} TB` : `${gb(bytes).toFixed(0)} GB`;
+
+// Enforce the "Auto-deletes in N hours unless you choose Keep" promise. Every guard rail is
+// re-checked at execution time: deletion enabled, keep list, never-delete list.
+async function sweepGraceDeletions() {
+  if (!CONFIG.ENABLE_DELETION) return;
+  const due = db.prepare("SELECT * FROM pending_deletions WHERE status = 'pending' AND delete_after < ?").all(Date.now());
+  for (const row of due) {
+    if (isInKeepList(row.media_id) || CONFIG.NEVER_DELETE_MEDIA_IDS.includes(row.media_id)) {
+      markPendingDeletion(row.media_id, 'kept');
+      continue;
+    }
+    const result = await executeDeletion(row.media_id, row.title, { requestorId: row.requestor_discord_id, reason: 'grace_expired' });
+    if (result.outcome === 'error') continue; // transient *arr failure — retry next sweep
+    if (result.outcome === 'not_found') { markPendingDeletion(row.media_id, 'cancelled'); continue; }
+    if (result.outcome === 'dry_run') {
+      markPendingDeletion(row.media_id, 'dry_run');
+      notifyAdmin({ embeds: [brandedEmbed(COLORS.WARN)
+        .setTitle('🧪 Janitor Dry-Run')
+        .setDescription(`Grace period expired for **${row.title}** — would have deleted ${result.paths.length} file(s).\nSet \`DELETION_DRY_RUN=false\` to let the janitor delete for real.`)] });
+      continue;
+    }
+    markPendingDeletion(row.media_id, 'deleted');
+    notifyAdmin({ embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle('🧹 Auto-Deleted After Grace Period')
+      .setDescription(`**${row.title}** — no response to the keep prompt within ${CONFIG.DELETION_GRACE_HOURS}h.\n${result.detail}`)] });
+    await dmUser(row.requestor_discord_id, { embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle('🧹 Freed Up Space')
+      .setDescription(`**${row.title}** was removed since we didn't hear back on the keep prompt.\nWant it back? Just request it again anytime!`)] });
+  }
+}
+
+// Age-based cleanup driven by the media_retention_rules table: movie_4k / movie_1080p apply to
+// the matching Radarr instance, tv_episode to Sonarr episode files. (tv_season is reserved.)
+// Deletes oldest-first, capped per run, and honors keep list / never-delete / kept decisions.
+async function sweepRetentionRules() {
+  const rules = Object.fromEntries(db.prepare('SELECT media_class, retention_days FROM media_retention_rules WHERE enabled = 1').all().map(r => [r.media_class, r.retention_days]));
+  const now = Date.now();
+  const candidates = [];
+
+  const movieSources = [
+    { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, rule: rules.movie_1080p },
+    { url: CONFIG.RADARR_4K_URL, key: CONFIG.RADARR_4K_API_KEY, rule: rules.movie_4k },
+  ].filter(s => s.url && s.rule > 0);
+  for (const s of movieSources) {
+    const movies = await radarrGetFrom(s.url, s.key, '/movie').catch(() => []);
+    for (const m of movies) {
+      if (!m.hasFile || !m.movieFile?.dateAdded) continue;
+      const ageDays = (now - Date.parse(m.movieFile.dateAdded)) / 86400000;
+      if (ageDays < s.rule) continue;
+      candidates.push({ kind: 'movie', mediaId: `tmdb:${m.tmdbId}`, title: `${m.title}${m.year ? ` (${m.year})` : ''}`, ageDays, sizeBytes: m.movieFile.size || 0 });
+    }
+  }
+
+  if (CONFIG.SONARR_URL && rules.tv_episode > 0) {
+    const seriesList = await sonarrGet('/series').catch(() => []);
+    for (const series of seriesList) {
+      const files = await getEpisodeFiles(series.id).catch(() => []);
+      const old = files.filter(f => f.dateAdded && (now - Date.parse(f.dateAdded)) / 86400000 >= rules.tv_episode);
+      if (!old.length) continue;
+      const oldest = Math.max(...old.map(f => (now - Date.parse(f.dateAdded)) / 86400000));
+      // Only the aged episode files are deleted — never the whole series.
+      candidates.push({ kind: 'tv', mediaId: `tvdb:${series.tvdbId}`, title: `${series.title} (${old.length} old episode file(s))`, ageDays: oldest, sizeBytes: old.reduce((a, f) => a + (f.size || 0), 0), fileIds: old.map(f => f.id) });
+    }
+  }
+
+  // Skip items mid-grace-flow ('pending'); expired keep protection is governed by the
+  // keep_list expiry itself, so a historical 'kept' status doesn't block forever.
+  const eligible = candidates
+    .filter(c => !isInKeepList(c.mediaId) && !CONFIG.NEVER_DELETE_MEDIA_IDS.includes(c.mediaId))
+    .filter(c => !db.prepare("SELECT id FROM pending_deletions WHERE media_id = ? AND status = 'pending'").get(c.mediaId))
+    .sort((a, b) => b.ageDays - a.ageDays)
+    .slice(0, CONFIG.RETENTION_MAX_DELETES_PER_RUN);
+  if (!eligible.length) return;
+
+  const totalGb = gb(eligible.reduce((a, c) => a + c.sizeBytes, 0)).toFixed(1);
+  const list = eligible.map(c => `• **${c.title}** — ${Math.round(c.ageDays)}d old`).join('\n').slice(0, 3500);
+
+  if (CONFIG.DELETION_DRY_RUN) {
+    audit('retention_dry_run', { count: eligible.length, items: eligible.map(c => c.mediaId) });
+    notifyAdmin({ embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle('🧪 Retention Dry-Run')
+      .setDescription(`These ${eligible.length} item(s) exceed their retention rules (~${totalGb} GB):\n${list}\n\nSet \`DELETION_DRY_RUN=false\` to enforce for real.`)] });
+    return;
+  }
+
+  let deleted = 0;
+  const done = [];
+  for (const c of eligible) {
+    if (c.kind === 'movie') {
+      const result = await executeDeletion(c.mediaId, c.title, { reason: 'retention_rule' });
+      if (result.outcome === 'deleted') { deleted++; done.push(c); }
+      continue;
+    }
+    // TV: delete only the aged episode files, never the series (executeDeletion would wipe all files).
+    let n = 0;
+    for (const id of c.fileIds) {
+      try {
+        await axios.delete(`${CONFIG.SONARR_URL}/api/v3/episodefile/${id}`, { params: { apikey: CONFIG.SONARR_API_KEY } });
+        n++;
+      } catch (err) {
+        audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'retention_delete', episodeFileId: id });
+      }
+    }
+    if (n) {
+      deleted++;
+      done.push(c);
+      audit('media_deleted', { mediaId: c.mediaId, title: c.title, reason: 'retention_rule', filesDeleted: n, filesAttempted: c.fileIds.length });
+    }
+  }
+  audit('retention_enforced', { deleted, attempted: eligible.length });
+  notifyAdmin({ embeds: [brandedEmbed(COLORS.SUCCESS)
+    .setTitle('🧹 Retention Cleanup')
+    .setDescription(`Deleted ${deleted}/${eligible.length} item(s) past their retention window (~${totalGb} GB):\n${done.map(c => `• **${c.title}**`).join('\n').slice(0, 3500) || '(none)'}`)] });
+}
+
+async function sweepDiskSpace() {
+  if (CONFIG.DISK_SPACE_WARN_GB <= 0) return;
+  const disks = await fetchDiskSpace();
+  const low = disks.filter(d => gb(d.freeSpace || 0) < CONFIG.DISK_SPACE_WARN_GB);
+  if (!low.length) { db.prepare('DELETE FROM app_settings WHERE key = ?').run('disk_alert_last'); return; }
+  const last = Number(getSetting('disk_alert_last') || '0');
+  if (Date.now() - last < 24 * 3600000) return;
+  setSetting('disk_alert_last', String(Date.now()));
+  notifyAdmin({ embeds: [brandedEmbed(COLORS.DANGER)
+    .setTitle('💾 Low Disk Space')
+    .setDescription(low.map(d => `**${d.path}** — ${fmtSpace(d.freeSpace)} free of ${fmtSpace(d.totalSpace)}`).join('\n') + `\n\nThreshold: ${CONFIG.DISK_SPACE_WARN_GB} GB. Consider \`/queue\`, retention rules, or manual cleanup.`)] });
+  audit('disk_space_alert', { disks: low.map(d => ({ path: d.path, freeGb: Math.round(gb(d.freeSpace)) })) });
+}
+
+async function janitorSweep() {
+  await sweepGraceDeletions().catch(err => log.warn(`Grace sweep failed: ${err.message}`));
+  await sweepDiskSpace().catch(err => log.warn(`Disk sweep failed: ${err.message}`));
+  if (CONFIG.RETENTION_ENFORCEMENT) {
+    const last = Number(getSetting('retention_last_run') || '0');
+    if (Date.now() - last >= CONFIG.RETENTION_CHECK_HOURS * 3600000) {
+      setSetting('retention_last_run', String(Date.now()));
+      await sweepRetentionRules().catch(err => log.warn(`Retention sweep failed: ${err.message}`));
+    }
+  }
+}
+
 async function searchMovies(title) {
   const lower = title.toLowerCase();
   const results = [];
@@ -733,6 +933,46 @@ async function resolveDeletableMedia(mediaId) {
     };
   }
   return { found: false, kind: 'unknown' };
+}
+
+// Shared deletion core used by the Delete Now button and the janitor sweep. Honors
+// DELETION_DRY_RUN. Callers are responsible for the guard rails (ENABLE_DELETION,
+// keep list, never-delete list) and for recording the pending_deletions outcome.
+async function executeDeletion(mediaId, title, ctx = {}) {
+  let resolved;
+  try {
+    resolved = await resolveDeletableMedia(mediaId);
+  } catch (err) {
+    audit('external_api_error', { provider: 'arr', error: err.message, mediaId, action: 'delete_resolve', ...ctx });
+    return { outcome: 'error', error: err.message };
+  }
+  if (!resolved.found) {
+    audit('deletion_dry_run', { mediaId, title, result: 'not_found', ...ctx });
+    return { outcome: 'not_found' };
+  }
+  if (CONFIG.DELETION_DRY_RUN) {
+    audit('deletion_dry_run', { mediaId, title, kind: resolved.kind, paths: resolved.paths, apiCall: resolved.apiCall, ...ctx });
+    return { outcome: 'dry_run', kind: resolved.kind, paths: resolved.paths, apiCall: resolved.apiCall };
+  }
+  try {
+    let detail;
+    if (resolved.kind === 'movie') {
+      await axios.delete(`${resolved.source.url}/api/v3/movie/${resolved.movie.id}`, { params: { apikey: resolved.source.key, deleteFiles: true } });
+      detail = `Radarr movie #${resolved.movie.id} deleted with files.`;
+    } else {
+      let n = 0;
+      for (const f of resolved.files) {
+        await axios.delete(`${CONFIG.SONARR_URL}/api/v3/episodefile/${f.id}`, { params: { apikey: CONFIG.SONARR_API_KEY } });
+        n++;
+      }
+      detail = `Sonarr episode files deleted: ${n}/${resolved.files.length}.`;
+    }
+    audit('media_deleted', { mediaId, title, kind: resolved.kind, paths: resolved.paths, apiCall: resolved.apiCall, ...ctx });
+    return { outcome: 'deleted', kind: resolved.kind, paths: resolved.paths, detail };
+  } catch (err) {
+    audit('external_api_error', { provider: 'arr', error: err.message, mediaId, action: 'delete', ...ctx });
+    return { outcome: 'error', error: err.message };
+  }
 }
 
 function remapPath(hostPath) {
@@ -823,6 +1063,10 @@ client.once('ready', async () => {
   if (CONFIG.STUCK_CHECK_MINUTES > 0 && arrSources().length) {
     setInterval(() => sweepStuckDownloads().catch(err => log.warn(`Stuck-download sweep failed: ${err.message}`)), CONFIG.STUCK_CHECK_MINUTES * 60000).unref();
     log.ok(`Stuck-download watchdog running every ${CONFIG.STUCK_CHECK_MINUTES} min (threshold ${CONFIG.STUCK_AFTER_MINUTES} min)`);
+  }
+  if (CONFIG.JANITOR_CHECK_MINUTES > 0) {
+    setInterval(() => janitorSweep(), CONFIG.JANITOR_CHECK_MINUTES * 60000).unref();
+    log.ok(`Janitor running every ${CONFIG.JANITOR_CHECK_MINUTES} min (grace deletes: ${CONFIG.ENABLE_DELETION ? 'on' : 'off'}, retention: ${CONFIG.RETENTION_ENFORCEMENT ? 'on' : 'off'}, dry-run: ${CONFIG.DELETION_DRY_RUN ? 'on' : 'off'})`);
   }
 });
 
@@ -1062,6 +1306,13 @@ async function handleStatusCommand(interaction) {
     `**Placeholder:** ${placeholderCount}${placeholderCount ? ` (${placeholderAcked} acknowledged)` : ''}`,
   ].join('\n');
 
+  const disks = await fetchDiskSpace().catch(() => []);
+  const storageLines = disks.map(d => {
+    const lowFlag = gb(d.freeSpace || 0) < CONFIG.DISK_SPACE_WARN_GB ? ' ⚠️' : '';
+    const pctUsed = d.totalSpace ? Math.round(((d.totalSpace - d.freeSpace) / d.totalSpace) * 100) : 0;
+    return `\`${d.path}\` — ${fmtSpace(d.freeSpace)} free of ${fmtSpace(d.totalSpace)} (${pctUsed}% used)${lowFlag}`;
+  });
+
   const embed = brandedEmbed(health.overall === 'ok' ? COLORS.SUCCESS : COLORS.WARN)
     .setTitle('📊 Durant Media Server Status')
     .setDescription(`Overall: **${String(health.overall).toUpperCase()}**`)
@@ -1070,6 +1321,7 @@ async function handleStatusCommand(interaction) {
       { name: 'Users', value: usersSummary, inline: true },
       { name: 'Pending requests', value: `${pendingRequests}`, inline: true },
       { name: 'Active download links', value: `${activeLinks}`, inline: true },
+      { name: 'Storage', value: storageLines.join('\n') || 'No *arr diskspace data', inline: false },
       { name: 'DB ↔ Overseerr', value: reconcileLine, inline: false },
       { name: 'Fixable sync issues', value: fixableLine, inline: false },
     );
@@ -1762,49 +2014,23 @@ async function handleButton(interaction) {
     audit('keep_delete_decision_made', { actorDiscordId: interaction.user.id, requestorId, mediaId, decision: 'delete_now' });
     await interaction.deferUpdate();
 
-    let resolved;
-    try {
-      resolved = await resolveDeletableMedia(mediaId);
-    } catch (err) {
-      audit('external_api_error', { provider: 'arr', error: err.message, mediaId, action: 'delete_resolve' });
-      return interaction.editReply({ content: `❌ Could not resolve **${title}** for deletion: ${err.message}`, components: [] });
+    const result = await executeDeletion(mediaId, title, { actorDiscordId: interaction.user.id, requestorId, reason: 'user_button' });
+    if (result.outcome === 'error') return interaction.editReply({ content: `❌ Delete failed for **${title}**: ${result.error}`, components: [] });
+    if (result.outcome === 'not_found') { markPendingDeletion(mediaId, 'cancelled'); return interaction.editReply({ content: `⚠️ Could not find **${title}** in Radarr/Sonarr — nothing to delete.`, components: [] }); }
+    if (result.outcome === 'dry_run') {
+      markPendingDeletion(mediaId, 'dry_run');
+      const fileList = result.paths.length ? result.paths.slice(0, 5).map(p => `• \`${p}\``).join('\n') : '• (no files on disk)';
+      return interaction.editReply({ content: `🧪 **Dry-run** — would delete **${title}** (${result.kind}, ${result.paths.length} file(s)).\n${fileList}\nWould call: \`${result.apiCall}\`\n\nSet \`DELETION_DRY_RUN=false\` to perform real deletes.`, components: [] });
     }
-    if (!resolved.found) {
-      audit('deletion_dry_run', { actorDiscordId: interaction.user.id, requestorId, mediaId, title, result: 'not_found' });
-      return interaction.editReply({ content: `⚠️ Could not find **${title}** in Radarr/Sonarr — nothing to delete.`, components: [] });
-    }
-
-    if (CONFIG.DELETION_DRY_RUN) {
-      audit('deletion_dry_run', { actorDiscordId: interaction.user.id, requestorId, mediaId, title, kind: resolved.kind, paths: resolved.paths, apiCall: resolved.apiCall });
-      const fileList = resolved.paths.length ? resolved.paths.slice(0, 5).map(p => `• \`${p}\``).join('\n') : '• (no files on disk)';
-      return interaction.editReply({ content: `🧪 **Dry-run** — would delete **${title}** (${resolved.kind}, ${resolved.paths.length} file(s)).\n${fileList}\nWould call: \`${resolved.apiCall}\`\n\nSet \`DELETION_DRY_RUN=false\` to perform real deletes.`, components: [] });
-    }
-
-    try {
-      let detail;
-      if (resolved.kind === 'movie') {
-        await axios.delete(`${resolved.source.url}/api/v3/movie/${resolved.movie.id}`, { params: { apikey: resolved.source.key, deleteFiles: true } });
-        detail = `Radarr movie #${resolved.movie.id} deleted with files.`;
-      } else {
-        let n = 0;
-        for (const f of resolved.files) {
-          await axios.delete(`${CONFIG.SONARR_URL}/api/v3/episodefile/${f.id}`, { params: { apikey: CONFIG.SONARR_API_KEY } });
-          n++;
-        }
-        detail = `Sonarr episode files deleted: ${n}/${resolved.files.length}.`;
-      }
-      audit('media_deleted', { actorDiscordId: interaction.user.id, requestorId, mediaId, title, kind: resolved.kind, paths: resolved.paths, apiCall: resolved.apiCall });
-      return interaction.editReply({ content: `🗑️ Deleted **${title}**. ${detail}`, components: [] });
-    } catch (err) {
-      audit('external_api_error', { provider: 'arr', error: err.message, mediaId, action: 'delete' });
-      return interaction.editReply({ content: `❌ Delete failed for **${title}**: ${err.message}`, components: [] });
-    }
+    markPendingDeletion(mediaId, 'deleted');
+    return interaction.editReply({ content: `🗑️ Deleted **${title}**. ${result.detail}`, components: [] });
   }
 
   if (action === 'delete_no') {
     const { mediaId, title, requestorId } = parseDeleteCustomId(parts);
     if (interaction.user.id !== requestorId && !isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Not allowed.', ephemeral: true });
     addToKeepList(mediaId, mediaId.startsWith('tvdb:') ? 'tv' : 'movie', title, requestorId);
+    markPendingDeletion(mediaId, 'kept');
     audit('keep_delete_decision_made', { actorDiscordId: interaction.user.id, requestorId, mediaId, decision: 'keep' });
     await interaction.update({ content: `📌 Keeping **${title}**.`, components: [] });
     return;
@@ -1815,6 +2041,9 @@ async function handleButton(interaction) {
     if (interaction.user.id !== requestorId && !isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Not allowed.', ephemeral: true });
     const nextPromptAt = Date.now() + CONFIG.DELETION_REMINDER_COOLDOWN_HOURS * 3600 * 1000;
     setSetting(`delete_prompt_snooze:${mediaId}:${requestorId}`, String(nextPromptAt));
+    // Give a fresh grace window after the reminder fires, so snoozing never means
+    // waking up to an already-deleted file.
+    postponePendingDeletion(mediaId, nextPromptAt + CONFIG.DELETION_GRACE_HOURS * 3600000);
     audit('keep_delete_decision_made', { actorDiscordId: interaction.user.id, requestorId, mediaId, decision: 'remind_later' });
     await interaction.update({ content: `⏰ Reminder set for later.`, components: [] });
   }
@@ -2394,7 +2623,9 @@ async function handlePlexWebhook(payload) {
     new ButtonBuilder().setCustomId(`delete_yes:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Delete Now').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(`delete_later:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Remind Me Later').setStyle(ButtonStyle.Primary),
   );
-  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [brandedEmbed(COLORS.WARN).setTitle(`${mediaTypeEmoji(mediaType === 'episode' ? 'tv' : 'movie', is4k)} Finished Watching`).setDescription(`Looks like you finished **${title}**. Should we keep it or free up space?\n\n⏳ Auto-deletes in ${CONFIG.DELETION_GRACE_HOURS} hour(s) unless you choose **Keep**.`)], components: [row] });
+  const autoLine = CONFIG.ENABLE_DELETION ? `\n\n⏳ Auto-deletes in ${CONFIG.DELETION_GRACE_HOURS} hour(s) unless you choose **Keep**.` : '';
+  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [brandedEmbed(COLORS.WARN).setTitle(`${mediaTypeEmoji(mediaType === 'episode' ? 'tv' : 'movie', is4k)} Finished Watching`).setDescription(`Looks like you finished **${title}**. Should we keep it or free up space?${autoLine}`)], components: [row] });
+  recordPendingDeletion(mediaId, mediaType === 'episode' ? 'tv' : 'movie', title, reqRow.requested_by_discord_id);
 }
 
 async function handleTautulliWebhook(body) {
@@ -2418,7 +2649,9 @@ async function handleTautulliWebhook(body) {
     new ButtonBuilder().setCustomId(`delete_yes:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Delete Now').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(`delete_later:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Remind Me Later').setStyle(ButtonStyle.Primary),
   );
-  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [brandedEmbed(COLORS.WARN).setTitle('📺 Finished Watching').setDescription(`Looks like you finished **${showTitle}**. Keep it, or free up space?`)], components: [row] });
+  const tautulliAutoLine = CONFIG.ENABLE_DELETION ? `\n\n⏳ Auto-deletes in ${CONFIG.DELETION_GRACE_HOURS} hour(s) unless you choose **Keep**.` : '';
+  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [brandedEmbed(COLORS.WARN).setTitle('📺 Finished Watching').setDescription(`Looks like you finished **${showTitle}**. Keep it, or free up space?${tautulliAutoLine}`)], components: [row] });
+  recordPendingDeletion(mediaId, media_type === 'episode' ? 'tv' : 'movie', showTitle, reqRow.requested_by_discord_id);
 }
 
 function shutdown(sig) {
