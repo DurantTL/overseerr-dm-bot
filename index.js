@@ -2116,6 +2116,12 @@ async function handleOverseerrWebhook(body) {
         );
       if (poster) embed.setThumbnail(poster);
       if (request?.request_id) embed.setFooter({ text: `Durant Media Server · Request #${request.request_id}` });
+      // Requestrr submits through Seerr as its configured default user unless per-user mapping
+      // is enabled. When everything resolves to the admin, surface it instead of silently
+      // pinning requests on the server owner.
+      if (requesterDiscordId === CONFIG.ADMIN_USER_ID) {
+        embed.addFields({ name: '⚠️ Attribution', value: 'Resolved to the admin account. If someone else requested this (e.g. via Requestrr without per-user mapping), Seerr recorded the wrong requester.', inline: false });
+      }
       const components = [];
       if (!autoApproved && request?.request_id) {
         components.push(new ActionRowBuilder().addComponents(
