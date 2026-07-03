@@ -89,6 +89,20 @@ function sha256(text) {
   return crypto.createHash('sha256').update(text).digest('hex');
 }
 
+// Constant-time string comparison for secrets (webhook secrets, admin credentials).
+function safeEqual(a, b) {
+  const ba = Buffer.from(String(a ?? ''));
+  const bb = Buffer.from(String(b ?? ''));
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
+
+// A real Discord user ID (snowflake). Rows like plex_12345 and stray junk must never be
+// mentioned as <@...> or DM'd.
+function isSnowflake(id) {
+  return /^\d{17,20}$/.test(String(id || ''));
+}
+
 // Centralized embed palette so every notification shares one consistent look.
 const COLORS = {
   PLEX: 0xe5a00d,    // brand amber/gold — onboarding & welcome
@@ -273,6 +287,10 @@ function runMigrations() {
   ensureColumn('download_tokens', 'used_at', 'INTEGER');
   ensureColumn('download_tokens', 'revoked', 'INTEGER DEFAULT 0');
 
+  // Old code stored '' when a webhook had no request id; those rows collided on the UNIQUE
+  // column and overwrote each other. NULL is allowed to repeat.
+  db.prepare("UPDATE requests SET overseerr_request_id = NULL WHERE overseerr_request_id = ''").run();
+
   db.prepare(`INSERT OR IGNORE INTO media_retention_rules (media_class, retention_days, enabled)
     VALUES
     ('movie_4k', 30, 1),
@@ -303,16 +321,42 @@ function storeUserEmail(discordId, email) {
     .run(discordId, email.toLowerCase().trim(), new Date().toISOString());
 }
 const getUserByDiscordId = discordId => db.prepare('SELECT * FROM users WHERE discord_id = ?').get(discordId);
-const getUserByEmail = email => db.prepare('SELECT * FROM users WHERE lower(email) = ?').get(email.toLowerCase().trim());
+// Canonical-email lookup (gmail dots/plus-tags collapse). Prefers rows with a real Discord
+// snowflake over synthetic plex_ rows so notifications reach the actual person.
+function getUserByCanonicalEmail(email) {
+  const key = canonicalizeEmail(email);
+  if (!key || key.startsWith('__placeholder__:')) return null;
+  const matches = db.prepare('SELECT * FROM users').all().filter(u => canonicalizeEmail(u.email) === key);
+  return matches.find(u => isSnowflake(u.discord_id)) || matches[0] || null;
+}
 const markUserInvited = discordId => db.prepare('UPDATE users SET invited = 1, invited_at = ? WHERE discord_id = ?').run(new Date().toISOString(), discordId);
 const markOverseerrCreated = (discordId, overseerrId) => db.prepare('UPDATE users SET overseerr_created = 1, overseerr_user_id = ? WHERE discord_id = ?').run(overseerrId, discordId);
 const removeUser = discordId => db.prepare('DELETE FROM users WHERE discord_id = ?').run(discordId);
 
 function upsertRequest(overseerrRequestId, mediaId, mediaType, is4k, title, discordId, status) {
-  db.prepare(`INSERT OR REPLACE INTO requests
-    (overseerr_request_id, media_id, media_type, is_4k, title, requested_by_discord_id, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(overseerrRequestId, mediaId, mediaType, is4k ? 1 : 0, title, discordId || null, status);
+  // Later webhook events (approved/available) often arrive without requestedBy fields.
+  // INSERT OR REPLACE used to wipe the original requester (breaking keep/delete attribution),
+  // and '' request ids from those events all collided on the UNIQUE column. COALESCE keeps
+  // the first known requester; missing request ids fall back to updating the media row.
+  const reqId = overseerrRequestId ? String(overseerrRequestId) : null;
+  if (reqId) {
+    db.prepare(`INSERT INTO requests (overseerr_request_id, media_id, media_type, is_4k, title, requested_by_discord_id, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(overseerr_request_id) DO UPDATE SET
+        status = excluded.status,
+        title = excluded.title,
+        requested_by_discord_id = COALESCE(excluded.requested_by_discord_id, requests.requested_by_discord_id)`)
+      .run(reqId, mediaId, mediaType, is4k ? 1 : 0, title, discordId || null, status);
+    return;
+  }
+  const updated = db.prepare(`UPDATE requests SET status = ?,
+      requested_by_discord_id = COALESCE(?, requested_by_discord_id)
+    WHERE media_id = ?`).run(status, discordId || null, mediaId);
+  if (!updated.changes) {
+    db.prepare(`INSERT INTO requests (overseerr_request_id, media_id, media_type, is_4k, title, requested_by_discord_id, status)
+      VALUES (NULL, ?, ?, ?, ?, ?, ?)`)
+      .run(mediaId, mediaType, is4k ? 1 : 0, title, discordId || null, status);
+  }
 }
 
 function addToKeepList(mediaId, mediaType, title, discordId, keepDays = CONFIG.KEEP_LIST_DEFAULT_DAYS) {
@@ -388,6 +432,18 @@ function rehydratePendingEmails() {
 }
 const routeLimits = new Map();
 const userGenerationLimits = new Map();
+
+// Keyed by client IP / user id, these maps only ever grew. Drop buckets whose newest hit is
+// older than an hour so a scan of unique IPs can't slowly eat memory.
+const RATE_LIMIT_MAPS = [routeLimits, userGenerationLimits];
+setInterval(() => {
+  const cutoff = Date.now() - 3600000;
+  for (const map of RATE_LIMIT_MAPS) {
+    for (const [key, hits] of map) {
+      if (!hits.length || hits[hits.length - 1] < cutoff) map.delete(key);
+    }
+  }
+}, 600000).unref();
 
 function takeRateLimit(bucketMap, key, maxHits, periodMs) {
   const now = Date.now();
@@ -587,6 +643,10 @@ function canonicalizeEmail(raw) {
   }
   return `${local.split('+')[0]}@${domain}`;
 }
+function requestStatusBadge(status) {
+  return ({ pending: '⏳ Pending', approved: '🚀 Approved', available: '✅ Available', declined: '🚫 Declined' })[status] || `▫️ ${status}`;
+}
+function discordTimestamp(ms, style = 'R') { return `<t:${Math.floor(ms / 1000)}:${style}>`; }
 function statusEmoji(v) {
   if (['ok', 'configured'].includes(v)) return '✅';
   if (v === 'skipped') return '⏭️';
@@ -770,7 +830,21 @@ async function handleDownloadCommand(interaction) {
   if (!fs.existsSync(filePath)) return interaction.editReply('❌ File missing on server.');
 
   const { rawToken, expiresAt } = createDownloadToken(filePath, displayTitle, interaction.user.id, oneTime);
-  await interaction.editReply(`📥 **${displayTitle}**\n🔗 https://${CONFIG.TUNNEL_DOMAIN}/download/${rawToken}\n⏳ Expires: ${new Date(expiresAt).toUTCString()}\n${oneTime ? '🔒 One-time link enabled.' : ''}`);
+  const url = `https://${CONFIG.TUNNEL_DOMAIN}/download/${rawToken}`;
+  let sizeLine = '';
+  try { sizeLine = `${(fs.statSync(filePath).size / (1024 ** 3)).toFixed(2)} GB`; } catch (_e) {}
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle('📥 Download Ready')
+    .setDescription(`**${displayTitle}**`)
+    .addFields(
+      { name: 'Expires', value: `<t:${Math.floor(expiresAt / 1000)}:R>`, inline: true },
+      { name: 'Link type', value: oneTime ? '🔒 One-time use' : '♻️ Multi-use', inline: true },
+    );
+  if (sizeLine) embed.addFields({ name: 'Size', value: sizeLine, inline: true });
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setLabel('Download').setStyle(ButtonStyle.Link).setURL(url),
+  );
+  await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
 async function handleLinkCommand(interaction) {
@@ -795,7 +869,13 @@ async function handleUnlinkCommand(interaction) {
 async function handleUsersCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
   const rows = db.prepare('SELECT * FROM users ORDER BY requested_at ASC').all();
-  await interaction.reply({ content: rows.slice(0, 50).map(u => `<@${u.discord_id}> — ${u.email}`).join('\n') || 'No users', ephemeral: true });
+  const line = u => `${u.invited ? '✅' : '⏳'} ${isSnowflake(u.discord_id) ? `<@${u.discord_id}>` : `\`${u.discord_id}\``} — \`${u.email}\``;
+  const shown = rows.slice(0, 50);
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle(`👥 Linked Users (${rows.length})`)
+    .setDescription(shown.map(line).join('\n') || 'No users yet.');
+  if (rows.length > shown.length) embed.setFooter({ text: `Durant Media Server · Showing ${shown.length} of ${rows.length}` });
+  await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 
 async function handleStatusCommand(interaction) {
@@ -1213,20 +1293,50 @@ async function handleAuditCommand(interaction) {
 
 async function handleMeCommand(interaction) {
   const row = getUserByDiscordId(interaction.user.id);
-  if (!row) return interaction.reply({ content: 'You are not linked yet.', ephemeral: true });
-  await interaction.reply({ content: `Linked email: ${row.email}\nInvited: ${row.invited ? 'yes' : 'no'}\nOverseerr linked: ${row.overseerr_created ? 'yes' : 'no'}`, ephemeral: true });
+  if (!row) {
+    return interaction.reply({ embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle('👤 Not Linked Yet')
+      .setDescription('You aren\'t linked to a Plex account yet.\nDM me your Plex email to request access!')], ephemeral: true });
+  }
+  const requestCount = db.prepare('SELECT COUNT(*) AS c FROM requests WHERE requested_by_discord_id = ?').get(interaction.user.id).c;
+  const embed = brandedEmbed(COLORS.PLEX)
+    .setTitle('👤 Your Profile')
+    .setThumbnail(interaction.user.displayAvatarURL?.() || null)
+    .addFields(
+      { name: 'Plex email', value: `\`${row.email}\``, inline: false },
+      { name: 'Plex invite', value: row.invited ? '✅ Sent' : '⏳ Pending approval', inline: true },
+      { name: 'Requests (Seerr)', value: row.overseerr_created ? '✅ Enabled' : '❌ Not set up', inline: true },
+      { name: 'Total requests', value: `${requestCount}`, inline: true },
+    );
+  await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 async function handleMyRequestsCommand(interaction) {
   const rows = db.prepare('SELECT * FROM requests WHERE requested_by_discord_id = ? ORDER BY id DESC LIMIT 15').all(interaction.user.id);
-  await interaction.reply({ content: rows.map(r => `${r.title} — ${r.status}`).join('\n') || 'No requests found.', ephemeral: true });
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle('🎬 Your Recent Requests')
+    .setDescription(rows.length
+      ? rows.map(r => `${requestStatusBadge(r.status)} — **${r.title}** (${mediaTypeLabel(r.media_type, r.is_4k)})`).join('\n')
+      : 'No requests yet. Request something in Overseerr and it\'ll show up here!');
+  await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 async function handleDownloadsCommand(interaction) {
   const rows = db.prepare('SELECT title, expires_at, one_time_use, created_at, revoked FROM download_tokens WHERE discord_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 20').all(interaction.user.id, Date.now());
-  await interaction.reply({ content: rows.map(r => `${r.title} | expires ${new Date(r.expires_at).toUTCString()} | ${r.revoked ? 'revoked' : (r.one_time_use ? 'one-time' : 'multi-use')}`).join('\n') || 'No active links.', ephemeral: true });
+  const active = rows.filter(r => !r.revoked);
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle('📥 Your Active Download Links')
+    .setDescription(active.length
+      ? active.map(r => `**${r.title}**\n└ ${r.one_time_use ? '🔒 one-time' : '♻️ multi-use'} · expires ${discordTimestamp(r.expires_at)}`).join('\n')
+      : 'No active links. Use `/download` to create one.');
+  await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 async function handleKeepCommand(interaction) {
   const rows = db.prepare('SELECT title, media_id, expires_at FROM keep_list WHERE kept_by_discord_id = ? ORDER BY created_at DESC LIMIT 20').all(interaction.user.id);
-  await interaction.reply({ content: rows.map(r => `${r.title} (${r.media_id})${r.expires_at ? ` expires ${new Date(r.expires_at).toUTCString()}` : ''}`).join('\n') || 'No keep entries.', ephemeral: true });
+  const embed = brandedEmbed(COLORS.SUCCESS)
+    .setTitle('📌 Your Keep List')
+    .setDescription(rows.length
+      ? rows.map(r => `**${r.title}**${r.expires_at ? ` — protected until ${discordTimestamp(r.expires_at, 'D')}` : ' — protected'}`).join('\n')
+      : 'Nothing on your keep list. Media you choose to **Keep** shows up here, protected from cleanup.');
+  await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 async function handleHelpCommand(interaction) {
   const userCommands = [
@@ -1237,9 +1347,10 @@ async function handleHelpCommand(interaction) {
     '`/keep` — Show your keep list (media saved from cleanup)',
     '`/help` — Show this help message',
   ];
-  let content = '**How Durant Media Server works**\n' +
-    'DM the bot your Plex account email → an admin approves → you get Plex + Seerr (request) access.\n\n' +
-    '**Commands**\n' + userCommands.join('\n');
+  const embed = brandedEmbed(COLORS.PLEX)
+    .setTitle('🎬 Durant Media Server — Help')
+    .setDescription('DM the bot your Plex account email → an admin approves → you get Plex + Seerr (request) access.')
+    .addFields({ name: 'Commands', value: userCommands.join('\n'), inline: false });
   if (isAdminInteraction(interaction)) {
     const adminCommands = [
       '`/link` — Link a Discord user to a Plex email',
@@ -1252,9 +1363,9 @@ async function handleHelpCommand(interaction) {
       '`/audit` — Query the audit log',
       '`/revoke-downloads` — Revoke active download links',
     ];
-    content += '\n\n**Admin commands**\n' + adminCommands.join('\n');
+    embed.addFields({ name: 'Admin commands', value: adminCommands.join('\n'), inline: false });
   }
-  await interaction.reply({ content, ephemeral: true });
+  await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 async function handleRevokeDownloadsCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
@@ -1271,6 +1382,18 @@ async function handleRevokeDownloadsCommand(interaction) {
   return interaction.reply({ content: `✅ Revoked active links for ${user.tag}.`, ephemeral: true });
 }
 
+// customIds look like `delete_yes:tmdb:123:My%20Title:1234567890`. mediaId itself contains a
+// ':' (tmdb:/tvdb: prefix), so naive positional destructuring shifted every field — requestorId
+// ended up holding the encoded title, which silently broke the permission check and made the
+// media lookup fail. The title is URI-encoded (':' becomes %3A) and the requestor is a plain
+// snowflake, so parsing from the end is unambiguous.
+function parseDeleteCustomId(parts) {
+  const requestorId = parts[parts.length - 1];
+  const encodedTitle = parts[parts.length - 2];
+  const mediaId = parts.slice(0, -2).join(':');
+  return { mediaId, title: decodeURIComponent(encodedTitle), requestorId };
+}
+
 async function handleButton(interaction) {
   const [action, ...parts] = interaction.customId.split(':');
   if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny'].includes(action) && !isAdminInteraction(interaction)) {
@@ -1282,11 +1405,21 @@ async function handleButton(interaction) {
     await interaction.deferUpdate();
     const user = getUserByDiscordId(targetDiscordId);
     if (!user) return interaction.editReply({ content: 'User not found.', components: [] });
-    let plexStatus = 'failed'; let overseerrStatus = 'failed';
-    try { const result = await inviteUserToPlex(user.email); markUserInvited(targetDiscordId); plexStatus = `ok (${result.successCount}/${result.total})`; } catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId }); }
+    let plexStatus = 'failed'; let overseerrStatus = 'failed'; let plexOk = false;
+    try { const result = await inviteUserToPlex(user.email); markUserInvited(targetDiscordId); plexOk = result.successCount > 0; plexStatus = `ok (${result.successCount}/${result.total})`; } catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId }); }
     try { const du = await client.users.fetch(targetDiscordId); const oid = await createOverseerrUser(user.email, targetDiscordId, du.username); markOverseerrCreated(targetDiscordId, oid); overseerrStatus = `ok (${oid})`; } catch (err) { audit('external_api_error', { provider: 'overseerr', error: err.message, targetDiscordId }); }
     audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: 'plex_approve' });
-    await interaction.editReply({ content: `Approved <@${targetDiscordId}> | Plex: ${plexStatus} | Overseerr: ${overseerrStatus}`, components: [] });
+    // The welcome DM promises a confirmation — deliver it.
+    await dmUser(targetDiscordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle('🎉 You\'re In!')
+      .setDescription(`Your access request was approved!\n\n${plexOk ? `📬 A Plex invite was sent to \`${user.email}\` — accept it and you're set.` : `⚠️ Your Plex invite to \`${user.email}\` hit a snag — an admin is on it.`}\n\nOnce you're in, use \`/help\` here to see everything I can do. 🍿`)] });
+    await interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle('✅ Access Approved')
+      .addFields(
+        { name: 'User', value: `<@${targetDiscordId}>`, inline: true },
+        { name: 'Plex', value: plexStatus, inline: true },
+        { name: 'Overseerr', value: overseerrStatus, inline: true },
+      )], components: [] });
     return;
   }
 
@@ -1294,7 +1427,12 @@ async function handleButton(interaction) {
     const targetDiscordId = parts[0];
     removeUser(targetDiscordId);
     audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: 'plex_deny' });
-    await interaction.update({ content: `Declined <@${targetDiscordId}>`, components: [] });
+    await dmUser(targetDiscordId, { embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle('Access Request Declined')
+      .setDescription('Sorry — your Plex access request was declined. Reach out to an admin if you think this was a mistake.')] });
+    await interaction.update({ embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle('🚫 Access Declined')
+      .setDescription(`Declined <@${targetDiscordId}>`)], components: [] });
     return;
   }
 
@@ -1427,8 +1565,7 @@ async function handleButton(interaction) {
   }
 
   if (action === 'delete_yes') {
-    const [mediaId, encodedTitle, requestorId] = parts;
-    const title = decodeURIComponent(encodedTitle);
+    const { mediaId, title, requestorId } = parseDeleteCustomId(parts);
     if (interaction.user.id !== requestorId && !isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Not allowed.', ephemeral: true });
     if (!CONFIG.ENABLE_DELETION) return interaction.reply({ content: '⚠️ Deletion is disabled by config.', ephemeral: true });
     if (CONFIG.NEVER_DELETE_MEDIA_IDS.includes(mediaId)) return interaction.reply({ content: '⚠️ This media is in never-delete override list.', ephemeral: true });
@@ -1476,8 +1613,7 @@ async function handleButton(interaction) {
   }
 
   if (action === 'delete_no') {
-    const [mediaId, encodedTitle, requestorId] = parts;
-    const title = decodeURIComponent(encodedTitle);
+    const { mediaId, title, requestorId } = parseDeleteCustomId(parts);
     if (interaction.user.id !== requestorId && !isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Not allowed.', ephemeral: true });
     addToKeepList(mediaId, mediaId.startsWith('tvdb:') ? 'tv' : 'movie', title, requestorId);
     audit('keep_delete_decision_made', { actorDiscordId: interaction.user.id, requestorId, mediaId, decision: 'keep' });
@@ -1486,7 +1622,7 @@ async function handleButton(interaction) {
   }
 
   if (action === 'delete_later') {
-    const [mediaId, _encodedTitle, requestorId] = parts;
+    const { mediaId, requestorId } = parseDeleteCustomId(parts);
     if (interaction.user.id !== requestorId && !isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Not allowed.', ephemeral: true });
     const nextPromptAt = Date.now() + CONFIG.DELETION_REMINDER_COOLDOWN_HOURS * 3600 * 1000;
     setSetting(`delete_prompt_snooze:${mediaId}:${requestorId}`, String(nextPromptAt));
@@ -1531,8 +1667,8 @@ function dashboardAuth(req, res, next) {
   const sessionOk = verifySession(readCookie(req, 'dm_session'));
   const pwd = req.headers['x-admin-password'];
   const token = req.headers['x-admin-token'];
-  const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && pwd === CONFIG.DASHBOARD_ADMIN_PASSWORD;
-  const tokenOk = CONFIG.DASHBOARD_ADMIN_TOKEN && token === CONFIG.DASHBOARD_ADMIN_TOKEN;
+  const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && safeEqual(pwd, CONFIG.DASHBOARD_ADMIN_PASSWORD);
+  const tokenOk = CONFIG.DASHBOARD_ADMIN_TOKEN && safeEqual(token, CONFIG.DASHBOARD_ADMIN_TOKEN);
   if (!sessionOk && !passOk && !tokenOk) {
     // Browsers hitting a page get sent to the login form; API/non-GET callers get 401.
     if (req.method === 'GET' && (req.headers.accept || '').includes('text/html')) {
@@ -1542,9 +1678,12 @@ function dashboardAuth(req, res, next) {
   }
 
   if (CONFIG.STRICT_DASHBOARD_POST_AUTH && req.method !== 'GET') {
-    const origin = req.get('origin');
-    const referer = req.get('referer');
-    if ((origin && !origin.includes(req.get('host'))) || (referer && !referer.includes(req.get('host')))) {
+    // Exact host match. Substring matching allowed e.g. https://myhost.com.evil.net through.
+    const sameHost = headerValue => {
+      if (!headerValue) return true; // header absent — nothing to compare
+      try { return new URL(headerValue).host === req.get('host'); } catch (_e) { return false; }
+    };
+    if (!sameHost(req.get('origin')) || !sameHost(req.get('referer'))) {
       return res.status(403).send('Cross-site POST denied');
     }
   }
@@ -1553,13 +1692,14 @@ function dashboardAuth(req, res, next) {
 
 function startExpressServer() {
   const app = express();
+  app.disable('x-powered-by');
   const upload = multer({ limits: { fileSize: 5 * 1024 * 1024, files: 5 } });
   app.use((req, res, next) => { if (req.is('multipart/form-data')) return next(); bodyParser.json({ limit: '1mb' })(req, res, next); });
 
   app.get('/health', async (_req, res) => res.json(await gatherHealth()));
 
   app.post('/webhook/overseerr', upload.any(), async (req, res) => {
-    if (CONFIG.WEBHOOK_SECRET && req.headers['x-webhook-secret'] !== CONFIG.WEBHOOK_SECRET) return res.status(401).json({ error: 'Unauthorized' });
+    if (CONFIG.WEBHOOK_SECRET && !safeEqual(req.headers['x-webhook-secret'], CONFIG.WEBHOOK_SECRET)) return res.status(401).json({ error: 'Unauthorized' });
     res.sendStatus(200);
     try {
       let body = req.body;
@@ -1570,7 +1710,7 @@ function startExpressServer() {
   });
 
   app.post('/webhook/plex', upload.any(), async (req, res) => {
-    if (CONFIG.WEBHOOK_SECRET && req.headers['x-webhook-secret'] !== CONFIG.WEBHOOK_SECRET) return res.status(401).json({ error: 'Unauthorized' });
+    if (CONFIG.WEBHOOK_SECRET && !safeEqual(req.headers['x-webhook-secret'], CONFIG.WEBHOOK_SECRET)) return res.status(401).json({ error: 'Unauthorized' });
     res.sendStatus(200);
     try {
       const payload = JSON.parse(req.body.payload || '{}');
@@ -1580,7 +1720,7 @@ function startExpressServer() {
   });
 
   app.post('/webhook/tautulli', async (req, res) => {
-    if (CONFIG.TAUTULLI_WEBHOOK_SECRET && req.headers['x-tautulli-secret'] !== CONFIG.TAUTULLI_WEBHOOK_SECRET) return res.status(401).json({ error: 'Unauthorized' });
+    if (CONFIG.TAUTULLI_WEBHOOK_SECRET && !safeEqual(req.headers['x-tautulli-secret'], CONFIG.TAUTULLI_WEBHOOK_SECRET)) return res.status(401).json({ error: 'Unauthorized' });
     res.sendStatus(200);
     try {
       audit('webhook_received', { source: 'tautulli', event: req.body?.event });
@@ -1639,9 +1779,22 @@ function startExpressServer() {
     audit('download_started', { targetDiscordId: record.discord_id, title: record.title });
 
     if (range) {
-      const [startStr, endStr] = range.replace(/bytes=/, '').split('-');
-      const start = Number.parseInt(startStr, 10);
-      const end = endStr ? Number.parseInt(endStr, 10) : fileSize - 1;
+      // Validate before touching the filesystem: a malformed header (NaN start, start > end,
+      // start past EOF) used to reach createReadStream and throw mid-response.
+      const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+      let start; let end;
+      if (m && m[1] === '' && m[2] !== '') {
+        // suffix form: last N bytes
+        start = Math.max(fileSize - Number.parseInt(m[2], 10), 0);
+        end = fileSize - 1;
+      } else {
+        start = m && m[1] !== '' ? Number.parseInt(m[1], 10) : NaN;
+        end = m && m[2] !== '' ? Math.min(Number.parseInt(m[2], 10), fileSize - 1) : fileSize - 1;
+      }
+      if (!m || Number.isNaN(start) || start > end || start >= fileSize) {
+        res.writeHead(416, { 'Content-Range': `bytes */${fileSize}` });
+        return res.end();
+      }
       res.writeHead(206, {
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
         'Accept-Ranges': 'bytes',
@@ -1663,6 +1816,7 @@ function startExpressServer() {
 
   if (CONFIG.DASHBOARD_ENABLED) {
     const loginLimits = new Map();
+    RATE_LIMIT_MAPS.push(loginLimits);
     const adminForm = express.urlencoded({ extended: false, limit: '16kb' });
 
     app.get('/admin/login', (req, res) => {
@@ -1676,8 +1830,8 @@ function startExpressServer() {
         return res.status(429).type('html').send(renderLogin(false, 'Too many attempts. Try again in a few minutes.'));
       }
       const pwd = req.body?.password || '';
-      const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && pwd === CONFIG.DASHBOARD_ADMIN_PASSWORD;
-      const tokenOk = CONFIG.DASHBOARD_ADMIN_TOKEN && pwd === CONFIG.DASHBOARD_ADMIN_TOKEN;
+      const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && safeEqual(pwd, CONFIG.DASHBOARD_ADMIN_PASSWORD);
+      const tokenOk = CONFIG.DASHBOARD_ADMIN_TOKEN && safeEqual(pwd, CONFIG.DASHBOARD_ADMIN_TOKEN);
       if (!passOk && !tokenOk) {
         audit('dashboard_login_failed', { ip });
         return res.redirect('/admin/login?error=1');
@@ -1884,6 +2038,44 @@ function renderSection(title, rows) {
   return `<div class="card"><h2>${escapeHtml(title)}</h2>${renderTable(rows)}</div>`;
 }
 
+// Resolve who actually made an Overseerr request.
+//
+// The old logic trusted `requestedBy_settings_discordId` from the webhook payload first.
+// If the webhook template is configured with {{notifyuser_*}} variables (or the request was
+// placed via the admin API key), that field carries the ADMIN's identity for every event —
+// which is how every request ended up attributed to the server owner. Our own DB, keyed by
+// the requester's email, is the source of truth; the webhook field is only a fallback, and
+// anything that isn't a real snowflake (or is the bot itself) is ignored.
+function resolveRequester(request) {
+  const email = (request?.requestedBy_email || '').trim() || null;
+  const dbUser = email ? getUserByCanonicalEmail(email) : null;
+  if (dbUser && isSnowflake(dbUser.discord_id)) {
+    return { discordId: dbUser.discord_id, email, source: 'db-email' };
+  }
+  const hookId = String(request?.requestedBy_settings_discordId || '').trim();
+  if (isSnowflake(hookId) && hookId !== CONFIG.DISCORD_CLIENT_ID) {
+    return { discordId: hookId, email, source: 'webhook' };
+  }
+  return { discordId: null, email, source: 'none' };
+}
+
+// Poster URL from the webhook payload ({{image}} in the Overseerr template), if sane.
+function posterUrl(body) {
+  const url = String(body?.image || '').trim();
+  return /^https:\/\//.test(url) ? url : null;
+}
+
+async function dmUser(discordId, payload) {
+  if (!isSnowflake(discordId)) return false;
+  try {
+    const user = await client.users.fetch(discordId);
+    await user.send(payload);
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
 async function handleOverseerrWebhook(body) {
   const { notification_type, subject, media, request } = body;
   if (!notification_type || !media) return;
@@ -1891,35 +2083,77 @@ async function handleOverseerrWebhook(body) {
   const title = titleMatch ? titleMatch[1] : (subject || 'Unknown Title');
   const is4k = !!media.is4k;
   const mediaId = media.media_type === 'tv' ? `tvdb:${media.tvdbId}` : `tmdb:${media.tmdbId}`;
-  const requesterEmail = request?.requestedBy_email;
-  const dbUser = requesterEmail ? getUserByEmail(requesterEmail) : null;
-  const requesterDiscordId = request?.requestedBy_settings_discordId || dbUser?.discord_id || null;
+  const requester = resolveRequester(request);
+  const requesterDiscordId = requester.discordId;
+  const poster = posterUrl(body);
+  const requesterLine = requesterDiscordId
+    ? `<@${requesterDiscordId}>${requester.email ? ` · \`${requester.email}\`` : ''}`
+    : (requester.email ? `\`${requester.email}\`` : 'Unknown');
 
-  if (notification_type === 'MEDIA_PENDING') {
+  if (['MEDIA_PENDING', 'MEDIA_AUTO_APPROVED'].includes(notification_type)) {
     const adminChannel = await safeGetChannel(CONFIG.ADMIN_CHANNEL_ID);
     if (adminChannel) {
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`overseerr_approve:${request.request_id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId(`overseerr_deny:${request.request_id}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
-      );
-      await adminChannel.send({ embeds: [brandedEmbed(COLORS.INFO).setTitle(`${mediaTypeEmoji(media.media_type, is4k)} New Request`).setDescription(`**${title}**`).addFields({ name: 'Requested By', value: requesterDiscordId ? `<@${requesterDiscordId}>` : (requesterEmail || 'Unknown'), inline: true }, { name: 'Quality', value: is4k ? '4K' : 'HD', inline: true })], components: [row] });
+      const autoApproved = notification_type === 'MEDIA_AUTO_APPROVED';
+      const embed = brandedEmbed(autoApproved ? COLORS.SUCCESS : COLORS.INFO)
+        .setTitle(`${mediaTypeEmoji(media.media_type, is4k)} ${autoApproved ? 'Request Auto-Approved' : 'New Request'}`)
+        .setDescription(`**${title}**`)
+        .addFields(
+          { name: 'Requested by', value: requesterLine, inline: true },
+          { name: 'Type', value: mediaTypeLabel(media.media_type, is4k), inline: true },
+          { name: 'Status', value: autoApproved ? '✅ Auto-approved' : '⏳ Awaiting approval', inline: true },
+        );
+      if (poster) embed.setThumbnail(poster);
+      if (request?.request_id) embed.setFooter({ text: `Durant Media Server · Request #${request.request_id}` });
+      const components = [];
+      if (!autoApproved && request?.request_id) {
+        components.push(new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`overseerr_approve:${request.request_id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId(`overseerr_deny:${request.request_id}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
+        ));
+      }
+      await adminChannel.send({ embeds: [embed], components });
     }
-    audit('seerr_request_received', { requestId: request?.request_id, requesterDiscordId, title, mediaId });
+    audit('seerr_request_received', { requestId: request?.request_id, requesterDiscordId, requesterSource: requester.source, title, mediaId });
   }
 
-  if (['MEDIA_PENDING', 'MEDIA_APPROVED', 'MEDIA_AVAILABLE'].includes(notification_type)) {
-    const status = notification_type === 'MEDIA_APPROVED' ? 'approved' : notification_type === 'MEDIA_AVAILABLE' ? 'available' : 'pending';
-    upsertRequest(String(request?.request_id || ''), mediaId, media.media_type, is4k, title, requesterDiscordId, status);
+  if (['MEDIA_PENDING', 'MEDIA_AUTO_APPROVED', 'MEDIA_APPROVED', 'MEDIA_AVAILABLE', 'MEDIA_DECLINED'].includes(notification_type)) {
+    const status = { MEDIA_PENDING: 'pending', MEDIA_AUTO_APPROVED: 'approved', MEDIA_APPROVED: 'approved', MEDIA_AVAILABLE: 'available', MEDIA_DECLINED: 'declined' }[notification_type];
+    upsertRequest(request?.request_id, mediaId, media.media_type, is4k, title, requesterDiscordId, status);
+  }
+
+  if (['MEDIA_APPROVED', 'MEDIA_AUTO_APPROVED'].includes(notification_type) && requesterDiscordId) {
+    const embed = brandedEmbed(COLORS.SUCCESS)
+      .setTitle('🎉 Request Approved')
+      .setDescription(`**${title}** was approved and is being grabbed now.\nYou'll get another DM the moment it's ready to watch.`);
+    if (poster) embed.setThumbnail(poster);
+    await dmUser(requesterDiscordId, { embeds: [embed] });
+  }
+
+  if (notification_type === 'MEDIA_DECLINED' && requesterDiscordId) {
+    const embed = brandedEmbed(COLORS.DANGER)
+      .setTitle('🚫 Request Declined')
+      .setDescription(`Sorry — your request for **${title}** was declined.\nReach out to an admin if you think this was a mistake.`);
+    if (poster) embed.setThumbnail(poster);
+    await dmUser(requesterDiscordId, { embeds: [embed] });
+  }
+
+  if (notification_type === 'MEDIA_FAILED') {
+    const embed = brandedEmbed(COLORS.DANGER)
+      .setTitle('⚠️ Request Failed')
+      .setDescription(`**${title}** failed to process in ${media.media_type === 'tv' ? 'Sonarr' : 'Radarr'}.`)
+      .addFields({ name: 'Requested by', value: requesterLine, inline: true });
+    if (poster) embed.setThumbnail(poster);
+    notifyAdmin({ embeds: [embed] });
+    audit('seerr_request_failed', { requestId: request?.request_id, requesterDiscordId, title, mediaId });
   }
 
   if (notification_type === 'MEDIA_AVAILABLE' && requesterDiscordId) {
-    try {
-      const user = await client.users.fetch(requesterDiscordId);
-      await user.send({ embeds: [brandedEmbed(COLORS.SUCCESS)
-        .setTitle('✅ Now Available on Plex')
-        .setDescription(`**${title}** is ready to watch — enjoy! 🍿\n\nWant something else? Use \`/download\` or request more anytime.`)] });
-      audit('media_available_notification_sent', { targetDiscordId: requesterDiscordId, title });
-    } catch (_e) {}
+    const embed = brandedEmbed(COLORS.SUCCESS)
+      .setTitle('🍿 Now Available on Plex')
+      .setDescription(`**${title}** is ready to watch — enjoy!\n\nWant something else? Use \`/download\` or request more anytime.`);
+    if (poster) embed.setImage(poster);
+    const sent = await dmUser(requesterDiscordId, { embeds: [embed] });
+    if (sent) audit('media_available_notification_sent', { targetDiscordId: requesterDiscordId, title });
   }
 }
 
@@ -1939,7 +2173,7 @@ async function handlePlexWebhook(payload) {
   if (isInKeepList(mediaId) || CONFIG.NEVER_DELETE_MEDIA_IDS.includes(mediaId)) return;
 
   const reqRow = db.prepare('SELECT * FROM requests WHERE media_id = ? ORDER BY created_at DESC LIMIT 1').get(mediaId);
-  if (!reqRow?.requested_by_discord_id) return;
+  if (!isSnowflake(reqRow?.requested_by_discord_id)) return;
   const snoozeUntil = Number(getSetting(`delete_prompt_snooze:${mediaId}:${reqRow.requested_by_discord_id}`) || '0');
   if (snoozeUntil > Date.now()) return;
 
@@ -1963,7 +2197,7 @@ async function handleTautulliWebhook(body) {
   if (!tmdb_id && media_type === 'movie') return;
   if (!tvdb_id && media_type === 'episode') return;
   const reqRow = db.prepare('SELECT * FROM requests WHERE media_id = ? ORDER BY created_at DESC LIMIT 1').get(mediaId);
-  if (!reqRow?.requested_by_discord_id || isInKeepList(mediaId)) return;
+  if (!isSnowflake(reqRow?.requested_by_discord_id) || isInKeepList(mediaId)) return;
   const snoozeUntil = Number(getSetting(`delete_prompt_snooze:${mediaId}:${reqRow.requested_by_discord_id}`) || '0');
   if (snoozeUntil > Date.now()) return;
   const adminChannel = await safeGetChannel(CONFIG.ADMIN_CHANNEL_ID);

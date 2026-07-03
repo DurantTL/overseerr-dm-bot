@@ -102,6 +102,41 @@ Compose defaults:
 - Plex: `POST /webhook/plex` (uses `WEBHOOK_SECRET` when set)
 - Tautulli (legacy): `POST /webhook/tautulli`
 
+### Seerr webhook JSON payload (important for correct requester attribution)
+The bot resolves who made a request from its own DB first (matching `requestedBy_email`
+against linked users on canonical email), and only falls back to the Discord ID in the
+payload. Make sure the Seerr webhook JSON template includes the `{{request}}` block and
+`{{image}}` — and uses the **`requestedBy_*`** variables, *not* `notifyuser_*` (those
+resolve to whoever receives the notification, typically the admin, which makes every
+request look like it came from the server owner):
+
+```json
+{
+  "notification_type": "{{notification_type}}",
+  "event": "{{event}}",
+  "subject": "{{subject}}",
+  "message": "{{message}}",
+  "image": "{{image}}",
+  "{{media}}": {
+    "media_type": "{{media_type}}",
+    "tmdbId": "{{media_tmdbid}}",
+    "tvdbId": "{{media_tvdbid}}",
+    "status": "{{media_status}}",
+    "status4k": "{{media_status4k}}"
+  },
+  "{{request}}": {
+    "request_id": "{{request_id}}",
+    "requestedBy_email": "{{requestedBy_email}}",
+    "requestedBy_username": "{{requestedBy_username}}",
+    "requestedBy_avatar": "{{requestedBy_avatar}}",
+    "requestedBy_settings_discordId": "{{requestedBy_settings_discordId}}"
+  }
+}
+```
+
+Enable at least: Request Pending Approval, Request Approved, Request Automatically
+Approved, Request Declined, Request Available, Request Processing Failed.
+
 ## Discord Command Registration
 Slash commands are registered automatically on bot startup using `DISCORD_CLIENT_ID` + `DISCORD_GUILD_ID`.
 
