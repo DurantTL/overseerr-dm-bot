@@ -57,7 +57,7 @@ See `.env.example` for full values.
 - `STUCK_CHECK_MINUTES` (default `10`), `STUCK_AFTER_MINUTES` (default `45`), `STUCK_ALERT_COOLDOWN_HOURS` (default `6`) — stuck-download watchdog: when a queue item makes no progress for `STUCK_AFTER_MINUTES` (e.g. no seeders), the admin channel gets an alert with **Remove & Try Another Release** (blocklist + auto re-search), **Remove Only**, and **Ignore** buttons. Set `STUCK_CHECK_MINUTES=0` to disable.
 - `JANITOR_CHECK_MINUTES` (default `60`) — janitor sweep interval; `0` disables. The janitor:
   1. **Grace deletes** — enforces the "Finished Watching" prompt's auto-delete promise: if nobody clicks Keep/Delete within `DELETION_GRACE_HOURS`, the media is deleted (requires `ENABLE_DELETION=true`; honors `DELETION_DRY_RUN`, keep list, and never-delete list). Requester gets a DM; admin channel gets a report. "Remind Me Later" restarts the grace window after the reminder.
-  2. **Disk-space alerts** — warns the admin channel (24h cooldown) when any *arr-visible volume drops below `DISK_SPACE_WARN_GB` (default `100`, `0` disables). `/status` also shows a Storage section.
+  2. **Disk-space alerts** — warns the admin channel (24h cooldown) when any *arr-visible volume drops below `DISK_SPACE_WARN_GB` (default `100`, `0` disables). `/status` also shows a Storage section. Set `DISK_SPACE_PATHS` (comma-separated) to an allowlist of mounts/folders to report — this hides the container's own `/` and `/config` disks and relabels a mount with the more specific media folder (e.g. shows `/share/media` for the `/share` mount). Unset reports every *arr mount.
   3. **Retention rules** — with `RETENTION_ENFORCEMENT=true`, enforces the `media_retention_rules` table (`movie_4k`/`movie_1080p` → matching Radarr, `tv_episode` → Sonarr) every `RETENTION_CHECK_HOURS` (default `24`), deleting oldest-first, at most `RETENTION_MAX_DELETES_PER_RUN` (default `10`) per run. Dry-run posts a "would delete" digest instead.
 - `PATH_REMAP_FROM`, `PATH_REMAP_TO`
 - `DOWNLOAD_*`, `ENABLE_DELETION`, `KEEP_LIST_DEFAULT_DAYS`, `NEVER_DELETE_MEDIA_IDS`
@@ -243,7 +243,7 @@ Checks include Discord, SQLite, Plex, Seerr/Overseerr, Radarr, Radarr-4K, Sonarr
 
 ## Slash Command List
 Admin:
-- `/link`, `/unlink`, `/users`, `/status`, `/sync`, `/cleanup`, `/audit`, `/revoke-downloads`
+- `/link`, `/unlink`, `/users`, `/status`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/audit`, `/revoke-downloads`
 
 User:
 - `/download`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`
