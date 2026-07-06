@@ -21,7 +21,16 @@ Durant Media Server Bot is a Discord + Plex + Seerr/Overseerr automation bot for
 - Optional per-topic notification channels (`REQUESTS_`/`SYSTEM_ALERTS_`/`DOWNLOADS_`/`CLEANUP_`/
   `AUDIT_`/`DEPLOY_CHANNEL_ID`), each falling back to `ADMIN_CHANNEL_ID` when unset — see
   `.env.example` for the routing map.
-- User self-service commands (`/request`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`).
+- Pipeline visibility: `/request-status` explains why a request isn't ready (pending approval,
+  downloading with progress/ETA, stalled with the *arr's reported reason, or waiting for a
+  release), `/queue` shows live downloads with stall reasons, `/watching` shows current Plex
+  sessions, `/indexers` shows Prowlarr/Byparr health, `/debrid` shows Premiumize status, and
+  `/cleanup-suggestions` lists the biggest disk hogs (read-only; honors keep/never-delete lists).
+- Heavy-transcode alerts via Tautulli, startup config sanity warnings, and a version-stamped
+  "Bot Online" deploy ping (`GIT_SHA` is baked into the image by CI).
+- Test suite (`npm test`) runs the shipped code against mock Seerr servers; CI runs it on every
+  PR and gates the image build.
+- User self-service commands (`/request`, `/request-status`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`).
 - Health endpoints (`/health` and authenticated `/admin/health`).
 
 ## Architecture
@@ -62,8 +71,10 @@ See `.env.example` for full values.
 - `RADARR_URL`, `RADARR_API_KEY`
 - `RADARR_4K_URL`, `RADARR_4K_API_KEY`
 - `SONARR_URL`, `SONARR_API_KEY`
-- `PROWLARR_URL`, `PROWLARR_API_KEY` — adds Prowlarr to `/status` and dashboard health checks
-- `BYPARR_URL` — adds Byparr (`/health` endpoint) to health checks
+- `PROWLARR_URL`, `PROWLARR_API_KEY` — adds Prowlarr to `/status` and dashboard health checks, and powers `/indexers` (per-indexer health with failure/backoff states)
+- `BYPARR_URL` — adds Byparr (`/health` endpoint) to health checks and `/indexers`
+- `TAUTULLI_URL`, `TAUTULLI_API_KEY` — enables `/watching` (live Plex sessions) and the heavy-transcode watchdog: every `PLAYBACK_CHECK_MINUTES` (default `5`, `0` disables) sessions that are **video**-transcoding trigger an alert to `PLAYBACK_CHANNEL_ID` (fallback admin channel), at most once per user+media per `TRANSCODE_ALERT_COOLDOWN_MINUTES` (default `60`)
+- `PREMIUMIZE_API_KEY` — enables `/debrid` (fair-use %, cloud storage, active/failed transfers)
 - `STUCK_CHECK_MINUTES` (default `10`), `STUCK_AFTER_MINUTES` (default `45`), `STUCK_ALERT_COOLDOWN_HOURS` (default `6`) — stuck-download watchdog: when a queue item makes no progress for `STUCK_AFTER_MINUTES` (e.g. no seeders), the admin channel gets an alert with **Remove & Try Another Release** (blocklist + auto re-search), **Remove Only**, and **Ignore** buttons. Set `STUCK_CHECK_MINUTES=0` to disable.
 - `JANITOR_CHECK_MINUTES` (default `60`) — janitor sweep interval; `0` disables. The janitor:
   1. **Grace deletes** — enforces the "Finished Watching" prompt's auto-delete promise: if nobody clicks Keep/Delete within `DELETION_GRACE_HOURS`, the media is deleted (requires `ENABLE_DELETION=true`; honors `DELETION_DRY_RUN`, keep list, and never-delete list). Requester gets a DM; admin channel gets a report. "Remind Me Later" restarts the grace window after the reminder.
@@ -284,10 +295,10 @@ Checks include Discord, SQLite, Plex, Seerr/Overseerr, Radarr, Radarr-4K, Sonarr
 
 ## Slash Command List
 Admin:
-- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/audit`, `/revoke-downloads`
+- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`
 
 User:
-- `/request`, `/download`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`
+- `/request`, `/request-status`, `/download`, `/queue`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`
 
 ## Database Tables
 - `users`
