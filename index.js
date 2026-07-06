@@ -347,6 +347,34 @@ function storeUserEmail(discordId, email) {
     ON CONFLICT(discord_id) DO UPDATE SET email=excluded.email, requested_at=excluded.requested_at, overseerr_created=0, overseerr_user_id=NULL`)
     .run(discordId, email.toLowerCase().trim(), new Date().toISOString());
 }
+// Link a Discord ID to an email, absorbing any synthetic plex_ row that holds the same canonical
+// email. Without the absorb, /link (and the DM email flow) created a second row for the same human
+// and left the stale plex_ row behind — an instant duplicate-email pair. Carried-over flags
+// (invited / overseerr_created / overseerr_user_id / plex_username) survive the merge so we don't
+// re-invite or re-create a Seerr user for someone who already has both.
+function linkUserToEmail(discordId, email) {
+  const key = canonicalizeEmail(email);
+  const absorbed = key && !key.startsWith('__placeholder__:')
+    ? db.prepare('SELECT * FROM users').all().find(u =>
+        u.discord_id !== discordId
+        && u.discord_id.startsWith('plex_')
+        && canonicalizeEmail(u.email) === key)
+    : null;
+  storeUserEmail(discordId, email);
+  if (absorbed) {
+    db.prepare(`UPDATE users SET
+        invited = MAX(invited, ?),
+        invited_at = COALESCE(invited_at, ?),
+        overseerr_created = MAX(overseerr_created, ?),
+        overseerr_user_id = COALESCE(overseerr_user_id, ?),
+        plex_username = COALESCE(plex_username, ?)
+      WHERE discord_id = ?`)
+      .run(absorbed.invited ? 1 : 0, absorbed.invited_at, absorbed.overseerr_created ? 1 : 0, absorbed.overseerr_user_id, absorbed.plex_username, discordId);
+    removeUser(absorbed.discord_id);
+    audit('plex_row_absorbed', { targetDiscordId: discordId, email, absorbedRow: absorbed.discord_id, absorbedEmail: absorbed.email });
+  }
+  return { absorbed };
+}
 const getUserByDiscordId = discordId => db.prepare('SELECT * FROM users WHERE discord_id = ?').get(discordId);
 // Canonical-email lookup (gmail dots/plus-tags collapse). Prefers rows with a real Discord
 // snowflake over synthetic plex_ rows so notifications reach the actual person.
@@ -578,12 +606,25 @@ async function removePlexAccess(email) {
   return { removed: removedCount > 0, removedCount, total: servers.length };
 }
 
+// Push a Discord ID into a Seerr user's notification settings. Previously this only happened for
+// users the bot created, so Plex-imported Seerr users that got "repaired" into the DB never
+// received Seerr-side Discord pings. Non-fatal: failures are audited, not thrown.
+async function setOverseerrDiscordNotification(overseerrUserId, discordId) {
+  try {
+    await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/user/${overseerrUserId}/settings/notifications`, { discordId }, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
+    return true;
+  } catch (err) {
+    audit('external_api_error', { provider: 'overseerr', error: err.message, action: 'set_discord_notification', targetDiscordId: discordId, overseerrUserId });
+    return false;
+  }
+}
+
 async function createOverseerrUser(email, discordId, username) {
   const createRes = await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/user`, {
     email, username, password: crypto.randomUUID(), permissions: 32, userType: 2,
   }, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
   const id = createRes.data.id;
-  await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/user/${id}/settings/notifications`, { discordId }, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
+  await setOverseerrDiscordNotification(id, discordId);
   return id;
 }
 
@@ -1046,12 +1087,12 @@ function isAdminInteraction(interaction) {
 
 const slashCommands = [
   new SlashCommandBuilder().setName('download').setDescription('Get a secure download link').addStringOption(o => o.setName('title').setDescription('Movie or show title').setRequired(true)).addIntegerOption(o => o.setName('season').setDescription('Season number')).addIntegerOption(o => o.setName('episode').setDescription('Episode number')).addBooleanOption(o => o.setName('one_time').setDescription('One-time download link')),
-  new SlashCommandBuilder().setName('link').setDescription('Link a user to Plex email').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('email').setDescription('Plex email').setRequired(true)),
+  new SlashCommandBuilder().setName('link').setDescription('Link a user to Plex email (invites + sets up Seerr)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('email').setDescription('Plex email — start typing to search linked/Plex users').setRequired(true).setAutocomplete(true)),
   new SlashCommandBuilder().setName('unlink').setDescription('Unlink a user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)),
   new SlashCommandBuilder().setName('users').setDescription('List linked users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('status').setDescription('Show status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('sync').setDescription('Sync users safely').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(true).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
-  new SlashCommandBuilder().setName('sync-fix').setDescription('Resolve sync issues found in the preview').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('target').setDescription('Category to fix').setRequired(true).addChoices({ name: 'placeholders', value: 'placeholders' }, { name: 'duplicates', value: 'duplicates' }, { name: 'orphans', value: 'orphans' }, { name: 'mergeemails', value: 'mergeemails' })),
+  new SlashCommandBuilder().setName('sync-fix').setDescription('Resolve sync issues found in the preview').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('target').setDescription('Category to fix').setRequired(true).addChoices({ name: 'placeholders', value: 'placeholders' }, { name: 'duplicates', value: 'duplicates' }, { name: 'orphans', value: 'orphans' }, { name: 'mergeemails', value: 'mergeemails' }, { name: 'links', value: 'links' })),
   new SlashCommandBuilder().setName('cleanup').setDescription('Cleanup deleted Overseerr users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(false).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
   new SlashCommandBuilder().setName('reinvite').setDescription('Re-send a Plex invite to a linked user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('Discord user currently in the server')).addStringOption(o => o.setName('email').setDescription('Any linked user — start typing to search the DB').setAutocomplete(true)),
   new SlashCommandBuilder().setName('requests').setDescription('Show the most recent Overseerr requests').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addIntegerOption(o => o.setName('count').setDescription('How many to show (default 10)').setMinValue(1).setMaxValue(25)),
@@ -1136,7 +1177,9 @@ client.on('messageCreate', async message => {
   const email = message.content.trim().toLowerCase();
   if (!isValidEmail(email)) return message.reply('That does not look like a valid email. Try again.');
   clearPendingEmail(message.author.id);
-  storeUserEmail(message.author.id, email);
+  // linkUserToEmail (not storeUserEmail) so an existing plex_ synthetic row with the same email is
+  // absorbed instead of becoming a duplicate pair — e.g. an existing Plex friend joining Discord.
+  linkUserToEmail(message.author.id, email);
   audit('user_linked', { targetDiscordId: message.author.id, email });
   await message.reply('✅ Thanks! Your request has been sent to the admins for approval. You\'ll get a DM here as soon as you\'re approved.');
   const adminChannel = await safeGetChannel(CONFIG.ADMIN_CHANNEL_ID);
@@ -1166,15 +1209,24 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// Discord's user-picker only lists people currently in the server, so /reinvite's `user` option
-// can't reach plex_ synthetic accounts or email-only ghost links — exactly the rows that most need
-// re-inviting. Autocomplete the `email` option against every invitable DB row so the whole list is
-// reachable. Placeholder (@plex.local) and malformed emails are skipped: they can't be invited.
+// Discord's user-picker only suggests locally *cached* members (mostly people recently seen in the
+// current channel), so it can't reliably reach everyone — and never reaches plex_ synthetic rows or
+// email-only ghost links. Autocomplete the `email` option of /reinvite and /link against every
+// invitable DB row instead, matching by email, stored Plex username, or Discord username/display
+// name. Member names come from already-cached data only — an autocomplete has a 3s deadline and a
+// forced gateway fetch would trip the opcode-8 rate limiter.
 async function handleAutocomplete(interaction) {
-  if (interaction.commandName !== 'reinvite') return interaction.respond([]).catch(() => {});
+  if (!['reinvite', 'link'].includes(interaction.commandName)) return interaction.respond([]).catch(() => {});
   const focused = interaction.options.getFocused(true);
   if (focused.name !== 'email') return interaction.respond([]).catch(() => {});
   const q = String(focused.value || '').toLowerCase().trim();
+
+  const nameById = new Map();
+  const cachedMembers = (guildMemberCache.members && Date.now() - guildMemberCache.at < GUILD_MEMBER_TTL_MS)
+    ? guildMemberCache.members
+    : Array.from((client.guilds.cache.get(CONFIG.DISCORD_GUILD_ID) || client.guilds.cache.first())?.members.cache.values() || []);
+  for (const m of cachedMembers) nameById.set(m.user.id, m.displayName || m.user.username);
+
   const seen = new Set();
   const choices = [];
   for (const u of db.prepare('SELECT * FROM users ORDER BY requested_at DESC').all()) {
@@ -1182,12 +1234,16 @@ async function handleAutocomplete(interaction) {
     if (!isValidEmail(email) || canonicalizeEmail(email).startsWith('__placeholder__:')) continue;
     const canon = canonicalizeEmail(email);
     if (seen.has(canon)) continue;
-    if (q && !email.includes(q)) continue;
+    const discordName = isSnowflake(u.discord_id) ? (nameById.get(u.discord_id) || '') : '';
+    const plexName = String(u.plex_username || '');
+    if (q && ![email, discordName.toLowerCase(), plexName.toLowerCase()].some(s => s.includes(q))) continue;
     seen.add(canon);
     const tags = [];
+    if (discordName) tags.push(`@${discordName}`);
+    if (plexName && plexName.toLowerCase() !== discordName.toLowerCase()) tags.push(plexName);
     if (u.discord_id.startsWith('plex_')) tags.push('Plex-only');
     if (!u.invited) tags.push('not yet invited');
-    const name = `${email}${tags.length ? ` · ${tags.join(', ')}` : ''}`.slice(0, 100);
+    const name = `${email}${tags.length ? ` · ${tags.join(' · ')}` : ''}`.slice(0, 100);
     choices.push({ name, value: email.slice(0, 100) });
     if (choices.length >= 25) break;
   }
@@ -1271,13 +1327,68 @@ async function handleDownloadCommand(interaction) {
   await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
+// The full Plex → Discord → Seerr chain for linking one person, shared by /link and the
+// /sync-fix links buttons. Absorbs a matching plex_ synthetic row, sends a Plex invite only if
+// they don't already have access, and reconciles Seerr: link the existing user (wiring the Discord
+// notification ID that Plex-imported users never got) or create a fresh one.
+async function applyFullChainLink(discordId, email, username) {
+  const { absorbed } = linkUserToEmail(discordId, email);
+  const row = getUserByDiscordId(discordId);
+
+  let plexStatus;
+  if (row.invited) {
+    plexStatus = absorbed ? '✅ already had access (merged Plex row)' : '✅ already invited';
+  } else {
+    try {
+      const result = await inviteUserToPlex(email);
+      markUserInvited(discordId);
+      plexStatus = result.successCount > 0 ? `✅ invite sent (${result.successCount}/${result.total})` : '⚠️ invite failed on all servers';
+    } catch (err) {
+      audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId: discordId });
+      plexStatus = '❌ invite failed';
+    }
+  }
+
+  let seerrStatus;
+  try {
+    const key = canonicalizeEmail(email);
+    const existing = (await fetchOverseerrUsers()).find(ou => canonicalizeEmail(ou.email) === key);
+    if (existing) {
+      markOverseerrCreated(discordId, existing.id ?? null);
+      const notified = existing.id != null ? await setOverseerrDiscordNotification(existing.id, discordId) : false;
+      seerrStatus = `✅ linked existing user${notified ? ' + Discord notifications' : ''}`;
+    } else {
+      const id = await createOverseerrUser(email, discordId, username || email.split('@')[0]);
+      markOverseerrCreated(discordId, id);
+      seerrStatus = '✅ user created + Discord notifications';
+    }
+  } catch (err) {
+    audit('external_api_error', { provider: 'overseerr', error: err.message, targetDiscordId: discordId });
+    seerrStatus = '❌ failed — run /sync apply to retry';
+  }
+
+  return { absorbed, plexStatus, seerrStatus };
+}
+
 async function handleLinkCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
   const target = interaction.options.getUser('user');
   const email = interaction.options.getString('email').toLowerCase().trim();
-  storeUserEmail(target.id, email); markUserInvited(target.id);
-  audit('user_linked', { actorDiscordId: interaction.user.id, targetDiscordId: target.id, email, source: 'slash_link' });
-  await interaction.reply({ content: `✅ Linked ${target.tag} to ${email}`, ephemeral: true });
+  if (!isValidEmail(email) || canonicalizeEmail(email).startsWith('__placeholder__:')) {
+    return interaction.reply({ content: `❌ \`${email}\` isn't a valid email address.`, ephemeral: true });
+  }
+  await interaction.deferReply({ ephemeral: true });
+  const { absorbed, plexStatus, seerrStatus } = await applyFullChainLink(target.id, email, target.username);
+  audit('user_linked', { actorDiscordId: interaction.user.id, targetDiscordId: target.id, email, source: 'slash_link', absorbedPlexRow: absorbed?.discord_id || null });
+  const embed = brandedEmbed(COLORS.SUCCESS)
+    .setTitle('🔗 User Linked')
+    .setDescription(`${target.tag} → \`${email}\``)
+    .addFields(
+      { name: 'DB', value: absorbed ? `✅ linked (merged \`${absorbed.discord_id}\` row)` : '✅ linked', inline: false },
+      { name: 'Plex', value: plexStatus, inline: true },
+      { name: 'Seerr', value: seerrStatus, inline: true },
+    );
+  await interaction.editReply({ embeds: [embed] });
 }
 
 async function handleUnlinkCommand(interaction) {
@@ -1287,7 +1398,7 @@ async function handleUnlinkCommand(interaction) {
   if (!record) return interaction.reply({ content: '⚠️ Not in DB.', ephemeral: true });
   removeUser(target.id);
   audit('user_unlinked', { actorDiscordId: interaction.user.id, targetDiscordId: target.id, email: record.email });
-  await interaction.reply({ content: `✅ Removed ${target.tag} from DB.`, ephemeral: true });
+  await interaction.reply({ content: `✅ Removed ${target.tag} from DB. Plex access and the Seerr account were left untouched — revoke from the leave-notification button or the Plex/Seerr admin UIs if needed.`, ephemeral: true });
 }
 
 async function handleUsersCommand(interaction) {
@@ -1484,17 +1595,22 @@ async function buildSyncPreview() {
     .filter(([, ids]) => ids.length > 1)
     .map(([canonicalEmail, discordIds]) => ({ canonicalEmail, discordIds }));
 
-  // Suggested links for plex_ friends with no real Discord link (preview only — never auto-linked in apply).
+  // Suggested links for plex_ friends with no real Discord link. Never auto-applied in /sync apply,
+  // but /sync-fix links offers per-pair Link/Dismiss buttons. Dismissed pairs are remembered via
+  // suggestlink_ack:<discordId>:<plexId>.
   const suggestedLinks = [];
   for (const f of plexFriends) {
-    if (!dbUsers.find(u => u.discord_id === `plex_${f.id}`)) continue;
+    const plexRow = dbUsers.find(u => u.discord_id === `plex_${f.id}`);
+    if (!plexRow) continue;
     const name = String(f.username || f.title || '').toLowerCase().trim();
     if (!name) continue;
     const match = discordMembers.find(m => {
       const uname = String(m.user.username || '').toLowerCase();
       return uname && (uname === name || uname.includes(name) || name.includes(uname));
     });
-    if (match) suggestedLinks.push({ plexFriend: f.username || f.title, plexId: f.id, discordTag: match.user.tag, discordId: match.user.id });
+    if (!match) continue;
+    if (getSetting(`suggestlink_ack:${match.user.id}:${f.id}`)) continue;
+    suggestedLinks.push({ plexFriend: f.username || f.title, plexId: f.id, discordTag: match.user.tag, discordId: match.user.id, plexEmail: plexRow.email });
   }
 
   // Multi-email merge candidates: a plex_ synthetic row that is likely the same human as an
@@ -1571,9 +1687,12 @@ async function handleSyncCommand(interaction) {
   for (const friend of friends) {
     const email = (friend.email || '').trim().toLowerCase();
     if (!email) continue;
+    const plexName = String(friend.username || friend.title || '').trim() || null;
+    // Keep plex_username fresh on existing plex_ rows so autocomplete can label them by name.
+    db.prepare('UPDATE users SET plex_username = ? WHERE discord_id = ? AND (plex_username IS NULL OR plex_username != ?)').run(plexName, `plex_${friend.id}`, plexName);
     const key = canonicalizeEmail(friend.email);
     if (!key || existingCanon.has(key)) continue;
-    db.prepare('INSERT OR IGNORE INTO users (discord_id, email, invited, requested_at) VALUES (?, ?, 1, ?)').run(`plex_${friend.id}`, email, new Date().toISOString());
+    db.prepare('INSERT OR IGNORE INTO users (discord_id, email, invited, requested_at, plex_username) VALUES (?, ?, 1, ?, ?)').run(`plex_${friend.id}`, email, new Date().toISOString(), plexName);
     existingCanon.add(key);
     added++;
   }
@@ -1595,7 +1714,11 @@ async function handleSyncCommand(interaction) {
     if (!key || isPlaceholderKey(key)) continue;
     if (overseerrByCanon.has(key)) {
       if (!u.overseerr_created) {
-        markOverseerrCreated(u.discord_id, overseerrByCanon.get(key).id ?? null);
+        const existing = overseerrByCanon.get(key);
+        markOverseerrCreated(u.discord_id, existing.id ?? null);
+        // Existing (usually Plex-imported) Seerr users never had their Discord ID set, so
+        // Seerr-side Discord notifications silently didn't work for them. Wire it on repair.
+        if (existing.id != null) await setOverseerrDiscordNotification(existing.id, u.discord_id);
         repaired++;
       }
       continue;
@@ -1702,6 +1825,25 @@ async function handleSyncFixCommand(interaction) {
     return interaction.editReply({ content: `Found ${preview.emailMergeCandidates.length} merge candidate(s). Suggestions only — nothing is applied until you click:`, embeds, components });
   }
 
+  if (target === 'links') {
+    if (!preview.suggestedLinks.length) return interaction.editReply('✅ No suggested links to review.');
+    const embeds = []; const components = [];
+    for (const s of preview.suggestedLinks.slice(0, 5)) {
+      const key = pendingFixKey('slink', `${s.discordId}|${s.plexId}|${s.plexEmail}`);
+      const embed = brandedEmbed(COLORS.INFO)
+        .setTitle('Suggested link')
+        .setDescription(
+          `Plex friend **${s.plexFriend}** (\`${s.plexEmail}\`) looks like Discord member <@${s.discordId}> (${s.discordTag}).\n\n` +
+          '**Link** merges the Plex row onto the Discord user and wires up Plex + Seerr (invite if needed, Discord notifications).');
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`syncfix_linkapply:${key}`).setLabel('Link them').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`syncfix_linkdismiss:${key}`).setLabel('Not the same — dismiss').setStyle(ButtonStyle.Secondary),
+      );
+      embeds.push(embed); components.push(row);
+    }
+    return interaction.editReply({ content: `Found ${preview.suggestedLinks.length} suggested link(s). Nothing is applied until you click:`, embeds, components });
+  }
+
   return interaction.editReply('❌ Unknown target.');
 }
 
@@ -1713,7 +1855,7 @@ function syncFixHints(p) {
   if (p.emailMergeCandidates?.length) hints.push(`${p.emailMergeCandidates.length} multi-email merge candidate(s) — run /sync-fix mergeemails to review`);
   if (p.suggestedLinks?.length) {
     const pairs = p.suggestedLinks.slice(0, 10).map(s => `  • ${s.plexFriend} → ${s.discordTag} (${s.discordId})`);
-    hints.push(`Suggested links (review manually, never auto-applied):\n${pairs.join('\n')}`);
+    hints.push(`${p.suggestedLinks.length} suggested link(s) — run /sync-fix links to apply or dismiss:\n${pairs.join('\n')}`);
   }
   return hints.length ? `\n\n${hints.join('\n')}` : '';
 }
@@ -1774,7 +1916,8 @@ async function handleReinviteCommand(interaction) {
     return interaction.editReply(`⚠️ \`${email}\` isn't a real email address — can't send a Plex invite (managed/placeholder account).`);
   }
   const result = await inviteUserToPlex(email);
-  if (discordId && isSnowflake(discordId)) markUserInvited(discordId);
+  // markUserInvited keys on the discord_id string, so it works for plex_ synthetic rows too.
+  if (discordId) markUserInvited(discordId);
   audit('plex_reinvite_sent', { actorDiscordId: interaction.user.id, targetDiscordId: discordId, email, successCount: result.successCount, total: result.total });
   const ok = result.successCount > 0;
   await interaction.editReply(
@@ -1910,12 +2053,12 @@ async function handleHelpCommand(interaction) {
     .addFields({ name: 'Commands', value: userCommands.join('\n'), inline: false });
   if (isAdminInteraction(interaction)) {
     const adminCommands = [
-      '`/link` — Link a Discord user to a Plex email',
+      '`/link` — Link a Discord user to a Plex email (invites + sets up Seerr)',
       '`/unlink` — Remove a user from the DB',
       '`/users` — List linked users',
       '`/status` — Show system health and stats',
       '`/sync` — Preview or apply user sync',
-      '`/sync-fix` — Resolve duplicate / placeholder / orphan records',
+      '`/sync-fix` — Resolve duplicates / placeholders / orphans / suggested links',
       '`/reinvite` — Re-send a Plex invite to a linked user',
       '`/requests` — Show the most recent Overseerr requests',
       '`/cleanup` — Remove deleted Overseerr users',
@@ -2121,6 +2264,35 @@ async function handleButton(interaction) {
     removeUser(plexDiscordId);
     audit('sync_fix_email_merged', { actorDiscordId: interaction.user.id, keptDiscordId, mergedEmails, adoptedEmail, finalEmail });
     return interaction.reply({ content: `✅ Merged onto <@${keptDiscordId}> with \`${finalEmail}\`${adoptedEmail ? ' (adopted Plex email)' : ''}. Removed plex row \`${plexDiscordId}\`.`, ephemeral: true });
+  }
+
+  if (['syncfix_linkapply', 'syncfix_linkdismiss'].includes(action)) {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const stored = getSetting(`syncfix_pending:${parts[0]}`);
+    if (!stored) return interaction.reply({ content: '❌ This action expired. Re-run /sync-fix links.', ephemeral: true });
+    const [discordId, plexId, ...emailParts] = stored.split('|');
+    const plexEmail = emailParts.join('|');
+
+    if (action === 'syncfix_linkdismiss') {
+      setSetting(`suggestlink_ack:${discordId}:${plexId}`, '1');
+      audit('sync_fix_link_dismissed', { actorDiscordId: interaction.user.id, targetDiscordId: discordId, plexId });
+      return interaction.reply({ content: `✅ Dismissed — won't suggest linking <@${discordId}> to \`plex_${plexId}\` again.`, ephemeral: true });
+    }
+
+    // Re-validate against the live DB — the plex_ row may have been merged or removed since.
+    if (!getUserByDiscordId(`plex_${plexId}`)) return interaction.reply({ content: '❌ Plex row no longer exists. Re-run /sync-fix links.', ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    const du = await client.users.fetch(discordId).catch(() => null);
+    const { absorbed, plexStatus, seerrStatus } = await applyFullChainLink(discordId, plexEmail, du?.username);
+    audit('user_linked', { actorDiscordId: interaction.user.id, targetDiscordId: discordId, email: plexEmail, source: 'syncfix_links', absorbedPlexRow: absorbed?.discord_id || null });
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle('🔗 User Linked')
+      .setDescription(`<@${discordId}> → \`${plexEmail}\``)
+      .addFields(
+        { name: 'DB', value: absorbed ? `✅ linked (merged \`${absorbed.discord_id}\` row)` : '✅ linked', inline: false },
+        { name: 'Plex', value: plexStatus, inline: true },
+        { name: 'Seerr', value: seerrStatus, inline: true },
+      )] });
   }
 
   if (['stuck_retry', 'stuck_rm', 'stuck_ignore'].includes(action)) {
