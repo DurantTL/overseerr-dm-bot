@@ -1529,13 +1529,18 @@ async function handleAutocomplete(interaction) {
   }
 
   // /request-status title: — matches locally tracked requests (fed by webhooks + /request).
+  // Non-admins only see their own requests; showing everyone's titles/statuses would let any
+  // member enumerate what other people requested.
   if (interaction.commandName === 'request-status') {
     const focusedTitle = interaction.options.getFocused(true);
     if (focusedTitle.name !== 'title') return interaction.respond([]).catch(() => {});
     const q = String(focusedTitle.value || '').toLowerCase().trim();
+    const rows = isAdminInteraction(interaction)
+      ? db.prepare('SELECT * FROM requests ORDER BY id DESC LIMIT 500').all()
+      : db.prepare('SELECT * FROM requests WHERE requested_by_discord_id = ? ORDER BY id DESC LIMIT 500').all(interaction.user.id);
     const seen = new Set();
     const choices = [];
-    for (const r of db.prepare('SELECT * FROM requests ORDER BY id DESC LIMIT 500').all()) {
+    for (const r of rows) {
       if (q && !String(r.title || '').toLowerCase().includes(q)) continue;
       if (seen.has(r.media_id)) continue;
       seen.add(r.media_id);
@@ -2477,12 +2482,18 @@ async function handleQueueCommand(interaction) {
 async function handleRequestStatusCommand(interaction) {
   await interaction.deferReply({ ephemeral: true });
   const raw = String(interaction.options.getString('title') || '').trim();
-  // Autocomplete sends media_id values (tmdb:123 / tvdb:456); free text falls back to title match.
+  // Autocomplete sends media_id values (tmdb:123 / tvdb:456); free text falls back to title
+  // match. Same scoping as the autocomplete: non-admins can only look up their own requests.
+  const admin = isAdminInteraction(interaction);
   const row = /^(tmdb|tvdb):\d+$/.test(raw)
-    ? db.prepare('SELECT * FROM requests WHERE media_id = ? ORDER BY id DESC LIMIT 1').get(raw)
-    : db.prepare('SELECT * FROM requests WHERE title LIKE ? ORDER BY id DESC LIMIT 1').get(`%${raw}%`);
+    ? (admin
+      ? db.prepare('SELECT * FROM requests WHERE media_id = ? ORDER BY id DESC LIMIT 1').get(raw)
+      : db.prepare('SELECT * FROM requests WHERE media_id = ? AND requested_by_discord_id = ? ORDER BY id DESC LIMIT 1').get(raw, interaction.user.id))
+    : (admin
+      ? db.prepare('SELECT * FROM requests WHERE title LIKE ? ORDER BY id DESC LIMIT 1').get(`%${raw}%`)
+      : db.prepare('SELECT * FROM requests WHERE title LIKE ? AND requested_by_discord_id = ? ORDER BY id DESC LIMIT 1').get(`%${raw}%`, interaction.user.id));
   if (!row) {
-    return interaction.editReply(`❌ No tracked request matches **${raw}**. Try picking a suggestion from the list, or \`/myrequests\` to see what's tracked.`);
+    return interaction.editReply(`❌ None of your tracked requests match **${raw}**. Try picking a suggestion from the list, or \`/myrequests\` to see what's tracked.`);
   }
 
   const lines = [`${requestStatusBadge(row.status)}${isSnowflake(row.requested_by_discord_id) ? ` — requested by <@${row.requested_by_discord_id}>` : ''}`];
@@ -2579,7 +2590,12 @@ async function handleDebridCommand(interaction) {
   await interaction.deferReply({ ephemeral: true });
   if (!CONFIG.PREMIUMIZE_API_KEY) return interaction.editReply('❌ Premiumize isn\'t configured — set `PREMIUMIZE_API_KEY`.');
   try {
-    const pm = p => axios.get(`https://www.premiumize.me/api${p}`, { params: { apikey: CONFIG.PREMIUMIZE_API_KEY }, timeout: 10000 }).then(r => r.data);
+    // Premiumize reports business failures (bad/expired key, ...) as HTTP 200 with
+    // status:"error" — treat those as errors instead of rendering an empty "all good" summary.
+    const pm = p => axios.get(`https://www.premiumize.me/api${p}`, { params: { apikey: CONFIG.PREMIUMIZE_API_KEY }, timeout: 10000 }).then(r => {
+      if (r.data?.status && r.data.status !== 'success') throw new Error(r.data.message || `Premiumize ${p} returned status ${r.data.status}`);
+      return r.data;
+    });
     const [info, transferList] = await Promise.all([pm('/account/info'), pm('/transfer/list')]);
     const lines = [];
     if (info?.limit_used != null) lines.push(`Fair-use limit: **${Math.round(Number(info.limit_used) * 100)}%** used`);
