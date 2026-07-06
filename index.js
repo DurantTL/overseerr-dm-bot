@@ -7,6 +7,9 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   Partials,
   REST,
   Routes,
@@ -1094,6 +1097,8 @@ const slashCommands = [
   new SlashCommandBuilder().setName('sync').setDescription('Sync users safely').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(true).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
   new SlashCommandBuilder().setName('sync-fix').setDescription('Resolve sync issues found in the preview').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('target').setDescription('Category to fix').setRequired(true).addChoices({ name: 'placeholders', value: 'placeholders' }, { name: 'duplicates', value: 'duplicates' }, { name: 'orphans', value: 'orphans' }, { name: 'mergeemails', value: 'mergeemails' }, { name: 'links', value: 'links' })),
   new SlashCommandBuilder().setName('cleanup').setDescription('Cleanup deleted Overseerr users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(false).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
+  new SlashCommandBuilder().setName('invite').setDescription('Invite a member: bot DMs them for their Plex email and auto-sets them up').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('Member to invite').setRequired(true)).addStringOption(o => o.setName('email').setDescription('Skip the DM — set them up with this Plex email right away').setAutocomplete(true)),
+  new SlashCommandBuilder().setName('invite-post').setDescription('Post a public "Request Plex Access" button in this channel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('reinvite').setDescription('Re-send a Plex invite to a linked user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('Discord user currently in the server')).addStringOption(o => o.setName('email').setDescription('Any linked user — start typing to search the DB').setAutocomplete(true)),
   new SlashCommandBuilder().setName('requests').setDescription('Show the most recent Overseerr requests').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addIntegerOption(o => o.setName('count').setDescription('How many to show (default 10)').setMinValue(1).setMaxValue(25)),
   new SlashCommandBuilder().setName('audit').setDescription('Audit log queries').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -1171,29 +1176,58 @@ client.on('guildMemberRemove', async member => {
   }
 });
 
+// Post the Approve/Deny access-request embed to the admin channel. Shared by the DM email flow
+// and the public Request Access modal.
+async function postAccessRequestToAdmins(user, email) {
+  const adminChannel = await safeGetChannel(CONFIG.ADMIN_CHANNEL_ID);
+  if (!adminChannel) return;
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`plex_approve:${user.id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`plex_deny:${user.id}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
+  );
+  const requestEmbed = brandedEmbed(COLORS.INFO)
+    .setTitle('🔐 New Plex Access Request')
+    .addFields({ name: 'User', value: `<@${user.id}>`, inline: true }, { name: 'Email', value: `\`${email}\``, inline: true });
+  const avatarUrl = user.displayAvatarURL?.();
+  if (avatarUrl) requestEmbed.setThumbnail(avatarUrl);
+  await adminChannel.send({ embeds: [requestEmbed], components: [row] });
+}
+
 client.on('messageCreate', async message => {
   if (message.author.bot || message.guild) return;
   if (!hasPendingEmail(message.author.id)) return;
   const email = message.content.trim().toLowerCase();
   if (!isValidEmail(email)) return message.reply('That does not look like a valid email. Try again.');
   clearPendingEmail(message.author.id);
+
+  // Admin-initiated invite (/invite): the admin already vouched for this person, so skip the
+  // Approve button and run the full chain (absorb + Plex invite + Seerr) the moment they reply.
+  if (getSetting(`admin_invited:${message.author.id}`)) {
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`admin_invited:${message.author.id}`);
+    const { absorbed, plexStatus, seerrStatus } = await applyFullChainLink(message.author.id, email, message.author.username);
+    audit('user_linked', { targetDiscordId: message.author.id, email, source: 'admin_invite_auto', absorbedPlexRow: absorbed?.discord_id || null });
+    const hadAccess = plexStatus.includes('already');
+    await message.reply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle('🎉 You\'re In!')
+      .setDescription(hadAccess
+        ? `You're all set — \`${email}\` already has Plex access. Use \`/help\` here to see everything I can do. 🍿`
+        : `📬 A Plex invite was sent to \`${email}\` — accept it and you're set. Use \`/help\` here to see everything I can do. 🍿`)] });
+    notifyAdmin({ embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle('✅ Admin Invite Completed')
+      .setDescription(`<@${message.author.id}> replied with \`${email}\` — auto-approved.`)
+      .addFields(
+        { name: 'Plex', value: plexStatus, inline: true },
+        { name: 'Seerr', value: seerrStatus, inline: true },
+      )] });
+    return;
+  }
+
   // linkUserToEmail (not storeUserEmail) so an existing plex_ synthetic row with the same email is
   // absorbed instead of becoming a duplicate pair — e.g. an existing Plex friend joining Discord.
   linkUserToEmail(message.author.id, email);
   audit('user_linked', { targetDiscordId: message.author.id, email });
   await message.reply('✅ Thanks! Your request has been sent to the admins for approval. You\'ll get a DM here as soon as you\'re approved.');
-  const adminChannel = await safeGetChannel(CONFIG.ADMIN_CHANNEL_ID);
-  if (!adminChannel) return;
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`plex_approve:${message.author.id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`plex_deny:${message.author.id}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
-  );
-  const requestEmbed = brandedEmbed(COLORS.INFO)
-    .setTitle('🔐 New Plex Access Request')
-    .addFields({ name: 'User', value: `<@${message.author.id}>`, inline: true }, { name: 'Email', value: `\`${email}\``, inline: true });
-  const avatarUrl = message.author.displayAvatarURL?.();
-  if (avatarUrl) requestEmbed.setThumbnail(avatarUrl);
-  await adminChannel.send({ embeds: [requestEmbed], components: [row] });
+  await postAccessRequestToAdmins(message.author, email);
 });
 
 client.on('interactionCreate', async interaction => {
@@ -1201,6 +1235,7 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isAutocomplete()) return handleAutocomplete(interaction);
     if (interaction.isChatInputCommand()) await handleSlashCommand(interaction);
     if (interaction.isButton()) await handleButton(interaction);
+    if (interaction.isModalSubmit()) await handleModalSubmit(interaction);
   } catch (err) {
     audit('external_api_error', { actorDiscordId: interaction.user?.id, error: err.message, action: 'interaction' });
     const payload = { content: `❌ ${err.message}`, ephemeral: true };
@@ -1216,7 +1251,7 @@ client.on('interactionCreate', async interaction => {
 // name. Member names come from already-cached data only — an autocomplete has a 3s deadline and a
 // forced gateway fetch would trip the opcode-8 rate limiter.
 async function handleAutocomplete(interaction) {
-  if (!['reinvite', 'link'].includes(interaction.commandName)) return interaction.respond([]).catch(() => {});
+  if (!['reinvite', 'link', 'invite'].includes(interaction.commandName)) return interaction.respond([]).catch(() => {});
   const focused = interaction.options.getFocused(true);
   if (focused.name !== 'email') return interaction.respond([]).catch(() => {});
   const q = String(focused.value || '').toLowerCase().trim();
@@ -1260,6 +1295,8 @@ async function handleSlashCommand(interaction) {
   if (n === 'sync') return handleSyncCommand(interaction);
   if (n === 'sync-fix') return handleSyncFixCommand(interaction);
   if (n === 'cleanup') return handleCleanupCommand(interaction);
+  if (n === 'invite') return handleInviteCommand(interaction);
+  if (n === 'invite-post') return handleInvitePostCommand(interaction);
   if (n === 'reinvite') return handleReinviteCommand(interaction);
   if (n === 'requests') return handleRequestsCommand(interaction);
   if (n === 'audit') return handleAuditCommand(interaction);
@@ -1891,6 +1928,83 @@ async function handleCleanupCommand(interaction) {
   await interaction.editReply(`Cleanup complete. Removed ${removed}/${toDelete.length}.`);
 }
 
+// Admin-initiated onboarding for members with no DB row (they never show in /reinvite or /link
+// autocomplete). Without an email, the bot DMs the member asking for their Plex email and flags
+// them admin_invited so the reply auto-approves — no Approve button. With an email, the full
+// chain runs immediately.
+async function handleInviteCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ ephemeral: true });
+  const target = interaction.options.getUser('user', true);
+  const emailOpt = interaction.options.getString('email');
+  if (target.bot) return interaction.editReply('❌ Can\'t invite a bot.');
+  const existing = getUserByDiscordId(target.id);
+  const existingNote = existing ? `\nNote: they were already linked to \`${existing.email}\` — this updates it.` : '';
+
+  if (emailOpt) {
+    const email = emailOpt.toLowerCase().trim();
+    if (!isValidEmail(email) || canonicalizeEmail(email).startsWith('__placeholder__:')) {
+      return interaction.editReply(`❌ \`${email}\` isn't a valid email address.`);
+    }
+    const { absorbed, plexStatus, seerrStatus } = await applyFullChainLink(target.id, email, target.username);
+    audit('user_linked', { actorDiscordId: interaction.user.id, targetDiscordId: target.id, email, source: 'slash_invite', absorbedPlexRow: absorbed?.discord_id || null });
+    const hadAccess = plexStatus.includes('already');
+    await dmUser(target.id, { embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle('🎉 You\'re In!')
+      .setDescription(hadAccess
+        ? `An admin set you up on the media server — \`${email}\` already has Plex access. Use \`/help\` here to see everything I can do. 🍿`
+        : `An admin set you up on the media server! 📬 A Plex invite was sent to \`${email}\` — accept it and you're set. Use \`/help\` here to see everything I can do. 🍿`)] });
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle('🔗 User Invited')
+      .setDescription(`${target.tag} → \`${email}\`${existingNote}`)
+      .addFields(
+        { name: 'DB', value: absorbed ? `✅ linked (merged \`${absorbed.discord_id}\` row)` : '✅ linked', inline: false },
+        { name: 'Plex', value: plexStatus, inline: true },
+        { name: 'Seerr', value: seerrStatus, inline: true },
+      )] });
+  }
+
+  try {
+    await target.send({ embeds: [brandedEmbed(COLORS.PLEX)
+      .setTitle('👋 You\'ve been invited to Durant Media Server!')
+      .setDescription(`An admin has invited you! To get set up, just **reply to this message with the email on your Plex account** — I'll handle the rest automatically. 🍿`)] });
+  } catch (_e) {
+    return interaction.editReply(`❌ ${target.tag}'s DMs are closed — use \`/invite user:${target.tag} email:<their Plex email>\` to set them up directly.`);
+  }
+  setPendingEmail(target.id);
+  setSetting(`admin_invited:${target.id}`, '1');
+  audit('admin_invite_sent', { actorDiscordId: interaction.user.id, targetDiscordId: target.id });
+  await interaction.editReply(`📨 DM sent to ${target.tag} — when they reply with their Plex email I'll set them up automatically (no approval needed).${existingNote}`);
+}
+
+// Post a persistent public "Request Plex Access" button in the current channel. The customId
+// carries no state, so the button keeps working across restarts — pin the message and forget it.
+async function handleInvitePostCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('request_access').setLabel('Request Plex Access').setStyle(ButtonStyle.Success).setEmoji('🎬'),
+  );
+  const embed = brandedEmbed(COLORS.PLEX)
+    .setTitle('🎬 Durant Media Server — Get Access')
+    .setDescription('Want in? Click the button below and enter the email on your **Plex account**.\nAn admin will approve you and you\'ll get a Plex invite by email, plus a DM here when you\'re in. 🍿');
+  await interaction.channel.send({ embeds: [embed], components: [row] });
+  audit('invite_post_created', { actorDiscordId: interaction.user.id, channelId: interaction.channelId });
+  await interaction.reply({ content: '✅ Posted. Tip: pin the message so it\'s easy to find — the button keeps working forever.', ephemeral: true });
+}
+
+async function handleModalSubmit(interaction) {
+  if (interaction.customId !== 'request_access_modal') return;
+  const email = String(interaction.fields.getTextInputValue('plex_email') || '').toLowerCase().trim();
+  if (!isValidEmail(email)) {
+    return interaction.reply({ content: '❌ That doesn\'t look like a valid email address — click the button and try again.', ephemeral: true });
+  }
+  clearPendingEmail(interaction.user.id); // a DM ask may be outstanding; the modal supersedes it
+  linkUserToEmail(interaction.user.id, email);
+  audit('user_linked', { targetDiscordId: interaction.user.id, email, source: 'request_access_button' });
+  await interaction.reply({ content: `✅ Thanks! Your request for \`${email}\` was sent to the admins. You'll get a DM as soon as you're approved.`, ephemeral: true });
+  await postAccessRequestToAdmins(interaction.user, email);
+}
+
 // Re-send a Plex invite. Resolves an email from either a linked Discord user or a raw email —
 // useful for the "DB users missing from Plex" bucket, where an invite was never accepted or the
 // friend was removed on the Plex side.
@@ -2053,6 +2167,8 @@ async function handleHelpCommand(interaction) {
     .addFields({ name: 'Commands', value: userCommands.join('\n'), inline: false });
   if (isAdminInteraction(interaction)) {
     const adminCommands = [
+      '`/invite` — DM a member for their Plex email and auto-set them up',
+      '`/invite-post` — Post a public Request Access button in this channel',
       '`/link` — Link a Discord user to a Plex email (invites + sets up Seerr)',
       '`/unlink` — Remove a user from the DB',
       '`/users` — List linked users',
@@ -2098,6 +2214,28 @@ function parseDeleteCustomId(parts) {
 
 async function handleButton(interaction) {
   const [action, ...parts] = interaction.customId.split(':');
+
+  // Public self-service button from /invite-post — open to everyone, pops an email modal.
+  if (action === 'request_access') {
+    const existing = getUserByDiscordId(interaction.user.id);
+    if (existing && !canonicalizeEmail(existing.email).startsWith('__placeholder__:')) {
+      return interaction.reply({ content: `✅ You're already set up with \`${existing.email}\`. Use \`/me\` to check your access, or ask an admin if the email needs changing.`, ephemeral: true });
+    }
+    const modal = new ModalBuilder()
+      .setCustomId('request_access_modal')
+      .setTitle('Request Plex Access')
+      .addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('plex_email')
+          .setLabel('Email on your Plex account')
+          .setPlaceholder('you@example.com')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(100),
+      ));
+    return interaction.showModal(modal);
+  }
+
   if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny'].includes(action) && !isAdminInteraction(interaction)) {
     return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
   }
