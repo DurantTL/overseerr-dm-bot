@@ -138,13 +138,30 @@ request look like it came from the server owner):
     "requestedBy_email": "{{requestedBy_email}}",
     "requestedBy_username": "{{requestedBy_username}}",
     "requestedBy_avatar": "{{requestedBy_avatar}}",
-    "requestedBy_settings_discordId": "{{requestedBy_settings_discordId}}"
+    "requestedBy_settings_discordId": "{{requestedBy_settings_discordId}}",
+    "requestedBy_settings_discordIds": "{{requestedBy_settings_discordIds}}"
   }
 }
 ```
 
+The template lists **both** Discord variables so it works on every version: Seerr 3.3+
+fills `requestedBy_settings_discordIds` (renamed in
+[seerr-team/seerr#2712](https://github.com/seerr-team/seerr/pull/2712), may contain
+multiple IDs), while Overseerr / Jellyseerr 2.x fills the singular
+`requestedBy_settings_discordId`. Whichever variable the server doesn't know is left as a
+literal `{{...}}` placeholder, which the bot safely ignores.
+
 Enable at least: Request Pending Approval, Request Approved, Request Automatically
 Approved, Request Declined, Request Available, Request Processing Failed.
+
+### Seerr 3.3+ per-user Discord IDs
+Seerr 3.3 replaced the old single per-user "Discord ID" field with a multi-entry
+**Discord IDs** list, found under **Users → (edit user) → Notifications → Discord**. The
+field only appears once the Discord agent is enabled under **Settings → Notifications →
+Discord**. The bot fills it automatically on `/link`, `/invite`, and `/sync-fix links`
+(merging with any IDs already set, not overwriting). If the bot ran an older version
+against Seerr 3.3, the old API payload stored an *empty* ID list — re-run
+`/sync-fix links` once after updating to repopulate every user.
 
 ## Discord Command Registration
 Slash commands are registered automatically on bot startup using `DISCORD_CLIENT_ID` + `DISCORD_GUILD_ID`.
