@@ -48,6 +48,11 @@ const CONFIG = {
   PROWLARR_URL: process.env.PROWLARR_URL || '',
   PROWLARR_API_KEY: process.env.PROWLARR_API_KEY || '',
   BYPARR_URL: process.env.BYPARR_URL || '',
+  TAUTULLI_URL: (process.env.TAUTULLI_URL || '').replace(/\/$/, ''),
+  TAUTULLI_API_KEY: process.env.TAUTULLI_API_KEY || '',
+  PLAYBACK_CHECK_MINUTES: Number.parseInt(process.env.PLAYBACK_CHECK_MINUTES || '5', 10),
+  TRANSCODE_ALERT_COOLDOWN_MINUTES: Number.parseInt(process.env.TRANSCODE_ALERT_COOLDOWN_MINUTES || '60', 10),
+  PREMIUMIZE_API_KEY: process.env.PREMIUMIZE_API_KEY || '',
   STUCK_CHECK_MINUTES: Number.parseInt(process.env.STUCK_CHECK_MINUTES || '10', 10),
   STUCK_AFTER_MINUTES: Number.parseInt(process.env.STUCK_AFTER_MINUTES || '45', 10),
   STUCK_ALERT_COOLDOWN_HOURS: Number.parseInt(process.env.STUCK_ALERT_COOLDOWN_HOURS || '6', 10),
@@ -197,6 +202,26 @@ function validateConfig() {
   if (CONFIG.DASHBOARD_ENABLED && !CONFIG.DASHBOARD_ADMIN_PASSWORD && !CONFIG.DASHBOARD_ADMIN_TOKEN) {
     throw new Error('DASHBOARD_ENABLED=true requires DASHBOARD_ADMIN_PASSWORD or DASHBOARD_ADMIN_TOKEN');
   }
+}
+
+// Non-fatal sanity checks for risky-but-valid configurations. Logged at startup and posted once
+// to the system channel after connect, so a dangerous combo can't sit unnoticed.
+function configWarnings() {
+  const warnings = [];
+  if (CONFIG.TUNNEL_DOMAIN && !CONFIG.WEBHOOK_SECRET) {
+    warnings.push('`WEBHOOK_SECRET` is blank while `TUNNEL_DOMAIN` is set — the Seerr/Plex webhook endpoints are reachable from the internet without authentication.');
+  }
+  if (CONFIG.ENABLE_DELETION && !CONFIG.DELETION_DRY_RUN) {
+    warnings.push('Deletion is **live** (`ENABLE_DELETION=true`, `DELETION_DRY_RUN=false`) — the janitor and retention rules will delete real files.');
+  }
+  const dashSecret = CONFIG.DASHBOARD_ADMIN_PASSWORD || CONFIG.DASHBOARD_ADMIN_TOKEN;
+  if (CONFIG.DASHBOARD_ENABLED && dashSecret && dashSecret.length < 12) {
+    warnings.push('The dashboard password/token is under 12 characters — use a longer one (login is internet-reachable if your tunnel exposes it).');
+  }
+  if (CONFIG.PLAYBACK_CHECK_MINUTES > 0 && CONFIG.PLAYBACK_CHANNEL_ID && !tautulliConfigured()) {
+    warnings.push('`PLAYBACK_CHANNEL_ID` is set but Tautulli isn\'t configured (`TAUTULLI_URL` + `TAUTULLI_API_KEY`) — no playback alerts will be sent.');
+  }
+  return warnings;
 }
 
 const db = new Database('/app/data/plex_invites.db');
@@ -956,6 +981,54 @@ async function fetchDiskSpace() {
 const gb = bytes => bytes / (1024 ** 3);
 const fmtSpace = bytes => gb(bytes) >= 1024 ? `${(gb(bytes) / 1024).toFixed(2)} TB` : `${gb(bytes).toFixed(0)} GB`;
 
+// ---- Tautulli (playback visibility) ----
+const tautulliConfigured = () => !!(CONFIG.TAUTULLI_URL && CONFIG.TAUTULLI_API_KEY);
+async function tautulliApi(cmd, params = {}) {
+  const res = await axios.get(`${CONFIG.TAUTULLI_URL}/api/v2`, {
+    params: { apikey: CONFIG.TAUTULLI_API_KEY, cmd, ...params },
+    timeout: 10000,
+  });
+  if (res.data?.response?.result !== 'success') throw new Error(res.data?.response?.message || `Tautulli ${cmd} failed`);
+  return res.data.response.data;
+}
+
+// One line per active Plex session, shared by /watching and the transcode sweep.
+function describeSession(s) {
+  const decision = s.video_decision === 'transcode' ? '🔥 Transcoding'
+    : s.transcode_decision === 'copy' ? '📼 Direct Stream'
+    : '▶️ Direct Play';
+  const res = s.video_full_resolution || s.stream_video_full_resolution || '';
+  const streamRes = s.stream_video_full_resolution || '';
+  const quality = s.video_decision === 'transcode' && res && streamRes && res !== streamRes ? `${res} → ${streamRes}` : (streamRes || res);
+  const pct = s.progress_percent ? ` (${s.progress_percent}%)` : '';
+  return `• **${s.friendly_name || s.user || 'Unknown'}** — ${s.full_title || 'Unknown'} — ${decision}${quality ? ` — ${quality}` : ''}${pct}`;
+}
+
+// Alert the playback channel when a session is video-transcoding (the expensive kind; audio-only
+// transcodes are cheap and ignored). One alert per session+media per cooldown window.
+const transcodeAlerted = new Map(); // `${user}:${rating_key}` -> last alert ts
+async function sweepTranscodes() {
+  if (!tautulliConfigured()) return;
+  const data = await tautulliApi('get_activity');
+  const sessions = data?.sessions || [];
+  const now = Date.now();
+  for (const [key, ts] of transcodeAlerted) {
+    if (now - ts > 24 * 3600000) transcodeAlerted.delete(key);
+  }
+  for (const s of sessions) {
+    if (s.video_decision !== 'transcode') continue;
+    const key = `${s.user_id || s.user}:${s.rating_key}`;
+    const last = transcodeAlerted.get(key) || 0;
+    if (now - last < CONFIG.TRANSCODE_ALERT_COOLDOWN_MINUTES * 60000) continue;
+    transcodeAlerted.set(key, now);
+    notifyChannel('playback', { embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle('🔥 Heavy Transcode')
+      .setDescription(describeSession(s))
+      .addFields({ name: 'Player', value: `${s.player || 'unknown'} (${s.platform || '?'})`, inline: true })] });
+    audit('transcode_alert', { user: s.friendly_name || s.user, title: s.full_title, from: s.video_full_resolution, to: s.stream_video_full_resolution });
+  }
+}
+
 // Enforce the "Auto-deletes in N hours unless you choose Keep" promise. Every guard rail is
 // re-checked at execution time: deletion enabled, keep list, never-delete list.
 async function sweepGraceDeletions() {
@@ -1265,6 +1338,11 @@ const slashCommands = [
     .addSubcommand(s => s.setName('user').setDescription('Entries by user').addUserOption(o => o.setName('person').setDescription('User').setRequired(true)).addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100)))
     .addSubcommand(s => s.setName('action').setDescription('Entries by action').addStringOption(o => o.setName('action').setDescription('Action name').setRequired(true)).addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100))),
   new SlashCommandBuilder().setName('queue').setDescription('Show what is downloading right now'),
+  new SlashCommandBuilder().setName('request-status').setDescription('Check why a requested movie or show is not ready yet').addStringOption(o => o.setName('title').setDescription('Start typing — matches your recent requests').setRequired(true).setAutocomplete(true)),
+  new SlashCommandBuilder().setName('watching').setDescription('Show current Plex playback (via Tautulli)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('indexers').setDescription('Prowlarr indexer + Byparr health').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('debrid').setDescription('Premiumize account + transfer status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('cleanup-suggestions').setDescription('Largest/oldest media that could be cleaned up').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('me').setDescription('Show your linked profile'),
   new SlashCommandBuilder().setName('myrequests').setDescription('Show your recent requests'),
   new SlashCommandBuilder().setName('downloads').setDescription('Show your active download links'),
@@ -1283,6 +1361,13 @@ async function registerSlashCommands() {
 
 client.once('ready', async () => {
   log.ok(`Discord bot online as ${client.user.tag}`);
+  const warnings = configWarnings();
+  for (const w of warnings) log.warn(`Config: ${w.replace(/\*\*/g, '')}`);
+  if (warnings.length) {
+    notifyChannel('system', { embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle('⚙️ Config Warnings')
+      .setDescription(warnings.map(w => `• ${w}`).join('\n').slice(0, 4000))] });
+  }
   // Deploy ping is opt-in only (channelFor('deploy') is null when unset) — with a fallback,
   // every Watchtower restart would ping the admin channel.
   notifyChannel('deploy', { embeds: [brandedEmbed(COLORS.SUCCESS)
@@ -1298,6 +1383,10 @@ client.once('ready', async () => {
   if (CONFIG.JANITOR_CHECK_MINUTES > 0) {
     setInterval(() => janitorSweep(), CONFIG.JANITOR_CHECK_MINUTES * 60000).unref();
     log.ok(`Janitor running every ${CONFIG.JANITOR_CHECK_MINUTES} min (grace deletes: ${CONFIG.ENABLE_DELETION ? 'on' : 'off'}, retention: ${CONFIG.RETENTION_ENFORCEMENT ? 'on' : 'off'}, dry-run: ${CONFIG.DELETION_DRY_RUN ? 'on' : 'off'})`);
+  }
+  if (tautulliConfigured() && CONFIG.PLAYBACK_CHECK_MINUTES > 0) {
+    setInterval(() => sweepTranscodes().catch(err => log.warn(`Transcode sweep failed: ${err.message}`)), CONFIG.PLAYBACK_CHECK_MINUTES * 60000).unref();
+    log.ok(`Transcode watchdog running every ${CONFIG.PLAYBACK_CHECK_MINUTES} min`);
   }
 });
 
@@ -1439,6 +1528,23 @@ async function handleAutocomplete(interaction) {
     }
   }
 
+  // /request-status title: — matches locally tracked requests (fed by webhooks + /request).
+  if (interaction.commandName === 'request-status') {
+    const focusedTitle = interaction.options.getFocused(true);
+    if (focusedTitle.name !== 'title') return interaction.respond([]).catch(() => {});
+    const q = String(focusedTitle.value || '').toLowerCase().trim();
+    const seen = new Set();
+    const choices = [];
+    for (const r of db.prepare('SELECT * FROM requests ORDER BY id DESC LIMIT 500').all()) {
+      if (q && !String(r.title || '').toLowerCase().includes(q)) continue;
+      if (seen.has(r.media_id)) continue;
+      seen.add(r.media_id);
+      choices.push({ name: `${r.title} · ${r.status}`.slice(0, 100), value: String(r.media_id).slice(0, 100) });
+      if (choices.length >= 25) break;
+    }
+    return interaction.respond(choices).catch(() => {});
+  }
+
   if (!['reinvite', 'link', 'invite'].includes(interaction.commandName)) return interaction.respond([]).catch(() => {});
   const focused = interaction.options.getFocused(true);
   if (focused.name !== 'email') return interaction.respond([]).catch(() => {});
@@ -1491,6 +1597,11 @@ async function handleSlashCommand(interaction) {
   if (n === 'requests') return handleRequestsCommand(interaction);
   if (n === 'audit') return handleAuditCommand(interaction);
   if (n === 'queue') return handleQueueCommand(interaction);
+  if (n === 'request-status') return handleRequestStatusCommand(interaction);
+  if (n === 'watching') return handleWatchingCommand(interaction);
+  if (n === 'indexers') return handleIndexersCommand(interaction);
+  if (n === 'debrid') return handleDebridCommand(interaction);
+  if (n === 'cleanup-suggestions') return handleCleanupSuggestionsCommand(interaction);
   if (n === 'me') return handleMeCommand(interaction);
   if (n === 'myrequests') return handleMyRequestsCommand(interaction);
   if (n === 'downloads') return handleDownloadsCommand(interaction);
@@ -2348,7 +2459,8 @@ async function handleQueueCommand(interaction) {
     const flag = queueItemLooksUnhealthy(i) ? ' ⚠️' : '';
     const eta = i.timeleft ? ` · ETA \`${i.timeleft}\`` : '';
     const size = i.size ? ` · ${(i.size / (1024 ** 3)).toFixed(1)} GB` : '';
-    return `**${i.title}**${flag}\n└ ${progressBar(pct)} ${pct}%${eta}${size}`;
+    const problem = queueItemLooksUnhealthy(i) && i.messages[0] ? `\n└ ⚠️ ${String(i.messages[0]).slice(0, 120)}` : '';
+    return `**${i.title}**${flag}\n└ ${progressBar(pct)} ${pct}%${eta}${size}${problem}`;
   });
   const embed = brandedEmbed(COLORS.INFO)
     .setTitle(`⬇️ Download Queue (${items.length})`)
@@ -2358,6 +2470,181 @@ async function handleQueueCommand(interaction) {
     embed.addFields({ name: 'Legend', value: '⚠️ = the *arr reports a problem with this download (stalled, missing, import issue)', inline: false });
   }
   await interaction.editReply({ embeds: [embed] });
+}
+
+// /request-status — trace a tracked request through the pipeline: DB status (fed by webhooks)
+// → live *arr queue match with progress/stall reason → plain-English next step.
+async function handleRequestStatusCommand(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const raw = String(interaction.options.getString('title') || '').trim();
+  // Autocomplete sends media_id values (tmdb:123 / tvdb:456); free text falls back to title match.
+  const row = /^(tmdb|tvdb):\d+$/.test(raw)
+    ? db.prepare('SELECT * FROM requests WHERE media_id = ? ORDER BY id DESC LIMIT 1').get(raw)
+    : db.prepare('SELECT * FROM requests WHERE title LIKE ? ORDER BY id DESC LIMIT 1').get(`%${raw}%`);
+  if (!row) {
+    return interaction.editReply(`❌ No tracked request matches **${raw}**. Try picking a suggestion from the list, or \`/myrequests\` to see what's tracked.`);
+  }
+
+  const lines = [`${requestStatusBadge(row.status)}${isSnowflake(row.requested_by_discord_id) ? ` — requested by <@${row.requested_by_discord_id}>` : ''}`];
+  if (row.status === 'available') {
+    lines.push('It\'s on Plex — go watch it! 🍿');
+  } else if (row.status === 'declined') {
+    lines.push('An admin declined this request.');
+  } else if (row.status === 'pending') {
+    lines.push('Waiting for an admin to approve it. You\'ll get a DM the moment that happens.');
+  } else {
+    const items = await fetchArrQueues().catch(() => []);
+    const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const target = norm(row.title);
+    const match = items.find(i => { const n = norm(i.title); return target && n && (n.includes(target) || target.includes(n)); });
+    if (match) {
+      const pct = queuePercent(match);
+      lines.push(`⬇️ Downloading via ${match.source.label}: ${progressBar(pct)} ${pct}%${match.timeleft ? ` · ETA \`${match.timeleft}\`` : ''}`);
+      if (queueItemLooksUnhealthy(match)) {
+        lines.push(`⚠️ The download has a problem: ${String(match.messages[0] || match.trackedStatus || match.status).slice(0, 200)}`);
+        lines.push('Often this means no seeders. The stuck-download watchdog will offer admins a one-click "try another release" fix.');
+      }
+    } else {
+      lines.push('🔎 Approved, but nothing is downloading for it yet — usually no good release has been grabbed so far. The *arrs keep retrying automatically; an admin can force a search from Radarr/Sonarr.');
+    }
+  }
+  await interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
+    .setTitle(`📊 ${row.title}${row.is_4k ? ' (4K)' : ''}`)
+    .setDescription(lines.join('\n'))] });
+}
+
+// /watching — live Plex sessions via Tautulli.
+async function handleWatchingCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ ephemeral: true });
+  if (!tautulliConfigured()) return interaction.editReply('❌ Tautulli isn\'t configured — set `TAUTULLI_URL` and `TAUTULLI_API_KEY`.');
+  try {
+    const data = await tautulliApi('get_activity');
+    const sessions = data?.sessions || [];
+    if (!sessions.length) {
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS).setTitle('📺 Now Playing').setDescription('Nobody is watching right now.')] });
+    }
+    const embed = brandedEmbed(COLORS.INFO)
+      .setTitle(`📺 Now Playing (${sessions.length})`)
+      .setDescription(sessions.slice(0, 15).map(describeSession).join('\n').slice(0, 4000));
+    const bw = Number(data.total_bandwidth || 0);
+    if (bw) embed.addFields({ name: 'Total bandwidth', value: `${(bw / 1000).toFixed(1)} Mbps`, inline: true });
+    await interaction.editReply({ embeds: [embed] });
+  } catch (err) {
+    await interaction.editReply(`❌ Tautulli error: ${err.message}`);
+  }
+}
+
+// /indexers — per-indexer Prowlarr health (definition list + failure/backoff statuses) + Byparr.
+async function handleIndexersCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ ephemeral: true });
+  if (!CONFIG.PROWLARR_URL && !CONFIG.BYPARR_URL) return interaction.editReply('❌ Neither Prowlarr nor Byparr is configured.');
+  const lines = [];
+  if (CONFIG.PROWLARR_URL) {
+    try {
+      const headers = { 'X-Api-Key': CONFIG.PROWLARR_API_KEY };
+      const [indexers, statuses] = await Promise.all([
+        axios.get(`${CONFIG.PROWLARR_URL}/api/v1/indexer`, { headers, timeout: 10000 }).then(r => r.data || []),
+        axios.get(`${CONFIG.PROWLARR_URL}/api/v1/indexerstatus`, { headers, timeout: 10000 }).then(r => r.data || []).catch(() => []),
+      ]);
+      const failing = new Map(statuses.map(s => [s.indexerId, s]));
+      for (const ix of indexers) {
+        const st = failing.get(ix.id);
+        const icon = !ix.enable ? '⏸️' : st?.disabledTill ? '❌' : '✅';
+        const note = !ix.enable ? ' — disabled' : st?.disabledTill ? ` — failing, retrying after \`${String(st.disabledTill).slice(0, 16).replace('T', ' ')}\`` : '';
+        lines.push(`${icon} ${ix.name}${note}`);
+      }
+      if (!indexers.length) lines.push('▫️ No indexers defined in Prowlarr');
+    } catch (err) {
+      lines.push(`❌ Prowlarr unreachable: ${err.message}`);
+    }
+  }
+  if (CONFIG.BYPARR_URL) {
+    try {
+      await axios.get(`${CONFIG.BYPARR_URL}/health`, { timeout: 8000 });
+      lines.push('✅ Byparr');
+    } catch (err) {
+      lines.push(`⚠️ Byparr unavailable: ${err.message}`);
+    }
+  }
+  await interaction.editReply({ embeds: [brandedEmbed(lines.some(l => l.startsWith('❌')) ? COLORS.WARN : COLORS.SUCCESS)
+    .setTitle('🔍 Indexer Health')
+    .setDescription(lines.join('\n').slice(0, 4000))] });
+}
+
+// /debrid — Premiumize account usage + active transfers.
+async function handleDebridCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ ephemeral: true });
+  if (!CONFIG.PREMIUMIZE_API_KEY) return interaction.editReply('❌ Premiumize isn\'t configured — set `PREMIUMIZE_API_KEY`.');
+  try {
+    const pm = p => axios.get(`https://www.premiumize.me/api${p}`, { params: { apikey: CONFIG.PREMIUMIZE_API_KEY }, timeout: 10000 }).then(r => r.data);
+    const [info, transferList] = await Promise.all([pm('/account/info'), pm('/transfer/list')]);
+    const lines = [];
+    if (info?.limit_used != null) lines.push(`Fair-use limit: **${Math.round(Number(info.limit_used) * 100)}%** used`);
+    if (info?.space_used) lines.push(`Cloud storage used: ${fmtSpace(Number(info.space_used))}`);
+    if (info?.premium_until) lines.push(`Premium until: ${new Date(Number(info.premium_until) * 1000).toISOString().slice(0, 10)}`);
+    const transfers = transferList?.transfers || [];
+    const active = transfers.filter(t => !['finished', 'seeding'].includes(String(t.status)));
+    const failed = transfers.filter(t => String(t.status) === 'error');
+    lines.push(`Transfers: ${active.length} active, ${failed.length} failed, ${transfers.length} total`);
+    for (const t of active.slice(0, 8)) {
+      const pct = t.progress != null ? ` — ${Math.round(Number(t.progress) * 100)}%` : '';
+      lines.push(`• ${String(t.name || 'unnamed').slice(0, 60)} — ${t.status}${pct}`);
+    }
+    for (const t of failed.slice(0, 4)) {
+      lines.push(`• ❌ ${String(t.name || 'unnamed').slice(0, 60)}${t.message ? ` — ${String(t.message).slice(0, 80)}` : ''}`);
+    }
+    await interaction.editReply({ embeds: [brandedEmbed(failed.length ? COLORS.WARN : COLORS.SUCCESS)
+      .setTitle('☁️ Premiumize')
+      .setDescription(lines.join('\n').slice(0, 4000))] });
+  } catch (err) {
+    await interaction.editReply(`❌ Premiumize error: ${err.message}`);
+  }
+}
+
+// /cleanup-suggestions — read-only list of the largest disk hogs, oldest-friendly, honoring the
+// keep list and never-delete list. Suggestions only: deletion still goes through the existing
+// prompts / *arr UIs, so this can't remove anything by itself.
+async function handleCleanupSuggestionsCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ ephemeral: true });
+  if (!arrSources().length) return interaction.editReply('❌ No Radarr/Sonarr configured.');
+  const now = Date.now();
+  const candidates = [];
+  for (const s of arrSources()) {
+    try {
+      if (s.kind === 'movie') {
+        const movies = await axios.get(`${s.url}/api/v3/movie`, { headers: { 'X-Api-Key': s.key }, timeout: 20000 }).then(r => r.data || []);
+        for (const m of movies) {
+          if (!m.sizeOnDisk) continue;
+          const addedMs = Date.parse(m.movieFile?.dateAdded || m.added || '') || now;
+          candidates.push({ mediaId: `tmdb:${m.tmdbId}`, title: `${m.title}${s.label === 'radarr-4k' ? ' (4K)' : ''}`, sizeBytes: m.sizeOnDisk, ageDays: (now - addedMs) / 86400000 });
+        }
+      } else {
+        const series = await axios.get(`${s.url}/api/v3/series`, { headers: { 'X-Api-Key': s.key }, timeout: 20000 }).then(r => r.data || []);
+        for (const t of series) {
+          const size = t.statistics?.sizeOnDisk || 0;
+          if (!size) continue;
+          const addedMs = Date.parse(t.added || '') || now;
+          candidates.push({ mediaId: `tvdb:${t.tvdbId}`, title: t.title, sizeBytes: size, ageDays: (now - addedMs) / 86400000 });
+        }
+      }
+    } catch (err) {
+      audit('external_api_error', { provider: s.label, error: err.message, action: 'cleanup_suggestions' });
+    }
+  }
+  const eligible = candidates
+    .filter(c => !isInKeepList(c.mediaId) && !CONFIG.NEVER_DELETE_MEDIA_IDS.includes(c.mediaId))
+    .sort((a, b) => b.sizeBytes - a.sizeBytes)
+    .slice(0, 12);
+  if (!eligible.length) return interaction.editReply('Nothing sizable to suggest — everything is either small, keep-listed, or never-delete.');
+  const total = fmtSpace(eligible.reduce((a, c) => a + c.sizeBytes, 0));
+  await interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
+    .setTitle(`🧹 Cleanup Suggestions (top ${eligible.length} ≈ ${total})`)
+    .setDescription(eligible.map(c => `• **${c.title}** — ${fmtSpace(c.sizeBytes)} — ${Math.round(c.ageDays)}d old`).join('\n').slice(0, 4000))
+    .setFooter({ text: 'Durant Media Server · Suggestions only — nothing is deleted. Keep list & never-delete already excluded.' })] });
 }
 
 async function handleMeCommand(interaction) {
@@ -2410,6 +2697,7 @@ async function handleKeepCommand(interaction) {
 async function handleHelpCommand(interaction) {
   const userCommands = [
     '`/request` — Search and request a movie or show (credited to you)',
+    '`/request-status` — Check why a request isn\'t ready yet',
     '`/download` — Get a secure download link for a movie or episode',
     '`/me` — Show your linked profile and access status',
     '`/myrequests` — Show your recent Seerr requests',
@@ -2437,6 +2725,11 @@ async function handleHelpCommand(interaction) {
       '`/cleanup` — Remove deleted Overseerr users',
       '`/audit` — Query the audit log',
       '`/revoke-downloads` — Revoke active download links',
+      '`/seerr-test` — Self-test Seerr Discord linking with a throwaway user',
+      '`/watching` — Current Plex playback (via Tautulli)',
+      '`/indexers` — Prowlarr indexer + Byparr health',
+      '`/debrid` — Premiumize account + transfer status',
+      '`/cleanup-suggestions` — Largest/oldest media that could be cleaned up',
     ];
     embed.addFields({ name: 'Admin commands', value: adminCommands.join('\n'), inline: false });
   }

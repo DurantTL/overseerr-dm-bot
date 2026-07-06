@@ -4,6 +4,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "test": "node --check index.js && node scripts/tests/run-all.js",
     "test:helpers": "node scripts/test-security.js"
   },
   "dependencies": {
