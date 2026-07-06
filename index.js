@@ -53,6 +53,10 @@ const CONFIG = {
   RETENTION_CHECK_HOURS: Number.parseInt(process.env.RETENTION_CHECK_HOURS || '24', 10),
   RETENTION_MAX_DELETES_PER_RUN: Number.parseInt(process.env.RETENTION_MAX_DELETES_PER_RUN || '10', 10),
   DISK_SPACE_WARN_GB: Number.parseInt(process.env.DISK_SPACE_WARN_GB || '100', 10),
+  // Optional allowlist of mount points / media folders to report in /status and disk alerts.
+  // Unset = report every *arr mount (original behaviour). Set e.g. `/share/media` to hide the
+  // container's own `/` and `/config` disks and label the media mount by its real folder.
+  DISK_SPACE_PATHS: (process.env.DISK_SPACE_PATHS || '').split(',').map(s => s.trim()).filter(Boolean),
   TUNNEL_DOMAIN: process.env.TUNNEL_DOMAIN,
   RAID_PATH: process.env.RAID_PATH || '/mnt/raid',
   PATH_REMAP_FROM: process.env.PATH_REMAP_FROM || '',
@@ -731,7 +735,22 @@ async function fetchDiskSpace() {
       audit('external_api_error', { provider: s.label, error: err.message, action: 'diskspace' });
     }
   }
-  return [...seen.values()].filter(d => (d.totalSpace || 0) > 10 * 1024 ** 3);
+  let disks = [...seen.values()].filter(d => (d.totalSpace || 0) > 10 * 1024 ** 3);
+  // Optional allowlist: keep only mounts an admin cares about, and relabel a mount with the more
+  // specific media folder (the *arr diskspace API reports the `/share` mount, but the real media
+  // lives at `/share/media` — show that instead). Unset = report every mount.
+  const wanted = CONFIG.DISK_SPACE_PATHS;
+  if (wanted.length) {
+    const norm = p => (p.length > 1 ? p.replace(/\/+$/, '') : p);
+    const related = (a, b) => { a = norm(a); b = norm(b); return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`); };
+    disks = disks
+      .filter(d => wanted.some(w => related(d.path, w)))
+      .map(d => {
+        const moreSpecific = wanted.find(w => norm(w).startsWith(`${norm(d.path)}/`));
+        return moreSpecific ? { ...d, displayPath: norm(moreSpecific) } : d;
+      });
+  }
+  return disks;
 }
 const gb = bytes => bytes / (1024 ** 3);
 const fmtSpace = bytes => gb(bytes) >= 1024 ? `${(gb(bytes) / 1024).toFixed(2)} TB` : `${gb(bytes).toFixed(0)} GB`;
@@ -860,7 +879,7 @@ async function sweepDiskSpace() {
   setSetting('disk_alert_last', String(Date.now()));
   notifyAdmin({ embeds: [brandedEmbed(COLORS.DANGER)
     .setTitle('💾 Low Disk Space')
-    .setDescription(low.map(d => `**${d.path}** — ${fmtSpace(d.freeSpace)} free of ${fmtSpace(d.totalSpace)}`).join('\n') + `\n\nThreshold: ${CONFIG.DISK_SPACE_WARN_GB} GB. Consider \`/queue\`, retention rules, or manual cleanup.`)] });
+    .setDescription(low.map(d => `**${d.displayPath || d.path}** — ${fmtSpace(d.freeSpace)} free of ${fmtSpace(d.totalSpace)}`).join('\n') + `\n\nThreshold: ${CONFIG.DISK_SPACE_WARN_GB} GB. Consider \`/queue\`, retention rules, or manual cleanup.`)] });
   audit('disk_space_alert', { disks: low.map(d => ({ path: d.path, freeGb: Math.round(gb(d.freeSpace)) })) });
 }
 
@@ -1034,6 +1053,8 @@ const slashCommands = [
   new SlashCommandBuilder().setName('sync').setDescription('Sync users safely').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(true).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
   new SlashCommandBuilder().setName('sync-fix').setDescription('Resolve sync issues found in the preview').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('target').setDescription('Category to fix').setRequired(true).addChoices({ name: 'placeholders', value: 'placeholders' }, { name: 'duplicates', value: 'duplicates' }, { name: 'orphans', value: 'orphans' }, { name: 'mergeemails', value: 'mergeemails' })),
   new SlashCommandBuilder().setName('cleanup').setDescription('Cleanup deleted Overseerr users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(false).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
+  new SlashCommandBuilder().setName('reinvite').setDescription('Re-send a Plex invite to a linked user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('Linked Discord user')).addStringOption(o => o.setName('email').setDescription('Plex email (if not linked to a Discord user)')),
+  new SlashCommandBuilder().setName('requests').setDescription('Show the most recent Overseerr requests').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addIntegerOption(o => o.setName('count').setDescription('How many to show (default 10)').setMinValue(1).setMaxValue(25)),
   new SlashCommandBuilder().setName('audit').setDescription('Audit log queries').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('recent').setDescription('Recent entries').addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100)))
     .addSubcommand(s => s.setName('user').setDescription('Entries by user').addUserOption(o => o.setName('person').setDescription('User').setRequired(true)).addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100)))
@@ -1154,6 +1175,8 @@ async function handleSlashCommand(interaction) {
   if (n === 'sync') return handleSyncCommand(interaction);
   if (n === 'sync-fix') return handleSyncFixCommand(interaction);
   if (n === 'cleanup') return handleCleanupCommand(interaction);
+  if (n === 'reinvite') return handleReinviteCommand(interaction);
+  if (n === 'requests') return handleRequestsCommand(interaction);
   if (n === 'audit') return handleAuditCommand(interaction);
   if (n === 'queue') return handleQueueCommand(interaction);
   if (n === 'me') return handleMeCommand(interaction);
@@ -1240,14 +1263,26 @@ async function handleUnlinkCommand(interaction) {
 
 async function handleUsersCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ ephemeral: true });
   const rows = db.prepare('SELECT * FROM users ORDER BY requested_at ASC').all();
-  const line = u => `${u.invited ? '✅' : '⏳'} ${isSnowflake(u.discord_id) ? `<@${u.discord_id}>` : `\`${u.discord_id}\``} — \`${u.email}\``;
+  // Resolve which snowflake links point at a real, present guild member. A snowflake row whose
+  // user isn't in the server is an "email-only" ghost link — flag it with 👻 so it's obvious the
+  // mention won't resolve to a person.
+  const memberIds = new Set((await getGuildMembers().catch(() => [])).map(m => m.user.id));
+  const line = u => {
+    if (!isSnowflake(u.discord_id)) return `${u.invited ? '✅' : '⏳'} \`${u.discord_id}\` — \`${u.email}\``;
+    const ghost = !memberIds.has(u.discord_id);
+    const who = ghost ? `👻 \`${u.discord_id}\`` : `<@${u.discord_id}>`;
+    return `${u.invited ? '✅' : '⏳'} ${who} — \`${u.email}\``;
+  };
+  const ghostCount = rows.filter(u => isSnowflake(u.discord_id) && !memberIds.has(u.discord_id)).length;
   const shown = rows.slice(0, 50);
   const embed = brandedEmbed(COLORS.INFO)
     .setTitle(`👥 Linked Users (${rows.length})`)
     .setDescription(shown.map(line).join('\n') || 'No users yet.');
+  if (ghostCount) embed.addFields({ name: 'Email-only links', value: `👻 ${ghostCount} linked to a Discord ID that isn't in the server (mention won't resolve).`, inline: false });
   if (rows.length > shown.length) embed.setFooter({ text: `Durant Media Server · Showing ${shown.length} of ${rows.length}` });
-  await interaction.reply({ embeds: [embed], ephemeral: true });
+  await interaction.editReply({ embeds: [embed] });
 }
 
 async function handleStatusCommand(interaction) {
@@ -1310,7 +1345,7 @@ async function handleStatusCommand(interaction) {
   const storageLines = disks.map(d => {
     const lowFlag = gb(d.freeSpace || 0) < CONFIG.DISK_SPACE_WARN_GB ? ' ⚠️' : '';
     const pctUsed = d.totalSpace ? Math.round(((d.totalSpace - d.freeSpace) / d.totalSpace) * 100) : 0;
-    return `\`${d.path}\` — ${fmtSpace(d.freeSpace)} free of ${fmtSpace(d.totalSpace)} (${pctUsed}% used)${lowFlag}`;
+    return `\`${d.displayPath || d.path}\` — ${fmtSpace(d.freeSpace)} free of ${fmtSpace(d.totalSpace)} (${pctUsed}% used)${lowFlag}`;
   });
 
   const embed = brandedEmbed(health.overall === 'ok' ? COLORS.SUCCESS : COLORS.WARN)
@@ -1334,11 +1369,27 @@ async function fetchOverseerrUsers() {
   return res.data.results || [];
 }
 
+// A full member fetch uses gateway opcode 8 (Request Guild Members), which Discord rate-limits
+// aggressively (~120/min). /sync preview, /sync apply and /sync-fix each rebuild the preview, and
+// /users now needs the roster too — without caching, back-to-back admin actions trip the limiter
+// ("Request with opcode 8 was rate limited"). Cache the roster briefly so they share one fetch.
+let guildMemberCache = { at: 0, members: null };
+const GUILD_MEMBER_TTL_MS = 60 * 1000;
+async function getGuildMembers({ force = false } = {}) {
+  if (!force && guildMemberCache.members && Date.now() - guildMemberCache.at < GUILD_MEMBER_TTL_MS) {
+    return guildMemberCache.members;
+  }
+  const guild = client.guilds.cache.get(CONFIG.DISCORD_GUILD_ID) || client.guilds.cache.first();
+  if (!guild) return guildMemberCache.members || [];
+  const members = Array.from((await guild.members.fetch()).values());
+  guildMemberCache = { at: Date.now(), members };
+  return members;
+}
+
 async function buildSyncPreview() {
   // Exclude the bot's own account from all matching.
   const dbUsers = db.prepare('SELECT * FROM users').all().filter(u => u.discord_id !== CONFIG.DISCORD_CLIENT_ID);
-  const guild = client.guilds.cache.get(CONFIG.DISCORD_GUILD_ID) || client.guilds.cache.first();
-  const discordMembers = guild ? Array.from((await guild.members.fetch()).values()).filter(m => !m.user.bot) : [];
+  const discordMembers = (await getGuildMembers()).filter(m => !m.user.bot);
   const discordIds = new Set(discordMembers.map(m => m.user.id));
 
   const token = await getPlexToken();
@@ -1369,8 +1420,24 @@ async function buildSyncPreview() {
     .filter(u => !u.discord_id.startsWith('plex_') && !placeholderDiscordIds.has(u.discord_id) && !plexEmails.has(canonicalizeEmail(u.email)))
     .map(u => `${u.email}`);
 
+  // Rows keyed on a real Discord snowflake whose user is no longer in the guild — the link is
+  // "email only", so /users renders a bare <@id> mention instead of a name. Includes placeholder
+  // (@plex.local) rows, which orphans deliberately excludes, so admins can spot every ghost link.
+  const linkedNotMember = dbUsers
+    .filter(u => isSnowflake(u.discord_id) && !discordIds.has(u.discord_id))
+    .map(u => `${u.email}`);
+
   const wouldAdd = plexNotInDiscord.slice();
-  const wouldUpdate = dbUsers.filter(u => overseerrEmails.has(canonicalizeEmail(u.email)) && !u.overseerr_created).map(u => u.email);
+  // Only rows the apply loop actually touches: real Discord logins (not plex_ synthetics, not the
+  // bot, not @plex.local placeholders) that exist in Overseerr but aren't flagged linked yet. The
+  // old count included plex_ rows the apply loop skips, so "Would update: 1" never matched the
+  // "Links repaired" result.
+  const wouldUpdate = dbUsers.filter(u =>
+    !u.discord_id.startsWith('plex_')
+    && !isPlaceholderKey(canonicalizeEmail(u.email))
+    && overseerrEmails.has(canonicalizeEmail(u.email))
+    && !u.overseerr_created,
+  ).map(u => u.email);
 
   const orphanRows = dbUsers.filter(u => !u.discord_id.startsWith('plex_') && !placeholderDiscordIds.has(u.discord_id) && !isAcked(u.discord_id) && !discordIds.has(u.discord_id));
   const risky = orphanRows.map(u => `${u.email} (discord missing)`);
@@ -1443,7 +1510,7 @@ async function buildSyncPreview() {
     }
   }
 
-  return { discordNotLinkedToPlex, plexNotInDiscord, overseerrNotLinkedToDiscord, dbMissingFromPlex, wouldAdd, wouldRemove: [], wouldUpdate, risky, unmatchablePlaceholders, duplicateEmails, orphans, suggestedLinks, emailMergeCandidates };
+  return { discordNotLinkedToPlex, plexNotInDiscord, overseerrNotLinkedToDiscord, dbMissingFromPlex, linkedNotMember, wouldAdd, wouldRemove: [], wouldUpdate, risky, unmatchablePlaceholders, duplicateEmails, orphans, suggestedLinks, emailMergeCandidates };
 }
 
 async function handleSyncCommand(interaction) {
@@ -1628,6 +1695,7 @@ function formatSyncPreview(p, header) {
     `Plex users not in Discord links: ${p.plexNotInDiscord.length}\n` +
     `Overseerr users not linked to Discord: ${p.overseerrNotLinkedToDiscord.length}\n` +
     `DB users missing from Plex: ${p.dbMissingFromPlex.length}\n` +
+    `Linked to a Discord ID not in the server: ${p.linkedNotMember?.length || 0}\n` +
     `Unmatchable placeholders: ${p.unmatchablePlaceholders?.length || 0}\n` +
     `Duplicate-email users: ${p.duplicateEmails?.length || 0}\n` +
     `Email-merge candidates: ${p.emailMergeCandidates?.length || 0}\n` +
@@ -1650,6 +1718,60 @@ async function handleCleanupCommand(interaction) {
   }
   audit('cleanup_changes_applied', { actorDiscordId: interaction.user.id, removed, failed: toDelete.length - removed });
   await interaction.editReply(`Cleanup complete. Removed ${removed}/${toDelete.length}.`);
+}
+
+// Re-send a Plex invite. Resolves an email from either a linked Discord user or a raw email —
+// useful for the "DB users missing from Plex" bucket, where an invite was never accepted or the
+// friend was removed on the Plex side.
+async function handleReinviteCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ ephemeral: true });
+  const target = interaction.options.getUser('user');
+  const emailOpt = interaction.options.getString('email');
+  let email; let discordId = null; let label;
+  if (target) {
+    const row = getUserByDiscordId(target.id);
+    if (!row) return interaction.editReply(`⚠️ ${target.tag} isn't in the DB. Link them first with \`/link\`.`);
+    email = row.email; discordId = target.id; label = target.tag;
+  } else if (emailOpt) {
+    email = emailOpt.toLowerCase().trim();
+    const match = getUserByCanonicalEmail(email);
+    if (match) { discordId = match.discord_id; }
+    label = email;
+  } else {
+    return interaction.editReply('❌ Provide a `user` or an `email` to re-invite.');
+  }
+  if (!isValidEmail(email) || canonicalizeEmail(email).startsWith('__placeholder__:')) {
+    return interaction.editReply(`⚠️ \`${email}\` isn't a real email address — can't send a Plex invite (managed/placeholder account).`);
+  }
+  const result = await inviteUserToPlex(email);
+  if (discordId && isSnowflake(discordId)) markUserInvited(discordId);
+  audit('plex_reinvite_sent', { actorDiscordId: interaction.user.id, targetDiscordId: discordId, email, successCount: result.successCount, total: result.total });
+  const ok = result.successCount > 0;
+  await interaction.editReply(
+    `${ok ? '✅' : '⚠️'} Re-sent Plex invite for **${label}** → \`${email}\` (${result.successCount}/${result.total} server${result.total === 1 ? '' : 's'}).`
+    + (ok ? '' : '\nNo servers accepted the invite — they may already have pending/active access.'),
+  );
+}
+
+// Most recent requests across everyone, drawn from the local requests table (populated by Overseerr
+// webhooks) so titles and requester attribution are already resolved.
+async function handleRequestsCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ ephemeral: true });
+  const count = interaction.options.getInteger('count') || 10;
+  const rows = db.prepare('SELECT * FROM requests ORDER BY id DESC LIMIT ?').all(count);
+  const line = r => {
+    const who = r.requested_by_discord_id
+      ? (isSnowflake(r.requested_by_discord_id) ? `<@${r.requested_by_discord_id}>` : `\`${r.requested_by_discord_id}\``)
+      : '_unknown_';
+    return `${requestStatusBadge(r.status)} ${mediaTypeEmoji(r.media_type, r.is_4k)} **${r.title}** — ${who}`;
+  };
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle('🎬 Most Recent Requests')
+    .setDescription(rows.length ? rows.map(line).join('\n') : 'No requests recorded yet.');
+  audit('requests_viewed', { actorDiscordId: interaction.user.id, count: rows.length });
+  await interaction.editReply({ embeds: [embed] });
 }
 
 async function handleAuditCommand(interaction) {
@@ -1765,6 +1887,8 @@ async function handleHelpCommand(interaction) {
       '`/status` — Show system health and stats',
       '`/sync` — Preview or apply user sync',
       '`/sync-fix` — Resolve duplicate / placeholder / orphan records',
+      '`/reinvite` — Re-send a Plex invite to a linked user',
+      '`/requests` — Show the most recent Overseerr requests',
       '`/cleanup` — Remove deleted Overseerr users',
       '`/audit` — Query the audit log',
       '`/revoke-downloads` — Revoke active download links',
