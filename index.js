@@ -612,9 +612,25 @@ async function removePlexAccess(email) {
 // Push a Discord ID into a Seerr user's notification settings. Previously this only happened for
 // users the bot created, so Plex-imported Seerr users that got "repaired" into the DB never
 // received Seerr-side Discord pings. Non-fatal: failures are audited, not thrown.
+//
+// Seerr 3.3 replaced the per-user `discordId` (string) with `discordIds` (string array) and reads
+// ONLY the new key — posting just the old shape "succeeds" but stores an empty list. Send both
+// shapes so the same call works on Overseerr / Jellyseerr 2.x (reads discordId, ignores the
+// unknown array) and Seerr 3.3+ (reads discordIds, ignores the legacy key). Existing discordIds
+// are merged in rather than clobbered, since 3.3 lets admins add extra IDs by hand.
+//
+// The POST treats the body as a FULL settings update — omitted fields (PGP key, Telegram,
+// Pushover, ...) are overwritten with undefined. Round-trip the current settings from the GET as
+// the POST base so only the Discord fields change; if the GET fails we abort rather than risk
+// wiping the user's other notification settings.
 async function setOverseerrDiscordNotification(overseerrUserId, discordId) {
+  const headers = { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY };
   try {
-    await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/user/${overseerrUserId}/settings/notifications`, { discordId }, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
+    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/user/${overseerrUserId}/settings/notifications`, { headers });
+    const current = (res.data && typeof res.data === 'object') ? res.data : {};
+    const existing = Array.isArray(current.discordIds) ? current.discordIds : [];
+    const discordIds = [...new Set([...existing, discordId].map(v => String(v || '').trim()).filter(Boolean))];
+    await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/user/${overseerrUserId}/settings/notifications`, { ...current, discordId, discordIds }, { headers });
     return true;
   } catch (err) {
     audit('external_api_error', { provider: 'overseerr', error: err.message, action: 'set_discord_notification', targetDiscordId: discordId, overseerrUserId });
@@ -2929,14 +2945,23 @@ function renderSection(title, rows) {
 // which is how every request ended up attributed to the server owner. Our own DB, keyed by
 // the requester's email, is the source of truth; the webhook field is only a fallback, and
 // anything that isn't a real snowflake (or is the bot itself) is ignored.
+//
+// Seerr 3.3 renamed the template variable to `requestedBy_settings_discordIds`, which can carry
+// several IDs (array, or a comma/semicolon-joined string) — and an outdated template leaves the
+// literal `{{...}}` placeholder behind. Accept both variables, split list values, and take the
+// first real snowflake; the placeholder and other junk fail isSnowflake and fall through.
+function webhookDiscordId(value) {
+  const parts = (Array.isArray(value) ? value : String(value || '').split(/[,;\s]+/)).map(v => String(v || '').trim());
+  return parts.find(p => isSnowflake(p) && p !== CONFIG.DISCORD_CLIENT_ID) || null;
+}
 function resolveRequester(request) {
   const email = (request?.requestedBy_email || '').trim() || null;
   const dbUser = email ? getUserByCanonicalEmail(email) : null;
   if (dbUser && isSnowflake(dbUser.discord_id)) {
     return { discordId: dbUser.discord_id, email, source: 'db-email' };
   }
-  const hookId = String(request?.requestedBy_settings_discordId || '').trim();
-  if (isSnowflake(hookId) && hookId !== CONFIG.DISCORD_CLIENT_ID) {
+  const hookId = webhookDiscordId(request?.requestedBy_settings_discordIds) || webhookDiscordId(request?.requestedBy_settings_discordId);
+  if (hookId) {
     return { discordId: hookId, email, source: 'webhook' };
   }
   return { discordId: null, email, source: 'none' };
