@@ -758,9 +758,11 @@ async function runSeerrSelfTest(discordId, { keep = false } = {}) {
 }
 
 // Movie/TV search against Seerr, used by /request (both autocomplete and the free-text fallback).
+// The query is %-encoded into the URL by hand: axios's default params serializer turns spaces
+// into '+', which Overseerr's API rejects (sct/overseerr#2010) — multi-word searches came back
+// as errors/empty while single words worked.
 async function searchSeerr(query, timeout = 8000) {
-  const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/search`, {
-    params: { query, page: 1 },
+  const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/search?query=${encodeURIComponent(query)}&page=1`, {
     headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY },
     timeout,
   });
@@ -793,6 +795,38 @@ async function approveOverseerrRequest(requestId) {
 }
 async function denyOverseerrRequest(requestId) {
   return axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/request/${requestId}/decline`, {}, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
+}
+
+// Seerr request ids the bot already posted an Approve/Deny notice for. /request posts the notice
+// itself — relying on the MEDIA_PENDING webhook left requests sitting silently in Seerr whenever
+// that notification type is off or the webhook lags — so the webhook handler checks this set to
+// avoid a duplicate when both fire. Memory-only: a restart in the seconds between the two at
+// worst repeats one embed.
+const postedApprovalNotices = new Set();
+function markApprovalNoticePosted(requestId) {
+  postedApprovalNotices.add(String(requestId));
+  if (postedApprovalNotices.size > 500) postedApprovalNotices.delete(postedApprovalNotices.values().next().value);
+}
+
+// Post the Approve/Deny notice for a pending Seerr request to the requests channel.
+async function postPendingRequestNotice({ requestId, title, mediaType, is4k, requesterLine }) {
+  const channel = await safeGetChannel(channelFor('requests'));
+  if (!channel) return;
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle(`${mediaTypeEmoji(mediaType, is4k)} New Request`)
+    .setDescription(`**${title}**`)
+    .addFields(
+      { name: 'Requested by', value: requesterLine, inline: true },
+      { name: 'Type', value: mediaTypeLabel(mediaType, is4k), inline: true },
+      { name: 'Status', value: '⏳ Awaiting approval', inline: true },
+    )
+    .setFooter({ text: `Durant Media Server · Request #${requestId}` });
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`overseerr_approve:${requestId}`).setLabel('Approve').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`overseerr_deny:${requestId}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
+  );
+  await channel.send({ embeds: [embed], components: [row] });
+  markApprovalNoticePosted(requestId);
 }
 
 async function radarrGetFrom(url, apiKey, endpoint) {
@@ -1672,6 +1706,15 @@ async function handleRequestCommand(interaction) {
     await interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Request Sent`)
       .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — ${status === 'approved' ? 'auto-approved, grabbing it now! 🚀' : 'waiting for admin approval.'}\nYou\'ll get a DM when it\'s on Plex.`)] });
+    // Post the Approve/Deny notice ourselves instead of waiting on Seerr's MEDIA_PENDING
+    // webhook — when that notification type is off (or lags), the request sits in Seerr
+    // with admins never pinged.
+    if (status === 'pending' && data?.id != null) {
+      await postPendingRequestNotice({
+        requestId: data.id, title: label, mediaType, is4k,
+        requesterLine: `<@${interaction.user.id}> · \`${row.email}\``,
+      }).catch(err => log.warn(`Approval notice for request #${data.id} failed: ${err.message}`));
+    }
   } catch (err) {
     const seerrMessage = err.response?.data?.message;
     audit('external_api_error', { provider: 'overseerr', error: seerrMessage || err.message, action: 'create_request', actorDiscordId: interaction.user.id, tmdbId, mediaType });
@@ -3252,7 +3295,9 @@ async function handleOverseerrWebhook(body) {
     : (requester.email ? `\`${requester.email}\`` : 'Unknown');
 
   if (['MEDIA_PENDING', 'MEDIA_AUTO_APPROVED'].includes(notification_type)) {
-    const adminChannel = await safeGetChannel(channelFor('requests'));
+    // /request already posted the Approve/Deny notice for this id — don't double-post.
+    const alreadyPosted = request?.request_id && postedApprovalNotices.has(String(request.request_id));
+    const adminChannel = alreadyPosted ? null : await safeGetChannel(channelFor('requests'));
     if (adminChannel) {
       const autoApproved = notification_type === 'MEDIA_AUTO_APPROVED';
       const embed = brandedEmbed(autoApproved ? COLORS.SUCCESS : COLORS.INFO)
