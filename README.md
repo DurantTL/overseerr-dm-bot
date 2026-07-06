@@ -13,7 +13,15 @@ Durant Media Server Bot is a Discord + Plex + Seerr/Overseerr automation bot for
 - Safe sync (`/sync mode:preview|apply`) and cleanup preview/apply.
 - Full-chain linking: `/link` (and the one-click `/sync-fix links` buttons) merges any matching `plex_` synthetic row, sends a Plex invite if the person doesn't already have access, and links or creates the Seerr user including its Discord notification ID. The `email` fields on `/link`, `/reinvite`, and `/invite` autocomplete against every linked user — searchable by Discord name, Plex username, or email (the native user picker only suggests members your client has cached).
 - Admin-initiated onboarding: `/invite @member` DMs them for their Plex email and **auto-approves** when they reply (no Approve button — the admin already vouched); `/invite @member email:x@y.com` skips the DM and sets them up immediately. `/invite-post` drops a persistent public **Request Plex Access** button in the current channel (email collected via modal, normal Approve/Deny review) — pin it and forget it.
-- User self-service commands (`/me`, `/myrequests`, `/downloads`, `/keep`, `/help`).
+- Media requesting with correct attribution: `/request` searches Seerr as you type and places the
+  request **as the linked user's Seerr account**, so Seerr, webhooks, DMs, and keep/delete prompts
+  all credit the right person. (Requestrr does *not* do this by default — it submits everything
+  under its own configured Seerr account, which makes every request look like the admin's unless
+  each Discord user is manually associated with a Seerr user in Requestrr's settings.)
+- Optional per-topic notification channels (`REQUESTS_`/`SYSTEM_ALERTS_`/`DOWNLOADS_`/`CLEANUP_`/
+  `AUDIT_`/`DEPLOY_CHANNEL_ID`), each falling back to `ADMIN_CHANNEL_ID` when unset — see
+  `.env.example` for the routing map.
+- User self-service commands (`/request`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`).
 - Health endpoints (`/health` and authenticated `/admin/health`).
 
 ## Architecture
@@ -67,6 +75,13 @@ See `.env.example` for full values.
 - `AUTO_REMOVE_PLEX_ON_LEAVE` (default `false`) — when `false`, a member leaving Discord only notifies the admin channel with a one-click **Revoke Plex** button instead of silently revoking. Multi-email merges in `/sync-fix mergeemails` are resolved per-row from the admin embed (no env key).
 - `DELETION_GRACE_HOURS`, `DELETION_REMINDER_COOLDOWN_HOURS`
 - `DASHBOARD_ENABLED`, `DASHBOARD_ADMIN_PASSWORD`, `DASHBOARD_ADMIN_TOKEN`, `STRICT_DASHBOARD_POST_AUTH`
+- Notification channels (all optional; unset = `ADMIN_CHANNEL_ID`): `REQUESTS_CHANNEL_ID` (new
+  Seerr requests, approve/deny, failed requests), `SYSTEM_ALERTS_CHANNEL_ID` (low disk space),
+  `DOWNLOADS_CHANNEL_ID` (stuck downloads, large download started), `CLEANUP_CHANNEL_ID`
+  (finished-watching prompts, janitor/retention reports), `AUDIT_CHANNEL_ID` (linked/unlinked,
+  member left, Plex revoked), `DEPLOY_CHANNEL_ID` (post-restart "Bot online" ping — **no
+  fallback**, sends only when set), `PLAYBACK_CHANNEL_ID` (reserved for future Tautulli
+  playback alerts). Onboarding access-request embeds always go to `ADMIN_CHANNEL_ID`.
 
 ### Optional (compose-only)
 - `MEDIA_HOST_PATH` (host path mounted to `/mnt/raid` in container)
@@ -272,7 +287,7 @@ Admin:
 - `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/audit`, `/revoke-downloads`
 
 User:
-- `/download`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`
+- `/request`, `/download`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`
 
 ## Database Tables
 - `users`
