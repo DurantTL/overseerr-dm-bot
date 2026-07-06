@@ -163,6 +163,13 @@ Discord**. The bot fills it automatically on `/link`, `/invite`, and `/sync-fix 
 against Seerr 3.3, the old API payload stored an *empty* ID list — re-run
 `/sync-fix links` once after updating to repopulate every user.
 
+Not sure any of this is working? Run **`/seerr-test`**: it checks the Seerr version and
+whether the Discord agent is enabled, then creates a throwaway Seerr user, pushes a
+Discord ID through the same call `/link` uses, reads it back to prove it stored, and
+deletes the test user. Pass `keep:true` to leave the test user in Seerr so you can open
+*Users → bot-selftest → Settings → Notifications → Discord* and see the field yourself
+(delete the user afterwards).
+
 ## Discord Command Registration
 Slash commands are registered automatically on bot startup using `DISCORD_CLIENT_ID` + `DISCORD_GUILD_ID`.
 
@@ -262,7 +269,7 @@ Checks include Discord, SQLite, Plex, Seerr/Overseerr, Radarr, Radarr-4K, Sonarr
 
 ## Slash Command List
 Admin:
-- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/audit`, `/revoke-downloads`
+- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/audit`, `/revoke-downloads`
 
 User:
 - `/download`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`
