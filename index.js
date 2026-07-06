@@ -1053,7 +1053,7 @@ const slashCommands = [
   new SlashCommandBuilder().setName('sync').setDescription('Sync users safely').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(true).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
   new SlashCommandBuilder().setName('sync-fix').setDescription('Resolve sync issues found in the preview').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('target').setDescription('Category to fix').setRequired(true).addChoices({ name: 'placeholders', value: 'placeholders' }, { name: 'duplicates', value: 'duplicates' }, { name: 'orphans', value: 'orphans' }, { name: 'mergeemails', value: 'mergeemails' })),
   new SlashCommandBuilder().setName('cleanup').setDescription('Cleanup deleted Overseerr users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(false).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
-  new SlashCommandBuilder().setName('reinvite').setDescription('Re-send a Plex invite to a linked user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('Linked Discord user')).addStringOption(o => o.setName('email').setDescription('Plex email (if not linked to a Discord user)')),
+  new SlashCommandBuilder().setName('reinvite').setDescription('Re-send a Plex invite to a linked user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('Discord user currently in the server')).addStringOption(o => o.setName('email').setDescription('Any linked user — start typing to search the DB').setAutocomplete(true)),
   new SlashCommandBuilder().setName('requests').setDescription('Show the most recent Overseerr requests').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addIntegerOption(o => o.setName('count').setDescription('How many to show (default 10)').setMinValue(1).setMaxValue(25)),
   new SlashCommandBuilder().setName('audit').setDescription('Audit log queries').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('recent').setDescription('Recent entries').addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100)))
@@ -1155,6 +1155,7 @@ client.on('messageCreate', async message => {
 
 client.on('interactionCreate', async interaction => {
   try {
+    if (interaction.isAutocomplete()) return handleAutocomplete(interaction);
     if (interaction.isChatInputCommand()) await handleSlashCommand(interaction);
     if (interaction.isButton()) await handleButton(interaction);
   } catch (err) {
@@ -1164,6 +1165,34 @@ client.on('interactionCreate', async interaction => {
     else await interaction.reply(payload).catch(() => {});
   }
 });
+
+// Discord's user-picker only lists people currently in the server, so /reinvite's `user` option
+// can't reach plex_ synthetic accounts or email-only ghost links — exactly the rows that most need
+// re-inviting. Autocomplete the `email` option against every invitable DB row so the whole list is
+// reachable. Placeholder (@plex.local) and malformed emails are skipped: they can't be invited.
+async function handleAutocomplete(interaction) {
+  if (interaction.commandName !== 'reinvite') return interaction.respond([]).catch(() => {});
+  const focused = interaction.options.getFocused(true);
+  if (focused.name !== 'email') return interaction.respond([]).catch(() => {});
+  const q = String(focused.value || '').toLowerCase().trim();
+  const seen = new Set();
+  const choices = [];
+  for (const u of db.prepare('SELECT * FROM users ORDER BY requested_at DESC').all()) {
+    const email = String(u.email || '').toLowerCase().trim();
+    if (!isValidEmail(email) || canonicalizeEmail(email).startsWith('__placeholder__:')) continue;
+    const canon = canonicalizeEmail(email);
+    if (seen.has(canon)) continue;
+    if (q && !email.includes(q)) continue;
+    seen.add(canon);
+    const tags = [];
+    if (u.discord_id.startsWith('plex_')) tags.push('Plex-only');
+    if (!u.invited) tags.push('not yet invited');
+    const name = `${email}${tags.length ? ` · ${tags.join(', ')}` : ''}`.slice(0, 100);
+    choices.push({ name, value: email.slice(0, 100) });
+    if (choices.length >= 25) break;
+  }
+  await interaction.respond(choices).catch(() => {});
+}
 
 async function handleSlashCommand(interaction) {
   const n = interaction.commandName;
