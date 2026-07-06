@@ -11,6 +11,7 @@ Durant Media Server Bot is a Discord + Plex + Seerr/Overseerr automation bot for
 - Audit logging for admin/user/system actions.
 - Admin dashboard (`/admin`) with health, pending items, and safe action endpoints.
 - Safe sync (`/sync mode:preview|apply`) and cleanup preview/apply.
+- Full-chain linking: `/link` (and the one-click `/sync-fix links` buttons) merges any matching `plex_` synthetic row, sends a Plex invite if the person doesn't already have access, and links or creates the Seerr user including its Discord notification ID. The `email` fields on `/link` and `/reinvite` autocomplete against every linked user — searchable by Discord name, Plex username, or email (the native user picker only suggests members your client has cached).
 - User self-service commands (`/me`, `/myrequests`, `/downloads`, `/keep`, `/help`).
 - Health endpoints (`/health` and authenticated `/admin/health`).
 
