@@ -647,6 +647,82 @@ async function createOverseerrUser(email, discordId, username) {
   return id;
 }
 
+// Live end-to-end diagnostic for the Seerr integration, driven by /seerr-test. Creates a
+// throwaway Seerr user (never stored in the bot's own DB), pushes a Discord ID through the same
+// code path /link uses, reads it back to prove it stored, then deletes the user unless the admin
+// asked to keep it for inspection in the Seerr UI. Each step is isolated so one failure still
+// yields a full report.
+async function runSeerrSelfTest(discordId, { keep = false } = {}) {
+  const headers = { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY };
+  const steps = [];
+  let testUserId = null;
+  const finish = () => {
+    audit('seerr_selftest', { targetDiscordId: discordId, keep, steps: steps.map(s => `${s.ok ? 'ok' : 'FAIL'}:${s.name}`) });
+    return { steps, testUserId };
+  };
+
+  try {
+    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/status`, { headers, timeout: 10000 });
+    const version = String(res.data?.version || 'unknown');
+    const major = Number.parseInt(version.split('.')[0], 10);
+    steps.push({ name: 'Seerr reachable', ok: true, detail: `Version ${version}${major >= 3 ? ' — new multi-ID `discordIds` API' : ' — legacy single `discordId` API'}` });
+  } catch (err) {
+    steps.push({ name: 'Seerr reachable', ok: false, detail: `Can't reach ${CONFIG.OVERSEERR_URL}: ${err.message}` });
+    return finish(); // nothing else can work
+  }
+
+  try {
+    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/settings/notifications/discord`, { headers, timeout: 10000 });
+    const enabled = !!res.data?.enabled;
+    const hasWebhook = !!res.data?.options?.webhookUrl;
+    steps.push(enabled
+      ? { name: 'Discord agent enabled', ok: true, detail: hasWebhook ? 'Agent is on with a webhook URL' : 'Agent is on, but no webhook URL is set' }
+      : { name: 'Discord agent enabled', ok: false, detail: 'Agent is OFF — Seerr hides the per-user Discord fields until you enable it under **Settings → Notifications → Discord** (set a channel webhook URL and tick Enable Agent)' });
+  } catch (err) {
+    steps.push({ name: 'Discord agent enabled', ok: false, detail: `Couldn't read agent settings: ${err.message}` });
+  }
+
+  const email = `selftest-${Date.now()}@seerr-test.local`;
+  try {
+    testUserId = await createOverseerrUser(email, discordId, 'bot-selftest');
+    steps.push({ name: 'Create test user', ok: true, detail: `Created \`${email}\` (Seerr user #${testUserId}) and pushed your Discord ID via the same call /link uses` });
+  } catch (err) {
+    steps.push({ name: 'Create test user', ok: false, detail: `Create failed: ${err.message}` });
+    return finish();
+  }
+
+  try {
+    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/user/${testUserId}/settings/notifications`, { headers, timeout: 10000 });
+    const ids = Array.isArray(res.data?.discordIds) ? res.data.discordIds.map(String) : null;
+    if (ids) {
+      const ok = ids.includes(String(discordId));
+      steps.push({ name: 'Discord ID stored', ok, detail: ok
+        ? `Read back \`discordIds = [${ids.join(', ')}]\` (Seerr 3.3+ field)`
+        : `Seerr 3.3+ \`discordIds\` came back as [${ids.join(', ')}] — your ID is missing` });
+    } else {
+      const single = String(res.data?.discordId || '');
+      const ok = single === String(discordId);
+      steps.push({ name: 'Discord ID stored', ok, detail: ok
+        ? `Read back \`discordId = ${single}\` (legacy field)`
+        : `Legacy \`discordId\` came back as "${single}" — expected ${discordId}` });
+    }
+  } catch (err) {
+    steps.push({ name: 'Discord ID stored', ok: false, detail: `Read-back failed: ${err.message}` });
+  }
+
+  if (keep) {
+    steps.push({ name: 'Cleanup', ok: true, detail: `Kept \`${email}\` — open Seerr → **Users → bot-selftest → Settings → Notifications → Discord** to see the field, then delete the user when done` });
+  } else {
+    try {
+      await axios.delete(`${CONFIG.OVERSEERR_URL}/api/v1/user/${testUserId}`, { headers, timeout: 10000 });
+      steps.push({ name: 'Cleanup', ok: true, detail: 'Test user deleted' });
+    } catch (err) {
+      steps.push({ name: 'Cleanup', ok: false, detail: `Couldn't delete test user #${testUserId} (${err.message}) — remove it from Seerr → Users manually` });
+    }
+  }
+  return finish();
+}
+
 async function approveOverseerrRequest(requestId) {
   return axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/request/${requestId}/approve`, {}, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
 }
@@ -1110,6 +1186,7 @@ const slashCommands = [
   new SlashCommandBuilder().setName('unlink').setDescription('Unlink a user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)),
   new SlashCommandBuilder().setName('users').setDescription('List linked users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('status').setDescription('Show status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('seerr-test').setDescription('Self-test Seerr Discord linking with a throwaway user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addBooleanOption(o => o.setName('keep').setDescription('Keep the test user in Seerr so you can inspect its Discord settings')),
   new SlashCommandBuilder().setName('sync').setDescription('Sync users safely').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(true).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
   new SlashCommandBuilder().setName('sync-fix').setDescription('Resolve sync issues found in the preview').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('target').setDescription('Category to fix').setRequired(true).addChoices({ name: 'placeholders', value: 'placeholders' }, { name: 'duplicates', value: 'duplicates' }, { name: 'orphans', value: 'orphans' }, { name: 'mergeemails', value: 'mergeemails' }, { name: 'links', value: 'links' })),
   new SlashCommandBuilder().setName('cleanup').setDescription('Cleanup deleted Overseerr users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(false).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
@@ -1308,6 +1385,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'unlink') return handleUnlinkCommand(interaction);
   if (n === 'users') return handleUsersCommand(interaction);
   if (n === 'status') return handleStatusCommand(interaction);
+  if (n === 'seerr-test') return handleSeerrTestCommand(interaction);
   if (n === 'sync') return handleSyncCommand(interaction);
   if (n === 'sync-fix') return handleSyncFixCommand(interaction);
   if (n === 'cleanup') return handleCleanupCommand(interaction);
@@ -1452,6 +1530,19 @@ async function handleUnlinkCommand(interaction) {
   removeUser(target.id);
   audit('user_unlinked', { actorDiscordId: interaction.user.id, targetDiscordId: target.id, email: record.email });
   await interaction.reply({ content: `✅ Removed ${target.tag} from DB. Plex access and the Seerr account were left untouched — revoke from the leave-notification button or the Plex/Seerr admin UIs if needed.`, ephemeral: true });
+}
+
+async function handleSeerrTestCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ ephemeral: true });
+  const keep = interaction.options.getBoolean('keep') || false;
+  // Test with the invoking admin's own ID — a pass also proves their account is linkable.
+  const { steps } = await runSeerrSelfTest(interaction.user.id, { keep });
+  const allOk = steps.every(s => s.ok);
+  const embed = brandedEmbed(allOk ? COLORS.SUCCESS : COLORS.WARN)
+    .setTitle(allOk ? '✅ Seerr Self-Test Passed' : '⚠️ Seerr Self-Test Found Problems')
+    .setDescription(steps.map(s => `${s.ok ? '✅' : '❌'} **${s.name}** — ${s.detail}`).join('\n').slice(0, 4000));
+  await interaction.editReply({ embeds: [embed] });
 }
 
 async function handleUsersCommand(interaction) {
