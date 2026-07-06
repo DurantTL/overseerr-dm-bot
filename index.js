@@ -618,16 +618,19 @@ async function removePlexAccess(email) {
 // shapes so the same call works on Overseerr / Jellyseerr 2.x (reads discordId, ignores the
 // unknown array) and Seerr 3.3+ (reads discordIds, ignores the legacy key). Existing discordIds
 // are merged in rather than clobbered, since 3.3 lets admins add extra IDs by hand.
+//
+// The POST treats the body as a FULL settings update — omitted fields (PGP key, Telegram,
+// Pushover, ...) are overwritten with undefined. Round-trip the current settings from the GET as
+// the POST base so only the Discord fields change; if the GET fails we abort rather than risk
+// wiping the user's other notification settings.
 async function setOverseerrDiscordNotification(overseerrUserId, discordId) {
   const headers = { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY };
   try {
-    let existing = [];
-    try {
-      const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/user/${overseerrUserId}/settings/notifications`, { headers });
-      if (Array.isArray(res.data?.discordIds)) existing = res.data.discordIds;
-    } catch (_e) {} // pre-3.3 servers have no discordIds to preserve
+    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/user/${overseerrUserId}/settings/notifications`, { headers });
+    const current = (res.data && typeof res.data === 'object') ? res.data : {};
+    const existing = Array.isArray(current.discordIds) ? current.discordIds : [];
     const discordIds = [...new Set([...existing, discordId].map(v => String(v || '').trim()).filter(Boolean))];
-    await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/user/${overseerrUserId}/settings/notifications`, { discordId, discordIds }, { headers });
+    await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/user/${overseerrUserId}/settings/notifications`, { ...current, discordId, discordIds }, { headers });
     return true;
   } catch (err) {
     audit('external_api_error', { provider: 'overseerr', error: err.message, action: 'set_discord_notification', targetDiscordId: discordId, overseerrUserId });
