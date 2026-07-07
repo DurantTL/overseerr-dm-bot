@@ -12,6 +12,10 @@ RUN npm ci --omit=dev
 COPY index.js ./
 COPY scripts ./scripts
 
+# Image version, shown in the DEPLOY_CHANNEL_ID "Bot Online" ping. Set by CI.
+ARG GIT_SHA=
+ENV GIT_SHA=$GIT_SHA
+
 RUN mkdir -p /app/data
 
 CMD ["node", "index.js"]
