@@ -9,11 +9,19 @@ const premiumizeConfigured = () => !!CONFIG.PREMIUMIZE_API_KEY;
 // Overridable so the test suite can point calls at a mock server.
 const PM_API_BASE = process.env.PREMIUMIZE_API_URL || 'https://www.premiumize.me/api';
 
-async function pmApi(path, params = {}) {
-  const res = await axios.get(`${PM_API_BASE}${path}`, {
-    params: { apikey: CONFIG.PREMIUMIZE_API_KEY, ...params },
-    timeout: 10000,
-  });
+// Reads are GET; the mutating transfer endpoints (delete/retry/clearfinished) are documented
+// as POST with form-encoded parameters — the apikey rides the query string either way.
+async function pmApi(path, params = {}, { post = false } = {}) {
+  const res = post
+    ? await axios.post(`${PM_API_BASE}${path}`, new URLSearchParams(params).toString(), {
+      params: { apikey: CONFIG.PREMIUMIZE_API_KEY },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 10000,
+    })
+    : await axios.get(`${PM_API_BASE}${path}`, {
+      params: { apikey: CONFIG.PREMIUMIZE_API_KEY, ...params },
+      timeout: 10000,
+    });
   if (res.data?.status && res.data.status !== 'success') {
     throw new Error(res.data.message || `Premiumize ${path} returned status ${res.data.status}`);
   }
@@ -22,9 +30,9 @@ async function pmApi(path, params = {}) {
 
 const accountInfo = () => pmApi('/account/info');
 const listTransfers = () => pmApi('/transfer/list').then(d => d?.transfers || []);
-const deleteTransfer = id => pmApi('/transfer/delete', { id });
-const retryTransfer = id => pmApi('/transfer/retry', { id });
-const clearFinished = () => pmApi('/transfer/clearfinished');
+const deleteTransfer = id => pmApi('/transfer/delete', { id }, { post: true });
+const retryTransfer = id => pmApi('/transfer/retry', { id }, { post: true });
+const clearFinished = () => pmApi('/transfer/clearfinished', {}, { post: true });
 
 // A transfer is "active" when Premiumize might still move it; finished/seeding never count as
 // stuck, and finished ones are cleared with clearFinished instead.
