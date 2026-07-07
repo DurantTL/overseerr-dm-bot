@@ -7,14 +7,17 @@ const express = require('express');
 (async () => {
   // Mock must be up before require so PM_API_BASE picks up the override.
   const app = express();
+  app.use(express.urlencoded({ extended: false }));
   const state = { deleted: [], retried: [], clearedFinished: 0, badKey: false };
   app.get('/api/transfer/list', (req, res) => {
     if (state.badKey) return res.json({ status: 'error', message: 'customer not found' });
     res.json({ status: 'success', transfers: [{ id: 'a1', name: 'Movie', status: 'running', progress: 0.5 }] });
   });
-  app.get('/api/transfer/delete', (req, res) => { state.deleted.push(req.query.id); res.json({ status: 'success' }); });
-  app.get('/api/transfer/retry', (req, res) => { state.retried.push(req.query.id); res.json({ status: 'success' }); });
-  app.get('/api/transfer/clearfinished', (req, res) => { state.clearedFinished++; res.json({ status: 'success' }); });
+  // Mutating endpoints are POST-only (as documented) — a GET here 404s, so a regression back
+  // to GET fails the test.
+  app.post('/api/transfer/delete', (req, res) => { state.deleted.push(req.body.id); res.json({ status: 'success' }); });
+  app.post('/api/transfer/retry', (req, res) => { state.retried.push(req.body.id); res.json({ status: 'success' }); });
+  app.post('/api/transfer/clearfinished', (req, res) => { state.clearedFinished++; res.json({ status: 'success' }); });
   const server = await new Promise(resolve => { const s = app.listen(0, () => resolve(s)); });
   process.env.PREMIUMIZE_API_URL = `http://127.0.0.1:${server.address().port}/api`;
   process.env.PREMIUMIZE_API_KEY = 'test-key';
