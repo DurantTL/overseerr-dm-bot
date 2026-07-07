@@ -17,9 +17,14 @@ Durant Media Server Bot is a Discord + Plex + Seerr/Overseerr automation bot for
   request **as the linked user's Seerr account**, so Seerr, webhooks, DMs, and keep/delete prompts
   all credit the right person. (Requestrr does *not* do this by default — it submits everything
   under its own configured Seerr account, which makes every request look like the admin's unless
-  each Discord user is manually associated with a Seerr user in Requestrr's settings.) Pending
-  requests get an Approve/Deny notice posted to the requests channel by the bot itself, so
-  approval doesn't depend on Seerr's webhook being configured for "Request Pending Approval".
+  each Discord user is manually associated with a Seerr user in Requestrr's settings.)
+- Bot-side approval gate: Seerr **always auto-approves** requests created with an admin API key
+  (its status check uses the authenticated caller's permissions, and admins pass every check), so
+  a Seerr-side pending state can't exist for bot requests. Instead, a non-admin `/request` is
+  held by the bot and posted to the requests channel with **Approve/Deny** buttons — the Seerr
+  request is only created when an admin clicks Approve (still attributed to the member), and Deny
+  never touches Seerr. Either way the member gets a DM. Admin `/request`s skip the gate. Pending
+  gate entries survive bot restarts.
 - Optional per-topic notification channels (`REQUESTS_`/`SYSTEM_ALERTS_`/`DOWNLOADS_`/`CLEANUP_`/
   `AUDIT_`/`DEPLOY_CHANNEL_ID`), each falling back to `ADMIN_CHANNEL_ID` when unset — see
   `.env.example` for the routing map.
