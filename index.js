@@ -822,36 +822,61 @@ async function denyOverseerrRequest(requestId) {
   return axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/request/${requestId}/decline`, {}, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
 }
 
-// Seerr request ids the bot already posted an Approve/Deny notice for. /request posts the notice
-// itself — relying on the MEDIA_PENDING webhook left requests sitting silently in Seerr whenever
-// that notification type is off or the webhook lags — so the webhook handler checks this set to
-// avoid a duplicate when both fire. Memory-only: a restart in the seconds between the two at
-// worst repeats one embed.
+// Seerr request ids the bot already announced in Discord (admin /request creates and gate
+// approvals). The MEDIA_PENDING/MEDIA_AUTO_APPROVED webhook checks this set so those requests
+// don't get a second embed. Memory-only: a restart in the seconds between the two at worst
+// repeats one embed.
 const postedApprovalNotices = new Set();
 function markApprovalNoticePosted(requestId) {
   postedApprovalNotices.add(String(requestId));
   if (postedApprovalNotices.size > 500) postedApprovalNotices.delete(postedApprovalNotices.values().next().value);
 }
 
-// Post the Approve/Deny notice for a pending Seerr request to the requests channel.
-async function postPendingRequestNotice({ requestId, title, mediaType, is4k, requesterLine }) {
+// ---- Bot-side approval gate for /request ----
+// Seerr auto-approves ANY request created with an admin API key: the status check in
+// MediaRequest.request uses the AUTHENTICATED CALLER's permissions (not the request user's),
+// and admins pass every permission check — so a pending state never exists Seerr-side and no
+// approval webhook can fire. The gate flips the order: a non-admin /request is stashed in
+// app_settings (so buttons survive restarts) and posted to the requests channel first; the
+// Seerr request is only created when an admin clicks Approve. Deny never touches Seerr.
+function stashPendingRequest(payload) {
+  const nonce = crypto.randomBytes(4).toString('hex');
+  setSetting(`pending_request:${nonce}`, JSON.stringify({ ...payload, createdAt: Date.now() }));
+  return nonce;
+}
+// Read + consume a stashed request. Null means the nonce is unknown or already handled —
+// consuming makes double-clicks and stale buttons harmless.
+function takePendingRequest(nonce) {
+  if (!/^[0-9a-f]{8}$/.test(String(nonce || ''))) return null;
+  const raw = getSetting(`pending_request:${nonce}`);
+  if (!raw) return null;
+  db.prepare('DELETE FROM app_settings WHERE key = ?').run(`pending_request:${nonce}`);
+  try { return JSON.parse(raw); } catch (_e) { return null; }
+}
+// Put a consumed request back (approve failed against Seerr) so the button can be retried.
+function restashPendingRequest(nonce, payload) {
+  setSetting(`pending_request:${nonce}`, JSON.stringify(payload));
+}
+
+// Post the Approve/Deny gate embed for a stashed /request to the requests channel.
+async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discordId, email }) {
   const channel = await safeGetChannel(channelFor('requests'));
-  if (!channel) return;
+  if (!channel) return false;
   const embed = brandedEmbed(COLORS.INFO)
     .setTitle(`${mediaTypeEmoji(mediaType, is4k)} New Request`)
-    .setDescription(`**${title}**`)
+    .setDescription(`**${label}**`)
     .addFields(
-      { name: 'Requested by', value: requesterLine, inline: true },
+      { name: 'Requested by', value: `<@${discordId}> · \`${email}\``, inline: true },
       { name: 'Type', value: mediaTypeLabel(mediaType, is4k), inline: true },
       { name: 'Status', value: '⏳ Awaiting approval', inline: true },
     )
-    .setFooter({ text: `Durant Media Server · Request #${requestId}` });
+    .setFooter({ text: 'Durant Media Server · Not sent to Seerr until approved' });
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`overseerr_approve:${requestId}`).setLabel('Approve').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`overseerr_deny:${requestId}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`request_approve:${nonce}`).setLabel('Approve').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`request_deny:${nonce}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
   );
   await channel.send({ embeds: [embed], components: [row] });
-  markApprovalNoticePosted(requestId);
+  return true;
 }
 
 async function radarrGetFrom(url, apiKey, endpoint) {
@@ -1812,25 +1837,35 @@ async function handleRequestCommand(interaction) {
     return interaction.editReply('❌ No Seerr account is linked to you yet — ask an admin to run `/link` for you.');
   }
 
+  // Non-admins go through the bot-side approval gate: Seerr sees nothing until an admin clicks
+  // Approve (Seerr insta-approves anything the bot's admin API key creates, so approval has to
+  // happen here). Admins skip the gate — they'd only be approving themselves.
+  if (!isAdminInteraction(interaction)) {
+    const payload = { discordId: interaction.user.id, email: row.email, seerrUserId, mediaType, tmdbId, is4k, label };
+    const nonce = stashPendingRequest(payload);
+    const posted = await postPendingRequestNotice(nonce, payload)
+      .catch(err => { log.warn(`Approval notice failed: ${err.message}`); return false; });
+    if (!posted) {
+      takePendingRequest(nonce);
+      return interaction.editReply('❌ Couldn\'t post the approval request to the admins — try again in a bit.');
+    }
+    upsertRequest(null, `tmdb:${tmdbId}`, mediaType, is4k, label, interaction.user.id, 'pending');
+    audit('media_request_gated', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, nonce });
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Request Submitted`)
+      .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nWaiting for admin approval — you'll get a DM either way.`)] });
+  }
+
   try {
     const data = await createSeerrRequestAs(seerrUserId, mediaType, tmdbId, is4k);
     // Same media-key convention as the webhook handler, so the rows merge cleanly.
     const mediaKey = mediaType === 'tv' && data?.media?.tvdbId ? `tvdb:${data.media.tvdbId}` : `tmdb:${tmdbId}`;
-    const status = data?.status === 2 ? 'approved' : 'pending';
-    upsertRequest(data?.id, mediaKey, mediaType, is4k, label, interaction.user.id, status);
+    if (data?.id != null) markApprovalNoticePosted(data.id); // suppress the duplicate webhook embed
+    upsertRequest(data?.id, mediaKey, mediaType, is4k, label, interaction.user.id, 'approved');
     audit('media_requested', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seerrUserId, requestId: data?.id ?? null });
     await interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Request Sent`)
-      .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — ${status === 'approved' ? 'auto-approved, grabbing it now! 🚀' : 'waiting for admin approval.'}\nYou\'ll get a DM when it\'s on Plex.`)] });
-    // Post the Approve/Deny notice ourselves instead of waiting on Seerr's MEDIA_PENDING
-    // webhook — when that notification type is off (or lags), the request sits in Seerr
-    // with admins never pinged.
-    if (status === 'pending' && data?.id != null) {
-      await postPendingRequestNotice({
-        requestId: data.id, title: label, mediaType, is4k,
-        requesterLine: `<@${interaction.user.id}> · \`${row.email}\``,
-      }).catch(err => log.warn(`Approval notice for request #${data.id} failed: ${err.message}`));
-    }
+      .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — approved and grabbing it now! 🚀\nYou\'ll get a DM when it\'s on Plex.`)] });
   } catch (err) {
     const seerrMessage = err.response?.data?.message;
     audit('external_api_error', { provider: 'overseerr', error: seerrMessage || err.message, action: 'create_request', actorDiscordId: interaction.user.id, tmdbId, mediaType });
@@ -2755,7 +2790,7 @@ async function handleKeepCommand(interaction) {
 }
 async function handleHelpCommand(interaction) {
   const userCommands = [
-    '`/request` — Search and request a movie or show (credited to you)',
+    '`/request` — Search and request a movie or show; an admin approves it in Discord',
     '`/request-status` — Check why a request isn\'t ready yet',
     '`/download` — Get a secure download link for a movie or episode',
     '`/me` — Show your linked profile and access status',
@@ -2845,7 +2880,7 @@ async function handleButton(interaction) {
     return interaction.showModal(modal);
   }
 
-  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny'].includes(action) && !isAdminInteraction(interaction)) {
+  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_deny'].includes(action) && !isAdminInteraction(interaction)) {
     return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
   }
 
@@ -2894,6 +2929,49 @@ async function handleButton(interaction) {
     await denyOverseerrRequest(parts[0]);
     audit('request_denied', { actorDiscordId: interaction.user.id, requestId: parts[0] });
     return interaction.update({ content: `❌ Request #${parts[0]} denied.`, components: [] });
+  }
+
+  // Bot-side approval gate (/request from non-admins). Approve creates the Seerr request now —
+  // Seerr insta-approves it, which is correct since an admin just did approve it.
+  if (action === 'request_approve') {
+    const nonce = parts[0];
+    const pending = takePendingRequest(nonce);
+    if (!pending) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
+    await interaction.deferUpdate();
+    try {
+      const data = await createSeerrRequestAs(pending.seerrUserId, pending.mediaType, pending.tmdbId, pending.is4k);
+      const mediaKey = pending.mediaType === 'tv' && data?.media?.tvdbId ? `tvdb:${data.media.tvdbId}` : `tmdb:${pending.tmdbId}`;
+      if (data?.id != null) markApprovalNoticePosted(data.id); // suppress the duplicate webhook embed
+      // The gate stored the request under tmdb:<id>; keep that row in sync too when the webhook
+      // key differs (tv → tvdb).
+      upsertRequest(data?.id, mediaKey, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
+      if (mediaKey !== `tmdb:${pending.tmdbId}`) upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
+      audit('request_approved_gate', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label, requestId: data?.id ?? null });
+      await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
+        .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Request Approved`)
+        .setDescription(`**${pending.label}** was approved and is being grabbed now. You'll get a DM when it's on Plex! 🍿`)] });
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+        .setTitle(`✅ Approved — ${pending.label}`)
+        .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}> — sent to Seerr${data?.id != null ? ` (request #${data.id})` : ''}.`)], components: [] });
+    } catch (err) {
+      // Put the stash back so the button can be retried once Seerr is reachable again.
+      restashPendingRequest(nonce, pending);
+      const seerrMessage = err.response?.data?.message;
+      audit('external_api_error', { provider: 'overseerr', error: seerrMessage || err.message, action: 'gate_approve', targetDiscordId: pending.discordId });
+      return interaction.followUp({ content: `❌ Approving failed: ${seerrMessage || err.message}. The buttons still work — try again.`, ephemeral: true });
+    }
+  }
+  if (action === 'request_deny') {
+    const pending = takePendingRequest(parts[0]);
+    if (!pending) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
+    upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'declined');
+    audit('request_denied_gate', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label });
+    await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle('Request Declined')
+      .setDescription(`Sorry — **${pending.label}** was declined. Reach out to an admin if you think this was a mistake.`)] });
+    return interaction.update({ embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle(`🚫 Denied — ${pending.label}`)
+      .setDescription(`Denied by <@${interaction.user.id}> (requested by <@${pending.discordId}>). Nothing was sent to Seerr.`)], components: [] });
   }
 
   if (action === 'syncfix_keepdup') {
