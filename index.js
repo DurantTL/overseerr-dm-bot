@@ -1,5 +1,3 @@
-require('dotenv').config();
-
 const {
   Client,
   GatewayIntentBits,
@@ -21,118 +19,19 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const multer = require('multer');
 const axios = require('axios');
-const Database = require('better-sqlite3');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const CONFIG = {
-  DISCORD_BOT_TOKEN: process.env.DISCORD_BOT_TOKEN,
-  DISCORD_CLIENT_ID: process.env.DISCORD_CLIENT_ID,
-  DISCORD_GUILD_ID: process.env.DISCORD_GUILD_ID,
-  ADMIN_CHANNEL_ID: process.env.ADMIN_CHANNEL_ID,
-  ADMIN_USER_ID: process.env.ADMIN_USER_ID,
-  OVERSEERR_URL: (process.env.OVERSEERR_URL || '').replace(/\/$/, ''),
-  OVERSEERR_API_KEY: process.env.OVERSEERR_API_KEY,
-  WEBHOOK_SECRET: process.env.WEBHOOK_SECRET || '',
-  PLEX_TOKEN: process.env.PLEX_TOKEN || '',
-  PLEX_USERNAME: process.env.PLEX_USERNAME || '',
-  PLEX_PASSWORD: process.env.PLEX_PASSWORD || '',
-  PLEX_EXCLUDE_SERVERS: process.env.PLEX_EXCLUDE_SERVERS ? process.env.PLEX_EXCLUDE_SERVERS.split(',').map(v => v.trim().toLowerCase()) : [],
-  RADARR_URL: process.env.RADARR_URL || '',
-  RADARR_API_KEY: process.env.RADARR_API_KEY || '',
-  RADARR_4K_URL: process.env.RADARR_4K_URL || '',
-  RADARR_4K_API_KEY: process.env.RADARR_4K_API_KEY || '',
-  SONARR_URL: process.env.SONARR_URL || '',
-  SONARR_API_KEY: process.env.SONARR_API_KEY || '',
-  PROWLARR_URL: process.env.PROWLARR_URL || '',
-  PROWLARR_API_KEY: process.env.PROWLARR_API_KEY || '',
-  BYPARR_URL: process.env.BYPARR_URL || '',
-  TAUTULLI_URL: (process.env.TAUTULLI_URL || '').replace(/\/$/, ''),
-  TAUTULLI_API_KEY: process.env.TAUTULLI_API_KEY || '',
-  PLAYBACK_CHECK_MINUTES: Number.parseInt(process.env.PLAYBACK_CHECK_MINUTES || '5', 10),
-  TRANSCODE_ALERT_COOLDOWN_MINUTES: Number.parseInt(process.env.TRANSCODE_ALERT_COOLDOWN_MINUTES || '60', 10),
-  PREMIUMIZE_API_KEY: process.env.PREMIUMIZE_API_KEY || '',
-  STUCK_CHECK_MINUTES: Number.parseInt(process.env.STUCK_CHECK_MINUTES || '10', 10),
-  STUCK_AFTER_MINUTES: Number.parseInt(process.env.STUCK_AFTER_MINUTES || '45', 10),
-  STUCK_ALERT_COOLDOWN_HOURS: Number.parseInt(process.env.STUCK_ALERT_COOLDOWN_HOURS || '6', 10),
-  JANITOR_CHECK_MINUTES: Number.parseInt(process.env.JANITOR_CHECK_MINUTES || '60', 10),
-  RETENTION_ENFORCEMENT: parseBool(process.env.RETENTION_ENFORCEMENT, false),
-  RETENTION_CHECK_HOURS: Number.parseInt(process.env.RETENTION_CHECK_HOURS || '24', 10),
-  RETENTION_MAX_DELETES_PER_RUN: Number.parseInt(process.env.RETENTION_MAX_DELETES_PER_RUN || '10', 10),
-  DISK_SPACE_WARN_GB: Number.parseInt(process.env.DISK_SPACE_WARN_GB || '100', 10),
-  // Optional allowlist of mount points / media folders to report in /status and disk alerts.
-  // Unset = report every *arr mount (original behaviour). Set e.g. `/share/media` to hide the
-  // container's own `/` and `/config` disks and label the media mount by its real folder.
-  DISK_SPACE_PATHS: (process.env.DISK_SPACE_PATHS || '').split(',').map(s => s.trim()).filter(Boolean),
-  TUNNEL_DOMAIN: process.env.TUNNEL_DOMAIN,
-  RAID_PATH: process.env.RAID_PATH || '/mnt/raid',
-  PATH_REMAP_FROM: process.env.PATH_REMAP_FROM || '',
-  PATH_REMAP_TO: process.env.PATH_REMAP_TO || process.env.RAID_PATH || '/mnt/raid',
-  TAUTULLI_WEBHOOK_SECRET: process.env.TAUTULLI_WEBHOOK_SECRET || '',
-  // Optional per-topic notification channels; anything unset falls back to ADMIN_CHANNEL_ID.
-  REQUESTS_CHANNEL_ID: process.env.REQUESTS_CHANNEL_ID || '',
-  SYSTEM_ALERTS_CHANNEL_ID: process.env.SYSTEM_ALERTS_CHANNEL_ID || '',
-  DOWNLOADS_CHANNEL_ID: process.env.DOWNLOADS_CHANNEL_ID || '',
-  PLAYBACK_CHANNEL_ID: process.env.PLAYBACK_CHANNEL_ID || '',
-  CLEANUP_CHANNEL_ID: process.env.CLEANUP_CHANNEL_ID || '',
-  AUDIT_CHANNEL_ID: process.env.AUDIT_CHANNEL_ID || '',
-  DEPLOY_CHANNEL_ID: process.env.DEPLOY_CHANNEL_ID || '',
-  PORT: Number.parseInt(process.env.PORT || '3000', 10),
-  DASHBOARD_ENABLED: parseBool(process.env.DASHBOARD_ENABLED, true),
-  DASHBOARD_ADMIN_PASSWORD: process.env.DASHBOARD_ADMIN_PASSWORD || '',
-  DASHBOARD_ADMIN_TOKEN: process.env.DASHBOARD_ADMIN_TOKEN || '',
-  STRICT_DASHBOARD_POST_AUTH: parseBool(process.env.STRICT_DASHBOARD_POST_AUTH, true),
-  SESSION_SECRET: process.env.SESSION_SECRET || '',
-  SESSION_TTL_HOURS: Number.parseInt(process.env.SESSION_TTL_HOURS || '12', 10),
-  ENABLE_DELETION: parseBool(process.env.ENABLE_DELETION, false),
-  DELETION_DRY_RUN: parseBool(process.env.DELETION_DRY_RUN, true),
-  AUTO_REMOVE_PLEX_ON_LEAVE: parseBool(process.env.AUTO_REMOVE_PLEX_ON_LEAVE, false),
-  DOWNLOAD_TOKEN_TTL_HOURS: Number.parseInt(process.env.DOWNLOAD_TOKEN_TTL_HOURS || '24', 10),
-  DOWNLOAD_ONE_TIME_LINKS_DEFAULT: parseBool(process.env.DOWNLOAD_ONE_TIME_LINKS_DEFAULT, false),
-  DOWNLOAD_MAX_PER_HOUR: Number.parseInt(process.env.DOWNLOAD_MAX_PER_HOUR || '10', 10),
-  DOWNLOAD_ROUTE_MAX_PER_MINUTE: Number.parseInt(process.env.DOWNLOAD_ROUTE_MAX_PER_MINUTE || '60', 10),
-  DOWNLOAD_LARGE_FILE_GB: Number.parseInt(process.env.DOWNLOAD_LARGE_FILE_GB || '8', 10),
-  DELETION_GRACE_HOURS: Number.parseInt(process.env.DELETION_GRACE_HOURS || '24', 10),
-  DELETION_REMINDER_COOLDOWN_HOURS: Number.parseInt(process.env.DELETION_REMINDER_COOLDOWN_HOURS || '12', 10),
-  KEEP_LIST_DEFAULT_DAYS: Number.parseInt(process.env.KEEP_LIST_DEFAULT_DAYS || '90', 10),
-  NEVER_DELETE_MEDIA_IDS: process.env.NEVER_DELETE_MEDIA_IDS ? process.env.NEVER_DELETE_MEDIA_IDS.split(',').map(s => s.trim()) : [],
-};
-
-const REQUIRED_ENV = [
-  'DISCORD_BOT_TOKEN', 'DISCORD_CLIENT_ID', 'DISCORD_GUILD_ID', 'ADMIN_CHANNEL_ID', 'ADMIN_USER_ID',
-  'OVERSEERR_URL', 'OVERSEERR_API_KEY', 'TUNNEL_DOMAIN', 'RAID_PATH',
-];
-
-const log = {
-  info: (...a) => console.log('[INFO]', ...a),
-  ok: (...a) => console.log('[OK]', ...a),
-  warn: (...a) => console.warn('[WARN]', ...a),
-  error: (...a) => console.error('[ERROR]', ...a),
-};
-
-function parseBool(v, fallback = false) {
-  if (v === undefined) return fallback;
-  return ['1', 'true', 'yes', 'on'].includes(String(v).toLowerCase());
-}
-
-function sha256(text) {
-  return crypto.createHash('sha256').update(text).digest('hex');
-}
-
-// Constant-time string comparison for secrets (webhook secrets, admin credentials).
-function safeEqual(a, b) {
-  const ba = Buffer.from(String(a ?? ''));
-  const bb = Buffer.from(String(b ?? ''));
-  if (ba.length !== bb.length) return false;
-  return crypto.timingSafeEqual(ba, bb);
-}
-
-// A real Discord user ID (snowflake). Rows like plex_12345 and stray junk must never be
-// mentioned as <@...> or DM'd.
-function isSnowflake(id) {
-  return /^\d{17,20}$/.test(String(id || ''));
-}
+const { log } = require('./src/log');
+const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
+const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, statusEmoji, pad, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
+const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
+const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, createSeerrRequestAs, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
+const { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, remapPath } = require('./src/arr');
+const { tautulliConfigured, tautulliApi, describeSession } = require('./src/tautulli');
+const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
 
 // Centralized embed palette so every notification shares one consistent look.
 const COLORS = {
@@ -191,185 +90,6 @@ function readCookie(req, name) {
   return undefined;
 }
 
-function validateConfig() {
-  const missing = REQUIRED_ENV.filter(k => !CONFIG[k]);
-  if (!CONFIG.PLEX_TOKEN && !(CONFIG.PLEX_USERNAME && CONFIG.PLEX_PASSWORD)) {
-    missing.push('PLEX_TOKEN or PLEX_USERNAME+PLEX_PASSWORD');
-  }
-  if (missing.length) {
-    throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
-  }
-  if (CONFIG.DASHBOARD_ENABLED && !CONFIG.DASHBOARD_ADMIN_PASSWORD && !CONFIG.DASHBOARD_ADMIN_TOKEN) {
-    throw new Error('DASHBOARD_ENABLED=true requires DASHBOARD_ADMIN_PASSWORD or DASHBOARD_ADMIN_TOKEN');
-  }
-}
-
-// Non-fatal sanity checks for risky-but-valid configurations. Logged at startup and posted once
-// to the system channel after connect, so a dangerous combo can't sit unnoticed.
-function configWarnings() {
-  const warnings = [];
-  if (CONFIG.TUNNEL_DOMAIN && !CONFIG.WEBHOOK_SECRET) {
-    warnings.push('`WEBHOOK_SECRET` is blank while `TUNNEL_DOMAIN` is set — the Seerr/Plex webhook endpoints are reachable from the internet without authentication.');
-  }
-  if (CONFIG.ENABLE_DELETION && !CONFIG.DELETION_DRY_RUN) {
-    warnings.push('Deletion is **live** (`ENABLE_DELETION=true`, `DELETION_DRY_RUN=false`) — the janitor and retention rules will delete real files.');
-  }
-  const dashSecret = CONFIG.DASHBOARD_ADMIN_PASSWORD || CONFIG.DASHBOARD_ADMIN_TOKEN;
-  if (CONFIG.DASHBOARD_ENABLED && dashSecret && dashSecret.length < 12) {
-    warnings.push('The dashboard password/token is under 12 characters — use a longer one (login is internet-reachable if your tunnel exposes it).');
-  }
-  if (CONFIG.PLAYBACK_CHECK_MINUTES > 0 && CONFIG.PLAYBACK_CHANNEL_ID && !tautulliConfigured()) {
-    warnings.push('`PLAYBACK_CHANNEL_ID` is set but Tautulli isn\'t configured (`TAUTULLI_URL` + `TAUTULLI_API_KEY`) — no playback alerts will be sent.');
-  }
-  return warnings;
-}
-
-const db = new Database('/app/data/plex_invites.db');
-db.pragma('journal_mode = WAL');
-
-function ensureColumn(table, col, spec) {
-  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
-  if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${spec}`);
-}
-
-function runMigrations() {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      discord_id TEXT PRIMARY KEY,
-      email TEXT NOT NULL,
-      invited INTEGER DEFAULT 0,
-      invited_at TEXT,
-      requested_at TEXT NOT NULL,
-      overseerr_created INTEGER DEFAULT 0,
-      overseerr_user_id INTEGER,
-      plex_username TEXT
-    );
-    CREATE TABLE IF NOT EXISTS requests (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      overseerr_request_id TEXT UNIQUE,
-      media_id TEXT NOT NULL,
-      media_type TEXT NOT NULL,
-      is_4k INTEGER DEFAULT 0,
-      title TEXT NOT NULL,
-      requested_by_discord_id TEXT,
-      status TEXT DEFAULT 'pending',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS keep_list (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      media_id TEXT NOT NULL,
-      media_type TEXT NOT NULL,
-      title TEXT NOT NULL,
-      kept_by_discord_id TEXT,
-      expires_at INTEGER,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_keep_unique ON keep_list(media_id, kept_by_discord_id);
-
-    CREATE TABLE IF NOT EXISTS download_tokens (
-      token_hash TEXT PRIMARY KEY,
-      file_path TEXT NOT NULL,
-      title TEXT NOT NULL,
-      discord_id TEXT NOT NULL,
-      expires_at INTEGER NOT NULL,
-      one_time_use INTEGER DEFAULT 0,
-      used_at INTEGER,
-      revoked INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS audit_log (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      action TEXT NOT NULL,
-      actor_discord_id TEXT,
-      target_discord_id TEXT,
-      metadata_json TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS download_access_log (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      token_hash TEXT,
-      discord_id TEXT,
-      ip TEXT,
-      user_agent TEXT,
-      file_path TEXT,
-      status TEXT,
-      bytes_sent INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS app_settings (
-      key TEXT PRIMARY KEY,
-      value TEXT,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS pending_deletions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      media_id TEXT NOT NULL UNIQUE,
-      media_type TEXT,
-      title TEXT,
-      requestor_discord_id TEXT,
-      prompt_sent_at INTEGER,
-      delete_after INTEGER NOT NULL,
-      status TEXT DEFAULT 'pending',
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS media_retention_rules (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      media_class TEXT UNIQUE,
-      retention_days INTEGER NOT NULL,
-      enabled INTEGER DEFAULT 1,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-    CREATE INDEX IF NOT EXISTS idx_requests_media ON requests(media_id);
-    CREATE INDEX IF NOT EXISTS idx_requests_requester ON requests(requested_by_discord_id);
-    CREATE INDEX IF NOT EXISTS idx_download_tokens_discord ON download_tokens(discord_id);
-    CREATE INDEX IF NOT EXISTS idx_download_tokens_expires ON download_tokens(expires_at);
-    CREATE INDEX IF NOT EXISTS idx_download_access_created ON download_access_log(created_at);
-    CREATE INDEX IF NOT EXISTS idx_audit_action_created ON audit_log(action, created_at);
-  `);
-
-  ensureColumn('users', 'overseerr_user_id', 'INTEGER');
-  ensureColumn('users', 'plex_username', 'TEXT');
-  ensureColumn('keep_list', 'expires_at', 'INTEGER');
-
-  const dlCols = db.prepare('PRAGMA table_info(download_tokens)').all().map(c => c.name);
-  if (dlCols.includes('token') && !dlCols.includes('token_hash')) {
-    ensureColumn('download_tokens', 'token_hash', 'TEXT');
-    const rows = db.prepare('SELECT token FROM download_tokens WHERE token_hash IS NULL').all();
-    const stmt = db.prepare('UPDATE download_tokens SET token_hash = ? WHERE token = ?');
-    for (const row of rows) stmt.run(sha256(row.token), row.token);
-  }
-  ensureColumn('download_tokens', 'one_time_use', 'INTEGER DEFAULT 0');
-  db.exec('CREATE INDEX IF NOT EXISTS idx_download_tokens_hash ON download_tokens(token_hash)');
-  ensureColumn('download_tokens', 'used_at', 'INTEGER');
-  ensureColumn('download_tokens', 'revoked', 'INTEGER DEFAULT 0');
-
-  // Old code stored '' when a webhook had no request id; those rows collided on the UNIQUE
-  // column and overwrote each other. NULL is allowed to repeat.
-  db.prepare("UPDATE requests SET overseerr_request_id = NULL WHERE overseerr_request_id = ''").run();
-
-  db.prepare(`INSERT OR IGNORE INTO media_retention_rules (media_class, retention_days, enabled)
-    VALUES
-    ('movie_4k', 30, 1),
-    ('movie_1080p', 60, 1),
-    ('tv_episode', 30, 1),
-    ('tv_season', 90, 1)
-  `).run();
-}
-
-function audit(action, details = {}) {
-  const meta = { ...details };
-  if (meta.error && typeof meta.error === 'string') meta.error = meta.error.slice(0, 500);
-  db.prepare('INSERT INTO audit_log (action, actor_discord_id, target_discord_id, metadata_json) VALUES (?, ?, ?, ?)')
-    .run(action, details.actorDiscordId || null, details.targetDiscordId || null, JSON.stringify(meta));
-}
-
 // Per-topic notification routing. Every kind falls back to ADMIN_CHANNEL_ID when its channel
 // isn't configured, so single-channel deployments behave exactly as before. Exception: 'deploy'
 // never falls back — a bot-online ping on every Watchtower restart would spam the admin channel.
@@ -399,153 +119,6 @@ function notifyChannel(kind, msg) {
 
 function notifyAdmin(msg) {
   notifyChannel('admin', msg);
-}
-
-// basic helpers
-function storeUserEmail(discordId, email) {
-  db.prepare(`INSERT INTO users (discord_id, email, requested_at)
-    VALUES (?, ?, ?)
-    ON CONFLICT(discord_id) DO UPDATE SET email=excluded.email, requested_at=excluded.requested_at, overseerr_created=0, overseerr_user_id=NULL`)
-    .run(discordId, email.toLowerCase().trim(), new Date().toISOString());
-}
-// Link a Discord ID to an email, absorbing any synthetic plex_ row that holds the same canonical
-// email. Without the absorb, /link (and the DM email flow) created a second row for the same human
-// and left the stale plex_ row behind — an instant duplicate-email pair. Carried-over flags
-// (invited / overseerr_created / overseerr_user_id / plex_username) survive the merge so we don't
-// re-invite or re-create a Seerr user for someone who already has both.
-function linkUserToEmail(discordId, email) {
-  const key = canonicalizeEmail(email);
-  const absorbed = key && !key.startsWith('__placeholder__:')
-    ? db.prepare('SELECT * FROM users').all().find(u =>
-        u.discord_id !== discordId
-        && u.discord_id.startsWith('plex_')
-        && canonicalizeEmail(u.email) === key)
-    : null;
-  storeUserEmail(discordId, email);
-  if (absorbed) {
-    db.prepare(`UPDATE users SET
-        invited = MAX(invited, ?),
-        invited_at = COALESCE(invited_at, ?),
-        overseerr_created = MAX(overseerr_created, ?),
-        overseerr_user_id = COALESCE(overseerr_user_id, ?),
-        plex_username = COALESCE(plex_username, ?)
-      WHERE discord_id = ?`)
-      .run(absorbed.invited ? 1 : 0, absorbed.invited_at, absorbed.overseerr_created ? 1 : 0, absorbed.overseerr_user_id, absorbed.plex_username, discordId);
-    removeUser(absorbed.discord_id);
-    audit('plex_row_absorbed', { targetDiscordId: discordId, email, absorbedRow: absorbed.discord_id, absorbedEmail: absorbed.email });
-  }
-  return { absorbed };
-}
-const getUserByDiscordId = discordId => db.prepare('SELECT * FROM users WHERE discord_id = ?').get(discordId);
-// Canonical-email lookup (gmail dots/plus-tags collapse). Prefers rows with a real Discord
-// snowflake over synthetic plex_ rows so notifications reach the actual person.
-function getUserByCanonicalEmail(email) {
-  const key = canonicalizeEmail(email);
-  if (!key || key.startsWith('__placeholder__:')) return null;
-  const matches = db.prepare('SELECT * FROM users').all().filter(u => canonicalizeEmail(u.email) === key);
-  return matches.find(u => isSnowflake(u.discord_id)) || matches[0] || null;
-}
-const markUserInvited = discordId => db.prepare('UPDATE users SET invited = 1, invited_at = ? WHERE discord_id = ?').run(new Date().toISOString(), discordId);
-const markOverseerrCreated = (discordId, overseerrId) => db.prepare('UPDATE users SET overseerr_created = 1, overseerr_user_id = ? WHERE discord_id = ?').run(overseerrId, discordId);
-const removeUser = discordId => db.prepare('DELETE FROM users WHERE discord_id = ?').run(discordId);
-
-function upsertRequest(overseerrRequestId, mediaId, mediaType, is4k, title, discordId, status) {
-  // Later webhook events (approved/available) often arrive without requestedBy fields.
-  // INSERT OR REPLACE used to wipe the original requester (breaking keep/delete attribution),
-  // and '' request ids from those events all collided on the UNIQUE column. COALESCE keeps
-  // the first known requester; missing request ids fall back to updating the media row.
-  const reqId = overseerrRequestId ? String(overseerrRequestId) : null;
-  if (reqId) {
-    db.prepare(`INSERT INTO requests (overseerr_request_id, media_id, media_type, is_4k, title, requested_by_discord_id, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(overseerr_request_id) DO UPDATE SET
-        status = excluded.status,
-        title = excluded.title,
-        requested_by_discord_id = COALESCE(excluded.requested_by_discord_id, requests.requested_by_discord_id)`)
-      .run(reqId, mediaId, mediaType, is4k ? 1 : 0, title, discordId || null, status);
-    return;
-  }
-  const updated = db.prepare(`UPDATE requests SET status = ?,
-      requested_by_discord_id = COALESCE(?, requested_by_discord_id)
-    WHERE media_id = ?`).run(status, discordId || null, mediaId);
-  if (!updated.changes) {
-    db.prepare(`INSERT INTO requests (overseerr_request_id, media_id, media_type, is_4k, title, requested_by_discord_id, status)
-      VALUES (NULL, ?, ?, ?, ?, ?, ?)`)
-      .run(mediaId, mediaType, is4k ? 1 : 0, title, discordId || null, status);
-  }
-}
-
-function addToKeepList(mediaId, mediaType, title, discordId, keepDays = CONFIG.KEEP_LIST_DEFAULT_DAYS) {
-  const expiresAt = keepDays > 0 ? Date.now() + keepDays * 86400000 : null;
-  db.prepare('INSERT OR REPLACE INTO keep_list (media_id, media_type, title, kept_by_discord_id, expires_at) VALUES (?, ?, ?, ?, ?)')
-    .run(mediaId, mediaType, title, discordId || null, expiresAt);
-}
-
-function isInKeepList(mediaId) {
-  return !!db.prepare('SELECT id FROM keep_list WHERE media_id = ? AND (expires_at IS NULL OR expires_at > ?)').get(mediaId, Date.now());
-}
-
-// The "Finished Watching" prompt promises auto-deletion after the grace period; these rows are
-// what the janitor sweep actually enforces. Re-prompting the same media resets the clock.
-function recordPendingDeletion(mediaId, mediaType, title, requestorDiscordId) {
-  const now = Date.now();
-  db.prepare(`INSERT INTO pending_deletions (media_id, media_type, title, requestor_discord_id, prompt_sent_at, delete_after, status, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
-    ON CONFLICT(media_id) DO UPDATE SET
-      title = excluded.title,
-      requestor_discord_id = excluded.requestor_discord_id,
-      prompt_sent_at = excluded.prompt_sent_at,
-      delete_after = excluded.delete_after,
-      status = 'pending',
-      updated_at = CURRENT_TIMESTAMP`)
-    .run(mediaId, mediaType, title, requestorDiscordId || null, now, now + CONFIG.DELETION_GRACE_HOURS * 3600000);
-}
-function markPendingDeletion(mediaId, status) {
-  db.prepare('UPDATE pending_deletions SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE media_id = ?').run(status, mediaId);
-}
-function postponePendingDeletion(mediaId, deleteAfterMs) {
-  db.prepare("UPDATE pending_deletions SET delete_after = ?, status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE media_id = ?").run(deleteAfterMs, mediaId);
-}
-
-function createDownloadToken(filePath, title, discordId, oneTimeUse = CONFIG.DOWNLOAD_ONE_TIME_LINKS_DEFAULT) {
-  const rawToken = crypto.randomBytes(32).toString('hex');
-  const tokenHash = sha256(rawToken);
-  const expiresAt = Date.now() + CONFIG.DOWNLOAD_TOKEN_TTL_HOURS * 3600 * 1000;
-  db.prepare('INSERT INTO download_tokens (token_hash, file_path, title, discord_id, expires_at, one_time_use) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(tokenHash, filePath, title, discordId, expiresAt, oneTimeUse ? 1 : 0);
-  audit('download_link_generated', { targetDiscordId: discordId, title, expiresAt, oneTimeUse: !!oneTimeUse });
-  return { rawToken, tokenHash, expiresAt };
-}
-
-function getDownloadRecordByRawToken(rawToken) {
-  return db.prepare('SELECT * FROM download_tokens WHERE token_hash = ?').get(sha256(rawToken));
-}
-
-function revokeAllDownloadLinks(discordId = null) {
-  if (discordId) {
-    db.prepare('UPDATE download_tokens SET revoked = 1 WHERE discord_id = ? AND revoked = 0').run(discordId);
-    audit('download_links_revoked_user', { targetDiscordId: discordId });
-  } else {
-    db.prepare('UPDATE download_tokens SET revoked = 1 WHERE revoked = 0').run();
-    audit('download_links_revoked_global', {});
-  }
-}
-
-function cleanExpiredTokens() {
-  db.prepare('DELETE FROM download_tokens WHERE expires_at < ?').run(Date.now());
-}
-
-function getSetting(key) {
-  const row = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key);
-  return row?.value || null;
-}
-
-function setSetting(key, value) {
-  db.prepare(`
-    INSERT INTO app_settings (key, value, updated_at)
-    VALUES (?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
-  `).run(key, String(value));
 }
 
 // Pending onboarding is mirrored in app_settings (pending_email:<discordId>) so it survives
@@ -607,221 +180,6 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message],
 });
 
-const PLEX_CLIENT_ID = 'durant-media-server-bot';
-async function getPlexToken() {
-  if (CONFIG.PLEX_TOKEN) return CONFIG.PLEX_TOKEN;
-  const res = await axios.post('https://plex.tv/users/sign_in.json', {}, {
-    auth: { username: CONFIG.PLEX_USERNAME, password: CONFIG.PLEX_PASSWORD },
-    headers: { 'X-Plex-Client-Identifier': PLEX_CLIENT_ID, 'X-Plex-Product': 'Durant Media Server Bot', 'X-Plex-Version': '1.0' },
-  });
-  return res.data.user.authToken;
-}
-async function plexApiGet(urlPath, token) {
-  const res = await axios.get(`https://plex.tv${urlPath}`, {
-    headers: { 'X-Plex-Token': token, 'Accept': 'application/json', 'X-Plex-Client-Identifier': PLEX_CLIENT_ID },
-  });
-  return res.data;
-}
-async function getPlexServers(token) {
-  const data = await plexApiGet('/api/v2/resources?includeHttps=1&includeRelay=1', token);
-  return (Array.isArray(data) ? data : []).filter(r => r.provides?.includes('server') && !CONFIG.PLEX_EXCLUDE_SERVERS.includes((r.name || '').toLowerCase()));
-}
-
-async function inviteUserToPlex(email) {
-  const token = await getPlexToken();
-  const servers = await getPlexServers(token);
-  let successCount = 0;
-  for (const server of servers) {
-    try {
-      await axios.post('https://plex.tv/api/v2/shared_servers', {
-        invitedEmail: email,
-        machineIdentifier: server.clientIdentifier,
-        librarySectionIds: [],
-        settings: { allowSync: true },
-      }, { headers: { 'X-Plex-Token': token, 'X-Plex-Client-Identifier': PLEX_CLIENT_ID, Accept: 'application/json' } });
-      successCount++;
-    } catch (err) {
-      log.warn(`Plex invite failed on ${server.name}: ${err.message}`);
-    }
-  }
-  audit('plex_invite_sent', { email, successCount, total: servers.length });
-  return { successCount, total: servers.length };
-}
-
-async function removePlexAccess(email) {
-  const token = await getPlexToken();
-  const friendsData = await plexApiGet('/api/v2/friends', token).catch(() => []);
-  const friends = Array.isArray(friendsData) ? friendsData : (friendsData.data || []);
-  const friend = friends.find(f => [f.email, f.username, f.title].some(v => (v || '').toLowerCase() === email.toLowerCase()));
-  if (!friend) return { removed: false, reason: 'No Plex account found' };
-  const servers = await getPlexServers(token);
-  let removedCount = 0;
-  for (const server of servers) {
-    try {
-      await axios.delete(`https://plex.tv/api/v2/shared_servers/${server.clientIdentifier}/friends/${friend.id}`, {
-        headers: { 'X-Plex-Token': token, 'X-Plex-Client-Identifier': PLEX_CLIENT_ID, Accept: 'application/json' },
-      });
-      removedCount++;
-    } catch (_e) {}
-  }
-  audit('plex_access_removed', { email, removedCount, total: servers.length });
-  return { removed: removedCount > 0, removedCount, total: servers.length };
-}
-
-// Push a Discord ID into a Seerr user's notification settings. Previously this only happened for
-// users the bot created, so Plex-imported Seerr users that got "repaired" into the DB never
-// received Seerr-side Discord pings. Non-fatal: failures are audited, not thrown.
-//
-// Seerr 3.3 replaced the per-user `discordId` (string) with `discordIds` (string array) and reads
-// ONLY the new key — posting just the old shape "succeeds" but stores an empty list. Send both
-// shapes so the same call works on Overseerr / Jellyseerr 2.x (reads discordId, ignores the
-// unknown array) and Seerr 3.3+ (reads discordIds, ignores the legacy key). Existing discordIds
-// are merged in rather than clobbered, since 3.3 lets admins add extra IDs by hand.
-//
-// The POST treats the body as a FULL settings update — omitted fields (PGP key, Telegram,
-// Pushover, ...) are overwritten with undefined. Round-trip the current settings from the GET as
-// the POST base so only the Discord fields change; if the GET fails we abort rather than risk
-// wiping the user's other notification settings.
-async function setOverseerrDiscordNotification(overseerrUserId, discordId) {
-  const headers = { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY };
-  try {
-    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/user/${overseerrUserId}/settings/notifications`, { headers });
-    const current = (res.data && typeof res.data === 'object') ? res.data : {};
-    const existing = Array.isArray(current.discordIds) ? current.discordIds : [];
-    const discordIds = [...new Set([...existing, discordId].map(v => String(v || '').trim()).filter(Boolean))];
-    await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/user/${overseerrUserId}/settings/notifications`, { ...current, discordId, discordIds }, { headers });
-    return true;
-  } catch (err) {
-    audit('external_api_error', { provider: 'overseerr', error: err.message, action: 'set_discord_notification', targetDiscordId: discordId, overseerrUserId });
-    return false;
-  }
-}
-
-async function createOverseerrUser(email, discordId, username) {
-  const createRes = await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/user`, {
-    email, username, password: crypto.randomUUID(), permissions: 32, userType: 2,
-  }, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
-  const id = createRes.data.id;
-  await setOverseerrDiscordNotification(id, discordId);
-  return id;
-}
-
-// Live end-to-end diagnostic for the Seerr integration, driven by /seerr-test. Creates a
-// throwaway Seerr user (never stored in the bot's own DB), pushes a Discord ID through the same
-// code path /link uses, reads it back to prove it stored, then deletes the user unless the admin
-// asked to keep it for inspection in the Seerr UI. Each step is isolated so one failure still
-// yields a full report.
-async function runSeerrSelfTest(discordId, { keep = false } = {}) {
-  const headers = { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY };
-  const steps = [];
-  let testUserId = null;
-  const finish = () => {
-    audit('seerr_selftest', { targetDiscordId: discordId, keep, steps: steps.map(s => `${s.ok ? 'ok' : 'FAIL'}:${s.name}`) });
-    return { steps, testUserId };
-  };
-
-  try {
-    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/status`, { headers, timeout: 10000 });
-    const version = String(res.data?.version || 'unknown');
-    const major = Number.parseInt(version.split('.')[0], 10);
-    steps.push({ name: 'Seerr reachable', ok: true, detail: `Version ${version}${major >= 3 ? ' — new multi-ID `discordIds` API' : ' — legacy single `discordId` API'}` });
-  } catch (err) {
-    steps.push({ name: 'Seerr reachable', ok: false, detail: `Can't reach ${CONFIG.OVERSEERR_URL}: ${err.message}` });
-    return finish(); // nothing else can work
-  }
-
-  try {
-    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/settings/notifications/discord`, { headers, timeout: 10000 });
-    const enabled = !!res.data?.enabled;
-    const hasWebhook = !!res.data?.options?.webhookUrl;
-    steps.push(enabled
-      ? { name: 'Discord agent enabled', ok: true, detail: hasWebhook ? 'Agent is on with a webhook URL' : 'Agent is on, but no webhook URL is set' }
-      : { name: 'Discord agent enabled', ok: false, detail: 'Agent is OFF — Seerr hides the per-user Discord fields until you enable it under **Settings → Notifications → Discord** (set a channel webhook URL and tick Enable Agent)' });
-  } catch (err) {
-    steps.push({ name: 'Discord agent enabled', ok: false, detail: `Couldn't read agent settings: ${err.message}` });
-  }
-
-  const email = `selftest-${Date.now()}@seerr-test.local`;
-  try {
-    testUserId = await createOverseerrUser(email, discordId, 'bot-selftest');
-    steps.push({ name: 'Create test user', ok: true, detail: `Created \`${email}\` (Seerr user #${testUserId}) and pushed your Discord ID via the same call /link uses` });
-  } catch (err) {
-    steps.push({ name: 'Create test user', ok: false, detail: `Create failed: ${err.message}` });
-    return finish();
-  }
-
-  try {
-    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/user/${testUserId}/settings/notifications`, { headers, timeout: 10000 });
-    const ids = Array.isArray(res.data?.discordIds) ? res.data.discordIds.map(String) : null;
-    if (ids) {
-      const ok = ids.includes(String(discordId));
-      steps.push({ name: 'Discord ID stored', ok, detail: ok
-        ? `Read back \`discordIds = [${ids.join(', ')}]\` (Seerr 3.3+ field)`
-        : `Seerr 3.3+ \`discordIds\` came back as [${ids.join(', ')}] — your ID is missing` });
-    } else {
-      const single = String(res.data?.discordId || '');
-      const ok = single === String(discordId);
-      steps.push({ name: 'Discord ID stored', ok, detail: ok
-        ? `Read back \`discordId = ${single}\` (legacy field)`
-        : `Legacy \`discordId\` came back as "${single}" — expected ${discordId}` });
-    }
-  } catch (err) {
-    steps.push({ name: 'Discord ID stored', ok: false, detail: `Read-back failed: ${err.message}` });
-  }
-
-  if (keep) {
-    steps.push({ name: 'Cleanup', ok: true, detail: `Kept \`${email}\` — open Seerr → **Users → bot-selftest → Settings → Notifications → Discord** to see the field, then delete the user when done` });
-  } else {
-    try {
-      await axios.delete(`${CONFIG.OVERSEERR_URL}/api/v1/user/${testUserId}`, { headers, timeout: 10000 });
-      steps.push({ name: 'Cleanup', ok: true, detail: 'Test user deleted' });
-    } catch (err) {
-      steps.push({ name: 'Cleanup', ok: false, detail: `Couldn't delete test user #${testUserId} (${err.message}) — remove it from Seerr → Users manually` });
-    }
-  }
-  return finish();
-}
-
-// Movie/TV search against Seerr, used by /request (both autocomplete and the free-text fallback).
-// The query is %-encoded into the URL by hand: axios's default params serializer turns spaces
-// into '+', which Overseerr's API rejects (sct/overseerr#2010) — multi-word searches came back
-// as errors/empty while single words worked.
-async function searchSeerr(query, timeout = 8000) {
-  const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/search?query=${encodeURIComponent(query)}&page=1`, {
-    headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY },
-    timeout,
-  });
-  return (res.data?.results || []).filter(r => r.mediaType === 'movie' || r.mediaType === 'tv');
-}
-
-// Place a Seerr request AS a specific Seerr user. The admin API key has MANAGE_USERS, which is
-// what lets the body's userId override the requesting identity — this is how requests made from
-// Discord get attributed to the real person instead of the server owner.
-async function createSeerrRequestAs(seerrUserId, mediaType, tmdbId, is4k) {
-  const body = { mediaType, mediaId: tmdbId, is4k: !!is4k, userId: seerrUserId };
-  if (mediaType === 'tv') body.seasons = 'all';
-  const res = await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/request`, body, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY }, timeout: 15000 });
-  return res.data;
-}
-
-// Seerr user id for a linked DB row, backfilling rows that predate overseerr_user_id tracking
-// by matching the Seerr user list on canonical email.
-async function resolveSeerrUserId(row) {
-  if (row.overseerr_user_id != null) return row.overseerr_user_id;
-  const key = canonicalizeEmail(row.email);
-  const match = (await fetchOverseerrUsers()).find(u => u.email && canonicalizeEmail(u.email) === key);
-  if (match?.id == null) return null;
-  markOverseerrCreated(row.discord_id, match.id);
-  return match.id;
-}
-
-async function approveOverseerrRequest(requestId) {
-  return axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/request/${requestId}/approve`, {}, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
-}
-async function denyOverseerrRequest(requestId) {
-  return axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/request/${requestId}/decline`, {}, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
-}
-
 // Seerr request ids the bot already announced in Discord (admin /request creates and gate
 // approvals). The MEDIA_PENDING/MEDIA_AUTO_APPROVED webhook checks this set so those requests
 // don't get a second embed. Memory-only: a restart in the seconds between the two at worst
@@ -830,32 +188,6 @@ const postedApprovalNotices = new Set();
 function markApprovalNoticePosted(requestId) {
   postedApprovalNotices.add(String(requestId));
   if (postedApprovalNotices.size > 500) postedApprovalNotices.delete(postedApprovalNotices.values().next().value);
-}
-
-// ---- Bot-side approval gate for /request ----
-// Seerr auto-approves ANY request created with an admin API key: the status check in
-// MediaRequest.request uses the AUTHENTICATED CALLER's permissions (not the request user's),
-// and admins pass every permission check — so a pending state never exists Seerr-side and no
-// approval webhook can fire. The gate flips the order: a non-admin /request is stashed in
-// app_settings (so buttons survive restarts) and posted to the requests channel first; the
-// Seerr request is only created when an admin clicks Approve. Deny never touches Seerr.
-function stashPendingRequest(payload) {
-  const nonce = crypto.randomBytes(4).toString('hex');
-  setSetting(`pending_request:${nonce}`, JSON.stringify({ ...payload, createdAt: Date.now() }));
-  return nonce;
-}
-// Read + consume a stashed request. Null means the nonce is unknown or already handled —
-// consuming makes double-clicks and stale buttons harmless.
-function takePendingRequest(nonce) {
-  if (!/^[0-9a-f]{8}$/.test(String(nonce || ''))) return null;
-  const raw = getSetting(`pending_request:${nonce}`);
-  if (!raw) return null;
-  db.prepare('DELETE FROM app_settings WHERE key = ?').run(`pending_request:${nonce}`);
-  try { return JSON.parse(raw); } catch (_e) { return null; }
-}
-// Put a consumed request back (approve failed against Seerr) so the button can be retried.
-function restashPendingRequest(nonce, payload) {
-  setSetting(`pending_request:${nonce}`, JSON.stringify(payload));
 }
 
 // Post the Approve/Deny gate embed for a stashed /request to the requests channel.
@@ -877,70 +209,6 @@ async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discord
   );
   await channel.send({ embeds: [embed], components: [row] });
   return true;
-}
-
-async function radarrGetFrom(url, apiKey, endpoint) {
-  const res = await axios.get(`${url}/api/v3${endpoint}`, { params: { apikey: apiKey }, timeout: 10000 });
-  return res.data;
-}
-async function sonarrGet(endpoint, params = {}) {
-  const res = await axios.get(`${CONFIG.SONARR_URL}/api/v3${endpoint}`, { params: { apikey: CONFIG.SONARR_API_KEY, ...params }, timeout: 10000 });
-  return res.data;
-}
-
-// The configured *arr instances, used for queue reads and stuck-download actions.
-function arrSources() {
-  const sources = [];
-  if (CONFIG.RADARR_URL) sources.push({ kind: 'movie', label: 'radarr', url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY });
-  if (CONFIG.RADARR_4K_URL) sources.push({ kind: 'movie', label: 'radarr-4k', url: CONFIG.RADARR_4K_URL, key: CONFIG.RADARR_4K_API_KEY });
-  if (CONFIG.SONARR_URL) sources.push({ kind: 'tv', label: 'sonarr', url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY });
-  return sources;
-}
-const arrSourceByLabel = label => arrSources().find(s => s.label === label) || null;
-
-// Normalized view of every active download across Radarr / Radarr-4K / Sonarr.
-async function fetchArrQueues() {
-  const items = [];
-  for (const s of arrSources()) {
-    try {
-      const params = s.kind === 'movie'
-        ? { pageSize: 200, includeMovie: true }
-        : { pageSize: 200, includeSeries: true, includeEpisode: true };
-      const res = await axios.get(`${s.url}/api/v3/queue`, { params, headers: { 'X-Api-Key': s.key }, timeout: 10000 });
-      for (const r of res.data.records || []) {
-        const displayTitle = s.kind === 'movie'
-          ? (r.movie?.title || r.title || 'Unknown')
-          : `${r.series?.title || r.title || 'Unknown'}${r.episode ? ` S${pad(r.episode.seasonNumber)}E${pad(r.episode.episodeNumber)}` : ''}`;
-        items.push({
-          source: s,
-          queueId: r.id,
-          title: displayTitle,
-          size: r.size || 0,
-          sizeleft: r.sizeleft || 0,
-          timeleft: r.timeleft || null,
-          status: r.status || '',
-          trackedStatus: r.trackedDownloadStatus || '',
-          trackedState: r.trackedDownloadState || '',
-          messages: (r.statusMessages || []).flatMap(m => m.messages || []).slice(0, 3),
-        });
-      }
-    } catch (err) {
-      audit('external_api_error', { provider: s.label, error: err.message, action: 'queue_fetch' });
-    }
-  }
-  return items;
-}
-
-function queuePercent(item) {
-  if (!item.size) return 0;
-  return Math.max(0, Math.min(100, Math.round(((item.size - item.sizeleft) / item.size) * 100)));
-}
-function progressBar(pct) {
-  const filled = Math.round(pct / 10);
-  return '▰'.repeat(filled) + '▱'.repeat(10 - filled);
-}
-function queueItemLooksUnhealthy(item) {
-  return item.trackedStatus === 'warning' || item.status === 'warning' || item.status === 'failed' || item.messages.length > 0;
 }
 
 // ---- Stuck-download watchdog ----
@@ -1006,63 +274,6 @@ async function sweepStuckDownloads() {
 
 // ---- Janitor: grace-period auto-delete, retention rules, disk-space alerts ----
 
-// Free/total space of every volume the *arrs can see, deduped by path across instances.
-async function fetchDiskSpace() {
-  const seen = new Map();
-  const sources = arrSources();
-  for (const s of sources) {
-    try {
-      const res = await axios.get(`${s.url}/api/v3/diskspace`, { headers: { 'X-Api-Key': s.key }, timeout: 8000 });
-      for (const d of res.data || []) {
-        if (!seen.has(d.path)) seen.set(d.path, d);
-      }
-    } catch (err) {
-      audit('external_api_error', { provider: s.label, error: err.message, action: 'diskspace' });
-    }
-  }
-  let disks = [...seen.values()].filter(d => (d.totalSpace || 0) > 10 * 1024 ** 3);
-  // Optional allowlist: keep only mounts an admin cares about, and relabel a mount with the more
-  // specific media folder (the *arr diskspace API reports the `/share` mount, but the real media
-  // lives at `/share/media` — show that instead). Unset = report every mount.
-  const wanted = CONFIG.DISK_SPACE_PATHS;
-  if (wanted.length) {
-    const norm = p => (p.length > 1 ? p.replace(/\/+$/, '') : p);
-    const related = (a, b) => { a = norm(a); b = norm(b); return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`); };
-    disks = disks
-      .filter(d => wanted.some(w => related(d.path, w)))
-      .map(d => {
-        const moreSpecific = wanted.find(w => norm(w).startsWith(`${norm(d.path)}/`));
-        return moreSpecific ? { ...d, displayPath: norm(moreSpecific) } : d;
-      });
-  }
-  return disks;
-}
-const gb = bytes => bytes / (1024 ** 3);
-const fmtSpace = bytes => gb(bytes) >= 1024 ? `${(gb(bytes) / 1024).toFixed(2)} TB` : `${gb(bytes).toFixed(0)} GB`;
-
-// ---- Tautulli (playback visibility) ----
-const tautulliConfigured = () => !!(CONFIG.TAUTULLI_URL && CONFIG.TAUTULLI_API_KEY);
-async function tautulliApi(cmd, params = {}) {
-  const res = await axios.get(`${CONFIG.TAUTULLI_URL}/api/v2`, {
-    params: { apikey: CONFIG.TAUTULLI_API_KEY, cmd, ...params },
-    timeout: 10000,
-  });
-  if (res.data?.response?.result !== 'success') throw new Error(res.data?.response?.message || `Tautulli ${cmd} failed`);
-  return res.data.response.data;
-}
-
-// One line per active Plex session, shared by /watching and the transcode sweep.
-function describeSession(s) {
-  const decision = s.video_decision === 'transcode' ? '🔥 Transcoding'
-    : s.transcode_decision === 'copy' ? '📼 Direct Stream'
-    : '▶️ Direct Play';
-  const res = s.video_full_resolution || s.stream_video_full_resolution || '';
-  const streamRes = s.stream_video_full_resolution || '';
-  const quality = s.video_decision === 'transcode' && res && streamRes && res !== streamRes ? `${res} → ${streamRes}` : (streamRes || res);
-  const pct = s.progress_percent ? ` (${s.progress_percent}%)` : '';
-  return `• **${s.friendly_name || s.user || 'Unknown'}** — ${s.full_title || 'Unknown'} — ${decision}${quality ? ` — ${quality}` : ''}${pct}`;
-}
-
 // Alert the playback channel when a session is video-transcoding (the expensive kind; audio-only
 // transcodes are cheap and ignored). One alert per session+media per cooldown window.
 const transcodeAlerted = new Map(); // `${user}:${rating_key}` -> last alert ts
@@ -1085,6 +296,51 @@ async function sweepTranscodes() {
       .setDescription(describeSession(s))
       .addFields({ name: 'Player', value: `${s.player || 'unknown'} (${s.platform || '?'})`, inline: true })] });
     audit('transcode_alert', { user: s.friendly_name || s.user, title: s.full_title, from: s.video_full_resolution, to: s.stream_video_full_resolution });
+  }
+}
+
+// ---- Premiumize stuck-transfer watchdog ----
+// Transfers that error out, or sit with frozen progress (0% forever = no cached source /
+// dead torrent), never reach the *arr queue — the stuck-download watchdog can't see them.
+// Alert the downloads channel with one-click Retry / Clear / Ignore.
+const pmTracker = new Map(); // transfer id -> { progress, since }
+const pmAlerted = new Map(); // transfer id -> last alert ts
+async function sweepPremiumizeTransfers() {
+  if (!premiumizeConfigured()) return;
+  const transfers = await listTransfers();
+  const now = Date.now();
+  const currentIds = new Set(transfers.map(t => String(t.id)));
+  for (const [id, ts] of pmAlerted) {
+    if (!currentIds.has(id) || now - ts > 48 * 3600000) pmAlerted.delete(id);
+  }
+  // Ignore flags are per transfer id; drop them once the transfer leaves the list so a reused
+  // id can't be silently ignored (same pattern as stuck_ignore:).
+  for (const r of db.prepare("SELECT key FROM app_settings WHERE key LIKE 'pm_ignore:%'").all()) {
+    if (!currentIds.has(r.key.slice('pm_ignore:'.length))) db.prepare('DELETE FROM app_settings WHERE key = ?').run(r.key);
+  }
+
+  const stuck = findStuckTransfers(transfers, pmTracker, { stuckAfterMs: CONFIG.PREMIUMIZE_STUCK_AFTER_MINUTES * 60000, now });
+  for (const t of stuck) {
+    const id = String(t.id);
+    if (getSetting(`pm_ignore:${id}`)) continue;
+    if (now - (pmAlerted.get(id) || 0) < CONFIG.PREMIUMIZE_ALERT_COOLDOWN_HOURS * 3600000) continue;
+    pmAlerted.set(id, now);
+    const pct = Math.round(Number(t.progress || 0) * 100);
+    const embed = brandedEmbed(COLORS.WARN)
+      .setTitle('🧊 Premiumize Transfer Stuck')
+      .setDescription(`**${String(t.name || 'unnamed').slice(0, 200)}**`)
+      .addFields(
+        { name: 'Status', value: String(t.status || 'unknown'), inline: true },
+        { name: 'Progress', value: `${progressBar(pct)} ${pct}%`, inline: true },
+      );
+    if (t.message) embed.addFields({ name: 'Message', value: String(t.message).slice(0, 500), inline: false });
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`pm_retry:${id}`).setLabel('Retry').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`pm_clear:${id}`).setLabel('Clear Transfer').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`pm_ignore:${id}`).setLabel('Ignore').setStyle(ButtonStyle.Secondary),
+    );
+    notifyChannel('downloads', { embeds: [embed], components: [row] });
+    audit('premiumize_transfer_stuck', { transferId: id, name: t.name, status: t.status, progress: t.progress });
   }
 }
 
@@ -1228,112 +484,6 @@ async function janitorSweep() {
   }
 }
 
-async function searchMovies(title) {
-  const lower = title.toLowerCase();
-  const results = [];
-  if (CONFIG.RADARR_URL) {
-    const all = await radarrGetFrom(CONFIG.RADARR_URL, CONFIG.RADARR_API_KEY, '/movie');
-    all.filter(m => m.hasFile && m.title.toLowerCase().includes(lower)).forEach(m => results.push({ ...m, _radarrUrl: CONFIG.RADARR_URL, _radarrKey: CONFIG.RADARR_API_KEY }));
-  }
-  if (CONFIG.RADARR_4K_URL) {
-    const all = await radarrGetFrom(CONFIG.RADARR_4K_URL, CONFIG.RADARR_4K_API_KEY, '/movie');
-    all.filter(m => m.hasFile && m.title.toLowerCase().includes(lower)).forEach(m => results.push({ ...m, _radarrUrl: CONFIG.RADARR_4K_URL, _radarrKey: CONFIG.RADARR_4K_API_KEY }));
-  }
-  return results;
-}
-async function searchSeries(title) {
-  const all = await sonarrGet('/series');
-  return all.filter(s => s.title.toLowerCase().includes(title.toLowerCase()));
-}
-async function getEpisodeFiles(seriesId) {
-  return sonarrGet('/episodefile', { seriesId });
-}
-
-// Resolve a stored mediaId (tmdb:/tvdb:) to the concrete Radarr movie or Sonarr episode files
-// behind it, so deletion can report exact paths in dry-run and issue the right API call when live.
-async function resolveDeletableMedia(mediaId) {
-  if (mediaId.startsWith('tmdb:')) {
-    const tmdbId = Number(mediaId.slice('tmdb:'.length));
-    const sources = [
-      { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, label: 'radarr' },
-      { url: CONFIG.RADARR_4K_URL, key: CONFIG.RADARR_4K_API_KEY, label: 'radarr-4k' },
-    ].filter(s => s.url);
-    for (const s of sources) {
-      const all = await radarrGetFrom(s.url, s.key, '/movie').catch(() => []);
-      const movie = all.find(m => m.tmdbId === tmdbId);
-      if (movie) {
-        return {
-          found: true, kind: 'movie', source: s, movie,
-          paths: movie.movieFile?.path ? [movie.movieFile.path] : [],
-          apiCall: `DELETE ${s.url}/api/v3/movie/${movie.id}?deleteFiles=true (${s.label})`,
-        };
-      }
-    }
-    return { found: false, kind: 'movie' };
-  }
-  if (mediaId.startsWith('tvdb:')) {
-    if (!CONFIG.SONARR_URL) return { found: false, kind: 'tv' };
-    const tvdbId = Number(mediaId.slice('tvdb:'.length));
-    const all = await sonarrGet('/series').catch(() => []);
-    const series = all.find(s => s.tvdbId === tvdbId);
-    if (!series) return { found: false, kind: 'tv' };
-    const files = await getEpisodeFiles(series.id).catch(() => []);
-    return {
-      found: true, kind: 'tv', series, files,
-      paths: files.map(f => f.path),
-      apiCall: `DELETE ${CONFIG.SONARR_URL}/api/v3/episodefile/{id} ×${files.length}`,
-    };
-  }
-  return { found: false, kind: 'unknown' };
-}
-
-// Shared deletion core used by the Delete Now button and the janitor sweep. Honors
-// DELETION_DRY_RUN. Callers are responsible for the guard rails (ENABLE_DELETION,
-// keep list, never-delete list) and for recording the pending_deletions outcome.
-async function executeDeletion(mediaId, title, ctx = {}) {
-  let resolved;
-  try {
-    resolved = await resolveDeletableMedia(mediaId);
-  } catch (err) {
-    audit('external_api_error', { provider: 'arr', error: err.message, mediaId, action: 'delete_resolve', ...ctx });
-    return { outcome: 'error', error: err.message };
-  }
-  if (!resolved.found) {
-    audit('deletion_dry_run', { mediaId, title, result: 'not_found', ...ctx });
-    return { outcome: 'not_found' };
-  }
-  if (CONFIG.DELETION_DRY_RUN) {
-    audit('deletion_dry_run', { mediaId, title, kind: resolved.kind, paths: resolved.paths, apiCall: resolved.apiCall, ...ctx });
-    return { outcome: 'dry_run', kind: resolved.kind, paths: resolved.paths, apiCall: resolved.apiCall };
-  }
-  try {
-    let detail;
-    if (resolved.kind === 'movie') {
-      await axios.delete(`${resolved.source.url}/api/v3/movie/${resolved.movie.id}`, { params: { apikey: resolved.source.key, deleteFiles: true } });
-      detail = `Radarr movie #${resolved.movie.id} deleted with files.`;
-    } else {
-      let n = 0;
-      for (const f of resolved.files) {
-        await axios.delete(`${CONFIG.SONARR_URL}/api/v3/episodefile/${f.id}`, { params: { apikey: CONFIG.SONARR_API_KEY } });
-        n++;
-      }
-      detail = `Sonarr episode files deleted: ${n}/${resolved.files.length}.`;
-    }
-    audit('media_deleted', { mediaId, title, kind: resolved.kind, paths: resolved.paths, apiCall: resolved.apiCall, ...ctx });
-    return { outcome: 'deleted', kind: resolved.kind, paths: resolved.paths, detail };
-  } catch (err) {
-    audit('external_api_error', { provider: 'arr', error: err.message, mediaId, action: 'delete', ...ctx });
-    return { outcome: 'error', error: err.message };
-  }
-}
-
-function remapPath(hostPath) {
-  if (CONFIG.PATH_REMAP_FROM && hostPath.startsWith(CONFIG.PATH_REMAP_FROM)) {
-    return hostPath.replace(CONFIG.PATH_REMAP_FROM, CONFIG.PATH_REMAP_TO);
-  }
-  return hostPath;
-}
-
 function resolveSafeMediaPath(requestedPath) {
   const normalizedRoot = fs.realpathSync(path.resolve(CONFIG.RAID_PATH));
   const resolved = path.resolve(requestedPath);
@@ -1343,31 +493,6 @@ function resolveSafeMediaPath(requestedPath) {
   }
   return realResolved;
 }
-
-function mediaTypeLabel(mediaType, is4k) { if (mediaType === 'tv') return is4k ? '4K TV Show' : 'TV Show'; return is4k ? '4K Movie' : 'Movie'; }
-function mediaTypeEmoji(mediaType, is4k) { if (mediaType === 'tv') return '📺'; return is4k ? '🎥' : '🎬'; }
-function isValidEmail(email) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); }
-function canonicalizeEmail(raw) {
-  const email = String(raw || '').trim().toLowerCase();
-  const [local, domain] = email.split('@');
-  if (!domain) return email;
-  if (domain === 'plex.local') return `__placeholder__:${email}`;
-  if (domain === 'gmail.com' || domain === 'googlemail.com') {
-    return `${local.split('+')[0].replace(/\./g, '')}@gmail.com`;
-  }
-  return `${local.split('+')[0]}@${domain}`;
-}
-function requestStatusBadge(status) {
-  return ({ pending: '⏳ Pending', approved: '🚀 Approved', available: '✅ Available', declined: '🚫 Declined' })[status] || `▫️ ${status}`;
-}
-function discordTimestamp(ms, style = 'R') { return `<t:${Math.floor(ms / 1000)}:${style}>`; }
-function statusEmoji(v) {
-  if (['ok', 'configured'].includes(v)) return '✅';
-  if (v === 'skipped') return '⏭️';
-  return '❌';
-}
-function pad(n) { return String(n).padStart(2, '0'); }
-function mimeFor(ext) { return ({ '.mkv': 'video/x-matroska', '.mp4': 'video/mp4', '.avi': 'video/x-msvideo', '.mov': 'video/quicktime', '.wmv': 'video/x-ms-wmv' })[ext] || 'application/octet-stream'; }
 
 async function safeGetChannel(channelId) {
   try { return await client.channels.fetch(channelId); } catch (_e) { return null; }
@@ -1446,6 +571,10 @@ client.once('ready', async () => {
   if (tautulliConfigured() && CONFIG.PLAYBACK_CHECK_MINUTES > 0) {
     setInterval(() => sweepTranscodes().catch(err => log.warn(`Transcode sweep failed: ${err.message}`)), CONFIG.PLAYBACK_CHECK_MINUTES * 60000).unref();
     log.ok(`Transcode watchdog running every ${CONFIG.PLAYBACK_CHECK_MINUTES} min`);
+  }
+  if (premiumizeConfigured() && CONFIG.PREMIUMIZE_CHECK_MINUTES > 0) {
+    setInterval(() => sweepPremiumizeTransfers().catch(err => log.warn(`Premiumize sweep failed: ${err.message}`)), CONFIG.PREMIUMIZE_CHECK_MINUTES * 60000).unref();
+    log.ok(`Premiumize transfer watchdog running every ${CONFIG.PREMIUMIZE_CHECK_MINUTES} min (stuck after ${CONFIG.PREMIUMIZE_STUCK_AFTER_MINUTES} min)`);
   }
 });
 
@@ -1989,11 +1118,6 @@ async function handleStatusCommand(interaction) {
     );
   audit('status_checked', { actorDiscordId: interaction.user.id, overall: health.overall });
   await interaction.editReply({ embeds: [embed] });
-}
-
-async function fetchOverseerrUsers() {
-  const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/user?take=200`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
-  return res.data.results || [];
 }
 
 // A full member fetch uses gateway opcode 8 (Request Guild Members), which Discord rate-limits
@@ -2666,23 +1790,17 @@ async function handleIndexersCommand(interaction) {
 async function handleDebridCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
   await interaction.deferReply({ ephemeral: true });
-  if (!CONFIG.PREMIUMIZE_API_KEY) return interaction.editReply('❌ Premiumize isn\'t configured — set `PREMIUMIZE_API_KEY`.');
+  if (!premiumizeConfigured()) return interaction.editReply('❌ Premiumize isn\'t configured — set `PREMIUMIZE_API_KEY`.');
   try {
-    // Premiumize reports business failures (bad/expired key, ...) as HTTP 200 with
-    // status:"error" — treat those as errors instead of rendering an empty "all good" summary.
-    const pm = p => axios.get(`https://www.premiumize.me/api${p}`, { params: { apikey: CONFIG.PREMIUMIZE_API_KEY }, timeout: 10000 }).then(r => {
-      if (r.data?.status && r.data.status !== 'success') throw new Error(r.data.message || `Premiumize ${p} returned status ${r.data.status}`);
-      return r.data;
-    });
-    const [info, transferList] = await Promise.all([pm('/account/info'), pm('/transfer/list')]);
+    const [info, transfers] = await Promise.all([accountInfo(), listTransfers()]);
     const lines = [];
     if (info?.limit_used != null) lines.push(`Fair-use limit: **${Math.round(Number(info.limit_used) * 100)}%** used`);
     if (info?.space_used) lines.push(`Cloud storage used: ${fmtSpace(Number(info.space_used))}`);
     if (info?.premium_until) lines.push(`Premium until: ${new Date(Number(info.premium_until) * 1000).toISOString().slice(0, 10)}`);
-    const transfers = transferList?.transfers || [];
     const active = transfers.filter(t => !['finished', 'seeding'].includes(String(t.status)));
     const failed = transfers.filter(t => String(t.status) === 'error');
-    lines.push(`Transfers: ${active.length} active, ${failed.length} failed, ${transfers.length} total`);
+    const zeroPct = transfers.filter(t => isStuckCandidate(t) && Number(t.progress || 0) <= 0.01);
+    lines.push(`Transfers: ${active.length} active, ${failed.length} failed (${zeroPct.length} at 0%), ${transfers.length} total`);
     for (const t of active.slice(0, 8)) {
       const pct = t.progress != null ? ` — ${Math.round(Number(t.progress) * 100)}%` : '';
       lines.push(`• ${String(t.name || 'unnamed').slice(0, 60)} — ${t.status}${pct}`);
@@ -2690,9 +1808,13 @@ async function handleDebridCommand(interaction) {
     for (const t of failed.slice(0, 4)) {
       lines.push(`• ❌ ${String(t.name || 'unnamed').slice(0, 60)}${t.message ? ` — ${String(t.message).slice(0, 80)}` : ''}`);
     }
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('pm_clearstuck').setLabel(`Clear Stuck/0% (${zeroPct.length})`).setStyle(ButtonStyle.Danger).setDisabled(!zeroPct.length),
+      new ButtonBuilder().setCustomId('pm_clearfinished').setLabel('Clear Finished').setStyle(ButtonStyle.Secondary),
+    );
     await interaction.editReply({ embeds: [brandedEmbed(failed.length ? COLORS.WARN : COLORS.SUCCESS)
       .setTitle('☁️ Premiumize')
-      .setDescription(lines.join('\n').slice(0, 4000))] });
+      .setDescription(lines.join('\n').slice(0, 4000))], components: [row] });
   } catch (err) {
     await interaction.editReply(`❌ Premiumize error: ${err.message}`);
   }
@@ -2880,7 +2002,7 @@ async function handleButton(interaction) {
     return interaction.showModal(modal);
   }
 
-  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_deny'].includes(action) && !isAdminInteraction(interaction)) {
+  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_deny', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished'].includes(action) && !isAdminInteraction(interaction)) {
     return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
   }
 
@@ -2972,6 +2094,63 @@ async function handleButton(interaction) {
     return interaction.update({ embeds: [brandedEmbed(COLORS.DANGER)
       .setTitle(`🚫 Denied — ${pending.label}`)
       .setDescription(`Denied by <@${interaction.user.id}> (requested by <@${pending.discordId}>). Nothing was sent to Seerr.`)], components: [] });
+  }
+
+  // Premiumize stuck-transfer actions (from watchdog alerts and /debrid).
+  if (action === 'pm_retry') {
+    await interaction.deferUpdate();
+    try {
+      await retryTransfer(parts[0]);
+      pmTracker.delete(String(parts[0])); // fresh progress window after the retry
+      audit('premiumize_transfer_retried', { actorDiscordId: interaction.user.id, transferId: parts[0] });
+      return interaction.editReply({ content: `🔁 Transfer retried by <@${interaction.user.id}>.`, components: [] });
+    } catch (err) {
+      return interaction.followUp({ content: `❌ Retry failed: ${err.message}`, ephemeral: true });
+    }
+  }
+  if (action === 'pm_clear') {
+    await interaction.deferUpdate();
+    try {
+      await deleteTransfer(parts[0]);
+      pmTracker.delete(String(parts[0]));
+      audit('premiumize_transfer_cleared', { actorDiscordId: interaction.user.id, transferId: parts[0] });
+      return interaction.editReply({ content: `🧹 Transfer cleared by <@${interaction.user.id}>.`, components: [] });
+    } catch (err) {
+      return interaction.followUp({ content: `❌ Clear failed: ${err.message}`, ephemeral: true });
+    }
+  }
+  if (action === 'pm_ignore') {
+    setSetting(`pm_ignore:${parts[0]}`, '1');
+    audit('premiumize_transfer_ignored', { actorDiscordId: interaction.user.id, transferId: parts[0] });
+    return interaction.update({ content: `🔕 Ignoring this transfer (flag clears when it leaves the list).`, components: [] });
+  }
+  // Bulk: delete every transfer that is error/queued/running at ≤1% progress — "clear the 0% ones".
+  if (action === 'pm_clearstuck') {
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const transfers = await listTransfers();
+      const targets = transfers.filter(t => isStuckCandidate(t) && Number(t.progress || 0) <= 0.01);
+      let cleared = 0;
+      const failures = [];
+      for (const t of targets) {
+        try { await deleteTransfer(t.id); pmTracker.delete(String(t.id)); cleared++; }
+        catch (err) { failures.push(`${String(t.name || t.id).slice(0, 40)}: ${err.message}`); }
+      }
+      audit('premiumize_stuck_cleared_bulk', { actorDiscordId: interaction.user.id, cleared, attempted: targets.length });
+      return interaction.editReply(`🧹 Cleared ${cleared}/${targets.length} stuck/0% transfer(s).${failures.length ? `\n❌ ${failures.slice(0, 3).join('\n❌ ')}` : ''}`);
+    } catch (err) {
+      return interaction.editReply(`❌ Couldn't list transfers: ${err.message}`);
+    }
+  }
+  if (action === 'pm_clearfinished') {
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      await clearFinished();
+      audit('premiumize_finished_cleared', { actorDiscordId: interaction.user.id });
+      return interaction.editReply('🧹 Finished transfers cleared.');
+    } catch (err) {
+      return interaction.editReply(`❌ Clear finished failed: ${err.message}`);
+    }
   }
 
   if (action === 'syncfix_keepdup') {
