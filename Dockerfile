@@ -10,6 +10,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 
 COPY index.js ./
+COPY src ./src
 COPY scripts ./scripts
 
 # Image version, shown in the DEPLOY_CHANNEL_ID "Bot Online" ping. Set by CI.
