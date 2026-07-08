@@ -5,7 +5,14 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const INDEX_SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'index.js'), 'utf8');
+// Extraction scans index.js plus every src/ module — functions keep working here no matter
+// which file they live in as the codebase gets split up.
+const ROOT = path.join(__dirname, '..', '..');
+const INDEX_SRC = [
+  fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8'),
+  ...fs.readdirSync(path.join(ROOT, 'src')).filter(f => f.endsWith('.js')).sort()
+    .map(f => fs.readFileSync(path.join(ROOT, 'src', f), 'utf8')),
+].join('\n');
 
 // Extract a top-level `function name(...) {...}` by scanning past the parameter list (which may
 // contain destructuring braces) and then brace-matching the body.
