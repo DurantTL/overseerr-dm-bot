@@ -28,7 +28,7 @@ const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = requ
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, statusEmoji, pad, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
 const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
-const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, createSeerrRequestAs, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
+const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, remapPath } = require('./src/arr');
 const { tautulliConfigured, tautulliApi, describeSession } = require('./src/tautulli');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
@@ -1009,6 +1009,13 @@ async function handleRequestCommand(interaction) {
     // Same media-key convention as the webhook handler, so the rows merge cleanly.
     const mediaKey = mediaType === 'tv' && data?.media?.tvdbId ? `tvdb:${data.media.tvdbId}` : `tmdb:${tmdbId}`;
     if (data?.id != null) markApprovalNoticePosted(data.id); // suppress the duplicate webhook embed
+    // Don't take Seerr's "accepted" at face value — it can lose the request moments later
+    // ('Media data not found' in its log) and nothing would ever download.
+    const verified = data?.id != null ? await verifySeerrRequestCreated(data.id, mediaType) : { ok: true };
+    if (!verified.ok) {
+      audit('external_api_error', { provider: 'overseerr', error: `request #${data.id} failed post-create verification: ${verified.reason}`, action: 'create_request_verify', actorDiscordId: interaction.user.id, tmdbId, mediaType });
+      return interaction.editReply(`⚠️ Seerr accepted **${label}** (request #${data.id}) but ${verified.reason}.\nNothing will download until that's fixed — check the Seerr container logs from the last minute for the underlying error, then try again.`);
+    }
     upsertRequest(data?.id, mediaKey, mediaType, is4k, label, interaction.user.id, 'approved');
     audit('media_requested', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seerrUserId, requestId: data?.id ?? null });
     await interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
@@ -2086,6 +2093,17 @@ async function handleButton(interaction) {
       const data = await createSeerrRequestAs(pending.seerrUserId, pending.mediaType, pending.tmdbId, pending.is4k);
       const mediaKey = pending.mediaType === 'tv' && data?.media?.tvdbId ? `tvdb:${data.media.tvdbId}` : `tmdb:${pending.tmdbId}`;
       if (data?.id != null) markApprovalNoticePosted(data.id); // suppress the duplicate webhook embed
+      // Don't take Seerr's "accepted" at face value — it can lose the request moments later
+      // ('Media data not found' in its log). Restash and leave the buttons live (omitting
+      // `components` keeps them) so the admin can retry once the Seerr-side problem is fixed.
+      const verified = data?.id != null ? await verifySeerrRequestCreated(data.id, pending.mediaType) : { ok: true };
+      if (!verified.ok) {
+        restashPendingRequest(nonce, pending);
+        audit('external_api_error', { provider: 'overseerr', error: `request #${data.id} failed post-create verification: ${verified.reason}`, action: 'gate_approve_verify', targetDiscordId: pending.discordId });
+        return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
+          .setTitle(`⚠️ Seerr lost the request — ${pending.label}`)
+          .setDescription(`Seerr accepted request #${data.id} for <@${pending.discordId}>, but ${verified.reason}.\nNothing will download. Check the Seerr container logs from the last minute for the underlying error, then hit Approve again to retry.`)] });
+      }
       // The gate stored the request under tmdb:<id>; keep that row in sync too when the webhook
       // key differs (tv → tvdb).
       upsertRequest(data?.id, mediaKey, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
