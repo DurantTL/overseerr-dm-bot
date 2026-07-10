@@ -190,6 +190,28 @@ async function createSeerrRequestAs(seerrUserId, mediaType, tmdbId, is4k) {
   return (data && typeof data === 'object') ? data : res.data;
 }
 
+// Post-create verification: Seerr can accept a request, auto-approve it, and send notifications —
+// and still lose it moments later (its own log shows only 'Media data not found'), e.g. when the
+// media row trips the unique TVDB-id constraint and rolls back. The bot then told the user
+// "grabbing it now" for a request that no longer exists. Fetch the request back after a short
+// settle delay and confirm it (and its media stub) survived. Only positive evidence of loss
+// fails a request that was already placed — network errors while verifying count as ok.
+async function verifySeerrRequestCreated(requestId, mediaType, delayMs = 2000) {
+  if (delayMs) await new Promise(r => setTimeout(r, delayMs));
+  try {
+    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/request/${requestId}`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY }, timeout: 10000 });
+    const media = res.data?.media;
+    if (!media || media.id == null) return { ok: false, reason: 'its media record is already gone from Seerr' };
+    // Sonarr can only grab shows by TVDB id; Seerr fills it from TMDB's external-ids mapping,
+    // which is often missing or wrong for brand-new/foreign series.
+    if (mediaType === 'tv' && media.tvdbId == null) return { ok: false, reason: 'the show has no TVDB id in Seerr, so Sonarr cannot grab it (usually a missing or wrong TVDB mapping on the TMDB entry)' };
+    return { ok: true };
+  } catch (err) {
+    if (err.response?.status === 404) return { ok: false, reason: 'Seerr rolled it back right after creating it (the Seerr log from this moment has the underlying error — often a duplicate or wrong TVDB mapping)' };
+    return { ok: true };
+  }
+}
+
 // Seerr user id for a linked DB row, backfilling rows that predate overseerr_user_id tracking
 // by matching the Seerr user list on canonical email.
 async function resolveSeerrUserId(row) {
@@ -214,4 +236,4 @@ async function fetchOverseerrUsers() {
   return res.data.results || [];
 }
 
-module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, createSeerrRequestAs, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers };
+module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers };

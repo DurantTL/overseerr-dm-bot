@@ -8,7 +8,7 @@ const { loadSandbox } = require('./extract');
 
 const settingsStore = new Map();
 const sandbox = loadSandbox(
-  ['canonicalizeEmail', 'searchSeerr', 'checkExistingSeerrMedia', 'createSeerrRequestAs', 'resolveSeerrUserId', 'fetchOverseerrUsers', 'channelFor', 'configWarnings', 'describeSession', 'stashPendingRequest', 'takePendingRequest', 'restashPendingRequest'],
+  ['canonicalizeEmail', 'searchSeerr', 'checkExistingSeerrMedia', 'createSeerrRequestAs', 'verifySeerrRequestCreated', 'resolveSeerrUserId', 'fetchOverseerrUsers', 'channelFor', 'configWarnings', 'describeSession', 'stashPendingRequest', 'takePendingRequest', 'restashPendingRequest'],
   {
     axios,
     crypto: require('crypto'),
@@ -49,6 +49,12 @@ function mockSeerr() {
   // titles Seerr already tracks, mirroring the real API.
   app.get('/api/v1/movie/:id', (req, res) => res.json({ id: Number(req.params.id), mediaInfo: state.media[`movie:${req.params.id}`] }));
   app.get('/api/v1/tv/:id', (req, res) => res.json({ id: Number(req.params.id), seasons: state.tvSeasons, mediaInfo: state.media[`tv:${req.params.id}`] }));
+  // Request read-back used by post-create verification; state.requestGet = null mimics Seerr
+  // rolling the request back after accepting it.
+  app.get('/api/v1/request/:id', (req, res) => {
+    if (!state.requestGet) return res.status(404).json({ message: 'Request not found.' });
+    res.json(state.requestGet);
+  });
   app.post('/api/v1/request', (req, res) => {
     if (state.failNext) { const f = state.failNext; state.failNext = null; return res.status(f.code).json({ message: f.message }); }
     if (state.respondNext) { const r = state.respondNext; state.respondNext = null; return res.status(r.code || 200).json(r.body); }
@@ -118,6 +124,25 @@ function mockSeerr() {
   assert.match(await sandbox.run(`checkExistingSeerrMedia('tv', 1396, false)`), /fully available/, 'fully available tv blocked');
   sandbox.CONFIG.OVERSEERR_URL = 'http://127.0.0.1:1'; // unreachable
   assert.strictEqual(await sandbox.run(`checkExistingSeerrMedia('movie', 603, false)`), null, 'Seerr outage fails open');
+  sandbox.CONFIG.OVERSEERR_URL = `http://127.0.0.1:${port}`;
+
+  // verifySeerrRequestCreated: Seerr can accept a request and lose it moments later
+  // ('Media data not found') — the read-back has to catch that instead of reporting success.
+  state.requestGet = { id: 77, media: { id: 1620, tvdbId: 81189 } };
+  assert.strictEqual((await sandbox.run(`verifySeerrRequestCreated(77, 'tv', 0)`)).ok, true, 'intact request verifies');
+  state.requestGet = { id: 77, media: { id: 1620, tvdbId: null } };
+  assert.strictEqual((await sandbox.run(`verifySeerrRequestCreated(77, 'movie', 0)`)).ok, true, 'movies never need a TVDB id');
+  let v = await sandbox.run(`verifySeerrRequestCreated(77, 'tv', 0)`);
+  assert.strictEqual(v.ok, false, 'tv without a TVDB id fails verification');
+  assert.match(v.reason, /TVDB/, 'reason names the TVDB mapping');
+  state.requestGet = { id: 77 };
+  assert.strictEqual((await sandbox.run(`verifySeerrRequestCreated(77, 'movie', 0)`)).ok, false, 'missing media record fails verification');
+  state.requestGet = null;
+  v = await sandbox.run(`verifySeerrRequestCreated(77, 'tv', 0)`);
+  assert.strictEqual(v.ok, false, '404 read-back (rolled back) fails verification');
+  assert.match(v.reason, /rolled it back/, 'reason explains the rollback');
+  sandbox.CONFIG.OVERSEERR_URL = 'http://127.0.0.1:1';
+  assert.strictEqual((await sandbox.run(`verifySeerrRequestCreated(77, 'tv', 0)`)).ok, true, 'network error while verifying fails open');
   sandbox.CONFIG.OVERSEERR_URL = `http://127.0.0.1:${port}`;
 
   assert.strictEqual(await sandbox.run(`resolveSeerrUserId({ discord_id: '1', email: 'x@y.z', overseerr_user_id: 42 })`), 42, 'existing id used directly');
