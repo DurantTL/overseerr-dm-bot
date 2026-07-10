@@ -28,7 +28,7 @@ const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = requ
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, statusEmoji, pad, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
 const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
-const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, createSeerrRequestAs, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
+const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, createSeerrRequestAs, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, remapPath } = require('./src/arr');
 const { tautulliConfigured, tautulliApi, describeSession } = require('./src/tautulli');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
@@ -704,8 +704,12 @@ async function handleAutocomplete(interaction) {
       const year = d => (d ? ` (${String(d).slice(0, 4)})` : '');
       const choices = results.slice(0, 25).map(r => {
         const title = (r.mediaType === 'movie' ? r.title : r.name) || 'Unknown';
+        // Search results carry mediaInfo for titles Seerr already tracks — surface that in the
+        // suggestion so people see "requested / on Plex" before they even submit.
+        const st = r.mediaInfo?.status;
+        const tag = st === 5 ? ' — ✅ on Plex' : st === 4 ? ' — 🌗 partly on Plex' : (st === 2 || st === 3) ? ' — ⏳ requested' : '';
         return {
-          name: `${mediaTypeEmoji(r.mediaType)} ${title}${year(r.releaseDate || r.firstAirDate)}`.slice(0, 100),
+          name: `${mediaTypeEmoji(r.mediaType)} ${title}${year(r.releaseDate || r.firstAirDate)}${tag}`.slice(0, 100),
           // The picked value carries type+tmdbId+title so the handler needs no second lookup.
           value: `${r.mediaType}:${r.id}:${title}`.slice(0, 100),
         };
@@ -958,6 +962,21 @@ async function handleRequestCommand(interaction) {
     mediaType = hit.mediaType;
     tmdbId = hit.id;
     label = (hit.mediaType === 'movie' ? hit.title : hit.name) || raw;
+  }
+
+  // Fail fast on duplicates instead of making an admin approve something Seerr will only reject
+  // (or, for TV with no seasons left, silently drop — see createSeerrRequestAs). First the bot's
+  // own gate, since Seerr can't know about requests still awaiting approval here; then Seerr
+  // itself (requested there directly, already downloading, or already on Plex).
+  const pendingDupe = db.prepare("SELECT * FROM requests WHERE media_id = ? AND is_4k = ? AND status = 'pending' LIMIT 1").get(`tmdb:${tmdbId}`, is4k ? 1 : 0);
+  if (pendingDupe) {
+    const who = pendingDupe.requested_by_discord_id === interaction.user.id ? 'you' : 'someone else';
+    return interaction.editReply(`⏳ **${label}**${is4k ? ' (4K)' : ''} was already requested by ${who} and is waiting for admin approval — no need to request it again.`);
+  }
+  const existing = await checkExistingSeerrMedia(mediaType, tmdbId, is4k);
+  if (existing) {
+    audit('media_request_duplicate', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, reason: existing });
+    return interaction.editReply(`ℹ️ **${label}**${is4k ? ' (4K)' : ''} is ${existing} — no need to request it again.${existing.includes('available on Plex') ? ' 🍿' : ' Use `/request-status` to track it.'}`);
   }
 
   let seerrUserId = null;
@@ -2076,10 +2095,23 @@ async function handleButton(interaction) {
         .setTitle(`✅ Approved — ${pending.label}`)
         .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}> — sent to Seerr${data?.id != null ? ` (request #${data.id})` : ''}.`)], components: [] });
     } catch (err) {
-      // Put the stash back so the button can be retried once Seerr is reachable again.
-      restashPendingRequest(nonce, pending);
+      const status = err.response?.status;
       const seerrMessage = err.response?.data?.message;
       audit('external_api_error', { provider: 'overseerr', error: seerrMessage || err.message, action: 'gate_approve', targetDiscordId: pending.discordId });
+      // 409 duplicate and 202 no-seasons-left (see createSeerrRequestAs) mean the title is
+      // already in Seerr's pipeline — retrying can never succeed, so resolve the gate instead of
+      // leaving live buttons the admin will click forever.
+      if (status === 202 || status === 409 || /already (exists|available|requested)/i.test(seerrMessage || '')) {
+        upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
+        await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.INFO)
+          .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Already Requested`)
+          .setDescription(`Good news — **${pending.label}** is already in the system (requested earlier or already available), so there was nothing new to send. Check Plex, or track it with \`/request-status\`.`)] });
+        return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
+          .setTitle(`ℹ️ Already in Seerr — ${pending.label}`)
+          .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}>, but Seerr says: *${seerrMessage || err.message}*. Nothing new was created — it's already requested or available.`)], components: [] });
+      }
+      // Anything else (network, 5xx) is retryable: put the stash back so the button still works.
+      restashPendingRequest(nonce, pending);
       return interaction.followUp({ content: `❌ Approving failed: ${seerrMessage || err.message}. The buttons still work — try again.`, ephemeral: true });
     }
   }
