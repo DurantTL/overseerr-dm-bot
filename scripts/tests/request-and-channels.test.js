@@ -20,6 +20,7 @@ const sandbox = loadSandbox(
     },
     markCalls: [],
     markOverseerrCreated: (discordId, id) => sandbox.markCalls.push({ discordId, id }),
+    audit: () => {},
     tautulliConfigured: () => !!(sandbox.CONFIG.TAUTULLI_URL && sandbox.CONFIG.TAUTULLI_API_KEY),
     // app_settings stand-in for the pending-request stash.
     getSetting: k => settingsStore.get(k) ?? null,
@@ -50,6 +51,7 @@ function mockSeerr() {
   app.get('/api/v1/tv/:id', (req, res) => res.json({ id: Number(req.params.id), seasons: state.tvSeasons, mediaInfo: state.media[`tv:${req.params.id}`] }));
   app.post('/api/v1/request', (req, res) => {
     if (state.failNext) { const f = state.failNext; state.failNext = null; return res.status(f.code).json({ message: f.message }); }
+    if (state.respondNext) { const r = state.respondNext; state.respondNext = null; return res.status(r.code || 200).json(r.body); }
     state.requests.push(req.body);
     res.json({ id: 77, status: 1, media: { tvdbId: req.body.mediaType === 'tv' ? 81189 : null } });
   });
@@ -90,6 +92,15 @@ function mockSeerr() {
   try { await sandbox.run(`createSeerrRequestAs(9, 'tv', 1396, false)`); } catch (err) { noSeasons = { status: err.response?.status, message: err.message }; }
   assert.strictEqual(noSeasons?.status, 202, '202 no-op response rejected');
   assert.strictEqual(noSeasons?.message, 'No seasons available to request', 'Seerr 202 message becomes the error message');
+
+  // But unfamiliar SUCCESS shapes must not be rejected — some Seerr variants nest the created
+  // request or omit the id, and treating those as failures broke every real request.
+  state.respondNext = { code: 201, body: { request: { id: 88 } } };
+  const nested = await sandbox.run(`createSeerrRequestAs(9, 'movie', 603, false)`);
+  assert.strictEqual(nested.request.id, 88, 'nested-id success shape accepted');
+  state.respondNext = { code: 200, body: { status: 1 } };
+  const odd = await sandbox.run(`createSeerrRequestAs(9, 'movie', 603, false)`);
+  assert.strictEqual(odd.status, 1, '2xx with no id and no message still counts as success');
 
   // checkExistingSeerrMedia: the /request duplicate pre-check.
   assert.strictEqual(await sandbox.run(`checkExistingSeerrMedia('movie', 603, false)`), null, 'movie unknown to Seerr → requestable');
