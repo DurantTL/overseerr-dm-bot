@@ -131,6 +131,39 @@ async function searchSeerr(query, timeout = 8000) {
   return (res.data?.results || []).filter(r => r.mediaType === 'movie' || r.mediaType === 'tv');
 }
 
+// Why `tmdbId` can't be requested again, as a human phrase — or null when it's requestable.
+// Movies: any tracked status (pending/downloading/available) blocks a repeat request. TV: only
+// blocked when no season is left to request — asking for a show where seasons 1-2 are grabbed
+// but 3 just aired is legitimate, and `seasons: 'all'` picks up just the new ones. 4K and
+// regular are tracked separately in Seerr, so the check honors is4k. Fails open (null) on any
+// API error: a Seerr hiccup shouldn't stop people requesting.
+async function checkExistingSeerrMedia(mediaType, tmdbId, is4k) {
+  // Media status values shared by Overseerr/Jellyseerr/Seerr.
+  const ST = { UNKNOWN: 1, PENDING: 2, PROCESSING: 3, PARTIALLY_AVAILABLE: 4, AVAILABLE: 5 };
+  // 6+ (newer Jellyseerr's DELETED) is requestable again, so only 2-5 counts as covered.
+  const covered = st => st >= ST.PENDING && st <= ST.AVAILABLE;
+  let data;
+  try {
+    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/${mediaType}/${tmdbId}`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY }, timeout: 8000 });
+    data = res.data;
+  } catch (_e) { return null; }
+  const info = data?.mediaInfo;
+  const overall = (is4k ? info?.status4k : info?.status) || ST.UNKNOWN;
+  if (!info || !covered(overall)) return null;
+  if (mediaType === 'movie') {
+    if (overall >= ST.PARTIALLY_AVAILABLE) return 'already available on Plex';
+    return overall === ST.PROCESSING ? 'already requested and downloading' : 'already requested and waiting for approval';
+  }
+  if (overall === ST.AVAILABLE) return 'already fully available on Plex';
+  // Seasons with no aired episodes can't be requested in Seerr either, so they don't count.
+  const requestable = (data.seasons || []).filter(s => s.seasonNumber > 0 && (s.episodeCount == null || s.episodeCount > 0));
+  if (!requestable.length) return null;
+  const seasonStatus = new Map((info.seasons || []).map(s => [s.seasonNumber, is4k ? s.status4k : s.status]));
+  if (requestable.some(s => !covered(seasonStatus.get(s.seasonNumber) || ST.UNKNOWN))) return null;
+  const allAvailable = requestable.every(s => seasonStatus.get(s.seasonNumber) === ST.AVAILABLE);
+  return allAvailable ? 'already fully available on Plex' : 'already requested — every season is on Plex or already on its way';
+}
+
 // Place a Seerr request AS a specific Seerr user. The admin API key has MANAGE_USERS, which is
 // what lets the body's userId override the requesting identity — this is how requests made from
 // Discord get attributed to the real person instead of the server owner.
@@ -138,6 +171,15 @@ async function createSeerrRequestAs(seerrUserId, mediaType, tmdbId, is4k) {
   const body = { mediaType, mediaId: tmdbId, is4k: !!is4k, userId: seerrUserId };
   if (mediaType === 'tv') body.seasons = 'all';
   const res = await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/request`, body, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY }, timeout: 15000 });
+  // Overseerr answers "no seasons available to request" with HTTP 202 + a message and creates
+  // NOTHING — axios counts 2xx as success, so an approved TV request could silently never reach
+  // Seerr while the bot reports it as sent. Normalize the no-op into the same axios-style error
+  // shape the 4xx rejections produce, so every caller handles it on the failure path.
+  if (res.data?.id == null) {
+    const err = new Error(res.data?.message || 'Seerr accepted the call but created no request');
+    err.response = res;
+    throw err;
+  }
   return res.data;
 }
 
@@ -165,4 +207,4 @@ async function fetchOverseerrUsers() {
   return res.data.results || [];
 }
 
-module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, createSeerrRequestAs, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers };
+module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, createSeerrRequestAs, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers };

@@ -8,7 +8,7 @@ const { loadSandbox } = require('./extract');
 
 const settingsStore = new Map();
 const sandbox = loadSandbox(
-  ['canonicalizeEmail', 'searchSeerr', 'createSeerrRequestAs', 'resolveSeerrUserId', 'fetchOverseerrUsers', 'channelFor', 'configWarnings', 'describeSession', 'stashPendingRequest', 'takePendingRequest', 'restashPendingRequest'],
+  ['canonicalizeEmail', 'searchSeerr', 'checkExistingSeerrMedia', 'createSeerrRequestAs', 'resolveSeerrUserId', 'fetchOverseerrUsers', 'channelFor', 'configWarnings', 'describeSession', 'stashPendingRequest', 'takePendingRequest', 'restashPendingRequest'],
   {
     axios,
     crypto: require('crypto'),
@@ -31,7 +31,7 @@ const sandbox = loadSandbox(
 function mockSeerr() {
   const app = express();
   app.use(express.json());
-  const state = { requests: [], failNext: null, users: [{ id: 9, email: 'Jane.Doe+x@gmail.com' }] };
+  const state = { requests: [], failNext: null, users: [{ id: 9, email: 'Jane.Doe+x@gmail.com' }], media: {}, tvSeasons: [] };
   app.get('/api/v1/search', (req, res) => {
     state.lastSearchUrl = req.originalUrl;
     // Mimic the upstream Overseerr bug (sct/overseerr#2010): '+'-encoded spaces in the raw
@@ -44,6 +44,10 @@ function mockSeerr() {
     ] });
   });
   app.get('/api/v1/user', (req, res) => res.json({ results: state.users }));
+  // Media detail endpoints used by the duplicate pre-check: mediaInfo is present only for
+  // titles Seerr already tracks, mirroring the real API.
+  app.get('/api/v1/movie/:id', (req, res) => res.json({ id: Number(req.params.id), mediaInfo: state.media[`movie:${req.params.id}`] }));
+  app.get('/api/v1/tv/:id', (req, res) => res.json({ id: Number(req.params.id), seasons: state.tvSeasons, mediaInfo: state.media[`tv:${req.params.id}`] }));
   app.post('/api/v1/request', (req, res) => {
     if (state.failNext) { const f = state.failNext; state.failNext = null; return res.status(f.code).json({ message: f.message }); }
     state.requests.push(req.body);
@@ -78,6 +82,32 @@ function mockSeerr() {
   let surfaced = null;
   try { await sandbox.run(`createSeerrRequestAs(9, 'movie', 603, false)`); } catch (err) { surfaced = err.response?.data?.message; }
   assert.strictEqual(surfaced, 'Request for this media already exists.', 'Seerr rejection message surfaced');
+
+  // Overseerr's "nothing left to request" is a 2xx (202 + message, NO request created) — it must
+  // surface as an error, not a phantom success (the bug that ate approved TV requests).
+  state.failNext = { code: 202, message: 'No seasons available to request' };
+  let noSeasons = null;
+  try { await sandbox.run(`createSeerrRequestAs(9, 'tv', 1396, false)`); } catch (err) { noSeasons = { status: err.response?.status, message: err.message }; }
+  assert.strictEqual(noSeasons?.status, 202, '202 no-op response rejected');
+  assert.strictEqual(noSeasons?.message, 'No seasons available to request', 'Seerr 202 message becomes the error message');
+
+  // checkExistingSeerrMedia: the /request duplicate pre-check.
+  assert.strictEqual(await sandbox.run(`checkExistingSeerrMedia('movie', 603, false)`), null, 'movie unknown to Seerr → requestable');
+  state.media['movie:603'] = { status: 5, status4k: 1 };
+  assert.match(await sandbox.run(`checkExistingSeerrMedia('movie', 603, false)`), /available on Plex/, 'available movie blocked');
+  assert.strictEqual(await sandbox.run(`checkExistingSeerrMedia('movie', 603, true)`), null, '4K tracked separately: HD copy does not block a 4K request');
+  state.media['movie:603'] = { status: 2 };
+  assert.match(await sandbox.run(`checkExistingSeerrMedia('movie', 603, false)`), /already requested/, 'pending movie blocked');
+  state.tvSeasons = [{ seasonNumber: 0, episodeCount: 3 }, { seasonNumber: 1, episodeCount: 10 }, { seasonNumber: 2, episodeCount: 8 }];
+  state.media['tv:1396'] = { status: 4, seasons: [{ seasonNumber: 1, status: 5 }] };
+  assert.strictEqual(await sandbox.run(`checkExistingSeerrMedia('tv', 1396, false)`), null, 'tv with an unrequested season → still requestable');
+  state.media['tv:1396'] = { status: 4, seasons: [{ seasonNumber: 1, status: 5 }, { seasonNumber: 2, status: 3 }] };
+  assert.match(await sandbox.run(`checkExistingSeerrMedia('tv', 1396, false)`), /every season/, 'tv with all seasons requested/downloading blocked');
+  state.media['tv:1396'] = { status: 5 };
+  assert.match(await sandbox.run(`checkExistingSeerrMedia('tv', 1396, false)`), /fully available/, 'fully available tv blocked');
+  sandbox.CONFIG.OVERSEERR_URL = 'http://127.0.0.1:1'; // unreachable
+  assert.strictEqual(await sandbox.run(`checkExistingSeerrMedia('movie', 603, false)`), null, 'Seerr outage fails open');
+  sandbox.CONFIG.OVERSEERR_URL = `http://127.0.0.1:${port}`;
 
   assert.strictEqual(await sandbox.run(`resolveSeerrUserId({ discord_id: '1', email: 'x@y.z', overseerr_user_id: 42 })`), 42, 'existing id used directly');
   assert.strictEqual(sandbox.markCalls.length, 0, 'no backfill when id present');

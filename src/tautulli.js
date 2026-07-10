@@ -6,10 +6,18 @@ const { CONFIG } = require('./config');
 const tautulliConfigured = () => !!(CONFIG.TAUTULLI_URL && CONFIG.TAUTULLI_API_KEY);
 
 async function tautulliApi(cmd, params = {}) {
-  const res = await axios.get(`${CONFIG.TAUTULLI_URL}/api/v2`, {
-    params: { apikey: CONFIG.TAUTULLI_API_KEY, cmd, ...params },
-    timeout: 10000,
-  });
+  let res;
+  try {
+    res = await axios.get(`${CONFIG.TAUTULLI_URL}/api/v2`, {
+      params: { apikey: CONFIG.TAUTULLI_API_KEY, cmd, ...params },
+      timeout: 10000,
+    });
+  } catch (err) {
+    // Tautulli signals auth/param problems as HTTP 400 with the reason in the JSON body (e.g.
+    // "Invalid apikey"); without this the log only shows axios's bare "status code 400".
+    const detail = err.response?.data?.response?.message;
+    throw new Error(detail ? `Tautulli ${cmd}: ${detail}` : `Tautulli ${cmd}: ${err.message}`);
+  }
   if (res.data?.response?.result !== 'success') throw new Error(res.data?.response?.message || `Tautulli ${cmd} failed`);
   return res.data.response.data;
 }
