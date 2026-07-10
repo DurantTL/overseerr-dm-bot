@@ -1015,11 +1015,14 @@ async function handleRequestCommand(interaction) {
       .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Request Sent`)
       .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — approved and grabbing it now! 🚀\nYou\'ll get a DM when it\'s on Plex.`)] });
   } catch (err) {
-    const seerrMessage = err.response?.data?.message;
+    // Seerr answered but said no (rejection body, or the created-nothing shapes from
+    // createSeerrRequestAs) vs. never answered at all — show which, so "Couldn't reach Seerr"
+    // stops masking rejections.
+    const seerrMessage = err.response?.data?.message || (err.response ? err.message : null);
     audit('external_api_error', { provider: 'overseerr', error: seerrMessage || err.message, action: 'create_request', actorDiscordId: interaction.user.id, tmdbId, mediaType });
     await interaction.editReply(seerrMessage
       ? `❌ Seerr rejected the request: ${seerrMessage}`
-      : `❌ Couldn't reach Seerr to place the request. Try again in a bit.`);
+      : `❌ Couldn't reach Seerr to place the request (${err.message}). Try again in a bit.`);
   }
 }
 

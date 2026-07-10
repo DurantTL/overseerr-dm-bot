@@ -171,16 +171,23 @@ async function createSeerrRequestAs(seerrUserId, mediaType, tmdbId, is4k) {
   const body = { mediaType, mediaId: tmdbId, is4k: !!is4k, userId: seerrUserId };
   if (mediaType === 'tv') body.seasons = 'all';
   const res = await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/request`, body, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY }, timeout: 15000 });
+  // A proxy or fork can hand axios the JSON body as a raw string — normalize before inspecting.
+  let data = res.data;
+  if (typeof data === 'string') { try { data = JSON.parse(data); } catch (_e) { /* keep raw */ } }
+  const id = data?.id ?? data?.request?.id ?? null;
   // Overseerr answers "no seasons available to request" with HTTP 202 + a message and creates
   // NOTHING — axios counts 2xx as success, so an approved TV request could silently never reach
-  // Seerr while the bot reports it as sent. Normalize the no-op into the same axios-style error
-  // shape the 4xx rejections produce, so every caller handles it on the failure path.
-  if (res.data?.id == null) {
-    const err = new Error(res.data?.message || 'Seerr accepted the call but created no request');
+  // Seerr while the bot reports it as sent. Only that confident no-op shape (202, or a message
+  // with no request id) becomes an error, normalized to the axios shape 4xx rejections produce.
+  // A 2xx whose body just looks unfamiliar still counts as success — some Seerr variants shape
+  // the created request differently, and rejecting those failed every real request.
+  if (res.status === 202 || (id == null && typeof data?.message === 'string')) {
+    const err = new Error(data?.message || `Seerr created no request (HTTP ${res.status})`);
     err.response = res;
     throw err;
   }
-  return res.data;
+  if (id == null) audit('external_api_error', { provider: 'overseerr', action: 'create_request_odd_response', error: `HTTP ${res.status}, body: ${JSON.stringify(res.data).slice(0, 300)}` });
+  return (data && typeof data === 'object') ? data : res.data;
 }
 
 // Seerr user id for a linked DB row, backfilling rows that predate overseerr_user_id tracking
