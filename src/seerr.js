@@ -164,6 +164,16 @@ async function checkExistingSeerrMedia(mediaType, tmdbId, is4k) {
   return allAvailable ? 'already fully available on Plex' : 'already requested — every season is on Plex or already on its way';
 }
 
+// tvdb id for a TMDB show — needed to find the series in Sonarr (which keys off tvdb). The
+// escalation watch stores it when the request-create response carries it; this is the backfill
+// for rows where it didn't. Fails open (null): the sweep just retries next pass.
+async function fetchSeerrTvdbId(tmdbId) {
+  try {
+    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/tv/${tmdbId}`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY }, timeout: 8000 });
+    return res.data?.mediaInfo?.tvdbId ?? res.data?.externalIds?.tvdbId ?? null;
+  } catch (_e) { return null; }
+}
+
 // Place a Seerr request AS a specific Seerr user. The admin API key has MANAGE_USERS, which is
 // what lets the body's userId override the requesting identity — this is how requests made from
 // Discord get attributed to the real person instead of the server owner.
@@ -236,4 +246,4 @@ async function fetchOverseerrUsers() {
   return res.data.results || [];
 }
 
-module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers };
+module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers };
