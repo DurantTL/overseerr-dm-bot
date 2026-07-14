@@ -352,12 +352,65 @@ indexer is tagged, no title carries the tag by default, so nothing ever hits Avi
 - The stuck-download **Remove & Try Another Release** button blocklists the release; on an AvistaZ
   grab that blocklists a private-tracker release.
 
+## Plex Home Staging (remote cache box)
+A second, small Plex server (e.g. a NUC abroad, behind CGNAT and a VPS tunnel) serves a local
+**cache** of the master library. The bot manages that cache from Discord:
+
+- `/stage <title>` — the verb the rest of the stack doesn't have. Overseerr can't request a
+  title that's already Available, and Plex won't copy between servers. The bot resolves the
+  folder from Radarr/Sonarr and runs `rclone copy` into the cache; the requester gets a DM when
+  it's warm. Cold titles stop being mysterious buffering and become an announced wait.
+- **Durable queue** — stage jobs live in SQLite (`stage_jobs`). A restart mid-copy re-queues the
+  job; `rclone copy` skips files that already transferred, so resuming is cheap.
+- **Disk-pressure guard** — before each copy the bot checks free space (`rclone about`, falling
+  back to a `STAGE_CACHE_MAX_GB` budget). If space is short it evicts least-recently-streamed
+  unpinned titles (announced in the cleanup channel), or refuses with a clear message when even
+  that wouldn't be enough.
+- `/pin` / `/unpin` — exempt weekly-rewatch titles from eviction. `/staged` shows the cache;
+  `/stage-bulk` (admin) seeds it from a pasted list — do this on LAN at gigabit before flying.
+- **Auto-stage** — when a PH user's request finishes importing on the master
+  (`MEDIA_AVAILABLE`), the bot stages it automatically and DMs when it's ready to play.
+- **Tunnel watchdog** — `PH_TUNNEL_HEALTH_URL` is polled; state transitions alert the system
+  channel, and `/status` + `/staged` show tunnel state, cache free space, and active jobs.
+
+### Server-aware webhook routing (the footgun guard)
+Plex/Tautulli events now carry a server identity and every handler is gated on it:
+
+- Events matching `PH_SERVER_NAMES` route to the **eviction** flow: the familiar finished-watching
+  prompt, but "Free Up Space" only purges the *cache* copy — the master file is untouched.
+- Events matching the primary route to the existing keep/delete flow.
+- Once `PH_SERVER_NAMES` is set, events with **no** recognizable identity are skipped (fail-safe):
+  a PH viewer finishing a movie must never reach a `delete_yes` that deletes the master.
+
+Setup:
+1. On the **PH box's Tautulli**, point the webhook at the same `POST /webhook/tautulli` endpoint
+   and include the server identity in the JSON payload:
+   `"server_name": "{server_name}", "machine_id": "{machine_id}"` (add the same two fields to the
+   master's Tautulli payload too, or set `PRIMARY_SERVER_NAMES` and keep them matching).
+2. Set `PH_SERVER_NAMES` to the PH box's server name and/or machine id (lowercase).
+3. Configure an rclone remote that reaches the PH cache (e.g. SFTP through the VPS tunnel), mount
+   the config into the container, and set `STAGE_RCLONE_REMOTE` (e.g. `phbox:/cache`) plus
+   `STAGE_RCLONE_FLAGS=--config /app/data/rclone.conf`.
+4. `STAGING_ENABLED=true`, and set `STAGE_CACHE_MAX_GB` if the remote can't answer `rclone about`.
+
+### One server per person
+Plex does **not** sync watch state between servers — separate Continue Watching, separate watched
+marks, separate Tautulli history. So each person belongs to exactly one server:
+
+- `/assign-server user:@X server:ph` marks a PH user. Invites (`/link`, `/invite`, `/reinvite`,
+  access-request approvals) then go **only** to servers matching `PH_SERVER_NAMES`; everyone else
+  is invited to everything *except* the PH box. With `PH_SERVER_NAMES` unset, invites behave as
+  before (all servers).
+- Revocation (leave-server button, `/unlink`, sync-fix orphan cleanup) always sweeps **every**
+  server in the account — including ones in `PLEX_EXCLUDE_SERVERS` — so nobody keeps quiet access
+  to an "excluded" box after losing access.
+
 ## Slash Command List
 Admin:
-- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`
+- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`, `/stage-bulk`, `/assign-server`
 
 User:
-- `/request`, `/request-status`, `/download`, `/queue`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`
+- `/request`, `/request-status`, `/download`, `/queue`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`, `/stage`, `/staged`, `/pin`, `/unpin`
 
 ## Database Tables
 - `users`
@@ -369,6 +422,8 @@ User:
 - `app_settings`
 - `media_retention_rules`
 - `escalations` (AvistaZ fallback watch list)
+- `stage_jobs` (durable Plex Home staging queue)
+- `staged_items` (PH cache inventory + LRU/pin state)
 
 ## Migration Notes
 On startup the bot creates missing tables and adds missing columns with non-destructive migrations. Existing data is preserved.

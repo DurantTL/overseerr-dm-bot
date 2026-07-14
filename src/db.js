@@ -122,7 +122,36 @@ function runMigrations() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS stage_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      media_id TEXT NOT NULL,
+      media_type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      requested_by_discord_id TEXT,
+      origin TEXT DEFAULT 'command',
+      status TEXT DEFAULT 'queued',
+      size_bytes INTEGER DEFAULT 0,
+      error TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      started_at INTEGER,
+      finished_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS staged_items (
+      media_id TEXT PRIMARY KEY,
+      media_type TEXT,
+      title TEXT,
+      dest_path TEXT NOT NULL,
+      size_bytes INTEGER DEFAULT 0,
+      pinned INTEGER DEFAULT 0,
+      pinned_by_discord_id TEXT,
+      staged_by_discord_id TEXT,
+      staged_at INTEGER,
+      last_streamed_at INTEGER
+    );
+
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+    CREATE INDEX IF NOT EXISTS idx_stage_jobs_status ON stage_jobs(status);
     CREATE INDEX IF NOT EXISTS idx_requests_media ON requests(media_id);
     CREATE INDEX IF NOT EXISTS idx_requests_requester ON requests(requested_by_discord_id);
     CREATE INDEX IF NOT EXISTS idx_download_tokens_discord ON download_tokens(discord_id);
@@ -134,6 +163,9 @@ function runMigrations() {
 
   ensureColumn('users', 'overseerr_user_id', 'INTEGER');
   ensureColumn('users', 'plex_username', 'TEXT');
+  // Which Plex server a person belongs to: 'primary' (California master) or 'ph' (remote cache
+  // box). Watch state never syncs between servers, so invites and auto-staging key off this.
+  ensureColumn('users', 'home_server', "TEXT DEFAULT 'primary'");
   ensureColumn('keep_list', 'expires_at', 'INTEGER');
 
   const dlCols = db.prepare('PRAGMA table_info(download_tokens)').all().map(c => c.name);
@@ -331,6 +363,74 @@ function resolveEscalationForMediaKey(mediaKey) {
   }
 }
 
+// ---- Plex Home staging queue + cache inventory ----
+// stage_jobs is the durable copy queue: a transpacific rclone copy can run 20+ minutes and WILL
+// be in flight when something restarts, so the queue lives in SQLite and interrupted jobs are
+// re-queued at startup (rclone copy skips already-transferred files, so a re-run is cheap).
+// staged_items is what's currently warm in the PH cache, with the LRU bookkeeping eviction uses.
+
+const setUserHomeServer = (discordId, server) => db.prepare('UPDATE users SET home_server = ? WHERE discord_id = ?').run(server, discordId);
+
+// One active (queued/copying) job per media id — double /stage or auto-stage racing a manual
+// stage collapses onto the existing job instead of copying twice.
+function enqueueStageJob({ mediaId, mediaType, title, discordId, origin = 'command' }) {
+  const existing = db.prepare("SELECT * FROM stage_jobs WHERE media_id = ? AND status IN ('queued','copying') ORDER BY id LIMIT 1").get(mediaId);
+  if (existing) return { duplicate: true, job: existing };
+  const info = db.prepare('INSERT INTO stage_jobs (media_id, media_type, title, requested_by_discord_id, origin) VALUES (?, ?, ?, ?, ?)')
+    .run(mediaId, mediaType, title, discordId || null, origin);
+  return { duplicate: false, job: db.prepare('SELECT * FROM stage_jobs WHERE id = ?').get(info.lastInsertRowid) };
+}
+
+const getStageJob = id => db.prepare('SELECT * FROM stage_jobs WHERE id = ?').get(id);
+
+const nextQueuedStageJob = () => db.prepare("SELECT * FROM stage_jobs WHERE status = 'queued' ORDER BY id LIMIT 1").get();
+
+const listActiveStageJobs = () => db.prepare("SELECT * FROM stage_jobs WHERE status IN ('queued','copying') ORDER BY id").all();
+
+function markStageJobCopying(id, sizeBytes) {
+  db.prepare("UPDATE stage_jobs SET status = 'copying', size_bytes = ?, started_at = ? WHERE id = ?").run(sizeBytes || 0, Date.now(), id);
+}
+
+function finishStageJob(id, status, error = null) {
+  db.prepare('UPDATE stage_jobs SET status = ?, error = ?, finished_at = ? WHERE id = ?').run(status, error ? String(error).slice(0, 500) : null, Date.now(), id);
+}
+
+// Requeue a failed job (the Retry button). Only failed jobs are retryable — anything else is
+// either still moving or already done.
+function requeueStageJob(id) {
+  return db.prepare("UPDATE stage_jobs SET status = 'queued', error = NULL, started_at = NULL, finished_at = NULL WHERE id = ? AND status = 'failed'").run(id).changes > 0;
+}
+
+// A restart mid-copy leaves 'copying' rows behind; put them back in the queue.
+function resetInterruptedStageJobs() {
+  return db.prepare("UPDATE stage_jobs SET status = 'queued', started_at = NULL WHERE status = 'copying'").run().changes;
+}
+
+function recordStagedItem({ mediaId, mediaType, title, destPath, sizeBytes, discordId }) {
+  db.prepare(`INSERT INTO staged_items (media_id, media_type, title, dest_path, size_bytes, staged_by_discord_id, staged_at, last_streamed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+    ON CONFLICT(media_id) DO UPDATE SET
+      title = excluded.title,
+      dest_path = excluded.dest_path,
+      size_bytes = excluded.size_bytes,
+      staged_at = excluded.staged_at`)
+    .run(mediaId, mediaType, title, destPath, sizeBytes || 0, discordId || null, Date.now());
+}
+
+const getStagedItem = mediaId => db.prepare('SELECT * FROM staged_items WHERE media_id = ?').get(mediaId);
+
+const listStagedItems = () => db.prepare('SELECT * FROM staged_items ORDER BY staged_at').all();
+
+const removeStagedItem = mediaId => db.prepare('DELETE FROM staged_items WHERE media_id = ?').run(mediaId);
+
+// LRU touch — every PH playback event for a cached title lands here so eviction order tracks
+// what actually gets watched, not what got copied first.
+const touchStagedItem = mediaId => db.prepare('UPDATE staged_items SET last_streamed_at = ? WHERE media_id = ?').run(Date.now(), mediaId);
+
+function setStagedItemPinned(mediaId, pinned, discordId) {
+  db.prepare('UPDATE staged_items SET pinned = ?, pinned_by_discord_id = ? WHERE media_id = ?').run(pinned ? 1 : 0, pinned ? (discordId || null) : null, mediaId);
+}
+
 function createDownloadToken(filePath, title, discordId, oneTimeUse = CONFIG.DOWNLOAD_ONE_TIME_LINKS_DEFAULT) {
   const rawToken = crypto.randomBytes(32).toString('hex');
   const tokenHash = sha256(rawToken);
@@ -400,4 +500,4 @@ function restashPendingRequest(nonce, payload) {
   setSetting(`pending_request:${nonce}`, JSON.stringify(payload));
 }
 
-module.exports = { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
+module.exports = { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
