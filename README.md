@@ -88,6 +88,7 @@ See `.env.example` for full values.
 - `TAUTULLI_URL`, `TAUTULLI_API_KEY` — enables `/watching` (live Plex sessions) and the heavy-transcode watchdog: every `PLAYBACK_CHECK_MINUTES` (default `5`, `0` disables) sessions that are **video**-transcoding trigger an alert to `PLAYBACK_CHANNEL_ID` (fallback admin channel), at most once per user+media per `TRANSCODE_ALERT_COOLDOWN_MINUTES` (default `60`)
 - `PREMIUMIZE_API_KEY` — enables `/debrid` (fair-use %, cloud storage, active/failed transfers, plus **Clear Stuck/0%** and **Clear Finished** buttons) and the **stuck-transfer watchdog**: every `PREMIUMIZE_CHECK_MINUTES` (default `15`, `0` disables) transfers that are errored or whose progress hasn't moved for `PREMIUMIZE_STUCK_AFTER_MINUTES` (default `45` — catches "0% forever") alert the downloads channel with **Retry / Clear Transfer / Ignore** buttons, at most once per transfer per `PREMIUMIZE_ALERT_COOLDOWN_HOURS` (default `6`)
 - `STUCK_CHECK_MINUTES` (default `10`), `STUCK_AFTER_MINUTES` (default `45`), `STUCK_ALERT_COOLDOWN_HOURS` (default `6`) — stuck-download watchdog: when a queue item makes no progress for `STUCK_AFTER_MINUTES` (e.g. no seeders), the admin channel gets an alert with **Remove & Try Another Release** (blocklist + auto re-search), **Remove Only**, and **Ignore** buttons. Set `STUCK_CHECK_MINUTES=0` to disable.
+- `ESCALATION_ENABLED` (default `false`), `AVISTAZ_TAG` (default `avistaz`), `ESCALATION_DELAY_HOURS` (default `6`), `ESCALATION_CHECK_MINUTES` (default `30`), `ESCALATION_MAX_AGE_DAYS` (default `14`) — the AvistaZ private-tracker fallback; see the dedicated section below. Requires the one-time Radarr/Sonarr/Prowlarr setup described there.
 - `JANITOR_CHECK_MINUTES` (default `60`) — janitor sweep interval; `0` disables. The janitor:
   1. **Grace deletes** — enforces the "Finished Watching" prompt's auto-delete promise: if nobody clicks Keep/Delete within `DELETION_GRACE_HOURS`, the media is deleted (requires `ENABLE_DELETION=true`; honors `DELETION_DRY_RUN`, keep list, and never-delete list). Requester gets a DM; admin channel gets a report. "Remind Me Later" restarts the grace window after the reminder.
   2. **Disk-space alerts** — warns the admin channel (24h cooldown) when any *arr-visible volume drops below `DISK_SPACE_WARN_GB` (default `100`, `0` disables). `/status` also shows a Storage section. Set `DISK_SPACE_PATHS` (comma-separated) to an allowlist of mounts/folders to report — this hides the container's own `/` and `/config` disks and relabels a mount with the more specific media folder (e.g. shows `/share/media` for the `/share` mount). Unset reports every *arr mount.
@@ -305,6 +306,52 @@ Checks include Discord, SQLite, Plex, Seerr/Overseerr, Radarr, Radarr-4K, Sonarr
 - Health test: `curl http://localhost:3000/health`.
 - Smoke test: `./scripts/smoke-test.sh`.
 
+## AvistaZ Private-Tracker Fallback
+Public indexers (→ Premiumize) always get first crack at every request. AvistaZ is only used as a
+per-title fallback, which conserves its download slots / ratio and keeps private grabs seeding on a
+seedbox instead of Premiumize.
+
+**Why not Prowlarr priority?** Priority is only a tie-breaker — Radarr/Sonarr grab the
+best-scoring release regardless of which indexer returned it. The strict mechanism is **indexer
+tags**: an indexer with a tag only applies to movies/series that carry the same tag. The AvistaZ
+indexer is tagged, no title carries the tag by default, so nothing ever hits AvistaZ until the bot
+"escalates" a title by adding the tag to it and re-searching.
+
+### How the bot uses it
+- The approval embed gets a third button, **Approve + AvistaZ Fallback**, which pre-authorizes the
+  fallback: if nothing public has been grabbed within `ESCALATION_DELAY_HOURS`, the bot tags the
+  title and re-searches automatically.
+- Plain **Approve** (and admin self-requests) get the watchdog flavor instead: after the delay, the
+  downloads channel gets a **⏳ Nothing Found Yet** embed with **Escalate to AvistaZ / Ignore**
+  buttons.
+- A watch row resolves automatically the moment the media turns available, starts downloading, or
+  the request is declined; unresolved rows expire after `ESCALATION_MAX_AGE_DAYS`.
+- 4K requests are never escalated (the fallback is for hard-to-find content, not 4K upgrades).
+
+### One-time arr/Prowlarr setup
+1. **Prowlarr**: add the AvistaZ indexer (needs your AvistaZ account; mind its seeding rules).
+2. **Get it into Radarr + Sonarr with a tag that sticks.** Caveat: Prowlarr *Full Sync* overwrites
+   manual indexer edits on every sync. Either set the Prowlarr application sync level to
+   *Add and Remove Only* and then tag the indexer inside Radarr/Sonarr, or add AvistaZ directly in
+   Radarr/Sonarr as a Torznab indexer pointed at Prowlarr's AvistaZ feed URL.
+3. **Tag the indexer** in Radarr → Settings → Indexers → AvistaZ → Tags → `avistaz` (must match
+   `AVISTAZ_TAG`), and the same in Sonarr. This tag gate is the entire strictness mechanism.
+4. **Do NOT tag it in the 4K Radarr instance** — 4K escalation is out of scope by design.
+5. **Route AvistaZ downloads to the seedbox**: add Deluge (or your seedbox client) as a download
+   client in Radarr/Sonarr, then on the AvistaZ indexer set *Download Client → Deluge*. Public
+   indexers keep using the Premiumize client. Disable completed-download removal / seeding-goal
+   teardown for the Deluge client so private grabs keep seeding.
+6. Set `ESCALATION_ENABLED=true` (plus any of the other `ESCALATION_*` keys) and restart the bot.
+7. Verify: the bot warns at startup (log + system channel) if the `avistaz` tag is missing in
+   Radarr or Sonarr, and `/indexers` shows AvistaZ health via Prowlarr.
+
+### Operational caveats
+- The tag is **never auto-removed** after an escalation — it marks which titles came from AvistaZ
+  (seeding traceability), and future upgrades of that title may search AvistaZ again. Remove the
+  tag from the movie/series manually if you want it back on public-only.
+- The stuck-download **Remove & Try Another Release** button blocklists the release; on an AvistaZ
+  grab that blocklists a private-tracker release.
+
 ## Slash Command List
 Admin:
 - `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`
@@ -321,6 +368,7 @@ User:
 - `audit_log`
 - `app_settings`
 - `media_retention_rules`
+- `escalations` (AvistaZ fallback watch list)
 
 ## Migration Notes
 On startup the bot creates missing tables and adds missing columns with non-destructive migrations. Existing data is preserved.
