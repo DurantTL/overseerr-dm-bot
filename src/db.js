@@ -106,6 +106,22 @@ function runMigrations() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS escalations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      media_id TEXT NOT NULL UNIQUE,
+      media_type TEXT NOT NULL,
+      tmdb_id INTEGER NOT NULL,
+      tvdb_id INTEGER,
+      title TEXT NOT NULL,
+      requested_by_discord_id TEXT,
+      pre_authorized INTEGER DEFAULT 0,
+      state TEXT DEFAULT 'watching',
+      approved_at INTEGER NOT NULL,
+      alerted_at INTEGER,
+      escalated_at INTEGER,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
     CREATE INDEX IF NOT EXISTS idx_requests_media ON requests(media_id);
     CREATE INDEX IF NOT EXISTS idx_requests_requester ON requests(requested_by_discord_id);
@@ -113,6 +129,7 @@ function runMigrations() {
     CREATE INDEX IF NOT EXISTS idx_download_tokens_expires ON download_tokens(expires_at);
     CREATE INDEX IF NOT EXISTS idx_download_access_created ON download_access_log(created_at);
     CREATE INDEX IF NOT EXISTS idx_audit_action_created ON audit_log(action, created_at);
+    CREATE INDEX IF NOT EXISTS idx_escalations_state ON escalations(state);
   `);
 
   ensureColumn('users', 'overseerr_user_id', 'INTEGER');
@@ -265,6 +282,55 @@ function postponePendingDeletion(mediaId, deleteAfterMs) {
   db.prepare("UPDATE pending_deletions SET delete_after = ?, status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE media_id = ?").run(deleteAfterMs, mediaId);
 }
 
+// ---- AvistaZ escalation watch list ----
+// One row per title the watchdog should keep an eye on after approval. Keyed by the canonical
+// tmdb:<id> (webhooks may report TV as tvdb:<id>, hence the extra tvdb_id column for matching).
+// Re-approving the same title resets the clock; pre-authorization is sticky so a plain re-approve
+// can't silently downgrade an admin's earlier "go to AvistaZ if needed".
+function recordEscalationWatch({ mediaType, tmdbId, tvdbId, title, discordId, preAuthorized }) {
+  db.prepare(`INSERT INTO escalations (media_id, media_type, tmdb_id, tvdb_id, title, requested_by_discord_id, pre_authorized, state, approved_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'watching', ?)
+    ON CONFLICT(media_id) DO UPDATE SET
+      tvdb_id = COALESCE(excluded.tvdb_id, escalations.tvdb_id),
+      title = excluded.title,
+      requested_by_discord_id = COALESCE(excluded.requested_by_discord_id, escalations.requested_by_discord_id),
+      pre_authorized = MAX(excluded.pre_authorized, escalations.pre_authorized),
+      state = 'watching',
+      approved_at = excluded.approved_at,
+      updated_at = CURRENT_TIMESTAMP`)
+    .run(`tmdb:${tmdbId}`, mediaType, tmdbId, tvdbId ?? null, title, discordId || null, preAuthorized ? 1 : 0, Date.now());
+}
+
+const getWatchingEscalations = () => db.prepare("SELECT * FROM escalations WHERE state = 'watching'").all();
+
+const getEscalationById = id => db.prepare('SELECT * FROM escalations WHERE id = ?').get(id);
+
+function setEscalationState(id, state) {
+  const stampCol = state === 'alerted' ? 'alerted_at' : state === 'escalated' ? 'escalated_at' : null;
+  const stamp = stampCol ? `, ${stampCol} = ?` : '';
+  const args = stampCol ? [state, Date.now(), id] : [state, id];
+  db.prepare(`UPDATE escalations SET state = ?${stamp}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(...args);
+}
+
+function setEscalationTvdbId(id, tvdbId) {
+  db.prepare('UPDATE escalations SET tvdb_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(tvdbId, id);
+}
+
+// Called from the Seerr webhook when media becomes available (or the request is declined) so
+// watch rows resolve promptly instead of waiting for the next sweep. mediaKey follows the
+// webhook convention: 'tmdb:<id>' or 'tvdb:<id>'.
+function resolveEscalationForMediaKey(mediaKey) {
+  const m = /^(tmdb|tvdb):(\d+)$/.exec(String(mediaKey || ''));
+  if (!m) return;
+  const [, kind, idStr] = m;
+  const id = Number(idStr);
+  if (kind === 'tmdb') {
+    db.prepare("UPDATE escalations SET state = 'resolved', updated_at = CURRENT_TIMESTAMP WHERE media_id = ? AND state IN ('watching','alerted')").run(`tmdb:${id}`);
+  } else {
+    db.prepare("UPDATE escalations SET state = 'resolved', updated_at = CURRENT_TIMESTAMP WHERE tvdb_id = ? AND state IN ('watching','alerted')").run(id);
+  }
+}
+
 function createDownloadToken(filePath, title, discordId, oneTimeUse = CONFIG.DOWNLOAD_ONE_TIME_LINKS_DEFAULT) {
   const rawToken = crypto.randomBytes(32).toString('hex');
   const tokenHash = sha256(rawToken);
@@ -334,4 +400,4 @@ function restashPendingRequest(nonce, payload) {
   setSetting(`pending_request:${nonce}`, JSON.stringify(payload));
 }
 
-module.exports = { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
+module.exports = { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
