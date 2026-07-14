@@ -24,6 +24,8 @@ services:
       - "3000:3000"
     volumes:
       - durant_bot_data:/app/data
+      # Plex Home staging: drop rclone.conf into this volume (/app/data/rclone.conf)
+      # and set STAGE_RCLONE_FLAGS=--config /app/data/rclone.conf
       - ${MEDIA_HOST_PATH:-/mnt/raid}:/mnt/raid:ro
     restart: unless-stopped
     healthcheck:
