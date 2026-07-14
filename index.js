@@ -721,13 +721,35 @@ async function runStageJob(job) {
   }
   if (plan.evict.length) {
     const evicted = [];
+    let evictionsFailed = 0;
     for (const item of plan.evict) {
       if (await evictStagedItemNow(item, { reason: 'lru_pressure', forMediaId: job.media_id })) evicted.push(item);
+      else evictionsFailed++;
     }
     if (evicted.length) {
       notifyChannel('cleanup', { embeds: [brandedEmbed(COLORS.WARN)
         .setTitle('📤 Evicted From PH Cache')
         .setDescription(`Freed ${fmtSpace(evicted.reduce((a, i) => a + (i.size_bytes || 0), 0))} to make room for **${job.title}**:\n${evicted.map(i => `• **${i.title}**`).join('\n').slice(0, 3500)}\n\nThe master copies in California are untouched — anything evicted can be re-staged with \`/stage\`.`)] });
+    }
+    // A failed purge means the space it was supposed to free doesn't exist. Re-check before
+    // copying; anything short of a clean pass fails the job instead of filling the drive.
+    if (evictionsFailed) {
+      const recheckItems = listStagedItems();
+      const recheck = planCacheSpace({ freeBytes: (await getCacheStatus(recheckItems)).freeBytes, neededBytes: src.sizeBytes, minFreeBytes: CONFIG.STAGE_MIN_FREE_GB * 1024 ** 3, items: recheckItems });
+      if (!recheck.ok || recheck.evict.length) {
+        finishStageJob(job.id, 'failed', `${evictionsFailed} planned eviction(s) failed (rclone purge error) — not enough verified space to copy`);
+        notifyChannel('system', { embeds: [brandedEmbed(COLORS.DANGER)
+          .setTitle(`❌ Stage Aborted — ${job.title}`)
+          .setDescription(`${evictionsFailed} planned eviction(s) failed (rclone purge error), so the cache still doesn't have room for **${job.title}**. Check the rclone/audit logs, then retry.`)],
+          components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`stage_retry:${job.id}`).setLabel('Retry Stage').setStyle(ButtonStyle.Primary),
+          )] });
+        await dmUser(job.requested_by_discord_id, { embeds: [brandedEmbed(COLORS.DANGER)
+          .setTitle(`💾 No Room on the Travel Server — ${job.title}`)
+          .setDescription('Clearing cache space didn\'t fully work, so the copy was aborted rather than risk filling the drive. An admin has been notified.')] });
+        audit('stage_refused_eviction_failed', { mediaId: job.media_id, title: job.title, evictionsFailed });
+        return;
+      }
     }
   }
 
@@ -2984,25 +3006,24 @@ async function handleButton(interaction) {
 
   // PH cache eviction prompt (the travel-server twin of delete_yes/delete_no). Deliberately a
   // separate action pair: an evict button can never reach executeDeletion, and a stale delete
-  // button can never purge the cache.
-  if (action === 'evict_yes') {
-    const { mediaId, title, requestorId } = parseDeleteCustomId(parts);
+  // button can never purge the cache. customIds carry no title (`evict_yes:<mediaId>:<snowflake>`)
+  // — it's re-read from staged_items so long titles can't blow Discord's 100-char limit.
+  if (['evict_yes', 'evict_no'].includes(action)) {
+    const requestorId = parts[parts.length - 1];
+    const mediaId = parts.slice(0, -1).join(':');
     if (interaction.user.id !== requestorId && !isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Not allowed.', ephemeral: true });
     const staged = getStagedItem(mediaId);
+    if (action === 'evict_no') {
+      touchStagedItem(mediaId); // an explicit "keep" resets the LRU clock too
+      audit('evict_decision_made', { actorDiscordId: interaction.user.id, mediaId, decision: 'keep_cached' });
+      return interaction.update({ content: `🔥 Keeping **${staged?.title || 'this title'}** warm in the cache. Tip: \`/pin\` protects it from automatic eviction.`, components: [] });
+    }
     if (!staged) return interaction.update({ content: 'ℹ️ Already evicted.', components: [] });
     if (staged.pinned) return interaction.reply({ content: '📌 This title is pinned — `/unpin` it first.', ephemeral: true });
     await interaction.deferUpdate();
     const ok = await evictStagedItemNow(staged, { actorDiscordId: interaction.user.id, reason: 'evict_button' });
     if (!ok) return interaction.followUp({ content: '❌ Eviction failed (rclone error) — the buttons still work, try again.', ephemeral: true });
-    return interaction.editReply({ content: `📤 Evicted **${title}** — freed ${fmtSpace(staged.size_bytes)} on the travel server. The California master is untouched; \`/stage\` brings it back anytime.`, components: [] });
-  }
-
-  if (action === 'evict_no') {
-    const { mediaId, title, requestorId } = parseDeleteCustomId(parts);
-    if (interaction.user.id !== requestorId && !isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Not allowed.', ephemeral: true });
-    touchStagedItem(mediaId); // an explicit "keep" resets the LRU clock too
-    audit('evict_decision_made', { actorDiscordId: interaction.user.id, mediaId, decision: 'keep_cached' });
-    return interaction.update({ content: `🔥 Keeping **${title}** warm in the cache. Tip: \`/pin\` protects it from automatic eviction.`, components: [] });
+    return interaction.editReply({ content: `📤 Evicted **${staged.title}** — freed ${fmtSpace(staged.size_bytes)} on the travel server. The California master is untouched; \`/stage\` brings it back anytime.`, components: [] });
   }
 
   // Retry button on stage-failure alerts (system channel — admin only).
@@ -3733,10 +3754,12 @@ async function handlePhWatchedEvent({ event, mediaId, title, mediaType, watcherE
   const channel = await safeGetChannel(channelFor('cleanup'));
   if (!channel) return;
   setSetting(`evict_prompt_last:${mediaId}`, String(Date.now()));
-  const encodedTitle = encodeURIComponent(staged.title || title);
+  // Unlike the delete buttons, no title in the customId: mediaId + snowflake alone leave
+  // headroom under Discord's 100-char limit, and a long encoded title would make channel.send
+  // reject the whole prompt. The handlers re-read the title from staged_items.
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`evict_no:${mediaId}:${encodedTitle}:${targetId}`).setLabel('Keep It Cached').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`evict_yes:${mediaId}:${encodedTitle}:${targetId}`).setLabel('Free Up Space').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`evict_no:${mediaId}:${targetId}`).setLabel('Keep It Cached').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`evict_yes:${mediaId}:${targetId}`).setLabel('Free Up Space').setStyle(ButtonStyle.Primary),
   );
   await channel.send({ content: `<@${targetId}>`, embeds: [brandedEmbed(COLORS.WARN)
     .setTitle(`${mediaTypeEmoji(mediaType, false)} Finished Watching (Travel Server)`)
