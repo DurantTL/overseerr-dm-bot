@@ -41,6 +41,13 @@ const CONFIG = {
   STUCK_CHECK_MINUTES: Number.parseInt(process.env.STUCK_CHECK_MINUTES || '10', 10),
   STUCK_AFTER_MINUTES: Number.parseInt(process.env.STUCK_AFTER_MINUTES || '45', 10),
   STUCK_ALERT_COOLDOWN_HOURS: Number.parseInt(process.env.STUCK_ALERT_COOLDOWN_HOURS || '6', 10),
+  // AvistaZ private-tracker fallback: tag-gated escalation of stalled requests (see README).
+  // Radarr/Sonarr lowercase tag labels, so the compare key is lowercased here too.
+  AVISTAZ_TAG: (process.env.AVISTAZ_TAG || 'avistaz').toLowerCase(),
+  ESCALATION_ENABLED: parseBool(process.env.ESCALATION_ENABLED, false),
+  ESCALATION_DELAY_HOURS: Number.parseInt(process.env.ESCALATION_DELAY_HOURS || '6', 10),
+  ESCALATION_CHECK_MINUTES: Number.parseInt(process.env.ESCALATION_CHECK_MINUTES || '30', 10),
+  ESCALATION_MAX_AGE_DAYS: Number.parseInt(process.env.ESCALATION_MAX_AGE_DAYS || '14', 10),
   JANITOR_CHECK_MINUTES: Number.parseInt(process.env.JANITOR_CHECK_MINUTES || '60', 10),
   RETENTION_ENFORCEMENT: parseBool(process.env.RETENTION_ENFORCEMENT, false),
   RETENTION_CHECK_HOURS: Number.parseInt(process.env.RETENTION_CHECK_HOURS || '24', 10),
@@ -118,6 +125,9 @@ function configWarnings() {
   }
   if (CONFIG.PLAYBACK_CHECK_MINUTES > 0 && CONFIG.PLAYBACK_CHANNEL_ID && !(CONFIG.TAUTULLI_URL && CONFIG.TAUTULLI_API_KEY)) {
     warnings.push('`PLAYBACK_CHANNEL_ID` is set but Tautulli isn\'t configured (`TAUTULLI_URL` + `TAUTULLI_API_KEY`) — no playback alerts will be sent.');
+  }
+  if (CONFIG.ESCALATION_ENABLED && !CONFIG.RADARR_URL && !CONFIG.SONARR_URL) {
+    warnings.push('`ESCALATION_ENABLED=true` but neither Radarr nor Sonarr is configured — AvistaZ escalation can never fire.');
   }
   return warnings;
 }

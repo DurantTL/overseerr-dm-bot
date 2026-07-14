@@ -26,10 +26,11 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, statusEmoji, pad, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
-const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
-const { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, remapPath } = require('./src/arr');
+const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
+const { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, escalateMediaToAvistaz, verifyAvistazTags, remapPath } = require('./src/arr');
+const { decideEscalationAction, escalationEligible } = require('./src/escalation');
 const { tautulliConfigured, tautulliApi, describeSession } = require('./src/tautulli');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
 
@@ -190,25 +191,97 @@ function markApprovalNoticePosted(requestId) {
   if (postedApprovalNotices.size > 500) postedApprovalNotices.delete(postedApprovalNotices.values().next().value);
 }
 
+// Whether this request could be escalated to AvistaZ (feature on, right media type, arr present).
+function canEscalate({ mediaType, is4k }) {
+  return escalationEligible({ mediaType, is4k }, {
+    enabled: CONFIG.ESCALATION_ENABLED,
+    radarrConfigured: !!CONFIG.RADARR_URL,
+    sonarrConfigured: !!CONFIG.SONARR_URL,
+  });
+}
+
 // Post the Approve/Deny gate embed for a stashed /request to the requests channel.
 async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discordId, email }) {
   const channel = await safeGetChannel(channelFor('requests'));
   if (!channel) return false;
+  const azEligible = canEscalate({ mediaType, is4k });
   const embed = brandedEmbed(COLORS.INFO)
     .setTitle(`${mediaTypeEmoji(mediaType, is4k)} New Request`)
-    .setDescription(`**${label}**`)
+    .setDescription(`**${label}**${azEligible ? `\n-# "+ AvistaZ Fallback" pre-authorizes the private tracker if nothing public shows up within ${CONFIG.ESCALATION_DELAY_HOURS}h.` : ''}`)
     .addFields(
       { name: 'Requested by', value: `<@${discordId}> · \`${email}\``, inline: true },
       { name: 'Type', value: mediaTypeLabel(mediaType, is4k), inline: true },
       { name: 'Status', value: '⏳ Awaiting approval', inline: true },
     )
     .setFooter({ text: 'Durant Media Server · Not sent to Seerr until approved' });
-  const row = new ActionRowBuilder().addComponents(
+  const buttons = [
     new ButtonBuilder().setCustomId(`request_approve:${nonce}`).setLabel('Approve').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`request_deny:${nonce}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
-  );
+  ];
+  if (azEligible) buttons.push(new ButtonBuilder().setCustomId(`request_approve_az:${nonce}`).setLabel('Approve + AvistaZ Fallback').setStyle(ButtonStyle.Primary));
+  buttons.push(new ButtonBuilder().setCustomId(`request_deny:${nonce}`).setLabel('Deny').setStyle(ButtonStyle.Danger));
+  const row = new ActionRowBuilder().addComponents(...buttons);
   await channel.send({ embeds: [embed], components: [row] });
   return true;
+}
+
+// Bot-side approval gate: create the stashed Seerr request an admin just approved. Shared by the
+// plain Approve button and Approve + AvistaZ Fallback (azPreAuth lets the escalation watchdog
+// auto-escalate instead of asking first).
+async function handleGateApprove(interaction, nonce, { azPreAuth }) {
+  const pending = takePendingRequest(nonce);
+  if (!pending) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
+  await interaction.deferUpdate();
+  try {
+    const data = await createSeerrRequestAs(pending.seerrUserId, pending.mediaType, pending.tmdbId, pending.is4k);
+    const mediaKey = pending.mediaType === 'tv' && data?.media?.tvdbId ? `tvdb:${data.media.tvdbId}` : `tmdb:${pending.tmdbId}`;
+    if (data?.id != null) markApprovalNoticePosted(data.id); // suppress the duplicate webhook embed
+    // Don't take Seerr's "accepted" at face value — it can lose the request moments later
+    // ('Media data not found' in its log). Restash and leave the buttons live (omitting
+    // `components` keeps them) so the admin can retry once the Seerr-side problem is fixed.
+    const verified = data?.id != null ? await verifySeerrRequestCreated(data.id, pending.mediaType) : { ok: true };
+    if (!verified.ok) {
+      restashPendingRequest(nonce, pending);
+      audit('external_api_error', { provider: 'overseerr', error: `request #${data.id} failed post-create verification: ${verified.reason}`, action: 'gate_approve_verify', targetDiscordId: pending.discordId });
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
+        .setTitle(`⚠️ Seerr lost the request — ${pending.label}`)
+        .setDescription(`Seerr accepted request #${data.id} for <@${pending.discordId}>, but ${verified.reason}.\nNothing will download. Check the Seerr container logs from the last minute for the underlying error, then hit Approve again to retry.`)] });
+    }
+    // The gate stored the request under tmdb:<id>; keep that row in sync too when the webhook
+    // key differs (tv → tvdb).
+    upsertRequest(data?.id, mediaKey, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
+    if (mediaKey !== `tmdb:${pending.tmdbId}`) upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
+    // Only watch requests Seerr verifiably kept — recording earlier would make the escalation
+    // watchdog alert on requests that never reached the arrs at all.
+    if (canEscalate(pending)) {
+      recordEscalationWatch({ mediaType: pending.mediaType, tmdbId: pending.tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: pending.label, discordId: pending.discordId, preAuthorized: azPreAuth });
+    }
+    audit('request_approved_gate', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label, requestId: data?.id ?? null, azPreAuth });
+    await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Request Approved`)
+      .setDescription(`**${pending.label}** was approved and is being grabbed now. You'll get a DM when it's on Plex! 🍿`)] });
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle(`✅ Approved — ${pending.label}`)
+      .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}> — sent to Seerr${data?.id != null ? ` (request #${data.id})` : ''}.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — auto-escalates if nothing public is grabbed within ${CONFIG.ESCALATION_DELAY_HOURS}h.` : ''}`)], components: [] });
+  } catch (err) {
+    const status = err.response?.status;
+    const seerrMessage = err.response?.data?.message;
+    audit('external_api_error', { provider: 'overseerr', error: seerrMessage || err.message, action: 'gate_approve', targetDiscordId: pending.discordId });
+    // 409 duplicate and 202 no-seasons-left (see createSeerrRequestAs) mean the title is
+    // already in Seerr's pipeline — retrying can never succeed, so resolve the gate instead of
+    // leaving live buttons the admin will click forever.
+    if (status === 202 || status === 409 || /already (exists|available|requested)/i.test(seerrMessage || '')) {
+      upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
+      await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.INFO)
+        .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Already Requested`)
+        .setDescription(`Good news — **${pending.label}** is already in the system (requested earlier or already available), so there was nothing new to send. Check Plex, or track it with \`/request-status\`.`)] });
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
+        .setTitle(`ℹ️ Already in Seerr — ${pending.label}`)
+        .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}>, but Seerr says: *${seerrMessage || err.message}*. Nothing new was created — it's already requested or available.`)], components: [] });
+    }
+    // Anything else (network, 5xx) is retryable: put the stash back so the button still works.
+    restashPendingRequest(nonce, pending);
+    return interaction.followUp({ content: `❌ Approving failed: ${seerrMessage || err.message}. The buttons still work — try again.`, ephemeral: true });
+  }
 }
 
 // ---- Stuck-download watchdog ----
@@ -269,6 +342,97 @@ async function sweepStuckDownloads() {
   const ignoreRows = db.prepare("SELECT key FROM app_settings WHERE key LIKE 'stuck_ignore:%'").all();
   for (const r of ignoreRows) {
     if (!seen.has(r.key.slice('stuck_ignore:'.length))) db.prepare('DELETE FROM app_settings WHERE key = ?').run(r.key);
+  }
+}
+
+// ---- AvistaZ escalation watchdog ----
+// Public indexers get first crack at every approved request. When nothing has been grabbed after
+// ESCALATION_DELAY_HOURS, the request either auto-escalates to AvistaZ (admin pre-authorized it
+// at approval time) or an admin gets an embed with an "Escalate to AvistaZ" button. Escalation
+// tags the movie/series so the tag-gated AvistaZ indexer applies to it, then re-searches.
+
+// The facts decideEscalationAction needs: did the public pipeline already deliver?
+async function gatherEscalationFacts(row, queue) {
+  const keys = [`tmdb:${row.tmdb_id}`, row.tvdb_id ? `tvdb:${row.tvdb_id}` : null].filter(Boolean);
+  const isAvailable = keys.some(k => db.prepare("SELECT 1 FROM requests WHERE media_id = ? AND status = 'available'").get(k));
+  if (isAvailable) return { isAvailable: true, hasQueueItem: false, hasFile: false };
+  if (row.media_type === 'movie') {
+    const hasQueueItem = queue.some(q => q.source.kind === 'movie' && q.movieTmdbId === row.tmdb_id);
+    if (hasQueueItem) return { isAvailable: false, hasQueueItem: true, hasFile: false };
+    const movie = await getMovieByTmdbId(row.tmdb_id).catch(() => null);
+    return { isAvailable: false, hasQueueItem: false, hasFile: !!movie?.hasFile };
+  }
+  // TV: Sonarr keys off tvdb — backfill it from Seerr once if the request-create response
+  // didn't carry it (Seerr sometimes only knows it after the arr add completes).
+  if (!row.tvdb_id) {
+    const tvdbId = await fetchSeerrTvdbId(row.tmdb_id);
+    if (tvdbId) { setEscalationTvdbId(row.id, tvdbId); row.tvdb_id = tvdbId; }
+  }
+  const hasQueueItem = !!row.tvdb_id && queue.some(q => q.source.kind === 'tv' && q.seriesTvdbId === row.tvdb_id);
+  if (hasQueueItem) return { isAvailable: false, hasQueueItem: true, hasFile: false };
+  const series = row.tvdb_id ? await getSeriesByTvdbId(row.tvdb_id).catch(() => null) : null;
+  return { isAvailable: false, hasQueueItem: false, hasFile: (series?.statistics?.episodeFileCount || 0) > 0 };
+}
+
+async function runEscalation(row) {
+  const result = await escalateMediaToAvistaz({ mediaType: row.media_type, tmdbId: row.tmdb_id, tvdbId: row.tvdb_id });
+  if (result.ok) {
+    setEscalationState(row.id, 'escalated');
+    return result;
+  }
+  setEscalationState(row.id, 'error');
+  const why = {
+    tag_missing: `No \`${CONFIG.AVISTAZ_TAG}\` tag exists in ${row.media_type === 'movie' ? 'Radarr' : 'Sonarr'} — see the README section "AvistaZ private-tracker fallback".`,
+    not_in_arr: `The title isn't in ${row.media_type === 'movie' ? 'Radarr' : 'Sonarr'} — the Seerr request may not have landed there.`,
+    no_tvdb_id: 'No TVDB id could be resolved for this show, so it can\'t be matched in Sonarr.',
+  }[result.reason] || `API error: ${result.reason.replace(/^api_error:/, '')}`;
+  return { ...result, why };
+}
+
+async function sweepEscalations() {
+  const rows = getWatchingEscalations();
+  if (!rows.length) return;
+  const queue = await fetchArrQueues();
+  const cfg = { delayHours: CONFIG.ESCALATION_DELAY_HOURS, maxAgeDays: CONFIG.ESCALATION_MAX_AGE_DAYS };
+  for (const row of rows) {
+    const facts = await gatherEscalationFacts(row, queue);
+    const action = decideEscalationAction(row, facts, Date.now(), cfg);
+    if (action === 'wait') continue;
+    if (action === 'resolve') {
+      setEscalationState(row.id, 'resolved');
+      audit('escalation_resolved', { mediaId: row.media_id, title: row.title, facts });
+      continue;
+    }
+    if (action === 'expire') {
+      setEscalationState(row.id, 'expired');
+      audit('escalation_expired', { mediaId: row.media_id, title: row.title });
+      continue;
+    }
+    const waitedHours = Math.round((Date.now() - row.approved_at) / 3600000);
+    if (action === 'escalate') {
+      const result = await runEscalation(row);
+      notifyChannel('downloads', { embeds: [brandedEmbed(result.ok ? COLORS.SUCCESS : COLORS.WARN)
+        .setTitle(result.ok ? `🔐 Escalated to AvistaZ — ${row.title}` : `⚠️ AvistaZ Escalation Failed — ${row.title}`)
+        .setDescription(result.ok
+          ? `Nothing public showed up in ${waitedHours}h and the fallback was pre-authorized at approval.\n${result.detail}`
+          : `Auto-escalation was pre-authorized but failed: ${result.why}`)] });
+      continue;
+    }
+    // action === 'alert': one embed per title (state moves to 'alerted' and stays there until a
+    // button is clicked or the media resolves). Buttons survive restarts — state is in SQLite.
+    setEscalationState(row.id, 'alerted');
+    audit('escalation_alerted', { mediaId: row.media_id, title: row.title, waitedHours });
+    notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle(`⏳ Nothing Found Yet — ${row.title}`)
+      .setDescription(`No public release grabbed in **${waitedHours}h** since approval. Escalate to AvistaZ (private tracker → seedbox)?`)
+      .addFields(
+        { name: 'Requested by', value: row.requested_by_discord_id ? `<@${row.requested_by_discord_id}>` : 'Unknown', inline: true },
+        { name: 'Type', value: mediaTypeLabel(row.media_type, false), inline: true },
+      )],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`escalate_az:${row.id}`).setLabel('Escalate to AvistaZ').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`escalate_ignore:${row.id}`).setLabel('Ignore').setStyle(ButtonStyle.Secondary),
+      )] });
   }
 }
 
@@ -563,6 +727,21 @@ client.once('ready', async () => {
   if (CONFIG.STUCK_CHECK_MINUTES > 0 && arrSources().length) {
     setInterval(() => sweepStuckDownloads().catch(err => log.warn(`Stuck-download sweep failed: ${err.message}`)), CONFIG.STUCK_CHECK_MINUTES * 60000).unref();
     log.ok(`Stuck-download watchdog running every ${CONFIG.STUCK_CHECK_MINUTES} min (threshold ${CONFIG.STUCK_AFTER_MINUTES} min)`);
+  }
+  if (CONFIG.ESCALATION_ENABLED && (CONFIG.RADARR_URL || CONFIG.SONARR_URL)) {
+    // Non-fatal setup check: escalation fails with tag_missing until the AvistaZ tag exists.
+    verifyAvistazTags(CONFIG.AVISTAZ_TAG).then(missing => {
+      for (const w of missing) log.warn(`Config: ${w.replace(/`/g, '')}`);
+      if (missing.length) {
+        notifyChannel('system', { embeds: [brandedEmbed(COLORS.WARN)
+          .setTitle('⚙️ AvistaZ Escalation Warnings')
+          .setDescription(missing.map(w => `• ${w}`).join('\n').slice(0, 4000))] });
+      }
+    }).catch(err => log.warn(`AvistaZ tag check failed: ${err.message}`));
+    if (CONFIG.ESCALATION_CHECK_MINUTES > 0) {
+      setInterval(() => sweepEscalations().catch(err => log.warn(`Escalation sweep failed: ${err.message}`)), CONFIG.ESCALATION_CHECK_MINUTES * 60000).unref();
+      log.ok(`AvistaZ escalation watchdog running every ${CONFIG.ESCALATION_CHECK_MINUTES} min (delay ${CONFIG.ESCALATION_DELAY_HOURS} h, tag '${CONFIG.AVISTAZ_TAG}')`);
+    }
   }
   if (CONFIG.JANITOR_CHECK_MINUTES > 0) {
     setInterval(() => janitorSweep(), CONFIG.JANITOR_CHECK_MINUTES * 60000).unref();
@@ -1017,6 +1196,11 @@ async function handleRequestCommand(interaction) {
       return interaction.editReply(`⚠️ Seerr accepted **${label}** (request #${data.id}) but ${verified.reason}.\nNothing will download until that's fixed — check the Seerr container logs from the last minute for the underlying error, then try again.`);
     }
     upsertRequest(data?.id, mediaKey, mediaType, is4k, label, interaction.user.id, 'approved');
+    // Admin self-requests skip the gate (no pre-auth button), so they get the watchdog's
+    // alert-with-button flavor instead of auto-escalation.
+    if (canEscalate({ mediaType, is4k })) {
+      recordEscalationWatch({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label, discordId: interaction.user.id, preAuthorized: false });
+    }
     audit('media_requested', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seerrUserId, requestId: data?.id ?? null });
     await interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Request Sent`)
@@ -2031,7 +2215,7 @@ async function handleButton(interaction) {
     return interaction.showModal(modal);
   }
 
-  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_deny', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished'].includes(action) && !isAdminInteraction(interaction)) {
+  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished'].includes(action) && !isAdminInteraction(interaction)) {
     return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
   }
 
@@ -2083,59 +2267,10 @@ async function handleButton(interaction) {
   }
 
   // Bot-side approval gate (/request from non-admins). Approve creates the Seerr request now —
-  // Seerr insta-approves it, which is correct since an admin just did approve it.
-  if (action === 'request_approve') {
-    const nonce = parts[0];
-    const pending = takePendingRequest(nonce);
-    if (!pending) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
-    await interaction.deferUpdate();
-    try {
-      const data = await createSeerrRequestAs(pending.seerrUserId, pending.mediaType, pending.tmdbId, pending.is4k);
-      const mediaKey = pending.mediaType === 'tv' && data?.media?.tvdbId ? `tvdb:${data.media.tvdbId}` : `tmdb:${pending.tmdbId}`;
-      if (data?.id != null) markApprovalNoticePosted(data.id); // suppress the duplicate webhook embed
-      // Don't take Seerr's "accepted" at face value — it can lose the request moments later
-      // ('Media data not found' in its log). Restash and leave the buttons live (omitting
-      // `components` keeps them) so the admin can retry once the Seerr-side problem is fixed.
-      const verified = data?.id != null ? await verifySeerrRequestCreated(data.id, pending.mediaType) : { ok: true };
-      if (!verified.ok) {
-        restashPendingRequest(nonce, pending);
-        audit('external_api_error', { provider: 'overseerr', error: `request #${data.id} failed post-create verification: ${verified.reason}`, action: 'gate_approve_verify', targetDiscordId: pending.discordId });
-        return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
-          .setTitle(`⚠️ Seerr lost the request — ${pending.label}`)
-          .setDescription(`Seerr accepted request #${data.id} for <@${pending.discordId}>, but ${verified.reason}.\nNothing will download. Check the Seerr container logs from the last minute for the underlying error, then hit Approve again to retry.`)] });
-      }
-      // The gate stored the request under tmdb:<id>; keep that row in sync too when the webhook
-      // key differs (tv → tvdb).
-      upsertRequest(data?.id, mediaKey, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
-      if (mediaKey !== `tmdb:${pending.tmdbId}`) upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
-      audit('request_approved_gate', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label, requestId: data?.id ?? null });
-      await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
-        .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Request Approved`)
-        .setDescription(`**${pending.label}** was approved and is being grabbed now. You'll get a DM when it's on Plex! 🍿`)] });
-      return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
-        .setTitle(`✅ Approved — ${pending.label}`)
-        .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}> — sent to Seerr${data?.id != null ? ` (request #${data.id})` : ''}.`)], components: [] });
-    } catch (err) {
-      const status = err.response?.status;
-      const seerrMessage = err.response?.data?.message;
-      audit('external_api_error', { provider: 'overseerr', error: seerrMessage || err.message, action: 'gate_approve', targetDiscordId: pending.discordId });
-      // 409 duplicate and 202 no-seasons-left (see createSeerrRequestAs) mean the title is
-      // already in Seerr's pipeline — retrying can never succeed, so resolve the gate instead of
-      // leaving live buttons the admin will click forever.
-      if (status === 202 || status === 409 || /already (exists|available|requested)/i.test(seerrMessage || '')) {
-        upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
-        await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.INFO)
-          .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Already Requested`)
-          .setDescription(`Good news — **${pending.label}** is already in the system (requested earlier or already available), so there was nothing new to send. Check Plex, or track it with \`/request-status\`.`)] });
-        return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
-          .setTitle(`ℹ️ Already in Seerr — ${pending.label}`)
-          .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}>, but Seerr says: *${seerrMessage || err.message}*. Nothing new was created — it's already requested or available.`)], components: [] });
-      }
-      // Anything else (network, 5xx) is retryable: put the stash back so the button still works.
-      restashPendingRequest(nonce, pending);
-      return interaction.followUp({ content: `❌ Approving failed: ${seerrMessage || err.message}. The buttons still work — try again.`, ephemeral: true });
-    }
-  }
+  // Seerr insta-approves it, which is correct since an admin just did approve it. The _az
+  // variant additionally pre-authorizes the AvistaZ fallback for the escalation watchdog.
+  if (action === 'request_approve') return handleGateApprove(interaction, parts[0], { azPreAuth: false });
+  if (action === 'request_approve_az') return handleGateApprove(interaction, parts[0], { azPreAuth: true });
   if (action === 'request_deny') {
     const pending = takePendingRequest(parts[0]);
     if (!pending) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
@@ -2350,6 +2485,33 @@ async function handleButton(interaction) {
         { name: 'Plex', value: plexStatus, inline: true },
         { name: 'Seerr', value: seerrStatus, inline: true },
       )] });
+  }
+
+  // AvistaZ escalation buttons (from the escalation watchdog's "nothing found yet" alerts).
+  if (['escalate_az', 'escalate_ignore'].includes(action)) {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const row = getEscalationById(Number(parts[0]));
+    // 'error' stays clickable so a failed escalation (e.g. tag created after the fact) can be retried.
+    if (!row || !['alerted', 'watching', 'error'].includes(row.state)) {
+      return interaction.update({ content: 'ℹ️ Already handled (escalated, resolved, or dismissed).', components: [] });
+    }
+    if (action === 'escalate_ignore') {
+      setEscalationState(row.id, 'ignored');
+      audit('escalation_ignored', { actorDiscordId: interaction.user.id, mediaId: row.media_id, title: row.title });
+      return interaction.update({ embeds: [brandedEmbed(COLORS.INFO)
+        .setTitle(`🙈 Not Escalating — ${row.title}`)
+        .setDescription(`Dismissed by <@${interaction.user.id}>. Public indexers keep trying on the arrs' own schedule; no AvistaZ.`)], components: [] });
+    }
+    await interaction.deferUpdate();
+    const result = await runEscalation(row);
+    audit('escalation_button', { actorDiscordId: interaction.user.id, mediaId: row.media_id, title: row.title, ok: result.ok, reason: result.reason || null });
+    if (result.ok) {
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+        .setTitle(`🔐 Escalated to AvistaZ — ${row.title}`)
+        .setDescription(`Escalated by <@${interaction.user.id}>.\n${result.detail}`)], components: [] });
+    }
+    // Keep the buttons (omit components) so the admin can retry after fixing the cause.
+    return interaction.followUp({ content: `❌ Escalation failed: ${result.why} The buttons still work — try again once that's fixed.`, ephemeral: true });
   }
 
   if (['stuck_retry', 'stuck_rm', 'stuck_ignore'].includes(action)) {
@@ -2950,6 +3112,9 @@ async function handleOverseerrWebhook(body) {
   if (['MEDIA_PENDING', 'MEDIA_AUTO_APPROVED', 'MEDIA_APPROVED', 'MEDIA_AVAILABLE', 'MEDIA_DECLINED'].includes(notification_type)) {
     const status = { MEDIA_PENDING: 'pending', MEDIA_AUTO_APPROVED: 'approved', MEDIA_APPROVED: 'approved', MEDIA_AVAILABLE: 'available', MEDIA_DECLINED: 'declined' }[notification_type];
     upsertRequest(request?.request_id, mediaId, media.media_type, is4k, title, requesterDiscordId, status);
+    // Available/declined means there's nothing left to escalate — resolve the watch row now
+    // instead of waiting for the next sweep.
+    if (['MEDIA_AVAILABLE', 'MEDIA_DECLINED'].includes(notification_type)) resolveEscalationForMediaKey(mediaId);
   }
 
   if (['MEDIA_APPROVED', 'MEDIA_AUTO_APPROVED'].includes(notification_type) && requesterDiscordId) {
