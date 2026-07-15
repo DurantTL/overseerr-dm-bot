@@ -4,6 +4,12 @@
 # compiler; alpine/musl tries to compile it and fails (no toolchain).
 FROM node:20-slim
 
+# rclone drives the Plex Home staging copies/evictions (see README "Plex Home staging").
+# ca-certificates lets it talk TLS to remotes like SFTP-over-VPS or cloud backends.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends rclone ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY package*.json ./

@@ -17,6 +17,7 @@ const sandbox = loadSandbox(
       TUNNEL_DOMAIN: 'x.example.com', WEBHOOK_SECRET: 's3cret', ENABLE_DELETION: false, DELETION_DRY_RUN: true,
       DASHBOARD_ENABLED: false, DASHBOARD_ADMIN_PASSWORD: '', DASHBOARD_ADMIN_TOKEN: '',
       PLAYBACK_CHECK_MINUTES: 5, PLAYBACK_CHANNEL_ID: '', TAUTULLI_URL: '', TAUTULLI_API_KEY: '',
+      STAGING_ENABLED: false, STAGE_RCLONE_REMOTE: '', PH_SERVER_NAMES: [], PRIMARY_SERVER_NAMES: [],
     },
     markCalls: [],
     markOverseerrCreated: (discordId, id) => sandbox.markCalls.push({ discordId, id }),

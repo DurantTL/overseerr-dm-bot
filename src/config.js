@@ -85,6 +85,33 @@ const CONFIG = {
   DOWNLOAD_MAX_PER_HOUR: Number.parseInt(process.env.DOWNLOAD_MAX_PER_HOUR || '10', 10),
   DOWNLOAD_ROUTE_MAX_PER_MINUTE: Number.parseInt(process.env.DOWNLOAD_ROUTE_MAX_PER_MINUTE || '60', 10),
   DOWNLOAD_LARGE_FILE_GB: Number.parseInt(process.env.DOWNLOAD_LARGE_FILE_GB || '8', 10),
+  // ---- Plex Home staging (remote cache box behind a tunnel) ----
+  // The PH box serves a small local cache of the California library. The bot copies titles into
+  // that cache over rclone ("staging"), evicts them when space runs short, and must never let a
+  // PH playback event trigger anything destructive against the master library.
+  STAGING_ENABLED: parseBool(process.env.STAGING_ENABLED, false),
+  // Server identities as they appear in Tautulli ({server_name}/{machine_id}) and Plex webhook
+  // payloads (Server.title/uuid), lowercased. PH_SERVER_NAMES marks the remote cache box;
+  // PRIMARY_SERVER_NAMES (optional) strictly pins the master. See README "Plex Home staging".
+  PH_SERVER_NAMES: (process.env.PH_SERVER_NAMES || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+  PRIMARY_SERVER_NAMES: (process.env.PRIMARY_SERVER_NAMES || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+  // rclone destination root for the cache, e.g. `phbox:/cache` or `phbox:cache`.
+  STAGE_RCLONE_REMOTE: (process.env.STAGE_RCLONE_REMOTE || '').replace(/\/$/, ''),
+  STAGE_RCLONE_BINARY: process.env.STAGE_RCLONE_BINARY || 'rclone',
+  // Extra rclone flags (space-separated), e.g. `--config /app/data/rclone.conf --bwlimit 8M`.
+  STAGE_RCLONE_FLAGS: (process.env.STAGE_RCLONE_FLAGS || '').split(/\s+/).filter(Boolean),
+  // Cache budget when `rclone about` can't report free space for the remote (0 = rely on
+  // rclone about only). Free space is then budget minus the tracked staged items.
+  STAGE_CACHE_MAX_GB: Number.parseInt(process.env.STAGE_CACHE_MAX_GB || '0', 10),
+  STAGE_MIN_FREE_GB: Number.parseInt(process.env.STAGE_MIN_FREE_GB || '25', 10),
+  STAGE_JOB_TIMEOUT_MINUTES: Number.parseInt(process.env.STAGE_JOB_TIMEOUT_MINUTES || '240', 10),
+  STAGE_CHECK_MINUTES: Number.parseInt(process.env.STAGE_CHECK_MINUTES || '2', 10),
+  STAGE_MAX_PER_USER_PER_DAY: Number.parseInt(process.env.STAGE_MAX_PER_USER_PER_DAY || '6', 10),
+  // Tunnel watchdog: any HTTP response from this URL (e.g. the PH Plex /identity endpoint via
+  // the VPS tunnel) counts as up; connect errors/timeouts count as down.
+  PH_TUNNEL_HEALTH_URL: process.env.PH_TUNNEL_HEALTH_URL || '',
+  PH_TUNNEL_CHECK_MINUTES: Number.parseInt(process.env.PH_TUNNEL_CHECK_MINUTES || '5', 10),
+  PH_TUNNEL_FAILS_BEFORE_ALERT: Number.parseInt(process.env.PH_TUNNEL_FAILS_BEFORE_ALERT || '3', 10),
   DELETION_GRACE_HOURS: Number.parseInt(process.env.DELETION_GRACE_HOURS || '24', 10),
   DELETION_REMINDER_COOLDOWN_HOURS: Number.parseInt(process.env.DELETION_REMINDER_COOLDOWN_HOURS || '12', 10),
   KEEP_LIST_DEFAULT_DAYS: Number.parseInt(process.env.KEEP_LIST_DEFAULT_DAYS || '90', 10),
@@ -128,6 +155,15 @@ function configWarnings() {
   }
   if (CONFIG.ESCALATION_ENABLED && !CONFIG.RADARR_URL && !CONFIG.SONARR_URL) {
     warnings.push('`ESCALATION_ENABLED=true` but neither Radarr nor Sonarr is configured — AvistaZ escalation can never fire.');
+  }
+  if (CONFIG.STAGING_ENABLED && !CONFIG.STAGE_RCLONE_REMOTE) {
+    warnings.push('`STAGING_ENABLED=true` but `STAGE_RCLONE_REMOTE` is unset — `/stage` can never copy anything to the cache box.');
+  }
+  if (CONFIG.STAGING_ENABLED && !CONFIG.PH_SERVER_NAMES.length) {
+    warnings.push('`STAGING_ENABLED=true` but `PH_SERVER_NAMES` is unset — webhook events from the cache box are indistinguishable from the master, so a PH viewer finishing a movie could trigger a **delete prompt against the master library**. Set it before the box goes live.');
+  }
+  if (CONFIG.PH_SERVER_NAMES.length) {
+    warnings.push('`PH_SERVER_NAMES` is set: Tautulli/Plex webhook payloads that carry **no** server identity are now skipped as a fail-safe. Make sure every Tautulli notification payload includes `server_name`/`machine_id` (see README "Plex Home staging") or the finished-watching prompts stop firing.');
   }
   return warnings;
 }
