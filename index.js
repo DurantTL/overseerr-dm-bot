@@ -26,12 +26,13 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, statusEmoji, pad, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, escalateMediaToAvistaz, verifyAvistazTags, remapPath } = require('./src/arr');
 const { decideEscalationAction, escalationEligible } = require('./src/escalation');
 const { tautulliConfigured, tautulliApi, describeSession } = require('./src/tautulli');
+const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus } = require('./src/staging');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
 
 // Centralized embed palette so every notification shares one consistent look.
@@ -145,6 +146,9 @@ function rehydratePendingEmails() {
 const routeLimits = new Map();
 const userGenerationLimits = new Map();
 const requestCommandLimits = new Map();
+// Deliberately NOT in RATE_LIMIT_MAPS: its window is 24h and the hourly reaper would wipe the
+// counts. It holds at most one small bucket per family member.
+const stageCommandLimits = new Map();
 
 // Keyed by client IP / user id, these maps only ever grew. Drop buckets whose newest hit is
 // older than an hour so a scan of unique IPs can't slowly eat memory.
@@ -648,6 +652,168 @@ async function janitorSweep() {
   }
 }
 
+// ---- Plex Home staging worker ----
+// One rclone copy at a time (the transpacific uplink is the bottleneck; parallel copies just
+// thrash it). The queue is SQLite (stage_jobs) so a 20-minute copy interrupted by a restart is
+// re-queued at startup — rclone skips already-transferred files, so resuming is cheap.
+let stageWorkerActive = false;
+
+async function pumpStageQueue() {
+  if (!stagingConfigured() || stageWorkerActive) return;
+  stageWorkerActive = true;
+  try {
+    for (let job = nextQueuedStageJob(); job; job = nextQueuedStageJob()) {
+      await runStageJob(job).catch(err => {
+        finishStageJob(job.id, 'failed', err.message);
+        audit('external_api_error', { provider: 'staging', error: err.message, action: 'stage_job', mediaId: job.media_id });
+      });
+    }
+  } finally {
+    stageWorkerActive = false;
+  }
+}
+
+// Purge one title from the PH cache and drop its inventory row. Shared by the disk-pressure
+// guard, the eviction buttons, and /unpin cleanup paths. Only touches the cache remote.
+async function evictStagedItemNow(item, ctx = {}) {
+  const res = await purgeStagedPath(item.dest_path);
+  if (!res.ok) {
+    audit('external_api_error', { provider: 'staging', error: res.error, action: 'evict', mediaId: item.media_id });
+    return false;
+  }
+  removeStagedItem(item.media_id);
+  audit('staged_item_evicted', { mediaId: item.media_id, title: item.title, sizeBytes: item.size_bytes, ...ctx });
+  return true;
+}
+
+async function runStageJob(job) {
+  const src = await resolveStageSource(job.media_id);
+  if (!src.found) {
+    finishStageJob(job.id, 'failed', 'not found in Radarr/Sonarr (or no file on disk)');
+    await dmUser(job.requested_by_discord_id, { embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle(`❌ Couldn't Stage — ${job.title}`)
+      .setDescription('The file couldn\'t be found in Radarr/Sonarr. If it only just finished downloading, try `/stage` again in a few minutes.')] });
+    return;
+  }
+  if (getStagedItem(job.media_id)) {
+    finishStageJob(job.id, 'done');
+    return;
+  }
+  markStageJobCopying(job.id, src.sizeBytes);
+
+  // Disk-pressure guard: the cache is finite and there's no second M.2 slot. Evict LRU unpinned
+  // titles (announced, never silent) or refuse with a clear message — never let the drive fill
+  // until Plex starts failing in confusing ways from 8,000 miles away.
+  const items = listStagedItems();
+  const cache = await getCacheStatus(items);
+  const plan = planCacheSpace({ freeBytes: cache.freeBytes, neededBytes: src.sizeBytes, minFreeBytes: CONFIG.STAGE_MIN_FREE_GB * 1024 ** 3, items });
+  if (plan.unguarded) audit('stage_cache_unguarded', { mediaId: job.media_id, reason: 'rclone about unsupported and STAGE_CACHE_MAX_GB unset' });
+  if (!plan.ok) {
+    const pinnedCount = items.filter(i => i.pinned).length;
+    const msg = `Cache is full: **${job.title}** needs ${fmtSpace(src.sizeBytes)} but only ${fmtSpace(cache.freeBytes)} is free and evicting every unpinned title would still fall ${fmtSpace(plan.shortfallBytes)} short${pinnedCount ? ` (${pinnedCount} pinned title(s) are exempt — \`/unpin\` some to make room)` : ''}.`;
+    finishStageJob(job.id, 'failed', 'cache full');
+    notifyChannel('cleanup', { embeds: [brandedEmbed(COLORS.DANGER).setTitle('💾 PH Cache Full — Stage Refused').setDescription(msg)] });
+    await dmUser(job.requested_by_discord_id, { embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle(`💾 No Room on the Travel Server — ${job.title}`)
+      .setDescription('The cache drive is full and nothing more can be evicted. An admin has been notified.')] });
+    audit('stage_refused_cache_full', { mediaId: job.media_id, title: job.title, neededBytes: src.sizeBytes, freeBytes: cache.freeBytes });
+    return;
+  }
+  if (plan.evict.length) {
+    const evicted = [];
+    let evictionsFailed = 0;
+    for (const item of plan.evict) {
+      if (await evictStagedItemNow(item, { reason: 'lru_pressure', forMediaId: job.media_id })) evicted.push(item);
+      else evictionsFailed++;
+    }
+    if (evicted.length) {
+      notifyChannel('cleanup', { embeds: [brandedEmbed(COLORS.WARN)
+        .setTitle('📤 Evicted From PH Cache')
+        .setDescription(`Freed ${fmtSpace(evicted.reduce((a, i) => a + (i.size_bytes || 0), 0))} to make room for **${job.title}**:\n${evicted.map(i => `• **${i.title}**`).join('\n').slice(0, 3500)}\n\nThe master copies in California are untouched — anything evicted can be re-staged with \`/stage\`.`)] });
+    }
+    // A failed purge means the space it was supposed to free doesn't exist. Re-check before
+    // copying; anything short of a clean pass fails the job instead of filling the drive.
+    if (evictionsFailed) {
+      const recheckItems = listStagedItems();
+      const recheck = planCacheSpace({ freeBytes: (await getCacheStatus(recheckItems)).freeBytes, neededBytes: src.sizeBytes, minFreeBytes: CONFIG.STAGE_MIN_FREE_GB * 1024 ** 3, items: recheckItems });
+      if (!recheck.ok || recheck.evict.length) {
+        finishStageJob(job.id, 'failed', `${evictionsFailed} planned eviction(s) failed (rclone purge error) — not enough verified space to copy`);
+        notifyChannel('system', { embeds: [brandedEmbed(COLORS.DANGER)
+          .setTitle(`❌ Stage Aborted — ${job.title}`)
+          .setDescription(`${evictionsFailed} planned eviction(s) failed (rclone purge error), so the cache still doesn't have room for **${job.title}**. Check the rclone/audit logs, then retry.`)],
+          components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`stage_retry:${job.id}`).setLabel('Retry Stage').setStyle(ButtonStyle.Primary),
+          )] });
+        await dmUser(job.requested_by_discord_id, { embeds: [brandedEmbed(COLORS.DANGER)
+          .setTitle(`💾 No Room on the Travel Server — ${job.title}`)
+          .setDescription('Clearing cache space didn\'t fully work, so the copy was aborted rather than risk filling the drive. An admin has been notified.')] });
+        audit('stage_refused_eviction_failed', { mediaId: job.media_id, title: job.title, evictionsFailed });
+        return;
+      }
+    }
+  }
+
+  const result = await stageCopy(src.srcPath, src.destSubPath, CONFIG.STAGE_JOB_TIMEOUT_MINUTES * 60000);
+  if (!result.ok) {
+    finishStageJob(job.id, 'failed', result.error);
+    audit('stage_job_failed', { mediaId: job.media_id, title: job.title, error: String(result.error).slice(0, 500) });
+    notifyChannel('system', { embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle(`❌ Stage Failed — ${job.title}`)
+      .setDescription(`rclone copy to the PH cache failed:\n\`\`\`${String(result.error).slice(0, 800)}\`\`\``)],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`stage_retry:${job.id}`).setLabel('Retry Stage').setStyle(ButtonStyle.Primary),
+      )] });
+    await dmUser(job.requested_by_discord_id, { embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle(`❌ Staging Failed — ${job.title}`)
+      .setDescription('The copy to the travel server didn\'t finish (flaky link, most likely). An admin has been notified and can retry it.')] });
+    return;
+  }
+
+  recordStagedItem({ mediaId: job.media_id, mediaType: job.media_type, title: src.title || job.title, destPath: src.destSubPath, sizeBytes: src.sizeBytes, discordId: job.requested_by_discord_id });
+  finishStageJob(job.id, 'done');
+  const minutes = job.started_at ? Math.max(1, Math.round((Date.now() - job.started_at) / 60000)) : null;
+  audit('media_staged', { mediaId: job.media_id, title: job.title, sizeBytes: src.sizeBytes, origin: job.origin, minutes });
+  // Bulk seeding would fire dozens of DMs at the admin who fed the list — /staged shows the result.
+  if (job.origin !== 'bulk') {
+    await dmUser(job.requested_by_discord_id, { embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle(`🔥 Ready on the Travel Server — ${src.title || job.title}`)
+      .setDescription(`**${src.title || job.title}** (${fmtSpace(src.sizeBytes)}) is now warm in the local cache — it'll play instantly, no more mystery buffering.`)] });
+  }
+}
+
+// ---- PH tunnel watchdog ----
+// The PH box sits behind CGNAT and a VPS tunnel across an ocean. When that path dies, the
+// admin should hear it from Discord — not from a family member texting that Plex is broken.
+// State transitions live in app_settings so a bot restart doesn't re-alert or forget an outage.
+let tunnelFailStreak = 0;
+async function sweepTunnelHealth() {
+  // Any HTTP response (even 401 from Plex) proves the tunnel path works; only connect
+  // errors/timeouts count as down.
+  const ok = await axios.get(CONFIG.PH_TUNNEL_HEALTH_URL, { timeout: 10000, validateStatus: () => true }).then(() => true).catch(() => false);
+  const prev = getSetting('ph_tunnel_state');
+  if (ok) {
+    tunnelFailStreak = 0;
+    if (prev === 'down') {
+      const downSince = Number(getSetting('ph_tunnel_since') || '0');
+      notifyChannel('system', { embeds: [brandedEmbed(COLORS.SUCCESS)
+        .setTitle('🛰️ PH Tunnel Recovered')
+        .setDescription(`The tunnel to the PH box is reachable again${downSince ? ` (down since ${discordTimestamp(downSince, 'f')})` : ''}.`)] });
+      audit('ph_tunnel_recovered', { downSince });
+    }
+    if (prev !== 'up') { setSetting('ph_tunnel_state', 'up'); setSetting('ph_tunnel_since', String(Date.now())); }
+    return;
+  }
+  tunnelFailStreak++;
+  if (prev !== 'down' && tunnelFailStreak >= CONFIG.PH_TUNNEL_FAILS_BEFORE_ALERT) {
+    setSetting('ph_tunnel_state', 'down');
+    setSetting('ph_tunnel_since', String(Date.now()));
+    notifyChannel('system', { embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle('🛰️ PH Tunnel Down')
+      .setDescription(`\`${CONFIG.PH_TUNNEL_HEALTH_URL}\` hasn't answered for ${tunnelFailStreak} consecutive checks — Plex on the PH box is likely unreachable for everyone there. Check the VPS tunnel and the NUC.`)] });
+    audit('ph_tunnel_down', { failStreak: tunnelFailStreak });
+  }
+}
+
 function resolveSafeMediaPath(requestedPath) {
   const normalizedRoot = fs.realpathSync(path.resolve(CONFIG.RAID_PATH));
   const resolved = path.resolve(requestedPath);
@@ -664,6 +830,12 @@ async function safeGetChannel(channelId) {
 
 function isAdminInteraction(interaction) {
   return interaction.user.id === CONFIG.ADMIN_USER_ID || interaction.memberPermissions?.has(PermissionFlagsBits.Administrator);
+}
+
+// Which Plex server a person belongs to ('primary' | 'ph'), for invite scoping and auto-staging.
+// Unknown/unlinked people default to the primary — the PH box is opt-in via /assign-server.
+function homeServerFor(discordId) {
+  return (discordId && getUserByDiscordId(discordId)?.home_server) === 'ph' ? 'ph' : 'primary';
 }
 
 const slashCommands = [
@@ -691,6 +863,14 @@ const slashCommands = [
   new SlashCommandBuilder().setName('indexers').setDescription('Prowlarr indexer + Byparr health').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('debrid').setDescription('Premiumize account + transfer status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('cleanup-suggestions').setDescription('Largest/oldest media that could be cleaned up').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('stage').setDescription('Copy a title into the travel-server cache so it plays instantly there').addStringOption(o => o.setName('title').setDescription('Start typing — matches what\'s in the library').setRequired(true).setAutocomplete(true)),
+  new SlashCommandBuilder().setName('staged').setDescription('Show the travel-server cache: what\'s warm, pinned, and copying'),
+  new SlashCommandBuilder().setName('pin').setDescription('Protect a cached title from automatic eviction').addStringOption(o => o.setName('title').setDescription('Cached title — start typing').setRequired(true).setAutocomplete(true)),
+  new SlashCommandBuilder().setName('unpin').setDescription('Remove eviction protection from a cached title').addStringOption(o => o.setName('title').setDescription('Pinned title — start typing').setRequired(true).setAutocomplete(true)),
+  new SlashCommandBuilder().setName('stage-bulk').setDescription('Seed the travel cache from a list of titles (one per line)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('assign-server').setDescription('Set which Plex server a user belongs to (drives invites + auto-staging)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addUserOption(o => o.setName('user').setDescription('User').setRequired(true))
+    .addStringOption(o => o.setName('server').setDescription('Home server').setRequired(true).addChoices({ name: 'primary (master library)', value: 'primary' }, { name: 'ph (travel cache box)', value: 'ph' })),
   new SlashCommandBuilder().setName('me').setDescription('Show your linked profile'),
   new SlashCommandBuilder().setName('myrequests').setDescription('Show your recent requests'),
   new SlashCommandBuilder().setName('downloads').setDescription('Show your active download links'),
@@ -754,6 +934,21 @@ client.once('ready', async () => {
   if (premiumizeConfigured() && CONFIG.PREMIUMIZE_CHECK_MINUTES > 0) {
     setInterval(() => sweepPremiumizeTransfers().catch(err => log.warn(`Premiumize sweep failed: ${err.message}`)), CONFIG.PREMIUMIZE_CHECK_MINUTES * 60000).unref();
     log.ok(`Premiumize transfer watchdog running every ${CONFIG.PREMIUMIZE_CHECK_MINUTES} min (stuck after ${CONFIG.PREMIUMIZE_STUCK_AFTER_MINUTES} min)`);
+  }
+  if (stagingConfigured()) {
+    // A restart mid-copy leaves 'copying' rows behind; put them back in the queue and let the
+    // worker pick them up (rclone skips files that already made it across).
+    const resumed = resetInterruptedStageJobs();
+    if (resumed) log.info(`Re-queued ${resumed} stage job(s) interrupted by restart`);
+    if (CONFIG.STAGE_CHECK_MINUTES > 0) {
+      setInterval(() => pumpStageQueue().catch(err => log.warn(`Stage queue pump failed: ${err.message}`)), CONFIG.STAGE_CHECK_MINUTES * 60000).unref();
+    }
+    pumpStageQueue().catch(err => log.warn(`Stage queue pump failed: ${err.message}`));
+    log.ok(`Plex Home staging enabled → ${CONFIG.STAGE_RCLONE_REMOTE} (queue check every ${CONFIG.STAGE_CHECK_MINUTES} min, min free ${CONFIG.STAGE_MIN_FREE_GB} GB)`);
+  }
+  if (CONFIG.PH_TUNNEL_HEALTH_URL && CONFIG.PH_TUNNEL_CHECK_MINUTES > 0) {
+    setInterval(() => sweepTunnelHealth().catch(err => log.warn(`Tunnel health sweep failed: ${err.message}`)), CONFIG.PH_TUNNEL_CHECK_MINUTES * 60000).unref();
+    log.ok(`PH tunnel watchdog running every ${CONFIG.PH_TUNNEL_CHECK_MINUTES} min (alert after ${CONFIG.PH_TUNNEL_FAILS_BEFORE_ALERT} failures)`);
   }
 });
 
@@ -870,6 +1065,34 @@ client.on('interactionCreate', async interaction => {
 // invitable DB row instead, matching by email, stored Plex username, or Discord username/display
 // name. Member names come from already-cached data only — an autocomplete has a 3s deadline and a
 // forced gateway fetch would trip the opcode-8 rate limiter.
+// Everything stageable (has a file on disk), across both Radarrs and Sonarr, cached briefly so
+// autocomplete keystrokes don't hammer the *arrs and stay inside Discord's 3s deadline.
+let stageLibraryCache = { at: 0, entries: null };
+async function getStageLibrary() {
+  if (stageLibraryCache.entries && Date.now() - stageLibraryCache.at < 60000) return stageLibraryCache.entries;
+  const seen = new Map();
+  const movieSources = [
+    { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY },
+    { url: CONFIG.RADARR_4K_URL, key: CONFIG.RADARR_4K_API_KEY },
+  ].filter(s => s.url);
+  for (const s of movieSources) {
+    for (const m of await radarrGetFrom(s.url, s.key, '/movie').catch(() => [])) {
+      if (!m.hasFile || !m.tmdbId) continue;
+      const mediaId = `tmdb:${m.tmdbId}`;
+      if (!seen.has(mediaId)) seen.set(mediaId, { mediaId, kind: 'movie', title: `${m.title}${m.year ? ` (${m.year})` : ''}`, sizeBytes: m.sizeOnDisk || m.movieFile?.size || 0 });
+    }
+  }
+  if (CONFIG.SONARR_URL) {
+    for (const s of await sonarrGet('/series').catch(() => [])) {
+      if (!(s.statistics?.episodeFileCount > 0) || !s.tvdbId) continue;
+      const mediaId = `tvdb:${s.tvdbId}`;
+      if (!seen.has(mediaId)) seen.set(mediaId, { mediaId, kind: 'tv', title: s.title, sizeBytes: s.statistics?.sizeOnDisk || 0 });
+    }
+  }
+  stageLibraryCache = { at: Date.now(), entries: [...seen.values()] };
+  return stageLibraryCache.entries;
+}
+
 async function handleAutocomplete(interaction) {
   // /request title: — live movie/TV search against Seerr. Discord gives autocomplete a 3s
   // deadline, so the search gets a short timeout and any failure degrades to no suggestions.
@@ -918,6 +1141,40 @@ async function handleAutocomplete(interaction) {
       choices.push({ name: `${r.title} · ${r.status}`.slice(0, 100), value: String(r.media_id).slice(0, 100) });
       if (choices.length >= 25) break;
     }
+    return interaction.respond(choices).catch(() => {});
+  }
+
+  // /stage title: — the whole library (anything with a file). /pin and /unpin match only what's
+  // currently cached. The library fetch is raced against Discord's deadline: a cold cache may
+  // yield no suggestions once, then it's warm.
+  if (interaction.commandName === 'stage') {
+    const focusedTitle = interaction.options.getFocused(true);
+    if (focusedTitle.name !== 'title') return interaction.respond([]).catch(() => {});
+    const q = String(focusedTitle.value || '').toLowerCase().trim();
+    if (q.length < 2) return interaction.respond([]).catch(() => {});
+    const library = await Promise.race([
+      getStageLibrary(),
+      new Promise(resolve => setTimeout(() => resolve([]), 2500)),
+    ]).catch(() => []);
+    const choices = library
+      .filter(e => e.title.toLowerCase().includes(q))
+      .slice(0, 25)
+      .map(e => {
+        const warm = getStagedItem(e.mediaId) ? ' — 🔥 already cached' : '';
+        return { name: `${mediaTypeEmoji(e.kind)} ${e.title} · ${fmtSpace(e.sizeBytes)}${warm}`.slice(0, 100), value: e.mediaId.slice(0, 100) };
+      });
+    return interaction.respond(choices).catch(() => {});
+  }
+
+  if (['pin', 'unpin'].includes(interaction.commandName)) {
+    const focusedTitle = interaction.options.getFocused(true);
+    if (focusedTitle.name !== 'title') return interaction.respond([]).catch(() => {});
+    const q = String(focusedTitle.value || '').toLowerCase().trim();
+    const wantPinned = interaction.commandName === 'unpin';
+    const choices = listStagedItems()
+      .filter(i => !!i.pinned === wantPinned && (!q || String(i.title || '').toLowerCase().includes(q)))
+      .slice(0, 25)
+      .map(i => ({ name: `${i.title} · ${fmtSpace(i.size_bytes)}`.slice(0, 100), value: String(i.media_id).slice(0, 100) }));
     return interaction.respond(choices).catch(() => {});
   }
 
@@ -978,6 +1235,12 @@ async function handleSlashCommand(interaction) {
   if (n === 'indexers') return handleIndexersCommand(interaction);
   if (n === 'debrid') return handleDebridCommand(interaction);
   if (n === 'cleanup-suggestions') return handleCleanupSuggestionsCommand(interaction);
+  if (n === 'stage') return handleStageCommand(interaction);
+  if (n === 'staged') return handleStagedCommand(interaction);
+  if (n === 'pin') return handlePinCommand(interaction, true);
+  if (n === 'unpin') return handlePinCommand(interaction, false);
+  if (n === 'stage-bulk') return handleStageBulkCommand(interaction);
+  if (n === 'assign-server') return handleAssignServerCommand(interaction);
   if (n === 'me') return handleMeCommand(interaction);
   if (n === 'myrequests') return handleMyRequestsCommand(interaction);
   if (n === 'downloads') return handleDownloadsCommand(interaction);
@@ -1054,7 +1317,7 @@ async function applyFullChainLink(discordId, email, username) {
     plexStatus = absorbed ? '✅ already had access (merged Plex row)' : '✅ already invited';
   } else {
     try {
-      const result = await inviteUserToPlex(email);
+      const result = await inviteUserToPlex(email, { homeServer: homeServerFor(discordId) });
       markUserInvited(discordId);
       plexStatus = result.successCount > 0 ? `✅ invite sent (${result.successCount}/${result.total})` : '⚠️ invite failed on all servers';
     } catch (err) {
@@ -1329,6 +1592,27 @@ async function handleStatusCommand(interaction) {
       { name: 'DB ↔ Overseerr', value: reconcileLine, inline: false },
       { name: 'Fixable sync issues', value: fixableLine, inline: false },
     );
+
+  // PH staging at a glance: cache free space, active stage jobs, tunnel state.
+  if (stagingConfigured()) {
+    const stagedItems = listStagedItems();
+    const jobs = listActiveStageJobs();
+    const cache = await getCacheStatus(stagedItems).catch(() => null);
+    const copying = jobs.find(j => j.status === 'copying');
+    const lines = [
+      cache && cache.freeBytes != null
+        ? `💾 Cache: ${fmtSpace(cache.freeBytes)} free${cache.totalBytes ? ` of ${fmtSpace(cache.totalBytes)}` : ''}${cache.source === 'budget' ? ' (budget estimate)' : ''}`
+        : '💾 Cache: free space unknown ⚠️',
+      `🎞️ Staged: ${stagedItems.length} title(s) (${stagedItems.filter(i => i.pinned).length} pinned)`,
+      copying ? `📥 Copying: **${copying.title}**${jobs.length > 1 ? ` (+${jobs.length - 1} queued)` : ''}` : `📥 Stage queue: ${jobs.length ? `${jobs.length} queued` : 'idle'}`,
+    ];
+    if (CONFIG.PH_TUNNEL_HEALTH_URL) {
+      const tState = getSetting('ph_tunnel_state') || 'unknown';
+      const tSince = Number(getSetting('ph_tunnel_since') || '0');
+      lines.push(`🛰️ Tunnel: ${tState === 'up' ? '✅ up' : tState === 'down' ? '❌ down' : '❔ not checked yet'}${tSince ? ` since ${discordTimestamp(tSince)}` : ''}`);
+    }
+    embed.addFields({ name: 'PH staging', value: lines.join('\n'), inline: false });
+  }
   audit('status_checked', { actorDiscordId: interaction.user.id, overall: health.overall });
   await interaction.editReply({ embeds: [embed] });
 }
@@ -1780,6 +2064,10 @@ async function handleInvitePostCommand(interaction) {
 }
 
 async function handleModalSubmit(interaction) {
+  if (interaction.customId === 'stage_bulk_modal') {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    return handleStageBulkModal(interaction);
+  }
   if (interaction.customId !== 'request_access_modal') return;
   const email = String(interaction.fields.getTextInputValue('plex_email') || '').toLowerCase().trim();
   if (!isValidEmail(email)) {
@@ -1816,7 +2104,7 @@ async function handleReinviteCommand(interaction) {
   if (!isValidEmail(email) || canonicalizeEmail(email).startsWith('__placeholder__:')) {
     return interaction.editReply(`⚠️ \`${email}\` isn't a real email address — can't send a Plex invite (managed/placeholder account).`);
   }
-  const result = await inviteUserToPlex(email);
+  const result = await inviteUserToPlex(email, { homeServer: homeServerFor(discordId) });
   // markUserInvited keys on the discord_id string, so it works for plex_ synthetic rows too.
   if (discordId) markUserInvited(discordId);
   audit('plex_reinvite_sent', { actorDiscordId: interaction.user.id, targetDiscordId: discordId, email, successCount: result.successCount, total: result.total });
@@ -2123,6 +2411,162 @@ async function handleKeepCommand(interaction) {
       : 'Nothing on your keep list. Media you choose to **Keep** shows up here, protected from cleanup.');
   await interaction.reply({ embeds: [embed], ephemeral: true });
 }
+// ---- Plex Home staging commands ----
+
+// /stage <title>: the verb the stack doesn't have. Overseerr can't request what's already
+// Available and Plex won't copy between servers — the bot resolves the path and queues an
+// rclone copy into the PH cache, then DMs the requester when it's warm.
+async function handleStageCommand(interaction) {
+  if (!stagingConfigured()) return interaction.reply({ content: '❌ Staging isn\'t configured — set `STAGING_ENABLED=true` and `STAGE_RCLONE_REMOTE`.', ephemeral: true });
+  if (!getUserByDiscordId(interaction.user.id)) return interaction.reply({ content: '❌ You must be linked first.', ephemeral: true });
+  if (!isAdminInteraction(interaction) && !takeRateLimit(stageCommandLimits, interaction.user.id, CONFIG.STAGE_MAX_PER_USER_PER_DAY, 24 * 3600000)) {
+    return interaction.reply({ content: `❌ You've hit the staging limit (${CONFIG.STAGE_MAX_PER_USER_PER_DAY}/day) — the uplink to the travel server only moves so fast. Try again tomorrow.`, ephemeral: true });
+  }
+  await interaction.deferReply({ ephemeral: true });
+  const raw = interaction.options.getString('title').trim();
+  const library = await getStageLibrary().catch(() => []);
+  let entry = null;
+  if (/^(tmdb|tvdb):\d+$/.test(raw)) {
+    entry = library.find(e => e.mediaId === raw) || { mediaId: raw, kind: raw.startsWith('tvdb:') ? 'tv' : 'movie', title: raw, sizeBytes: 0 };
+  } else {
+    const q = raw.toLowerCase();
+    entry = library.find(e => e.title.toLowerCase() === q) || library.find(e => e.title.toLowerCase().includes(q));
+  }
+  if (!entry) return interaction.editReply(`❌ Nothing in the library matches **${raw}** — start typing and pick from the suggestions. (Not downloaded yet? Use \`/request\` first.)`);
+  if (getStagedItem(entry.mediaId)) return interaction.editReply(`🔥 **${entry.title}** is already warm in the travel cache — it should play instantly.`);
+
+  const { duplicate, job } = enqueueStageJob({ mediaId: entry.mediaId, mediaType: entry.kind, title: entry.title, discordId: interaction.user.id, origin: 'command' });
+  if (duplicate) {
+    return interaction.editReply(`⏳ **${entry.title}** is already ${job.status === 'copying' ? 'copying to the travel server right now' : 'in the staging queue'} — you'll get a DM when it's ready.`);
+  }
+  const ahead = listActiveStageJobs().filter(j => j.id < job.id).length;
+  audit('stage_requested', { actorDiscordId: interaction.user.id, mediaId: entry.mediaId, title: entry.title, sizeBytes: entry.sizeBytes });
+  pumpStageQueue().catch(() => {});
+  await interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
+    .setTitle(`📦 Staging — ${entry.title}`)
+    .setDescription(`Copying **${entry.title}**${entry.sizeBytes ? ` (${fmtSpace(entry.sizeBytes)})` : ''} to the travel server${ahead ? ` — ${ahead} job(s) ahead in the queue` : ' now'}.\nThe link is slow across the ocean, so this can take a while — you'll get a DM the moment it's warm. 🔥`)] });
+}
+
+// /staged: what's warm, what's pinned, what's copying, and how much cache is left.
+async function handleStagedCommand(interaction) {
+  if (!stagingConfigured()) return interaction.reply({ content: '❌ Staging isn\'t configured.', ephemeral: true });
+  await interaction.deferReply({ ephemeral: true });
+  const items = listStagedItems();
+  const jobs = listActiveStageJobs();
+  const cache = await getCacheStatus(items);
+
+  const itemLine = i => `${i.pinned ? '📌' : '🎞️'} **${i.title}** — ${fmtSpace(i.size_bytes)}${i.last_streamed_at ? ` · watched ${discordTimestamp(i.last_streamed_at)}` : ''}`;
+  const jobLine = j => j.status === 'copying'
+    ? `📥 **${j.title}** — copying${j.started_at ? ` since ${discordTimestamp(j.started_at)}` : ''}`
+    : `⏳ **${j.title}** — queued`;
+  const cacheLine = cache.freeBytes == null
+    ? '⚠️ Free space unknown (`rclone about` unsupported and no `STAGE_CACHE_MAX_GB` budget set)'
+    : `${fmtSpace(cache.freeBytes)} free${cache.totalBytes ? ` of ${fmtSpace(cache.totalBytes)}` : ''}${cache.source === 'budget' ? ' (budget estimate)' : ''} · ${fmtSpace(cache.usedByCache)} in ${items.length} staged title(s)`;
+
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle('🧳 Travel Server Cache')
+    .addFields(
+      { name: 'Cache', value: cacheLine, inline: false },
+      { name: `Warm (${items.length})`, value: items.length ? items.sort((a, b) => (b.pinned - a.pinned) || (b.staged_at || 0) - (a.staged_at || 0)).map(itemLine).join('\n').slice(0, 1024) : 'Nothing staged yet — `/stage` a title.', inline: false },
+      { name: `Staging queue (${jobs.length})`, value: jobs.length ? jobs.map(jobLine).join('\n').slice(0, 1024) : 'Idle.', inline: false },
+    );
+  if (CONFIG.PH_TUNNEL_HEALTH_URL) {
+    const state = getSetting('ph_tunnel_state') || 'unknown';
+    const since = Number(getSetting('ph_tunnel_since') || '0');
+    embed.addFields({ name: 'Tunnel', value: `${state === 'up' ? '✅ up' : state === 'down' ? '❌ down' : '❔ not checked yet'}${since ? ` since ${discordTimestamp(since)}` : ''}`, inline: false });
+  }
+  await interaction.editReply({ embeds: [embed] });
+}
+
+// /pin and /unpin: LRU has no idea the same six movies get rewatched weekly. Anyone linked can
+// pin; unpin needs the pinner, the stager, or an admin (a pin is someone's promise to themselves).
+async function handlePinCommand(interaction, pin) {
+  if (!stagingConfigured()) return interaction.reply({ content: '❌ Staging isn\'t configured.', ephemeral: true });
+  if (!getUserByDiscordId(interaction.user.id)) return interaction.reply({ content: '❌ You must be linked first.', ephemeral: true });
+  const raw = interaction.options.getString('title').trim();
+  const items = listStagedItems();
+  const item = items.find(i => i.media_id === raw)
+    || items.find(i => String(i.title || '').toLowerCase() === raw.toLowerCase())
+    || items.find(i => String(i.title || '').toLowerCase().includes(raw.toLowerCase()));
+  if (!item) return interaction.reply({ content: `❌ **${raw}** isn't in the travel cache — only staged titles can be ${pin ? 'pinned' : 'unpinned'}.`, ephemeral: true });
+  if (pin && item.pinned) return interaction.reply({ content: `📌 **${item.title}** is already pinned${item.pinned_by_discord_id ? ` (by <@${item.pinned_by_discord_id}>)` : ''}.`, ephemeral: true });
+  if (!pin && !item.pinned) return interaction.reply({ content: `ℹ️ **${item.title}** isn't pinned.`, ephemeral: true });
+  if (!pin && ![item.pinned_by_discord_id, item.staged_by_discord_id].includes(interaction.user.id) && !isAdminInteraction(interaction)) {
+    return interaction.reply({ content: `❌ Only the person who pinned it${item.pinned_by_discord_id ? ` (<@${item.pinned_by_discord_id}>)` : ''} or an admin can unpin **${item.title}**.`, ephemeral: true });
+  }
+  setStagedItemPinned(item.media_id, pin, interaction.user.id);
+  audit(pin ? 'staged_item_pinned' : 'staged_item_unpinned', { actorDiscordId: interaction.user.id, mediaId: item.media_id, title: item.title });
+  return interaction.reply({ content: pin
+    ? `📌 Pinned **${item.title}** — it's exempt from cache eviction until unpinned.`
+    : `📍 Unpinned **${item.title}** — it's back in the normal eviction rotation.`, ephemeral: true });
+}
+
+// /stage-bulk: seed the cache while still on LAN at gigabit — feed it a list, arrive with a
+// warm server instead of an empty one. Admin-only; results land in /staged, not a DM storm.
+async function handleStageBulkCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  if (!stagingConfigured()) return interaction.reply({ content: '❌ Staging isn\'t configured.', ephemeral: true });
+  const modal = new ModalBuilder()
+    .setCustomId('stage_bulk_modal')
+    .setTitle('Bulk Stage Titles')
+    .addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('titles')
+        .setLabel('One title per line (max 50)')
+        .setPlaceholder('Inception\nSpirited Away\nBluey')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true)
+        .setMaxLength(4000),
+    ));
+  return interaction.showModal(modal);
+}
+
+async function handleStageBulkModal(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const lines = String(interaction.fields.getTextInputValue('titles') || '')
+    .split('\n').map(l => l.trim()).filter(Boolean).slice(0, 50);
+  const library = await getStageLibrary().catch(() => []);
+  const queued = []; const warm = []; const missing = [];
+  for (const line of lines) {
+    const q = line.toLowerCase();
+    const entry = library.find(e => e.title.toLowerCase() === q) || library.find(e => e.title.toLowerCase().includes(q));
+    if (!entry) { missing.push(line); continue; }
+    if (getStagedItem(entry.mediaId)) { warm.push(entry.title); continue; }
+    const { duplicate } = enqueueStageJob({ mediaId: entry.mediaId, mediaType: entry.kind, title: entry.title, discordId: interaction.user.id, origin: 'bulk' });
+    if (!duplicate) queued.push(`${entry.title} (${fmtSpace(entry.sizeBytes)})`);
+  }
+  audit('stage_bulk_enqueued', { actorDiscordId: interaction.user.id, queued: queued.length, alreadyWarm: warm.length, missing });
+  pumpStageQueue().catch(() => {});
+  await interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
+    .setTitle('📦 Bulk Stage Queued')
+    .setDescription([
+      queued.length ? `**Queued (${queued.length}):**\n${queued.map(t => `• ${t}`).join('\n')}` : '**Queued:** nothing new',
+      warm.length ? `**Already warm (${warm.length}):** ${warm.join(', ')}` : null,
+      missing.length ? `**Not in the library (${missing.length}):** ${missing.join(', ')} — \`/request\` these first` : null,
+      'Track progress with `/staged`.',
+    ].filter(Boolean).join('\n\n').slice(0, 4000))] });
+}
+
+// /assign-server: Plex never syncs watch state between servers, so each person belongs to
+// exactly one. This drives invite scoping and MEDIA_AVAILABLE auto-staging.
+async function handleAssignServerCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  const target = interaction.options.getUser('user');
+  const server = interaction.options.getString('server', true);
+  const row = getUserByDiscordId(target.id);
+  if (!row) return interaction.reply({ content: `⚠️ ${target.tag} isn't in the DB — \`/link\` them first.`, ephemeral: true });
+  if ((row.home_server || 'primary') === server) return interaction.reply({ content: `ℹ️ ${target.tag} is already on **${server}**.`, ephemeral: true });
+  setUserHomeServer(target.id, server);
+  audit('user_home_server_changed', { actorDiscordId: interaction.user.id, targetDiscordId: target.id, from: row.home_server || 'primary', to: server });
+  const notes = [
+    `✅ ${target.tag} is now a **${server}** user${server === 'ph' ? ' — their finished-request titles will auto-stage to the travel cache' : ''}.`,
+  ];
+  if (row.invited) {
+    notes.push(`⚠️ They were already invited under the old assignment. Send a fresh invite to the ${server === 'ph' ? 'PH box' : 'primary'} with \`/reinvite\`, and remove their share on the old server from plex.tv if they shouldn't keep it (watch state doesn't sync between servers).`);
+  }
+  return interaction.reply({ content: notes.join('\n'), ephemeral: true });
+}
+
 async function handleHelpCommand(interaction) {
   const userCommands = [
     '`/request` — Search and request a movie or show; an admin approves it in Discord',
@@ -2135,6 +2579,12 @@ async function handleHelpCommand(interaction) {
     '`/keep` — Show your keep list (media saved from cleanup)',
     '`/help` — Show this help message',
   ];
+  if (stagingConfigured()) {
+    userCommands.splice(2, 0,
+      '`/stage` — Copy a title to the travel server so it plays instantly there',
+      '`/staged` — See what\'s warm in the travel cache (and what\'s copying)',
+      '`/pin` / `/unpin` — Protect a cached title from automatic eviction');
+  }
   const embed = brandedEmbed(COLORS.PLEX)
     .setTitle('🎬 Durant Media Server — Help')
     .setDescription('DM the bot your Plex account email → an admin approves → you get Plex + Seerr (request) access.')
@@ -2160,6 +2610,11 @@ async function handleHelpCommand(interaction) {
       '`/debrid` — Premiumize account + transfer status',
       '`/cleanup-suggestions` — Largest/oldest media that could be cleaned up',
     ];
+    if (stagingConfigured()) {
+      adminCommands.push(
+        '`/stage-bulk` — Seed the travel cache from a list of titles',
+        '`/assign-server` — Set a user\'s home server (primary / ph)');
+    }
     embed.addFields({ name: 'Admin commands', value: adminCommands.join('\n'), inline: false });
   }
   await interaction.reply({ embeds: [embed], ephemeral: true });
@@ -2225,7 +2680,7 @@ async function handleButton(interaction) {
     const user = getUserByDiscordId(targetDiscordId);
     if (!user) return interaction.editReply({ content: 'User not found.', components: [] });
     let plexStatus = 'failed'; let overseerrStatus = 'failed'; let plexOk = false;
-    try { const result = await inviteUserToPlex(user.email); markUserInvited(targetDiscordId); plexOk = result.successCount > 0; plexStatus = `ok (${result.successCount}/${result.total})`; } catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId }); }
+    try { const result = await inviteUserToPlex(user.email, { homeServer: homeServerFor(targetDiscordId) }); markUserInvited(targetDiscordId); plexOk = result.successCount > 0; plexStatus = `ok (${result.successCount}/${result.total})`; } catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId }); }
     try { const du = await client.users.fetch(targetDiscordId); const oid = await createOverseerrUser(user.email, targetDiscordId, du.username); markOverseerrCreated(targetDiscordId, oid); overseerrStatus = `ok (${oid})`; } catch (err) { audit('external_api_error', { provider: 'overseerr', error: err.message, targetDiscordId }); }
     audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: 'plex_approve' });
     // The welcome DM promises a confirmation — deliver it.
@@ -2547,6 +3002,39 @@ async function handleButton(interaction) {
         .setTitle('❌ Remove Failed')
         .setDescription(`${itemName}\n\n${err.message}\n(It may have already finished or been removed.)`)], components: [] });
     }
+  }
+
+  // PH cache eviction prompt (the travel-server twin of delete_yes/delete_no). Deliberately a
+  // separate action pair: an evict button can never reach executeDeletion, and a stale delete
+  // button can never purge the cache. customIds carry no title (`evict_yes:<mediaId>:<snowflake>`)
+  // — it's re-read from staged_items so long titles can't blow Discord's 100-char limit.
+  if (['evict_yes', 'evict_no'].includes(action)) {
+    const requestorId = parts[parts.length - 1];
+    const mediaId = parts.slice(0, -1).join(':');
+    if (interaction.user.id !== requestorId && !isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Not allowed.', ephemeral: true });
+    const staged = getStagedItem(mediaId);
+    if (action === 'evict_no') {
+      touchStagedItem(mediaId); // an explicit "keep" resets the LRU clock too
+      audit('evict_decision_made', { actorDiscordId: interaction.user.id, mediaId, decision: 'keep_cached' });
+      return interaction.update({ content: `🔥 Keeping **${staged?.title || 'this title'}** warm in the cache. Tip: \`/pin\` protects it from automatic eviction.`, components: [] });
+    }
+    if (!staged) return interaction.update({ content: 'ℹ️ Already evicted.', components: [] });
+    if (staged.pinned) return interaction.reply({ content: '📌 This title is pinned — `/unpin` it first.', ephemeral: true });
+    await interaction.deferUpdate();
+    const ok = await evictStagedItemNow(staged, { actorDiscordId: interaction.user.id, reason: 'evict_button' });
+    if (!ok) return interaction.followUp({ content: '❌ Eviction failed (rclone error) — the buttons still work, try again.', ephemeral: true });
+    return interaction.editReply({ content: `📤 Evicted **${staged.title}** — freed ${fmtSpace(staged.size_bytes)} on the travel server. The California master is untouched; \`/stage\` brings it back anytime.`, components: [] });
+  }
+
+  // Retry button on stage-failure alerts (system channel — admin only).
+  if (action === 'stage_retry') {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const job = getStageJob(Number(parts[0]));
+    if (!job) return interaction.update({ content: 'ℹ️ Job no longer exists.', components: [] });
+    if (!requeueStageJob(job.id)) return interaction.update({ content: `ℹ️ Job is ${job.status} — nothing to retry.`, components: [] });
+    audit('stage_job_retried', { actorDiscordId: interaction.user.id, jobId: job.id, mediaId: job.media_id });
+    pumpStageQueue().catch(() => {});
+    return interaction.update({ content: `🔁 Re-queued **${job.title}** for staging.`, components: [] });
   }
 
   if (action === 'delete_yes') {
@@ -3144,28 +3632,49 @@ async function handleOverseerrWebhook(body) {
   }
 
   if (notification_type === 'MEDIA_AVAILABLE' && requesterDiscordId) {
+    // Close the loop for PH users: the import just finished in California, so kick the cache
+    // copy now instead of making them /stage a title Overseerr already calls "Available".
+    let autoStaged = false;
+    if (stagingConfigured() && homeServerFor(requesterDiscordId) === 'ph' && !getStagedItem(mediaId)) {
+      const { duplicate } = enqueueStageJob({ mediaId, mediaType: media.media_type === 'tv' ? 'tv' : 'movie', title, discordId: requesterDiscordId, origin: 'auto' });
+      autoStaged = true;
+      if (!duplicate) audit('stage_auto_enqueued', { targetDiscordId: requesterDiscordId, mediaId, title });
+      pumpStageQueue().catch(() => {});
+    }
     const embed = brandedEmbed(COLORS.SUCCESS)
-      .setTitle('🍿 Now Available on Plex')
-      .setDescription(`**${title}** is ready to watch — enjoy!\n\nWant something else? Use \`/download\` or request more anytime.`);
+      .setTitle(autoStaged ? '🍿 Downloaded — Copying to Your Server' : '🍿 Now Available on Plex')
+      .setDescription(autoStaged
+        ? `**${title}** finished downloading and is being copied to your home server now.\nThe link across the ocean takes a while — you'll get another DM the moment it's ready to play. 🔥`
+        : `**${title}** is ready to watch — enjoy!\n\nWant something else? Use \`/download\` or request more anytime.`);
     if (poster) embed.setImage(poster);
     const sent = await dmUser(requesterDiscordId, { embeds: [embed] });
-    if (sent) audit('media_available_notification_sent', { targetDiscordId: requesterDiscordId, title });
+    if (sent) audit('media_available_notification_sent', { targetDiscordId: requesterDiscordId, title, autoStaged });
   }
 }
 
 async function handlePlexWebhook(payload) {
-  const { event, Account, Metadata } = payload;
+  const { event, Account, Metadata, Server } = payload;
   if (event !== 'media.scrobble' || !Account || !Metadata) return;
+  // Every scrobble is gated on which server it came from BEFORE anything destructive can
+  // happen: a PH viewer finishing a movie must never reach the delete flow against the master.
+  const origin = classifyServerIdentity({ serverName: Server?.title, machineId: Server?.uuid });
+  if (origin === 'unknown') {
+    audit('webhook_server_unmatched', { source: 'plex', serverName: Server?.title || null, machineId: Server?.uuid || null, event });
+    return;
+  }
   const mediaType = Metadata.type;
   const title = mediaType === 'episode' ? (Metadata.grandparentTitle || Metadata.title) : Metadata.title;
   const videoStream = Metadata.Media?.[0]?.Part?.[0]?.Stream?.find(s => s.streamType === 1);
   const resolution = (videoStream?.displayTitle || '').toLowerCase();
   const is4k = resolution.includes('4k') || resolution.includes('2160');
-  if (mediaType === 'movie' && !is4k) return;
 
   const guids = Metadata.Guid || [];
   const mediaId = mediaType === 'movie' ? `tmdb:${(guids.find(g => g.id?.startsWith('tmdb://'))?.id || '').replace('tmdb://', '')}` : `tvdb:${(guids.find(g => g.id?.startsWith('tvdb://'))?.id || '').replace('tvdb://', '')}`;
   if (!mediaId || mediaId.endsWith(':')) return;
+  if (origin === 'ph') {
+    return handlePhWatchedEvent({ event: 'watched', mediaId, title, mediaType: mediaType === 'episode' ? 'tv' : 'movie' });
+  }
+  if (mediaType === 'movie' && !is4k) return;
   if (isInKeepList(mediaId) || CONFIG.NEVER_DELETE_MEDIA_IDS.includes(mediaId)) return;
 
   const reqRow = db.prepare('SELECT * FROM requests WHERE media_id = ? ORDER BY created_at DESC LIMIT 1').get(mediaId);
@@ -3187,13 +3696,25 @@ async function handlePlexWebhook(payload) {
 }
 
 async function handleTautulliWebhook(body) {
-  const { event, user_email, media_type, title, grandparent_title, tmdb_id, tvdb_id, is_4k } = body;
-  if (event !== 'watched' || !user_email) return;
-  const is4k = String(is_4k || '').toLowerCase().includes('4k');
-  if (media_type === 'movie' && !is4k) return;
+  const { event, user_email, media_type, title, grandparent_title, tmdb_id, tvdb_id, is_4k, server_name, machine_id } = body;
+  // Server-aware routing: the payload's server identity decides which flow an event may reach.
+  // PH events go to the eviction flow (cache only), primary events to the delete flow, and
+  // unidentifiable events are dropped — a delete prompt fired for the wrong server costs a
+  // master file; a skipped prompt costs nothing.
+  const origin = classifyServerIdentity({ serverName: server_name, machineId: machine_id });
+  if (origin === 'unknown') {
+    audit('webhook_server_unmatched', { source: 'tautulli', serverName: server_name || null, machineId: machine_id || null, event });
+    return;
+  }
   const mediaId = media_type === 'movie' ? `tmdb:${tmdb_id}` : `tvdb:${tvdb_id}`;
   if (!tmdb_id && media_type === 'movie') return;
   if (!tvdb_id && media_type === 'episode') return;
+  if (origin === 'ph') {
+    return handlePhWatchedEvent({ event, mediaId, title: media_type === 'episode' ? (grandparent_title || title) : title, mediaType: media_type === 'episode' ? 'tv' : 'movie', watcherEmail: user_email });
+  }
+  if (event !== 'watched' || !user_email) return;
+  const is4k = String(is_4k || '').toLowerCase().includes('4k');
+  if (media_type === 'movie' && !is4k) return;
   const reqRow = db.prepare('SELECT * FROM requests WHERE media_id = ? ORDER BY created_at DESC LIMIT 1').get(mediaId);
   if (!isSnowflake(reqRow?.requested_by_discord_id) || isInKeepList(mediaId)) return;
   const snoozeUntil = Number(getSetting(`delete_prompt_snooze:${mediaId}:${reqRow.requested_by_discord_id}`) || '0');
@@ -3210,6 +3731,40 @@ async function handleTautulliWebhook(body) {
   const tautulliAutoLine = CONFIG.ENABLE_DELETION ? `\n\n⏳ Auto-deletes in ${CONFIG.DELETION_GRACE_HOURS} hour(s) unless you choose **Keep**.` : '';
   await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [brandedEmbed(COLORS.WARN).setTitle('📺 Finished Watching').setDescription(`Looks like you finished **${showTitle}**. Keep it, or free up space?${tautulliAutoLine}`)], components: [row] });
   recordPendingDeletion(mediaId, media_type === 'episode' ? 'tv' : 'movie', showTitle, reqRow.requested_by_discord_id);
+}
+
+// A playback event from the PH box. Any event bumps the LRU clock for a cached title; a
+// finished watch re-uses the familiar 90% prompt UX, but pointed at the CACHE: "Yes" frees
+// local cache space and the master file in California is untouched either way.
+async function handlePhWatchedEvent({ event, mediaId, title, mediaType, watcherEmail }) {
+  const staged = getStagedItem(mediaId);
+  if (!staged) return; // not cache-managed (e.g. pre-seeded by hand) — nothing to track or evict
+  touchStagedItem(mediaId);
+  if (event !== 'watched') return;
+  if (staged.pinned) return; // pinned = weekly rewatch material; don't even ask
+  // One prompt per title per cooldown window — a nightly episode binge shouldn't re-ask daily.
+  const lastPrompt = Number(getSetting(`evict_prompt_last:${mediaId}`) || '0');
+  if (Date.now() - lastPrompt < 12 * 3600000) return;
+
+  // Address the prompt to the watcher when their Plex email is linked, else whoever staged it.
+  const watcher = watcherEmail ? getUserByCanonicalEmail(watcherEmail) : null;
+  const reqRow = db.prepare('SELECT requested_by_discord_id FROM requests WHERE media_id = ? ORDER BY created_at DESC LIMIT 1').get(mediaId);
+  const targetId = [watcher?.discord_id, staged.staged_by_discord_id, reqRow?.requested_by_discord_id, CONFIG.ADMIN_USER_ID].find(isSnowflake);
+  if (!targetId) return;
+  const channel = await safeGetChannel(channelFor('cleanup'));
+  if (!channel) return;
+  setSetting(`evict_prompt_last:${mediaId}`, String(Date.now()));
+  // Unlike the delete buttons, no title in the customId: mediaId + snowflake alone leave
+  // headroom under Discord's 100-char limit, and a long encoded title would make channel.send
+  // reject the whole prompt. The handlers re-read the title from staged_items.
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`evict_no:${mediaId}:${targetId}`).setLabel('Keep It Cached').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`evict_yes:${mediaId}:${targetId}`).setLabel('Free Up Space').setStyle(ButtonStyle.Primary),
+  );
+  await channel.send({ content: `<@${targetId}>`, embeds: [brandedEmbed(COLORS.WARN)
+    .setTitle(`${mediaTypeEmoji(mediaType, false)} Finished Watching (Travel Server)`)
+    .setDescription(`Looks like you finished **${staged.title || title}**. Free up ${fmtSpace(staged.size_bytes)} of cache space?\n\nEither way the master copy in California is untouched — \`/stage\` brings it back anytime.`)], components: [row] });
+  audit('evict_prompt_sent', { mediaId, title: staged.title || title, targetDiscordId: targetId });
 }
 
 function shutdown(sig) {
