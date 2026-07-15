@@ -25,11 +25,11 @@ const crypto = require('crypto');
 
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
-const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, statusEmoji, pad, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
+const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
 const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
-const { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, escalateMediaToAvistaz, verifyAvistazTags, remapPath } = require('./src/arr');
+const { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, escalateMediaToAvistaz, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
 const { decideEscalationAction, escalationEligible } = require('./src/escalation');
 const { tautulliConfigured, tautulliApi, describeSession } = require('./src/tautulli');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus } = require('./src/staging');
@@ -426,13 +426,18 @@ async function sweepEscalations() {
     // button is clicked or the media resolves). Buttons survive restarts — state is in SQLite.
     setEscalationState(row.id, 'alerted');
     audit('escalation_alerted', { mediaId: row.media_id, title: row.title, waitedHours });
-    notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
+    // Escalating a title that isn't out yet is pointless — surface the release timing so the
+    // admin can tell "no seeders" apart from "not released".
+    const eta = releaseEtaInfo(await fetchReleaseEta({ mediaType: row.media_type, tmdbId: row.tmdb_id, tvdbId: row.tvdb_id }));
+    const alertEmbed = brandedEmbed(COLORS.WARN)
       .setTitle(`⏳ Nothing Found Yet — ${row.title}`)
       .setDescription(`No public release grabbed in **${waitedHours}h** since approval. Escalate to AvistaZ (private tracker → seedbox)?`)
       .addFields(
         { name: 'Requested by', value: row.requested_by_discord_id ? `<@${row.requested_by_discord_id}>` : 'Unknown', inline: true },
         { name: 'Type', value: mediaTypeLabel(row.media_type, false), inline: true },
-      )],
+      );
+    if (eta) alertEmbed.addFields({ name: 'Release timing', value: `${eta.line}${eta.waiting ? '\nEscalating now likely won\'t help — the title isn\'t out yet.' : ''}`, inline: false });
+    notifyChannel('downloads', { embeds: [alertEmbed],
       components: [new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`escalate_az:${row.id}`).setLabel('Escalate to AvistaZ').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId(`escalate_ignore:${row.id}`).setLabel('Ignore').setStyle(ButtonStyle.Secondary),
@@ -2219,7 +2224,24 @@ async function handleRequestStatusCommand(interaction) {
         lines.push('Often this means no seeders. The stuck-download watchdog will offer admins a one-click "try another release" fix.');
       }
     } else {
-      lines.push('🔎 Approved, but nothing is downloading for it yet — usually no good release has been grabbed so far. The *arrs keep retrying automatically; an admin can force a search from Radarr/Sonarr.');
+      // Before blaming the indexers, check whether the title is even out yet — Radarr/Sonarr
+      // know the digital release / air dates, and "it releases March 14" beats "no release
+      // has been grabbed" when the real answer is "it isn't out".
+      const idNum = Number(row.media_id.split(':')[1]);
+      // TV rows from the /request gate are keyed tmdb: but Sonarr keys off tvdb — backfill it.
+      const tvdbId = row.media_id.startsWith('tvdb:') ? idNum
+        : (row.media_type === 'tv' ? await fetchSeerrTvdbId(idNum) : null);
+      const eta = releaseEtaInfo(await fetchReleaseEta({
+        mediaType: row.media_type,
+        tmdbId: row.media_id.startsWith('tmdb:') ? idNum : null,
+        tvdbId,
+      }));
+      if (eta?.waiting) {
+        lines.push(`⏳ It isn't out yet, so there's nothing to download — it'll be grabbed automatically once it releases.\n${eta.line}`);
+      } else {
+        lines.push('🔎 Approved, but nothing is downloading for it yet — usually no good release has been grabbed so far. The *arrs keep retrying automatically; an admin can force a search from Radarr/Sonarr.');
+        if (eta) lines.push(eta.line);
+      }
     }
   }
   await interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
@@ -3606,9 +3628,19 @@ async function handleOverseerrWebhook(body) {
   }
 
   if (['MEDIA_APPROVED', 'MEDIA_AUTO_APPROVED'].includes(notification_type) && requesterDiscordId) {
+    // Radarr/Sonarr know the digital release / air dates by now (Seerr adds the title on
+    // approval) — set expectations up front instead of promising a grab that can't happen
+    // until the title is actually out. Best-effort: no ETA just means the plain copy.
+    const eta = releaseEtaInfo(await fetchReleaseEta({
+      mediaType: media.media_type === 'tv' ? 'tv' : 'movie',
+      tmdbId: media.tmdbId ?? null,
+      tvdbId: media.tvdbId ?? null,
+    }));
     const embed = brandedEmbed(COLORS.SUCCESS)
       .setTitle('🎉 Request Approved')
-      .setDescription(`**${title}** was approved and is being grabbed now.\nYou'll get another DM the moment it's ready to watch.`);
+      .setDescription(eta?.waiting
+        ? `**${title}** was approved! It isn't out yet, so it'll be grabbed automatically the moment it releases.\n${eta.line}\nYou'll get another DM when it's ready to watch.`
+        : `**${title}** was approved and is being grabbed now.\nYou'll get another DM the moment it's ready to watch.${eta ? `\n\n${eta.line}` : ''}`);
     if (poster) embed.setThumbnail(poster);
     await dmUser(requesterDiscordId, { embeds: [embed] });
   }
