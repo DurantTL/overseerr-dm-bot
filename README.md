@@ -30,7 +30,9 @@ Durant Media Server Bot is a Discord + Plex + Seerr/Overseerr automation bot for
   `.env.example` for the routing map.
 - Pipeline visibility: `/request-status` explains why a request isn't ready (pending approval,
   downloading with progress/ETA, stalled with the *arr's reported reason, or waiting for a
-  release), `/queue` shows live downloads with stall reasons, `/watching` shows current Plex
+  release — including the expected digital release / air date pulled from Radarr/Sonarr when the
+  title simply isn't out yet; approval DMs and AvistaZ escalation alerts show the same release
+  ETA), `/queue` shows live downloads with stall reasons, `/watching` shows current Plex
   sessions, `/indexers` shows Prowlarr/Byparr health, `/debrid` shows Premiumize status, and
   `/cleanup-suggestions` lists the biggest disk hogs (read-only; honors keep/never-delete lists).
 - Heavy-transcode alerts via Tautulli, startup config sanity warnings, and a version-stamped
