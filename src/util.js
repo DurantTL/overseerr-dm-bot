@@ -59,9 +59,14 @@ function releaseEtaInfo(info, now = Date.now()) {
       if (now - digital <= 30 * 86400000) return { line: `💿 Digitally released ${discordTimestamp(digital, 'R')} — a good copy should turn up soon.`, waiting: false };
       return null;
     }
+    // Radarr calling it 'released' outranks a missing digital date — the movie is out, so
+    // never claim it's still waiting on a release.
+    if (info.status === 'released') return null;
     if (cinemas != null && cinemas > now) return { line: `🎬 Hits theaters ${when(cinemas)} — digital release usually follows a few months later.`, waiting: true };
-    if (cinemas != null) return { line: `🎬 In theaters since ${discordTimestamp(cinemas, 'D')} — no digital date announced yet; those typically land a few months after the theatrical release.`, waiting: true };
-    if (info.status && info.status !== 'released') return { line: '📅 No release date announced yet — this could be a long wait.', waiting: true };
+    // A theatrical-only "not out yet" claim is only plausible while a digital window could
+    // still be coming (~6 months); past that the metadata is stale, not the release.
+    if (cinemas != null && now - cinemas <= 180 * 86400000) return { line: `🎬 In theaters since ${discordTimestamp(cinemas, 'D')} — no digital date announced yet; those typically land a few months after the theatrical release.`, waiting: true };
+    if (cinemas == null && info.status) return { line: '📅 No release date announced yet — this could be a long wait.', waiting: true };
     return null;
   }
   if (info.kind === 'tv') {
