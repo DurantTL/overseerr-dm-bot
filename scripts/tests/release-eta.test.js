@@ -35,6 +35,8 @@ const { loadSandbox } = require('./extract');
   r = releaseEtaInfo({ kind: 'movie', status: 'announced' }, now);
   assert.strictEqual(r.waiting, true, 'announced with no dates still waits');
   assert.strictEqual(releaseEtaInfo({ kind: 'movie', status: 'released' }, now), null, 'released with no dates adds nothing');
+  assert.strictEqual(releaseEtaInfo({ kind: 'movie', status: 'released', inCinemas: iso(now - 20 * DAY) }, now), null, 'released status outranks a theaters-only date');
+  assert.strictEqual(releaseEtaInfo({ kind: 'movie', status: 'inCinemas', inCinemas: iso(now - 300 * DAY) }, now), null, 'stale theaters-only date is not "waiting"');
 
   r = releaseEtaInfo({ kind: 'tv', firstAired: iso(now + 10 * DAY), status: 'upcoming' }, now);
   assert.deepStrictEqual({ waiting: r.waiting, prem: /Premieres/.test(r.line) }, { waiting: true, prem: true }, 'unaired show shows premiere date');
