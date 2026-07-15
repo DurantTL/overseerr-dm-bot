@@ -42,6 +42,39 @@ function requestStatusBadge(status) {
 
 function discordTimestamp(ms, style = 'R') { return `<t:${Math.floor(ms / 1000)}:${style}>`; }
 
+// Turns fetchReleaseEta()'s normalized info into a one-line human explanation of when the title
+// might become downloadable, or null when release timing adds nothing (released a while ago,
+// aired show with no upcoming episode). `waiting` is true when the title simply isn't out yet —
+// callers use it to soften "being grabbed now" copy. Dates render as Discord timestamps so every
+// viewer sees their own timezone/locale.
+function releaseEtaInfo(info, now = Date.now()) {
+  if (!info) return null;
+  const ts = v => { const t = Date.parse(v || ''); return Number.isFinite(t) ? t : null; };
+  const when = t => `${discordTimestamp(t, 'D')} (${discordTimestamp(t, 'R')})`;
+  if (info.kind === 'movie') {
+    const digital = ts(info.digitalRelease) ?? ts(info.physicalRelease);
+    const cinemas = ts(info.inCinemas);
+    if (digital != null) {
+      if (digital > now) return { line: `📅 Digital release expected ${when(digital)} — downloads usually start around then.`, waiting: true };
+      if (now - digital <= 30 * 86400000) return { line: `💿 Digitally released ${discordTimestamp(digital, 'R')} — a good copy should turn up soon.`, waiting: false };
+      return null;
+    }
+    if (cinemas != null && cinemas > now) return { line: `🎬 Hits theaters ${when(cinemas)} — digital release usually follows a few months later.`, waiting: true };
+    if (cinemas != null) return { line: `🎬 In theaters since ${discordTimestamp(cinemas, 'D')} — no digital date announced yet; those typically land a few months after the theatrical release.`, waiting: true };
+    if (info.status && info.status !== 'released') return { line: '📅 No release date announced yet — this could be a long wait.', waiting: true };
+    return null;
+  }
+  if (info.kind === 'tv') {
+    const first = ts(info.firstAired);
+    const next = ts(info.nextAiring);
+    if (first != null && first > now) return { line: `📅 Premieres ${when(first)}.`, waiting: true };
+    if (next != null) return { line: `📅 Next episode airs ${when(next)}.`, waiting: false };
+    if (info.status === 'upcoming') return { line: '📅 Not airing yet — no premiere date announced.', waiting: true };
+    return null;
+  }
+  return null;
+}
+
 function statusEmoji(v) {
   if (['ok', 'configured'].includes(v)) return '✅';
   if (v === 'skipped') return '⏭️';
@@ -70,4 +103,4 @@ function queueItemLooksUnhealthy(item) {
   return item.trackedStatus === 'warning' || item.status === 'warning' || item.status === 'failed' || item.messages.length > 0;
 }
 
-module.exports = { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, statusEmoji, pad, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy };
+module.exports = { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy };

@@ -286,6 +286,48 @@ async function verifyAvistazTags(tagName) {
   return warnings;
 }
 
+// ---- Release ETA: when might a title actually become downloadable? ----
+// Radarr tracks a movie's theatrical/digital/physical release dates; Sonarr tracks a series'
+// air dates. Best-effort by design: any failure (not configured, not in the arr yet, API down)
+// returns null and callers simply omit the ETA line.
+async function fetchReleaseEta({ mediaType, tmdbId, tvdbId }) {
+  try {
+    if (mediaType === 'movie') {
+      if (!tmdbId) return null;
+      const sources = [
+        { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, label: 'radarr' },
+        { url: CONFIG.RADARR_4K_URL, key: CONFIG.RADARR_4K_API_KEY, label: 'radarr-4k' },
+      ].filter(s => s.url);
+      for (const s of sources) {
+        const res = await axios.get(`${s.url}/api/v3/movie`, { params: { tmdbId }, headers: { 'X-Api-Key': s.key }, timeout: 10000 });
+        const m = (res.data || [])[0];
+        if (m) {
+          return {
+            kind: 'movie',
+            status: m.status || null,
+            inCinemas: m.inCinemas || null,
+            digitalRelease: m.digitalRelease || null,
+            physicalRelease: m.physicalRelease || null,
+          };
+        }
+      }
+      return null;
+    }
+    if (!tvdbId || !CONFIG.SONARR_URL) return null;
+    const series = await getSeriesByTvdbId(tvdbId);
+    if (!series) return null;
+    return {
+      kind: 'tv',
+      status: series.status || null,
+      firstAired: series.firstAired || null,
+      nextAiring: series.nextAiring || null,
+    };
+  } catch (err) {
+    audit('external_api_error', { provider: 'arr', error: err.message, action: 'release_eta', mediaId: mediaType === 'movie' ? `tmdb:${tmdbId}` : `tvdb:${tvdbId}` });
+    return null;
+  }
+}
+
 function remapPath(hostPath) {
   if (CONFIG.PATH_REMAP_FROM && hostPath.startsWith(CONFIG.PATH_REMAP_FROM)) {
     return hostPath.replace(CONFIG.PATH_REMAP_FROM, CONFIG.PATH_REMAP_TO);
@@ -293,4 +335,4 @@ function remapPath(hostPath) {
   return hostPath;
 }
 
-module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, escalateMediaToAvistaz, verifyAvistazTags, remapPath };
+module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, escalateMediaToAvistaz, verifyAvistazTags, fetchReleaseEta, remapPath };
