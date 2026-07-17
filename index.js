@@ -26,14 +26,14 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, escalateMediaToAvistaz, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
 const { decideEscalationAction, escalationEligible } = require('./src/escalation');
 const { tautulliConfigured, tautulliApi, describeSession } = require('./src/tautulli');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
-const { grabConfigured, findAvistazIndexer, searchAvistaz, fetchTorrentFile, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
+const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, getRtorrentVersion } = require('./src/rtorrent');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
@@ -420,6 +420,13 @@ async function runEscalation(row) {
       audit('avistaz_direct_escalation', { mediaId: row.media_id, title: row.title, detail: direct.detail });
       return direct;
     }
+    if (direct.deferred) {
+      // Allowance exhausted: leave the row's state untouched — a 'watching' pre-authorized
+      // row is retried by the sweep and succeeds once the UTC day rolls over. No tag-path
+      // fallback either: the arrs would spend the very slots the counter protects.
+      audit('avistaz_direct_escalation_deferred', { mediaId: row.media_id, title: row.title, why: direct.why });
+      return { ok: false, deferred: true, why: `${direct.why} — the escalation stays queued and retries automatically.` };
+    }
     audit('avistaz_direct_escalation_fallback', { mediaId: row.media_id, title: row.title, why: direct.why });
   }
   const result = await escalateMediaToAvistaz({ mediaType: row.media_type, tmdbId: row.tmdb_id, tvdbId: row.tvdb_id });
@@ -458,6 +465,12 @@ async function sweepEscalations() {
     const waitedHours = Math.round((Date.now() - row.approved_at) / 3600000);
     if (action === 'escalate') {
       const result = await runEscalation(row);
+      if (result.deferred) {
+        // Quiet by design: this fires every sweep until the allowance frees up, and a
+        // Discord warning each half hour would be pure noise. The audit log has it.
+        log.info(`AvistaZ escalation deferred for ${row.title}: ${result.why}`);
+        continue;
+      }
       notifyChannel('downloads', { embeds: [brandedEmbed(result.ok ? COLORS.SUCCESS : COLORS.WARN)
         .setTitle(result.ok ? `🔐 Escalated to AvistaZ — ${row.title}` : `⚠️ AvistaZ Escalation Failed — ${row.title}`)
         .setDescription(result.ok
@@ -531,15 +544,33 @@ function grabCandidatesMessage({ heading, candidates, nonce, allowance, footnote
   return { embeds: [embed], components: [new ActionRowBuilder().addComponents(...buttons)] };
 }
 
-// Fetch the .torrent, dedupe by info-hash, push it to rTorrent with the right label, and
-// record the durable grab job. Never throws — callers branch on { ok, why, dup }.
+// Fetch the .torrent, dedupe, push it to rTorrent with the right label, and record the
+// durable grab job. Never throws — callers branch on { ok, why, dup }.
 async function executeGrab(candidate, meta) {
+  if (!grabImportTarget(meta.mediaType)) {
+    return { ok: false, why: `${meta.mediaType === 'tv' ? 'Sonarr' : 'Radarr'} isn't configured — a ${meta.mediaType} grab could never be imported` };
+  }
+  // Duplicate checks BEFORE fetching: the .torrent download is the metered tracker action
+  // this whole feature rations. Prowlarr's info-hash when it reports one, else the exact
+  // release title; the post-fetch hash check below stays as the final authority.
+  const dupEarly = (candidate.infoHash && getGrabJobByHash(candidate.infoHash)) || getGrabJobByRelease(candidate.releaseTitle);
+  if (dupEarly) return { ok: false, dup: true, why: `already grabbed as job #${dupEarly.id} (${dupEarly.state})` };
+
+  let torrent;
   try {
-    const torrent = await fetchTorrentFile(candidate.downloadUrl);
-    const infoHash = computeInfoHash(torrent);
+    torrent = await fetchTorrentFile(candidate.downloadUrl);
+  } catch (err) {
+    audit('external_api_error', { provider: 'prowlarr', error: err.message, action: 'grab_fetch_torrent', title: meta.title });
+    return { ok: false, why: `couldn't fetch the .torrent: ${err.message}` };
+  }
+  // From here the tracker download slot may already be spent, so failures still record a
+  // (failed) job — countGrabJobsToday counts every state, keeping the allowance honest.
+  const label = meta.mediaType === 'tv' ? CONFIG.RTORRENT_LABEL_TV : CONFIG.RTORRENT_LABEL_MOVIE;
+  let infoHash = null;
+  try {
+    infoHash = computeInfoHash(torrent);
     const dup = getGrabJobByHash(infoHash);
     if (dup) return { ok: false, dup: true, why: `already grabbed as job #${dup.id} (${dup.state})` };
-    const label = meta.mediaType === 'tv' ? CONFIG.RTORRENT_LABEL_TV : CONFIG.RTORRENT_LABEL_MOVIE;
     await addTorrentToRtorrent(torrent, label);
     const job = recordGrabJob({
       mediaId: meta.mediaId || null, mediaType: meta.mediaType, title: meta.title,
@@ -549,7 +580,13 @@ async function executeGrab(candidate, meta) {
     audit('avistaz_grab_sent', { actorDiscordId: meta.actorDiscordId || null, targetDiscordId: meta.discordId || null, jobId: job.id, mediaId: meta.mediaId, title: meta.title, release: candidate.releaseTitle, infoHash, label, confidence: candidate.confidence, origin: meta.origin });
     return { ok: true, job };
   } catch (err) {
-    audit('external_api_error', { provider: 'rtorrent', error: err.message, action: 'grab_send', title: meta.title });
+    const failed = recordGrabJob({
+      mediaId: meta.mediaId || null, mediaType: meta.mediaType, title: meta.title,
+      releaseTitle: candidate.releaseTitle, infoHash, sizeBytes: candidate.size, label,
+      discordId: meta.discordId, origin: meta.origin,
+    });
+    setGrabJobState(failed.id, 'failed', err.message);
+    audit('external_api_error', { provider: 'rtorrent', error: err.message, action: 'grab_send', title: meta.title, jobId: failed.id });
     return { ok: false, why: err.message };
   }
 }
@@ -558,6 +595,12 @@ async function executeGrab(candidate, meta) {
 // high confidence + allowance left) or post the candidates to the downloads channel for a
 // one-click decision. ok:false lets runEscalation fall back to the tag-based path.
 async function runDirectGrabEscalation(row) {
+  if (!grabImportTarget(row.media_type)) return { ok: false, why: `${row.media_type === 'tv' ? 'Sonarr' : 'Radarr'} isn't configured — the grab could never be imported` };
+  // Allowance first, before spending a Prowlarr/AvistaZ search: an exhausted day defers
+  // the escalation instead of posting button-less candidates or falling back to the tag
+  // path (which would burn the very slots the counter protects).
+  const allowance = grabDailyAllowance();
+  if (allowance.exhausted) return { ok: false, deferred: true, why: `daily AvistaZ allowance is used up (${CONFIG.AVISTAZ_DAILY_GRAB_LIMIT}/day)` };
   const indexer = await findAvistazIndexer();
   if (!indexer) return { ok: false, why: 'no AvistaZ indexer found in Prowlarr' };
   const { query, year } = splitTitleYear(row.title);
@@ -565,9 +608,8 @@ async function runDirectGrabEscalation(row) {
   const candidates = rankAvistazResults(results, { title: query, year, mediaType: row.media_type });
   if (!candidates.length) return { ok: false, why: 'no AvistaZ results' };
 
-  const allowance = grabDailyAllowance();
   const top = candidates[0];
-  if (CONFIG.GRAB_MODE === 'auto' && top.confidence >= CONFIG.GRAB_AUTO_CONFIDENCE && !allowance.exhausted) {
+  if (CONFIG.GRAB_MODE === 'auto' && top.confidence >= CONFIG.GRAB_AUTO_CONFIDENCE) {
     const grab = await executeGrab(top, { mediaId: row.media_id, mediaType: row.media_type, title: row.title, discordId: row.requested_by_discord_id, origin: 'escalation-auto' });
     if (grab.ok) {
       return { ok: true, detail: `Auto-grabbed **${top.releaseTitle}** (${top.confidence}% confidence) → seedbox rTorrent. I'll transfer and import it when the download finishes.` };
@@ -2648,9 +2690,10 @@ async function handleAvistazCommand(interaction) {
   // sub === 'search' — posted in-channel (not ephemeral) so the Download buttons leave a record.
   if (!CONFIG.PROWLARR_URL) return interaction.reply({ content: '❌ Prowlarr isn\'t configured (`PROWLARR_URL` + `PROWLARR_API_KEY`).', ephemeral: true });
   if (!grabConfigured()) return interaction.reply({ content: '❌ The grab pipeline isn\'t fully configured — need `RTORRENT_URL`, `GRAB_RCLONE_REMOTE`, and `GRAB_STAGING_PATH` (see README "AvistaZ direct grab").', ephemeral: true });
-  await interaction.deferReply();
   const rawTitle = interaction.options.getString('title');
   const mediaType = interaction.options.getString('type');
+  if (!grabImportTarget(mediaType)) return interaction.reply({ content: `❌ ${mediaType === 'tv' ? 'Sonarr' : 'Radarr'} isn't configured — a ${mediaType} grab could never be imported, so it won't be downloaded.`, ephemeral: true });
+  await interaction.deferReply();
   const season = interaction.options.getInteger('season');
   const split = splitTitleYear(rawTitle);
   const year = interaction.options.getInteger('year') ?? split.year;

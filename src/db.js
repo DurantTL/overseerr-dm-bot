@@ -403,6 +403,10 @@ const getGrabJob = id => db.prepare('SELECT * FROM grab_jobs WHERE id = ?').get(
 // already imported) must not be grabbed again — "already downloaded" is a scoring criterion.
 const getGrabJobByHash = infoHash => db.prepare("SELECT * FROM grab_jobs WHERE info_hash = ? AND state != 'failed' ORDER BY id DESC LIMIT 1").get(infoHash);
 
+// Pre-download duplicate check by exact release title, for when Prowlarr didn't report an
+// info-hash. Failed jobs don't block a retry of the same release.
+const getGrabJobByRelease = releaseTitle => db.prepare("SELECT * FROM grab_jobs WHERE release_title = ? AND state != 'failed' ORDER BY id DESC LIMIT 1").get(releaseTitle);
+
 const listActiveGrabJobs = () => db.prepare("SELECT * FROM grab_jobs WHERE state IN ('sent','downloading','complete','transferring') ORDER BY id").all();
 
 const nextTransferableGrabJob = () => db.prepare("SELECT * FROM grab_jobs WHERE state = 'complete' ORDER BY id LIMIT 1").get();
@@ -584,4 +588,4 @@ function restashPendingRequest(nonce, payload) {
   setSetting(`pending_request:${nonce}`, JSON.stringify(payload));
 }
 
-module.exports = { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
+module.exports = { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };

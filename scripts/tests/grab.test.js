@@ -8,7 +8,7 @@ const crypto = require('crypto');
 const express = require('express');
 
 (async () => {
-  const { parseReleaseName, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction, findAvistazIndexer, searchAvistaz } = require('../../src/grab');
+  const { parseReleaseName, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction, grabImportTarget, findAvistazIndexer, searchAvistaz } = require('../../src/grab');
   const { serializeXmlRpcCall, parseXmlRpcResponse, computeInfoHash } = require('../../src/rtorrent');
 
   // --- Release-name parsing ---
@@ -56,6 +56,17 @@ const express = require('express');
   assert.strictEqual(ranked.length, 3, 'result with no downloadUrl is dropped');
   assert.ok(ranked[0].releaseTitle.includes('1080p'), 'best candidate first');
   assert.ok(ranked[0].confidence >= ranked[1].confidence && ranked[1].confidence >= ranked[2].confidence, 'sorted by confidence');
+
+  // Prowlarr-reported info-hashes ride along (uppercased) for the pre-download dup check.
+  const withHash = rankAvistazResults([mk('My.Father.is.Strange.S01.1080p.WEB-DL', { infoHash: 'abc123def' })], tvCtx);
+  assert.strictEqual(withHash[0].infoHash, 'ABC123DEF', 'infoHash preserved and uppercased');
+  assert.strictEqual(ranked[0].infoHash, null, 'missing infoHash is null, not undefined');
+
+  // --- Import target: don't download what can never be imported ---
+  assert.strictEqual(grabImportTarget('movie', { RADARR_URL: 'http://r', SONARR_URL: '' }), 'radarr', 'movie imports via radarr');
+  assert.strictEqual(grabImportTarget('movie', { RADARR_URL: '', SONARR_URL: 'http://s' }), null, 'movie without radarr refused');
+  assert.strictEqual(grabImportTarget('tv', { RADARR_URL: '', SONARR_URL: 'http://s' }), 'sonarr', 'tv imports via sonarr');
+  assert.strictEqual(grabImportTarget('tv', { RADARR_URL: 'http://r', SONARR_URL: '' }), null, 'tv without sonarr refused');
 
   // --- Allowance ---
   assert.deepStrictEqual(grabAllowance(0, 4), { limited: true, remaining: 4, exhausted: false }, 'fresh day');
