@@ -193,6 +193,9 @@ function configWarnings() {
   if (CONFIG.RTORRENT_URL && (!CONFIG.GRAB_RCLONE_REMOTE || !CONFIG.GRAB_STAGING_PATH)) {
     warnings.push('`RTORRENT_URL` is set but `GRAB_RCLONE_REMOTE`/`GRAB_STAGING_PATH` aren\'t — completed seedbox grabs can\'t be copied home and imported.');
   }
+  if (CONFIG.RTORRENT_URL && !CONFIG.RADARR_URL && !CONFIG.SONARR_URL) {
+    warnings.push('`RTORRENT_URL` is set but neither Radarr nor Sonarr is configured — completed grabs could never be imported.');
+  }
   if (!['approve', 'auto'].includes(CONFIG.GRAB_MODE)) {
     warnings.push(`\`GRAB_MODE=${CONFIG.GRAB_MODE}\` is not a valid mode (use \`approve\` or \`auto\`) — treating it as \`approve\`.`);
   }

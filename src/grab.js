@@ -14,6 +14,13 @@ const { CONFIG } = require('./config');
 // local staging folder (transfer & import).
 const grabConfigured = () => !!(CONFIG.PROWLARR_URL && CONFIG.RTORRENT_URL && CONFIG.GRAB_RCLONE_REMOTE && CONFIG.GRAB_STAGING_PATH);
 
+// The arr that will import a grab of this media type — a movie grab is useless without
+// Radarr, a TV grab without Sonarr. Null means "don't even start the download".
+function grabImportTarget(mediaType, cfg = CONFIG) {
+  if (mediaType === 'tv') return cfg.SONARR_URL ? 'sonarr' : null;
+  return cfg.RADARR_URL ? 'radarr' : null;
+}
+
 // ---- Prowlarr ----
 // The AvistaZ indexer as defined in Prowlarr, matched by name (case-insensitive substring,
 // so 'AvistaZ (API)' matches the default 'avistaz').
@@ -128,6 +135,9 @@ function rankAvistazResults(results, ctx, { limit = 3 } = {}) {
       return {
         releaseTitle: r.title,
         downloadUrl: r.downloadUrl,
+        // Prowlarr sometimes knows the info-hash up front — it enables the duplicate
+        // check to run BEFORE the metered .torrent download.
+        infoHash: r.infoHash ? String(r.infoHash).toUpperCase() : null,
         size: Number(r.size) || 0,
         seeders: Number(r.seeders) || 0,
         confidence,
@@ -167,4 +177,4 @@ function decideGrabJobAction(row, facts, now, cfg) {
   return row.state === 'sent' ? 'mark_downloading' : 'wait';
 }
 
-module.exports = { grabConfigured, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, parseReleaseName, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction };
+module.exports = { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, parseReleaseName, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction };
