@@ -137,6 +137,25 @@ function runMigrations() {
       finished_at INTEGER
     );
 
+    CREATE TABLE IF NOT EXISTS grab_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      media_id TEXT,
+      media_type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      release_title TEXT NOT NULL,
+      info_hash TEXT,
+      size_bytes INTEGER DEFAULT 0,
+      label TEXT,
+      requested_by_discord_id TEXT,
+      origin TEXT DEFAULT 'manual',
+      state TEXT DEFAULT 'sent',
+      error TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      sent_at INTEGER,
+      completed_at INTEGER,
+      imported_at INTEGER
+    );
+
     CREATE TABLE IF NOT EXISTS staged_items (
       media_id TEXT PRIMARY KEY,
       media_type TEXT,
@@ -159,6 +178,8 @@ function runMigrations() {
     CREATE INDEX IF NOT EXISTS idx_download_access_created ON download_access_log(created_at);
     CREATE INDEX IF NOT EXISTS idx_audit_action_created ON audit_log(action, created_at);
     CREATE INDEX IF NOT EXISTS idx_escalations_state ON escalations(state);
+    CREATE INDEX IF NOT EXISTS idx_grab_jobs_state ON grab_jobs(state);
+    CREATE INDEX IF NOT EXISTS idx_grab_jobs_hash ON grab_jobs(info_hash);
   `);
 
   ensureColumn('users', 'overseerr_user_id', 'INTEGER');
@@ -363,6 +384,73 @@ function resolveEscalationForMediaKey(mediaKey) {
   }
 }
 
+// ---- AvistaZ direct-grab jobs ----
+// One row per torrent the bot pushed to the seedbox rTorrent. States:
+// sent → downloading → complete (seedbox finished, transfer pending) → transferring →
+// done (imported by the arr), or failed. Durable so a restart mid-download/mid-transfer
+// picks the pipeline back up.
+
+function recordGrabJob({ mediaId, mediaType, title, releaseTitle, infoHash, sizeBytes, label, discordId, origin }) {
+  const info = db.prepare(`INSERT INTO grab_jobs (media_id, media_type, title, release_title, info_hash, size_bytes, label, requested_by_discord_id, origin, state, sent_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?)`)
+    .run(mediaId || null, mediaType, title, releaseTitle, infoHash || null, sizeBytes || 0, label || null, discordId || null, origin || 'manual', Date.now());
+  return db.prepare('SELECT * FROM grab_jobs WHERE id = ?').get(info.lastInsertRowid);
+}
+
+const getGrabJob = id => db.prepare('SELECT * FROM grab_jobs WHERE id = ?').get(id);
+
+// Duplicate guard: a hash that was ever sent and didn't outright fail (still moving, or
+// already imported) must not be grabbed again — "already downloaded" is a scoring criterion.
+const getGrabJobByHash = infoHash => db.prepare("SELECT * FROM grab_jobs WHERE info_hash = ? AND state != 'failed' ORDER BY id DESC LIMIT 1").get(infoHash);
+
+// Pre-download duplicate check by exact release title, for when Prowlarr didn't report an
+// info-hash. Failed jobs don't block a retry of the same release.
+const getGrabJobByRelease = releaseTitle => db.prepare("SELECT * FROM grab_jobs WHERE release_title = ? AND state != 'failed' ORDER BY id DESC LIMIT 1").get(releaseTitle);
+
+const listActiveGrabJobs = () => db.prepare("SELECT * FROM grab_jobs WHERE state IN ('sent','downloading','complete','transferring') ORDER BY id").all();
+
+const nextTransferableGrabJob = () => db.prepare("SELECT * FROM grab_jobs WHERE state = 'complete' ORDER BY id LIMIT 1").get();
+
+function setGrabJobState(id, state, error = null) {
+  const stampCol = state === 'complete' ? 'completed_at' : state === 'done' ? 'imported_at' : null;
+  const stamp = stampCol ? `, ${stampCol} = ?` : '';
+  const args = stampCol ? [state, error ? String(error).slice(0, 500) : null, Date.now(), id] : [state, error ? String(error).slice(0, 500) : null, id];
+  db.prepare(`UPDATE grab_jobs SET state = ?, error = ?${stamp} WHERE id = ?`).run(...args);
+}
+
+// The allowance counts every grab attempted today (failed ones included — the tracker may
+// have counted the download the moment the .torrent was fetched). created_at is UTC.
+const countGrabJobsToday = () => db.prepare("SELECT COUNT(*) AS n FROM grab_jobs WHERE created_at >= datetime('now', 'start of day')").get().n;
+
+// Retry a failed transfer/import (the torrent is still seeding on the seedbox, so the
+// copy can simply run again). Only failed jobs are retryable.
+const requeueGrabTransfer = id => db.prepare("UPDATE grab_jobs SET state = 'complete', error = NULL WHERE id = ? AND state = 'failed'").run(id).changes > 0;
+
+// A restart mid-transfer leaves 'transferring' rows behind; rclone copy resumes cheaply.
+const resetInterruptedGrabTransfers = () => db.prepare("UPDATE grab_jobs SET state = 'complete' WHERE state = 'transferring'").run().changes;
+
+// AvistaZ search results parked behind Download buttons. Same app_settings stash pattern
+// as the request approval gate: consumed on click, so stale/double clicks are harmless
+// and the buttons survive restarts.
+function stashGrabOffer(payload) {
+  const nonce = crypto.randomBytes(4).toString('hex');
+  setSetting(`grab_offer:${nonce}`, JSON.stringify({ ...payload, createdAt: Date.now() }));
+  return nonce;
+}
+
+function takeGrabOffer(nonce) {
+  if (!/^[0-9a-f]{8}$/.test(String(nonce || ''))) return null;
+  const raw = getSetting(`grab_offer:${nonce}`);
+  if (!raw) return null;
+  db.prepare('DELETE FROM app_settings WHERE key = ?').run(`grab_offer:${nonce}`);
+  try { return JSON.parse(raw); } catch (_e) { return null; }
+}
+
+// Put a consumed offer back (grab failed against rTorrent) so the buttons can be retried.
+function restashGrabOffer(nonce, payload) {
+  setSetting(`grab_offer:${nonce}`, JSON.stringify(payload));
+}
+
 // ---- Plex Home staging queue + cache inventory ----
 // stage_jobs is the durable copy queue: a transpacific rclone copy can run 20+ minutes and WILL
 // be in flight when something restarts, so the queue lives in SQLite and interrupted jobs are
@@ -500,4 +588,4 @@ function restashPendingRequest(nonce, payload) {
   setSetting(`pending_request:${nonce}`, JSON.stringify(payload));
 }
 
-module.exports = { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
+module.exports = { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };

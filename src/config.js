@@ -48,6 +48,37 @@ const CONFIG = {
   ESCALATION_DELAY_HOURS: Number.parseInt(process.env.ESCALATION_DELAY_HOURS || '6', 10),
   ESCALATION_CHECK_MINUTES: Number.parseInt(process.env.ESCALATION_CHECK_MINUTES || '30', 10),
   ESCALATION_MAX_AGE_DAYS: Number.parseInt(process.env.ESCALATION_MAX_AGE_DAYS || '14', 10),
+  // ---- AvistaZ direct grab: Prowlarr search → seedbox rTorrent → rclone → arr import ----
+  // Full rTorrent XML-RPC endpoint incl. credentials, e.g.
+  // https://user:pass@server.rapidseedbox.com/plugins/rpc/rpc.php
+  RTORRENT_URL: process.env.RTORRENT_URL || '',
+  // rTorrent label (d.custom1) applied per media type — the category the seedbox side sees.
+  RTORRENT_LABEL_MOVIE: process.env.RTORRENT_LABEL_MOVIE || 'radarr',
+  RTORRENT_LABEL_TV: process.env.RTORRENT_LABEL_TV || 'sonarr',
+  // Case-insensitive substring matched against Prowlarr indexer names to find AvistaZ.
+  AVISTAZ_INDEXER_NAME: (process.env.AVISTAZ_INDEXER_NAME || 'avistaz').toLowerCase(),
+  // Max grabs per UTC day (failed attempts count — the tracker may have already counted the
+  // download). 0 = unlimited.
+  AVISTAZ_DAILY_GRAB_LIMIT: Number.parseInt(process.env.AVISTAZ_DAILY_GRAB_LIMIT || '4', 10),
+  // 'approve' = always post candidates with Download buttons; 'auto' = escalations grab the
+  // top candidate automatically when its confidence ≥ GRAB_AUTO_CONFIDENCE.
+  GRAB_MODE: (process.env.GRAB_MODE || 'approve').toLowerCase(),
+  GRAB_AUTO_CONFIDENCE: Number.parseInt(process.env.GRAB_AUTO_CONFIDENCE || '92', 10),
+  // rclone remote pointing at the seedbox's rTorrent download folder, e.g. `rapidseedbox:files`.
+  GRAB_RCLONE_REMOTE: (process.env.GRAB_RCLONE_REMOTE || '').replace(/\/$/, ''),
+  // Extra rclone flags for seedbox copies (SFTP tuning etc.), space-separated.
+  GRAB_RCLONE_FLAGS: (process.env.GRAB_RCLONE_FLAGS || '').split(/\s+/).filter(Boolean),
+  // Writable local staging folder inside the container (NOT under the read-only media
+  // mount) that Radarr/Sonarr can also see; GRAB_IMPORT_PATH is that same folder as the
+  // arrs see it (defaults to the container path when they share the mount).
+  GRAB_STAGING_PATH: (process.env.GRAB_STAGING_PATH || '').replace(/\/$/, ''),
+  GRAB_IMPORT_PATH: (process.env.GRAB_IMPORT_PATH || process.env.GRAB_STAGING_PATH || '').replace(/\/$/, ''),
+  GRAB_CHECK_MINUTES: Number.parseInt(process.env.GRAB_CHECK_MINUTES || '5', 10),
+  GRAB_COPY_TIMEOUT_MINUTES: Number.parseInt(process.env.GRAB_COPY_TIMEOUT_MINUTES || '240', 10),
+  // A pushed torrent that never appears in rTorrent within this window failed to load.
+  GRAB_MISSING_AFTER_MINUTES: Number.parseInt(process.env.GRAB_MISSING_AFTER_MINUTES || '10', 10),
+  // Give up watching a seedbox download after this long without completion.
+  GRAB_DOWNLOAD_TIMEOUT_HOURS: Number.parseInt(process.env.GRAB_DOWNLOAD_TIMEOUT_HOURS || '72', 10),
   JANITOR_CHECK_MINUTES: Number.parseInt(process.env.JANITOR_CHECK_MINUTES || '60', 10),
   RETENTION_ENFORCEMENT: parseBool(process.env.RETENTION_ENFORCEMENT, false),
   RETENTION_CHECK_HOURS: Number.parseInt(process.env.RETENTION_CHECK_HOURS || '24', 10),
@@ -155,6 +186,18 @@ function configWarnings() {
   }
   if (CONFIG.ESCALATION_ENABLED && !CONFIG.RADARR_URL && !CONFIG.SONARR_URL) {
     warnings.push('`ESCALATION_ENABLED=true` but neither Radarr nor Sonarr is configured — AvistaZ escalation can never fire.');
+  }
+  if (CONFIG.RTORRENT_URL && !CONFIG.PROWLARR_URL) {
+    warnings.push('`RTORRENT_URL` is set but Prowlarr isn\'t (`PROWLARR_URL` + `PROWLARR_API_KEY`) — the AvistaZ direct-grab pipeline can\'t search anything.');
+  }
+  if (CONFIG.RTORRENT_URL && (!CONFIG.GRAB_RCLONE_REMOTE || !CONFIG.GRAB_STAGING_PATH)) {
+    warnings.push('`RTORRENT_URL` is set but `GRAB_RCLONE_REMOTE`/`GRAB_STAGING_PATH` aren\'t — completed seedbox grabs can\'t be copied home and imported.');
+  }
+  if (CONFIG.RTORRENT_URL && !CONFIG.RADARR_URL && !CONFIG.SONARR_URL) {
+    warnings.push('`RTORRENT_URL` is set but neither Radarr nor Sonarr is configured — completed grabs could never be imported.');
+  }
+  if (!['approve', 'auto'].includes(CONFIG.GRAB_MODE)) {
+    warnings.push(`\`GRAB_MODE=${CONFIG.GRAB_MODE}\` is not a valid mode (use \`approve\` or \`auto\`) — treating it as \`approve\`.`);
   }
   if (CONFIG.STAGING_ENABLED && !CONFIG.STAGE_RCLONE_REMOTE) {
     warnings.push('`STAGING_ENABLED=true` but `STAGE_RCLONE_REMOTE` is unset — `/stage` can never copy anything to the cache box.');
