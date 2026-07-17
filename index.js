@@ -26,13 +26,15 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, escalateMediaToAvistaz, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
 const { decideEscalationAction, escalationEligible } = require('./src/escalation');
 const { tautulliConfigured, tautulliApi, describeSession } = require('./src/tautulli');
-const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus } = require('./src/staging');
+const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
+const { grabConfigured, findAvistazIndexer, searchAvistaz, fetchTorrentFile, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
+const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, getRtorrentVersion } = require('./src/rtorrent');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
 
@@ -407,6 +409,19 @@ async function gatherEscalationFacts(row, queue) {
 }
 
 async function runEscalation(row) {
+  // Direct-grab pipeline first when configured: the bot searches AvistaZ itself and either
+  // auto-grabs or posts scored candidates. The state moves to 'escalated' either way — the
+  // grab job (or the posted buttons) owns the follow-through from here. Falls back to the
+  // tag-based arr escalation when the search fails or finds nothing.
+  if (grabConfigured()) {
+    const direct = await runDirectGrabEscalation(row).catch(err => ({ ok: false, why: err.message }));
+    if (direct.ok) {
+      setEscalationState(row.id, 'escalated');
+      audit('avistaz_direct_escalation', { mediaId: row.media_id, title: row.title, detail: direct.detail });
+      return direct;
+    }
+    audit('avistaz_direct_escalation_fallback', { mediaId: row.media_id, title: row.title, why: direct.why });
+  }
   const result = await escalateMediaToAvistaz({ mediaType: row.media_type, tmdbId: row.tmdb_id, tvdbId: row.tvdb_id });
   if (result.ok) {
     setEscalationState(row.id, 'escalated');
@@ -471,6 +486,209 @@ async function sweepEscalations() {
         new ButtonBuilder().setCustomId(`escalate_ignore:${row.id}`).setLabel('Ignore').setStyle(ButtonStyle.Secondary),
       )] });
   }
+}
+
+// ---- AvistaZ direct-grab pipeline ----
+// The smarter escalation path: search AvistaZ through Prowlarr, score the candidates, send
+// the chosen torrent to the seedbox rTorrent (labeled radarr/sonarr), watch it to
+// completion, rclone the files into local staging, and hand them to Radarr/Sonarr for a
+// normal import (renaming, notifications, Bazarr subtitle search all follow from there).
+// Falls back to the tag-based arr escalation when the pipeline isn't configured or the
+// search comes up empty.
+
+// Seerr/escalation titles often carry a trailing year — "My Title (2017)" — which hurts
+// tracker search recall; split it into query + year for scoring instead.
+function splitTitleYear(title) {
+  const m = /^(.*?)\s*\(((?:19|20)\d{2})\)\s*$/.exec(String(title || ''));
+  return m ? { query: m[1], year: Number(m[2]) } : { query: String(title || ''), year: null };
+}
+
+const grabDailyAllowance = () => grabAllowance(countGrabJobsToday(), CONFIG.AVISTAZ_DAILY_GRAB_LIMIT);
+
+// The candidates embed + Download/Cancel buttons, shared by /avistaz search and the
+// escalation flow. The offer behind the buttons lives in SQLite (stashGrabOffer).
+function grabCandidatesMessage({ heading, candidates, nonce, allowance, footnote }) {
+  const lines = candidates.map((c, i) => {
+    const bits = [
+      [c.resolution, { webdl: 'WEB-DL', webrip: 'WEBRip', hdtv: 'HDTV', bluray: 'BluRay' }[c.source]].filter(Boolean).join(' ') || 'unknown quality',
+      c.seasonPack ? 'season pack' : null,
+      fmtSpace(c.size),
+      `${c.seeders} seeder${c.seeders === 1 ? '' : 's'}`,
+      c.freeleech ? '🆓 freeleech' : null,
+    ].filter(Boolean).join(' • ');
+    const notes = c.notes.length ? `\n⚠️ ${c.notes.join(', ')}` : '';
+    return `**${i + 1}. ${String(c.releaseTitle).slice(0, 200)}**\n${bits}\nConfidence: **${c.confidence}%**${notes}`;
+  });
+  const allowanceLine = allowance.limited
+    ? `\n\nDownloads remaining today: **${allowance.remaining}**${allowance.exhausted ? ' — daily AvistaZ allowance is used up, try again tomorrow.' : ''}`
+    : '';
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle(heading)
+    .setDescription(`${lines.join('\n\n')}${allowanceLine}${footnote ? `\n\n${footnote}` : ''}`.slice(0, 4000));
+  const buttons = allowance.exhausted ? [] : candidates.map((c, i) =>
+    new ButtonBuilder().setCustomId(`grab_dl:${nonce}:${i}`).setLabel(`Download ${i + 1}`).setStyle(i === 0 ? ButtonStyle.Success : ButtonStyle.Primary));
+  buttons.push(new ButtonBuilder().setCustomId(`grab_cancel:${nonce}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary));
+  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(...buttons)] };
+}
+
+// Fetch the .torrent, dedupe by info-hash, push it to rTorrent with the right label, and
+// record the durable grab job. Never throws — callers branch on { ok, why, dup }.
+async function executeGrab(candidate, meta) {
+  try {
+    const torrent = await fetchTorrentFile(candidate.downloadUrl);
+    const infoHash = computeInfoHash(torrent);
+    const dup = getGrabJobByHash(infoHash);
+    if (dup) return { ok: false, dup: true, why: `already grabbed as job #${dup.id} (${dup.state})` };
+    const label = meta.mediaType === 'tv' ? CONFIG.RTORRENT_LABEL_TV : CONFIG.RTORRENT_LABEL_MOVIE;
+    await addTorrentToRtorrent(torrent, label);
+    const job = recordGrabJob({
+      mediaId: meta.mediaId || null, mediaType: meta.mediaType, title: meta.title,
+      releaseTitle: candidate.releaseTitle, infoHash, sizeBytes: candidate.size, label,
+      discordId: meta.discordId, origin: meta.origin,
+    });
+    audit('avistaz_grab_sent', { actorDiscordId: meta.actorDiscordId || null, targetDiscordId: meta.discordId || null, jobId: job.id, mediaId: meta.mediaId, title: meta.title, release: candidate.releaseTitle, infoHash, label, confidence: candidate.confidence, origin: meta.origin });
+    return { ok: true, job };
+  } catch (err) {
+    audit('external_api_error', { provider: 'rtorrent', error: err.message, action: 'grab_send', title: meta.title });
+    return { ok: false, why: err.message };
+  }
+}
+
+// Escalation via the direct pipeline: search, rank, then either auto-grab (GRAB_MODE=auto +
+// high confidence + allowance left) or post the candidates to the downloads channel for a
+// one-click decision. ok:false lets runEscalation fall back to the tag-based path.
+async function runDirectGrabEscalation(row) {
+  const indexer = await findAvistazIndexer();
+  if (!indexer) return { ok: false, why: 'no AvistaZ indexer found in Prowlarr' };
+  const { query, year } = splitTitleYear(row.title);
+  const results = await searchAvistaz({ query, mediaType: row.media_type, indexerId: indexer.id });
+  const candidates = rankAvistazResults(results, { title: query, year, mediaType: row.media_type });
+  if (!candidates.length) return { ok: false, why: 'no AvistaZ results' };
+
+  const allowance = grabDailyAllowance();
+  const top = candidates[0];
+  if (CONFIG.GRAB_MODE === 'auto' && top.confidence >= CONFIG.GRAB_AUTO_CONFIDENCE && !allowance.exhausted) {
+    const grab = await executeGrab(top, { mediaId: row.media_id, mediaType: row.media_type, title: row.title, discordId: row.requested_by_discord_id, origin: 'escalation-auto' });
+    if (grab.ok) {
+      return { ok: true, detail: `Auto-grabbed **${top.releaseTitle}** (${top.confidence}% confidence) → seedbox rTorrent. I'll transfer and import it when the download finishes.` };
+    }
+    if (grab.dup) return { ok: true, detail: `Best match **${top.releaseTitle}** was ${grab.why} — nothing new to grab.` };
+    // Grab itself failed (rTorrent down, bad torrent) — fall through to human approval.
+  }
+
+  const nonce = stashGrabOffer({ mediaId: row.media_id, mediaType: row.media_type, title: row.title, discordId: row.requested_by_discord_id, origin: 'escalation', candidates });
+  notifyChannel('downloads', grabCandidatesMessage({
+    heading: `🔎 AvistaZ Matches — ${row.title}`,
+    candidates, nonce, allowance,
+    footnote: `Requested by ${row.requested_by_discord_id ? `<@${row.requested_by_discord_id}>` : 'unknown'}. Downloading sends the torrent to the seedbox rTorrent; the bot copies it home and imports it when done.`,
+  }));
+  return { ok: true, detail: `Found ${candidates.length} AvistaZ candidate(s) — posted to the downloads channel for approval (best: ${top.confidence}% confidence).` };
+}
+
+// Watch active grab jobs against rTorrent and act on the state machine's verdicts.
+async function sweepGrabJobs() {
+  const jobs = listActiveGrabJobs().filter(j => ['sent', 'downloading'].includes(j.state));
+  let anyComplete = false;
+  const cfg = { missingAfterMinutes: CONFIG.GRAB_MISSING_AFTER_MINUTES, downloadTimeoutHours: CONFIG.GRAB_DOWNLOAD_TIMEOUT_HOURS };
+  for (const job of jobs) {
+    let facts;
+    try {
+      const st = await getRtorrentStatus(job.info_hash);
+      facts = { reachable: true, found: st.found, complete: !!st.complete };
+    } catch (err) {
+      facts = { reachable: false };
+      audit('external_api_error', { provider: 'rtorrent', error: err.message, action: 'grab_status', jobId: job.id });
+    }
+    const action = decideGrabJobAction(job, facts, Date.now(), cfg);
+    if (action === 'wait') continue;
+    if (action === 'mark_downloading') { setGrabJobState(job.id, 'downloading'); continue; }
+    if (action === 'fail_missing' || action === 'fail_timeout') {
+      const why = action === 'fail_missing'
+        ? 'the torrent never appeared in rTorrent (or was removed externally)'
+        : `no completion after ${CONFIG.GRAB_DOWNLOAD_TIMEOUT_HOURS}h — likely dead on AvistaZ`;
+      setGrabJobState(job.id, 'failed', why);
+      audit('avistaz_grab_failed', { jobId: job.id, title: job.title, release: job.release_title, reason: action });
+      notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.DANGER)
+        .setTitle(`❌ AvistaZ Grab Failed — ${job.title}`)
+        .setDescription(`**${job.release_title}**\n${why}. Check the seedbox, then re-run \`/avistaz search\` if it's still wanted.`)] });
+      continue;
+    }
+    // action === 'transfer': seedbox finished — queue the copy home. Seeding continues on
+    // the seedbox untouched (private-tracker ratio lives there, not here).
+    setGrabJobState(job.id, 'complete');
+    anyComplete = true;
+    audit('avistaz_grab_complete', { jobId: job.id, title: job.title, release: job.release_title });
+  }
+  if (anyComplete || nextTransferableGrabJob()) pumpGrabTransfers().catch(err => log.warn(`Grab transfer pump failed: ${err.message}`));
+}
+
+// One transfer at a time (same reasoning as the stage worker: the WAN link is the
+// bottleneck). Durable via grab_jobs; a restart mid-copy re-queues and rclone resumes.
+let grabTransferActive = false;
+async function pumpGrabTransfers() {
+  if (grabTransferActive) return;
+  grabTransferActive = true;
+  try {
+    for (let job = nextTransferableGrabJob(); job; job = nextTransferableGrabJob()) {
+      await runGrabTransfer(job).catch(err => {
+        setGrabJobState(job.id, 'failed', err.message);
+        audit('avistaz_transfer_failed', { jobId: job.id, title: job.title, error: String(err.message).slice(0, 500) });
+        notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.DANGER)
+          .setTitle(`❌ Seedbox Transfer Failed — ${job.title}`)
+          .setDescription(`**${job.release_title}**\n\`\`\`${String(err.message).slice(0, 800)}\`\`\`\nThe torrent is still on the seedbox — Retry re-runs the copy (already-transferred files are skipped).`)],
+          components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`grab_retry:${job.id}`).setLabel('Retry Transfer').setStyle(ButtonStyle.Primary),
+          )] });
+      });
+    }
+  } finally {
+    grabTransferActive = false;
+  }
+}
+
+async function runGrabTransfer(job) {
+  setGrabJobState(job.id, 'transferring');
+  // The on-disk name comes from the torrent metadata (d.name), not the release title —
+  // they usually match, but the seedbox filesystem is the source of truth.
+  const st = await getRtorrentStatus(job.info_hash);
+  if (!st.found) throw new Error('torrent vanished from rTorrent before the transfer started');
+  const name = st.name;
+  if (!name || name.includes('/') || name.includes('..')) throw new Error(`unsafe torrent name: ${name}`);
+  const incoming = path.join(CONFIG.GRAB_STAGING_PATH, '.incoming', name);
+  const finalPath = path.join(CONFIG.GRAB_STAGING_PATH, name);
+  fs.mkdirSync(path.dirname(incoming), { recursive: true });
+
+  // copyto handles both single-file and folder torrents; .incoming keeps half-copied data
+  // out of the arr's sight until the rename below.
+  const res = await runRclone(['copyto', `${CONFIG.GRAB_RCLONE_REMOTE}/${name}`, incoming],
+    { timeoutMs: CONFIG.GRAB_COPY_TIMEOUT_MINUTES * 60000, flags: CONFIG.GRAB_RCLONE_FLAGS });
+  if (res.timedOut) throw new Error(`rclone copy timed out after ${CONFIG.GRAB_COPY_TIMEOUT_MINUTES} min`);
+  if (res.code !== 0) throw new Error(res.stderr || `rclone exited ${res.code}`);
+
+  fs.rmSync(finalPath, { recursive: true, force: true }); // leftover from an earlier retry
+  fs.renameSync(incoming, finalPath);
+
+  // Hand the finished folder to the right arr as a completed download: it renames, imports
+  // into the library, fires its own notifications, and Bazarr picks up subtitle work.
+  // importMode Move so staging cleans itself (the seedbox copy keeps seeding).
+  const importPath = `${CONFIG.GRAB_IMPORT_PATH}/${name}`;
+  if (job.media_type === 'movie') {
+    await axios.post(`${CONFIG.RADARR_URL}/api/v3/command`, { name: 'DownloadedMoviesScan', path: importPath, importMode: 'Move' },
+      { headers: { 'X-Api-Key': CONFIG.RADARR_API_KEY }, timeout: 15000 });
+  } else {
+    await axios.post(`${CONFIG.SONARR_URL}/api/v3/command`, { name: 'DownloadedEpisodesScan', path: importPath, importMode: 'Move' },
+      { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 15000 });
+  }
+
+  setGrabJobState(job.id, 'done');
+  const minutes = job.completed_at ? Math.max(1, Math.round((Date.now() - job.completed_at) / 60000)) : null;
+  audit('avistaz_grab_imported', { jobId: job.id, mediaId: job.media_id, title: job.title, release: job.release_title, sizeBytes: st.sizeBytes, transferMinutes: minutes });
+  notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.SUCCESS)
+    .setTitle(`📦 AvistaZ Grab Imported — ${job.title}`)
+    .setDescription(`**${job.release_title}** (${fmtSpace(st.sizeBytes || job.size_bytes)}) finished on the seedbox, copied home, and was handed to ${job.media_type === 'movie' ? 'Radarr' : 'Sonarr'} for import. It keeps seeding on the seedbox.`)] });
+  await dmUser(job.requested_by_discord_id, { embeds: [brandedEmbed(COLORS.SUCCESS)
+    .setTitle(`🎉 On Its Way — ${job.title}`)
+    .setDescription(`Your request came through the private-tracker route and just finished downloading. It should appear in Plex within a few minutes.`)] });
 }
 
 // ---- Janitor: grace-period auto-delete, retention rules, disk-space alerts ----
@@ -895,6 +1113,13 @@ const slashCommands = [
   new SlashCommandBuilder().setName('watching').setDescription('Show current Plex playback (via Tautulli)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('indexers').setDescription('Prowlarr indexer + Byparr health').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('debrid').setDescription('Premiumize account + transfer status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('avistaz').setDescription('AvistaZ direct grab (Prowlarr search → seedbox rTorrent)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(s => s.setName('search').setDescription('Search AvistaZ and pick a release to send to the seedbox')
+      .addStringOption(o => o.setName('title').setDescription('Title to search for').setRequired(true))
+      .addStringOption(o => o.setName('type').setDescription('Media type').setRequired(true).addChoices({ name: 'movie', value: 'movie' }, { name: 'tv', value: 'tv' }))
+      .addIntegerOption(o => o.setName('season').setDescription('Season number (TV) — prefers a matching season pack').setMinValue(0).setMaxValue(99))
+      .addIntegerOption(o => o.setName('year').setDescription('Release year (movies) — improves match confidence').setMinValue(1900).setMaxValue(2100)))
+    .addSubcommand(s => s.setName('status').setDescription('Grab allowance + active seedbox grabs')),
   new SlashCommandBuilder().setName('cleanup-suggestions').setDescription('Largest/oldest media that could be cleaned up').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('stage').setDescription('Copy a title into the travel-server cache so it plays instantly there').addStringOption(o => o.setName('title').setDescription('Start typing — matches what\'s in the library').setRequired(true).setAutocomplete(true)),
   new SlashCommandBuilder().setName('staged').setDescription('Show the travel-server cache: what\'s warm, pinned, and copying'),
@@ -955,6 +1180,17 @@ client.once('ready', async () => {
       setInterval(() => sweepEscalations().catch(err => log.warn(`Escalation sweep failed: ${err.message}`)), CONFIG.ESCALATION_CHECK_MINUTES * 60000).unref();
       log.ok(`AvistaZ escalation watchdog running every ${CONFIG.ESCALATION_CHECK_MINUTES} min (delay ${CONFIG.ESCALATION_DELAY_HOURS} h, tag '${CONFIG.AVISTAZ_TAG}')`);
     }
+  }
+  if (grabConfigured()) {
+    // A restart mid-transfer leaves 'transferring' rows behind; put them back in the queue
+    // (rclone copy skips files that already made it across).
+    const resumed = resetInterruptedGrabTransfers();
+    if (resumed) log.info(`Re-queued ${resumed} AvistaZ transfer(s) interrupted by restart`);
+    if (CONFIG.GRAB_CHECK_MINUTES > 0) {
+      setInterval(() => sweepGrabJobs().catch(err => log.warn(`Grab sweep failed: ${err.message}`)), CONFIG.GRAB_CHECK_MINUTES * 60000).unref();
+    }
+    pumpGrabTransfers().catch(err => log.warn(`Grab transfer pump failed: ${err.message}`));
+    log.ok(`AvistaZ direct grab enabled → seedbox rTorrent (sweep every ${CONFIG.GRAB_CHECK_MINUTES} min, mode ${CONFIG.GRAB_MODE}, daily limit ${CONFIG.AVISTAZ_DAILY_GRAB_LIMIT || 'unlimited'})`);
   }
   if (CONFIG.JANITOR_CHECK_MINUTES > 0) {
     setInterval(() => janitorSweep(), CONFIG.JANITOR_CHECK_MINUTES * 60000).unref();
@@ -1267,6 +1503,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'watching') return handleWatchingCommand(interaction);
   if (n === 'indexers') return handleIndexersCommand(interaction);
   if (n === 'debrid') return handleDebridCommand(interaction);
+  if (n === 'avistaz') return handleAvistazCommand(interaction);
   if (n === 'cleanup-suggestions') return handleCleanupSuggestionsCommand(interaction);
   if (n === 'stage') return handleStageCommand(interaction);
   if (n === 'staged') return handleStagedCommand(interaction);
@@ -2371,6 +2608,71 @@ async function handleDebridCommand(interaction) {
   }
 }
 
+// /avistaz — manual mode of the direct-grab pipeline: search AvistaZ through Prowlarr, show
+// scored candidates with Download buttons, and report allowance + active seedbox grabs.
+async function handleAvistazCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  const sub = interaction.options.getSubcommand();
+
+  if (sub === 'status') {
+    await interaction.deferReply({ ephemeral: true });
+    const lines = [];
+    const allowance = grabDailyAllowance();
+    lines.push(allowance.limited
+      ? `Daily allowance: **${allowance.remaining}/${CONFIG.AVISTAZ_DAILY_GRAB_LIMIT}** grab(s) remaining today (UTC)`
+      : 'Daily allowance: unlimited (`AVISTAZ_DAILY_GRAB_LIMIT=0`)');
+    lines.push(`Mode: **${CONFIG.GRAB_MODE === 'auto' ? `auto (≥${CONFIG.GRAB_AUTO_CONFIDENCE}% confidence grabs itself)` : 'approve (every grab needs a button click)'}**`);
+    if (rtorrentConfigured()) {
+      try {
+        const version = await getRtorrentVersion();
+        lines.push(`Seedbox rTorrent: ✅ reachable (v${version})`);
+      } catch (err) {
+        lines.push(`Seedbox rTorrent: ❌ ${err.message}`);
+      }
+    } else {
+      lines.push('Seedbox rTorrent: ⏭️ not configured (`RTORRENT_URL`)');
+    }
+    if (!grabConfigured()) lines.push('⚠️ Pipeline incomplete — need `PROWLARR_URL`, `RTORRENT_URL`, `GRAB_RCLONE_REMOTE`, and `GRAB_STAGING_PATH`.');
+    const active = listActiveGrabJobs();
+    if (active.length) {
+      lines.push('', '**Active grabs:**');
+      for (const j of active.slice(0, 10)) {
+        lines.push(`• #${j.id} **${j.title}** — ${j.state} — ${String(j.release_title).slice(0, 80)}`);
+      }
+    } else {
+      lines.push('', 'No active grabs.');
+    }
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO).setTitle('🔐 AvistaZ Direct Grab').setDescription(lines.join('\n').slice(0, 4000))] });
+  }
+
+  // sub === 'search' — posted in-channel (not ephemeral) so the Download buttons leave a record.
+  if (!CONFIG.PROWLARR_URL) return interaction.reply({ content: '❌ Prowlarr isn\'t configured (`PROWLARR_URL` + `PROWLARR_API_KEY`).', ephemeral: true });
+  if (!grabConfigured()) return interaction.reply({ content: '❌ The grab pipeline isn\'t fully configured — need `RTORRENT_URL`, `GRAB_RCLONE_REMOTE`, and `GRAB_STAGING_PATH` (see README "AvistaZ direct grab").', ephemeral: true });
+  await interaction.deferReply();
+  const rawTitle = interaction.options.getString('title');
+  const mediaType = interaction.options.getString('type');
+  const season = interaction.options.getInteger('season');
+  const split = splitTitleYear(rawTitle);
+  const year = interaction.options.getInteger('year') ?? split.year;
+  try {
+    const indexer = await findAvistazIndexer();
+    if (!indexer) return interaction.editReply(`❌ No Prowlarr indexer matching \`${CONFIG.AVISTAZ_INDEXER_NAME}\` — add AvistaZ in Prowlarr first.`);
+    const results = await searchAvistaz({ query: split.query, mediaType, indexerId: indexer.id });
+    const candidates = rankAvistazResults(results, { title: split.query, year, mediaType, season });
+    if (!candidates.length) return interaction.editReply(`🔍 No AvistaZ results for **${split.query}**${season != null ? ` S${pad(season)}` : ''}. Try alternate spellings or the show's original title.`);
+    const allowance = grabDailyAllowance();
+    const nonce = stashGrabOffer({ mediaType, title: rawTitle, discordId: interaction.user.id, origin: 'manual', candidates });
+    audit('avistaz_search', { actorDiscordId: interaction.user.id, query: split.query, mediaType, season, results: results.length, shown: candidates.length });
+    return interaction.editReply(grabCandidatesMessage({
+      heading: `🔎 Found ${candidates.length} AvistaZ match${candidates.length === 1 ? '' : 'es'} — ${split.query}`,
+      candidates, nonce, allowance,
+    }));
+  } catch (err) {
+    audit('external_api_error', { provider: 'prowlarr', error: err.message, action: 'avistaz_search' });
+    return interaction.editReply(`❌ AvistaZ search failed: ${err.message}`);
+  }
+}
+
 // /cleanup-suggestions — read-only list of the largest disk hogs, oldest-friendly, honoring the
 // keep list and never-delete list. Suggestions only: deletion still goes through the existing
 // prompts / *arr UIs, so this can't remove anything by itself.
@@ -2660,6 +2962,9 @@ async function handleHelpCommand(interaction) {
       '`/debrid` — Premiumize account + transfer status',
       '`/cleanup-suggestions` — Largest/oldest media that could be cleaned up',
     ];
+    if (grabConfigured()) {
+      adminCommands.push('`/avistaz` — Search AvistaZ directly and send a release to the seedbox');
+    }
     if (stagingConfigured()) {
       adminCommands.push(
         '`/stage-bulk` — Seed the travel cache from a list of titles',
@@ -2720,7 +3025,7 @@ async function handleButton(interaction) {
     return interaction.showModal(modal);
   }
 
-  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished'].includes(action) && !isAdminInteraction(interaction)) {
+  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_cancel', 'grab_retry'].includes(action) && !isAdminInteraction(interaction)) {
     return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
   }
 
@@ -3017,6 +3322,54 @@ async function handleButton(interaction) {
     }
     // Keep the buttons (omit components) so the admin can retry after fixing the cause.
     return interaction.followUp({ content: `❌ Escalation failed: ${result.why} The buttons still work — try again once that's fixed.`, ephemeral: true });
+  }
+
+  // AvistaZ candidate buttons (from /avistaz search or an escalation post). The offer is
+  // consumed on click — a second click on the same message just reports "already handled".
+  if (action === 'grab_dl') {
+    const offer = takeGrabOffer(parts[0]);
+    if (!offer) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
+    const candidate = offer.candidates?.[Number(parts[1])];
+    if (!candidate) return interaction.update({ content: 'ℹ️ That option no longer exists.', components: [] });
+    const allowance = grabDailyAllowance();
+    if (allowance.exhausted) {
+      restashGrabOffer(parts[0], offer);
+      return interaction.reply({ content: `❌ Daily AvistaZ allowance is used up (${CONFIG.AVISTAZ_DAILY_GRAB_LIMIT}/day) — the buttons will work again tomorrow (UTC).`, ephemeral: true });
+    }
+    await interaction.deferUpdate();
+    const result = await executeGrab(candidate, {
+      mediaId: offer.mediaId || null, mediaType: offer.mediaType, title: offer.title,
+      discordId: offer.discordId, origin: offer.origin || 'manual', actorDiscordId: interaction.user.id,
+    });
+    if (!result.ok) {
+      if (result.dup) {
+        return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
+          .setTitle(`ℹ️ Already Grabbed — ${offer.title}`)
+          .setDescription(`**${candidate.releaseTitle}** is ${result.why}.`)], components: [] });
+      }
+      restashGrabOffer(parts[0], offer);
+      return interaction.followUp({ content: `❌ Grab failed: ${result.why}\nThe buttons still work — try again once that's fixed.`, ephemeral: true });
+    }
+    const after = grabDailyAllowance();
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle(`🔐 Sent to Seedbox — ${offer.title}`)
+      .setDescription(`**${candidate.releaseTitle}** (${fmtSpace(candidate.size)}) → rTorrent as \`${result.job.label}\`, picked by <@${interaction.user.id}>.\nI'll watch it, copy it home when it finishes, and hand it to ${offer.mediaType === 'movie' ? 'Radarr' : 'Sonarr'} for import.${after.limited ? `\nDownloads remaining today: **${after.remaining}**` : ''}`)], components: [] });
+  }
+  if (action === 'grab_cancel') {
+    const offer = takeGrabOffer(parts[0]);
+    if (!offer) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
+    audit('avistaz_offer_cancelled', { actorDiscordId: interaction.user.id, title: offer.title });
+    return interaction.update({ embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle(`🙈 Not Grabbing — ${offer.title}`)
+      .setDescription(`Dismissed by <@${interaction.user.id}> — no AvistaZ download slot was spent.`)], components: [] });
+  }
+  if (action === 'grab_retry') {
+    const job = getGrabJob(Number(parts[0]));
+    if (!job) return interaction.update({ content: 'ℹ️ Job no longer exists.', components: [] });
+    if (!requeueGrabTransfer(job.id)) return interaction.update({ content: `ℹ️ Job is ${job.state} — nothing to retry.`, components: [] });
+    audit('avistaz_transfer_retried', { actorDiscordId: interaction.user.id, jobId: job.id, title: job.title });
+    pumpGrabTransfers().catch(() => {});
+    return interaction.update({ content: `🔁 Re-running the transfer for **${job.title}** (already-copied files are skipped).`, components: [] });
   }
 
   if (['stuck_retry', 'stuck_rm', 'stuck_ignore'].includes(action)) {

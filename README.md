@@ -91,6 +91,7 @@ See `.env.example` for full values.
 - `PREMIUMIZE_API_KEY` — enables `/debrid` (fair-use %, cloud storage, active/failed transfers, plus **Clear Stuck/0%** and **Clear Finished** buttons) and the **stuck-transfer watchdog**: every `PREMIUMIZE_CHECK_MINUTES` (default `15`, `0` disables) transfers that are errored or whose progress hasn't moved for `PREMIUMIZE_STUCK_AFTER_MINUTES` (default `45` — catches "0% forever") alert the downloads channel with **Retry / Clear Transfer / Ignore** buttons, at most once per transfer per `PREMIUMIZE_ALERT_COOLDOWN_HOURS` (default `6`)
 - `STUCK_CHECK_MINUTES` (default `10`), `STUCK_AFTER_MINUTES` (default `45`), `STUCK_ALERT_COOLDOWN_HOURS` (default `6`) — stuck-download watchdog: when a queue item makes no progress for `STUCK_AFTER_MINUTES` (e.g. no seeders), the admin channel gets an alert with **Remove & Try Another Release** (blocklist + auto re-search), **Remove Only**, and **Ignore** buttons. TV episodes are consolidated **per season** — a whole season stalling (from either download path, public indexers or the AvistaZ fallback) is one alert listing every stuck episode, and its buttons act on all of them at once, instead of one message per episode. Set `STUCK_CHECK_MINUTES=0` to disable.
 - `ESCALATION_ENABLED` (default `false`), `AVISTAZ_TAG` (default `avistaz`), `ESCALATION_DELAY_HOURS` (default `6`), `ESCALATION_CHECK_MINUTES` (default `30`), `ESCALATION_MAX_AGE_DAYS` (default `14`) — the AvistaZ private-tracker fallback; see the dedicated section below. Requires the one-time Radarr/Sonarr/Prowlarr setup described there.
+- `RTORRENT_URL`, `RTORRENT_LABEL_MOVIE`/`RTORRENT_LABEL_TV` (defaults `radarr`/`sonarr`), `AVISTAZ_INDEXER_NAME` (default `avistaz`), `AVISTAZ_DAILY_GRAB_LIMIT` (default `4`, `0` = unlimited), `GRAB_MODE` (`approve` default / `auto`), `GRAB_AUTO_CONFIDENCE` (default `92`), `GRAB_RCLONE_REMOTE`, `GRAB_RCLONE_FLAGS`, `GRAB_STAGING_PATH`, `GRAB_IMPORT_PATH`, `GRAB_CHECK_MINUTES` (default `5`), `GRAB_COPY_TIMEOUT_MINUTES` (default `240`), `GRAB_MISSING_AFTER_MINUTES` (default `10`), `GRAB_DOWNLOAD_TIMEOUT_HOURS` (default `72`) — the AvistaZ **direct grab** pipeline (`/avistaz`, and the smarter escalation path); see the dedicated section below.
 - `JANITOR_CHECK_MINUTES` (default `60`) — janitor sweep interval; `0` disables. The janitor:
   1. **Grace deletes** — enforces the "Finished Watching" prompt's auto-delete promise: if nobody clicks Keep/Delete within `DELETION_GRACE_HOURS`, the media is deleted (requires `ENABLE_DELETION=true`; honors `DELETION_DRY_RUN`, keep list, and never-delete list). Requester gets a DM; admin channel gets a report. "Remind Me Later" restarts the grace window after the reminder.
   2. **Disk-space alerts** — warns the admin channel (24h cooldown) when any *arr-visible volume drops below `DISK_SPACE_WARN_GB` (default `100`, `0` disables). `/status` also shows a Storage section. Set `DISK_SPACE_PATHS` (comma-separated) to an allowlist of mounts/folders to report — this hides the container's own `/` and `/config` disks and relabels a mount with the more specific media folder (e.g. shows `/share/media` for the `/share` mount). Unset reports every *arr mount.
@@ -313,6 +314,10 @@ Public indexers (→ Premiumize) always get first crack at every request. Avista
 per-title fallback, which conserves its download slots / ratio and keeps private grabs seeding on a
 seedbox instead of Premiumize.
 
+> When the **direct grab** pipeline (next section) is fully configured, escalation routes through
+> it instead — the tag mechanism below stays as the fallback for when the direct search fails or
+> finds nothing.
+
 **Why not Prowlarr priority?** Priority is only a tie-breaker — Radarr/Sonarr grab the
 best-scoring release regardless of which indexer returned it. The strict mechanism is **indexer
 tags**: an indexer with a tag only applies to movies/series that carry the same tag. The AvistaZ
@@ -353,6 +358,68 @@ indexer is tagged, no title carries the tag by default, so nothing ever hits Avi
   tag from the movie/series manually if you want it back on public-only.
 - The stuck-download **Remove & Try Another Release** button blocklists the release; on an AvistaZ
   grab that blocklists a private-tracker release.
+
+## AvistaZ Direct Grab (Prowlarr search → seedbox rTorrent → rclone → arr import)
+The next stage of the fallback above. Instead of handing the search to Radarr/Sonarr via the
+indexer tag (where the arrs grab whatever scores best and burn AvistaZ download slots on their
+own judgement), the bot runs the whole chain itself:
+
+```text
+Escalation fires (or /avistaz search)
+        ↓
+Bot searches AvistaZ through Prowlarr (never scrapes the website)
+        ↓
+Bot scores each release: title/year match, season pack vs episode,
+resolution/source, seeders, size sanity, freeleech, already-downloaded
+        ↓
+Auto-grab (GRAB_MODE=auto + high confidence) or Discord approval buttons
+        ↓
+.torrent pushed to seedbox rTorrent (raw bytes over XML-RPC) with the
+radarr/sonarr label — the seedbox can't reach Prowlarr, so the bot fetches
+the file and computes the info-hash locally for tracking
+        ↓
+Bot polls rTorrent until the download completes (seeding continues there —
+private-tracker ratio lives on the seedbox)
+        ↓
+rclone copy into GRAB_STAGING_PATH/.incoming, then renamed into place so the
+arr never sees a half-copied folder
+        ↓
+Radarr DownloadedMoviesScan / Sonarr DownloadedEpisodesScan (importMode Move)
+→ normal import, renaming, notifications; Bazarr picks up subtitles; Plex updates
+```
+
+### Modes
+- **Automatic** (`GRAB_MODE=auto`): escalations grab the top candidate themselves when its
+  confidence ≥ `GRAB_AUTO_CONFIDENCE`; anything less confident falls back to approval buttons.
+- **Approval** (`GRAB_MODE=approve`, default): escalations post the top 3 scored candidates to
+  the downloads channel with **Download 1/2/3 / Cancel** buttons.
+- **Manual**: `/avistaz search title:<...> type:movie|tv [season] [year]` any time;
+  `/avistaz status` shows the allowance, mode, seedbox reachability, and active grabs.
+
+### Allowance
+Every grab (failed attempts included — the tracker may count the download the moment the
+`.torrent` is fetched) consumes one slot of `AVISTAZ_DAILY_GRAB_LIMIT` per UTC day, so
+automation can't drain a limited AvistaZ account. Scoring prefers season packs for exactly the
+reason the limit exists: one grab can deliver a whole season. Duplicate info-hashes are refused
+outright ("already grabbed as job #N").
+
+### Setup
+1. Add the AvistaZ indexer in **Prowlarr** (the bot finds it by name via `AVISTAZ_INDEXER_NAME`).
+2. Set `RTORRENT_URL` to the seedbox's XML-RPC endpoint incl. credentials — RapidSeedbox
+   exposes it at `/plugins/rpc/rpc.php`, e.g.
+   `https://user:pass@server.rapidseedbox.com/plugins/rpc/rpc.php`.
+3. Configure an rclone remote that reaches the seedbox's rTorrent download folder (SFTP works
+   well) and set `GRAB_RCLONE_REMOTE` (e.g. `rapidseedbox:files`) plus
+   `GRAB_RCLONE_FLAGS=--config /app/data/rclone.conf` and any SFTP tuning.
+4. Mount a **writable** staging folder into the container (the media mount is `:ro` — see the
+   commented volume in `docker-compose.yml`) and set `GRAB_STAGING_PATH`; set
+   `GRAB_IMPORT_PATH` to the same folder as Radarr/Sonarr see it.
+5. Restart. When the pipeline is fully configured, escalations use it automatically and fall
+   back to the tag-based flow only when the AvistaZ search fails or finds nothing.
+
+Grab jobs are durable (`grab_jobs` in SQLite): a restart mid-download keeps watching, a restart
+mid-transfer re-queues the copy, and rclone skips already-transferred files. Transfer failures
+alert the downloads channel with a **Retry Transfer** button.
 
 ## Plex Home Staging (remote cache box)
 A second, small Plex server (e.g. a NUC abroad, behind CGNAT and a VPS tunnel) serves a local
@@ -409,7 +476,7 @@ marks, separate Tautulli history. So each person belongs to exactly one server:
 
 ## Slash Command List
 Admin:
-- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`, `/stage-bulk`, `/assign-server`
+- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`, `/avistaz`, `/stage-bulk`, `/assign-server`
 
 User:
 - `/request`, `/request-status`, `/download`, `/queue`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`, `/stage`, `/staged`, `/pin`, `/unpin`
@@ -424,6 +491,7 @@ User:
 - `app_settings`
 - `media_retention_rules`
 - `escalations` (AvistaZ fallback watch list)
+- `grab_jobs` (AvistaZ direct-grab pipeline: sent → downloading → complete → transferring → done)
 - `stage_jobs` (durable Plex Home staging queue)
 - `staged_items` (PH cache inventory + LRU/pin state)
 

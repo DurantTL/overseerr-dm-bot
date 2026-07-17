@@ -18,6 +18,7 @@ const sandbox = loadSandbox(
       DASHBOARD_ENABLED: false, DASHBOARD_ADMIN_PASSWORD: '', DASHBOARD_ADMIN_TOKEN: '',
       PLAYBACK_CHECK_MINUTES: 5, PLAYBACK_CHANNEL_ID: '', TAUTULLI_URL: '', TAUTULLI_API_KEY: '',
       STAGING_ENABLED: false, STAGE_RCLONE_REMOTE: '', PH_SERVER_NAMES: [], PRIMARY_SERVER_NAMES: [],
+      RTORRENT_URL: '', GRAB_MODE: 'approve', GRAB_RCLONE_REMOTE: '', GRAB_STAGING_PATH: '',
     },
     markCalls: [],
     markOverseerrCreated: (discordId, id) => sandbox.markCalls.push({ discordId, id }),

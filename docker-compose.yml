@@ -27,6 +27,11 @@ services:
       # Plex Home staging: drop rclone.conf into this volume (/app/data/rclone.conf)
       # and set STAGE_RCLONE_FLAGS=--config /app/data/rclone.conf
       - ${MEDIA_HOST_PATH:-/mnt/raid}:/mnt/raid:ro
+      # AvistaZ direct grab: the media mount above is read-only, so the seedbox staging
+      # folder needs its own WRITABLE mount that Radarr/Sonarr can also see. Uncomment and
+      # set GRAB_STAGING_PATH=/seedbox-staging (GRAB_IMPORT_PATH = the same folder as the
+      # arrs see it, e.g. /share/seedbox-staging).
+      # - ${SEEDBOX_STAGING_HOST_PATH:-/mnt/raid/media/seedbox-staging}:/seedbox-staging
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
