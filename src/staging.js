@@ -101,9 +101,11 @@ async function resolveStageSource(mediaId) {
 
 // Spawn rclone and wait for exit. Keeps only a stderr tail — that's where rclone puts the
 // reason a transfer died, and it's what lands in stage_jobs.error and the failure DM.
-function runRclone(args, { timeoutMs = 0 } = {}) {
+// `flags` lets the AvistaZ grab pipeline pass its own tuning (GRAB_RCLONE_FLAGS) instead
+// of the PH staging flags.
+function runRclone(args, { timeoutMs = 0, flags = CONFIG.STAGE_RCLONE_FLAGS } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(CONFIG.STAGE_RCLONE_BINARY, [...args, ...CONFIG.STAGE_RCLONE_FLAGS], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(CONFIG.STAGE_RCLONE_BINARY, [...args, ...flags], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderrTail = '';
     let timedOut = false;
