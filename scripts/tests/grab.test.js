@@ -22,6 +22,16 @@ const express = require('express');
   assert.deepStrictEqual({ year: p.year, res: p.resolution, src: p.source }, { year: 2019, res: '2160p', src: 'bluray' }, 'movie year/quality parses');
   p = parseReleaseName('Old.Drama.Complete.Series.1080p.WEBRip');
   assert.strictEqual(p.seasonPack, true, '"complete" without SxxExx counts as a pack');
+  assert.strictEqual(p.multiSeason, true, '"complete series" with no season marker is multi-season');
+  p = parseReleaseName('Old.Show.1983.S01-S05.480p.DVDRip.Complete');
+  assert.deepStrictEqual({ season: p.season, end: p.seasonEnd, multi: p.multiSeason, pack: p.seasonPack },
+    { season: 1, end: 5, multi: true, pack: true }, 'S01-S05 parses as a multi-season range, not season 1');
+  p = parseReleaseName('Old.Show.Seasons.1-3.1080p.WEB-DL');
+  assert.deepStrictEqual({ season: p.season, end: p.seasonEnd, multi: p.multiSeason, pack: p.seasonPack },
+    { season: 1, end: 3, multi: true, pack: true }, 'dotted "Seasons.1-3" parses as a range');
+  p = parseReleaseName('Some.Show.S02.COMPLETE.1080p.WEB-DL');
+  assert.deepStrictEqual({ season: p.season, multi: p.multiSeason, pack: p.seasonPack },
+    { season: 2, multi: false, pack: true }, 'a complete SINGLE season is a pack but not multi-season');
 
   // --- Scoring ---
   const tvCtx = { title: 'My Father Is Strange', mediaType: 'tv', season: 1 };
@@ -37,6 +47,20 @@ const express = require('express');
   assert.ok(dead.confidence <= 40, `zero seeders caps confidence (got ${dead.confidence})`);
   assert.ok(dead.notes.includes('no seeders'), 'dead torrent is flagged');
   assert.ok(wrongSeason.confidence < pack1080.confidence - 10, 'wrong season is penalized');
+
+  // Multi-season packs: a range covering the wanted season scores as a full pack (an old show
+  // may only exist as one complete-series torrent); a range that misses it is a wrong season.
+  const ctxS3 = { title: 'Old Show', mediaType: 'tv', season: 3 };
+  const coveringRange = scoreAvistazResult(mk('Old.Show.S01-S05.1080p.WEB-DL', { size: 60 * 1024 ** 3 }), ctxS3);
+  const completeRun = scoreAvistazResult(mk('Old.Show.Complete.Series.1080p.WEB-DL', { size: 60 * 1024 ** 3 }), ctxS3);
+  const missingRange = scoreAvistazResult(mk('Old.Show.S04-S05.1080p.WEB-DL', { size: 30 * 1024 ** 3 }), ctxS3);
+  assert.ok(coveringRange.confidence >= 90, `range covering the wanted season scores like a pack (got ${coveringRange.confidence})`);
+  assert.ok(completeRun.confidence >= 90, `complete series covers any requested season (got ${completeRun.confidence})`);
+  assert.ok(missingRange.confidence <= coveringRange.confidence - 10, 'range that misses the wanted season is penalized');
+  assert.ok(missingRange.notes.some(note => note.includes('wrong season')), 'missed range is flagged');
+  const rankedMulti = rankAvistazResults([mk('Old.Show.S01-S05.1080p.WEB-DL')], { title: 'Old Show', mediaType: 'tv' });
+  assert.deepStrictEqual({ multi: rankedMulti[0].multiSeason, s: rankedMulti[0].season, e: rankedMulti[0].seasonEnd },
+    { multi: true, s: 1, e: 5 }, 'multi-season fields ride along for the candidate embeds');
 
   const movieCtx = { title: 'Great Movie', mediaType: 'movie', year: 2019 };
   const rightYear = scoreAvistazResult(mk('Great.Movie.2019.1080p.WEB-DL', { size: 8 * 1024 ** 3 }), movieCtx);
