@@ -1,0 +1,63 @@
+// rTorrent adoption: bring torrents that already live in the seedbox rTorrent (added
+// manually, by another private tracker, or before the bot existed) into the grab pipeline.
+// The bot normally tracks torrents by the info-hash it computes when IT submits the
+// .torrent; anything else in rTorrent has no grab_jobs row and is invisible. Adoption
+// creates that row from the EXISTING torrent — no tracker download, no AvistaZ allowance
+// slot, nothing removed from rTorrent — at 'downloading' (the sweep watches it to 100%) or
+// 'complete' (the transfer runs immediately), and the normal rclone → .incoming →
+// arr-import chain finishes the job.
+//
+// Everything here is pure (facts in, verdict out) so the tests can exercise it directly;
+// index.js wires Discord, rTorrent, and rclone around these decisions.
+const { CONFIG } = require('./config');
+const { normalizeTitle } = require('./grab');
+
+// Token match: every word of the search must appear in the torrent name, case- and
+// punctuation-insensitive — "Blood Vs Duty" matches "Blood.Vs.Duty.S01.1080p.WEB-DL".
+function matchTorrentsByName(torrents, search) {
+  const tokens = normalizeTitle(search).split(' ').filter(Boolean);
+  if (!tokens.length) return [];
+  return (torrents || []).filter(t => {
+    const haystack = ` ${normalizeTitle(t.name)} `;
+    return tokens.every(tok => haystack.includes(` ${tok} `));
+  });
+}
+
+// Import target implied by the torrent's rTorrent label (d.custom1). Only labels listed in
+// RTORRENT_ADOPT_LABELS count, and the label must name an arr that is actually configured.
+// Null means blank/unknown label — adoption then requires an explicit admin choice, never a
+// silent guess.
+function adoptTargetForLabel(label, cfg = CONFIG) {
+  const l = String(label || '').trim().toLowerCase();
+  if (!l || !cfg.RTORRENT_ADOPT_LABELS.includes(l)) return null;
+  if (l.includes('sonarr')) return cfg.SONARR_URL ? 'sonarr' : null;
+  if (l.includes('radarr')) return cfg.RADARR_URL ? 'radarr' : null;
+  return null;
+}
+
+// Map the torrent's on-seedbox path (d.base_path: the folder for multi-file torrents, the
+// file itself for single-file ones) to the subpath under GRAB_RCLONE_REMOTE that rclone
+// should copy. RTORRENT_REMOTE_ROOT is the seedbox-side folder the remote points at, so
+// torrents living in per-label subfolders map to 'label/Name'. Null when the path can't be
+// mapped safely — callers fall back to the bare torrent name.
+function remoteSubpathFor(basePath, remoteRoot) {
+  const base = String(basePath || '');
+  const root = String(remoteRoot || '').replace(/\/+$/, '');
+  if (!root || !base.startsWith(`${root}/`)) return null;
+  const rel = base.slice(root.length + 1).replace(/\/+$/, '');
+  if (!rel || rel.split('/').some(part => !part || part === '.' || part === '..')) return null;
+  return rel;
+}
+
+// The adoption verdict for one existing torrent: refuse duplicates (an info-hash already in
+// grab_jobs is already owned by the pipeline), refuse target-less adoptions, and pick the
+// job's starting state from the torrent's completion.
+function decideAdoption({ torrent, existingJob, target }) {
+  if (existingJob) return { ok: false, dup: true, why: `already tracked as grab job #${existingJob.id} (${existingJob.state})` };
+  if (!target) return { ok: false, needsTarget: true, why: 'the rTorrent label is blank or unknown — pick sonarr/radarr explicitly' };
+  const name = String(torrent.name || '');
+  if (!name || name.includes('/') || name.includes('..')) return { ok: false, why: `unsafe torrent name: ${name || '(empty)'}` };
+  return { ok: true, state: torrent.complete ? 'complete' : 'downloading', mediaType: target === 'sonarr' ? 'tv' : 'movie' };
+}
+
+module.exports = { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, decideAdoption };
