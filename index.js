@@ -35,7 +35,7 @@ const { tautulliConfigured, tautulliApi, describeSession } = require('./src/taut
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
-const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, decideAdoption, bulkTargetChoices } = require('./src/adopt');
+const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
 
@@ -705,7 +705,7 @@ async function runGrabTransfer(job) {
   // out of the arr's sight until the rename below. Adopted torrents may live in a per-label
   // subfolder on the seedbox — remote_path (verified at adoption time) points there.
   const remoteSub = job.remote_path && !job.remote_path.includes('..') ? job.remote_path : name;
-  const res = await runRclone(['copyto', `${CONFIG.GRAB_RCLONE_REMOTE}/${remoteSub}`, incoming],
+  const res = await runRclone(['copyto', joinRemotePath(CONFIG.GRAB_RCLONE_REMOTE, remoteSub), incoming],
     { timeoutMs: CONFIG.GRAB_COPY_TIMEOUT_MINUTES * 60000, flags: CONFIG.GRAB_RCLONE_FLAGS });
   if (res.timedOut) throw new Error(`rclone copy timed out after ${CONFIG.GRAB_COPY_TIMEOUT_MINUTES} min`);
   if (res.code !== 0) throw new Error(res.stderr || `rclone exited ${res.code}`);
@@ -754,7 +754,7 @@ const adoptPipelineReady = () => !!(rtorrentConfigured() && CONFIG.GRAB_RCLONE_R
 
 // One rclone stat: does this exact path exist under GRAB_RCLONE_REMOTE?
 async function remotePathExistsByStat(sub) {
-  const res = await runRclone(['lsjson', '--stat', `${CONFIG.GRAB_RCLONE_REMOTE}/${sub}`],
+  const res = await runRclone(['lsjson', '--stat', joinRemotePath(CONFIG.GRAB_RCLONE_REMOTE, sub)],
     { timeoutMs: 60000, flags: CONFIG.GRAB_RCLONE_FLAGS });
   return res.code === 0;
 }
@@ -766,8 +766,7 @@ async function remotePathExistsByStat(sub) {
 function makeRemotePathChecker() {
   const dirs = new Map(); // parent subpath ('' = remote root) -> Promise<Set<names> | null>
   const listDir = async parent => {
-    const target = parent ? `${CONFIG.GRAB_RCLONE_REMOTE}/${parent}` : CONFIG.GRAB_RCLONE_REMOTE;
-    const res = await runRclone(['lsf', target], { timeoutMs: 120000, flags: CONFIG.GRAB_RCLONE_FLAGS });
+    const res = await runRclone(['lsf', joinRemotePath(CONFIG.GRAB_RCLONE_REMOTE, parent)], { timeoutMs: 120000, flags: CONFIG.GRAB_RCLONE_FLAGS });
     if (res.code !== 0 || res.stdout.length >= 65536) return null;
     return new Set(res.stdout.split('\n').map(s => s.replace(/\/$/, '').trim()).filter(Boolean));
   };
@@ -780,15 +779,16 @@ function makeRemotePathChecker() {
   };
 }
 
-// Does the torrent's data actually exist under GRAB_RCLONE_REMOTE? Verified BEFORE the job
-// is created so adoption can't produce a transfer that was doomed from the start. Tries the
-// RTORRENT_REMOTE_ROOT-derived subpath first (per-label subfolders), then the bare name.
+// Does the torrent's data actually exist under GRAB_RCLONE_REMOTE, and where? Verified
+// BEFORE the job is created so adoption can't produce a transfer that was doomed from the
+// start. Probes every plausible mapping of d.base_path (remoteSubpathCandidates), so the
+// remote's root not being the rTorrent download folder self-corrects instead of failing.
 async function findAdoptRemotePath(torrent, pathExists = remotePathExistsByStat) {
-  const candidates = [...new Set([remoteSubpathFor(torrent.basePath, CONFIG.RTORRENT_REMOTE_ROOT), torrent.name].filter(Boolean))];
-  for (const sub of candidates) {
-    if (await pathExists(sub)) return sub;
+  const tried = remoteSubpathCandidates(torrent.basePath, torrent.name, CONFIG.RTORRENT_REMOTE_ROOT);
+  for (const sub of tried) {
+    if (await pathExists(sub)) return { sub, tried };
   }
-  return null;
+  return { sub: null, tried };
 }
 
 // Create the grab job for an existing torrent. Never throws — callers branch on
@@ -799,9 +799,10 @@ async function executeAdoption(torrent, target, meta, pathExists = remotePathExi
   if (!grabImportTarget(verdict.mediaType)) {
     return { ok: false, why: `${target === 'sonarr' ? 'Sonarr' : 'Radarr'} isn't configured — the adopted torrent could never be imported` };
   }
-  const remotePath = await findAdoptRemotePath(torrent, pathExists);
+  const { sub: remotePath, tried } = await findAdoptRemotePath(torrent, pathExists);
   if (!remotePath) {
-    return { ok: false, why: `no matching file/folder under \`${CONFIG.GRAB_RCLONE_REMOTE}\` — check the rclone remote (and \`RTORRENT_REMOTE_ROOT\` if torrents live in subfolders)` };
+    const probed = tried.slice(0, 3).map(p => `\`${p}\``).join(', ') + (tried.length > 3 ? ', …' : '');
+    return { ok: false, why: `not found under \`${CONFIG.GRAB_RCLONE_REMOTE}\` (probed ${probed}) — \`/rtorrent status\` shows what the remote root actually contains` };
   }
   if (isAdoptIgnored(torrent.hash)) clearAdoptIgnored(torrent.hash);
   const job = recordGrabJob({
@@ -2961,6 +2962,20 @@ async function handleRtorrentCommand(interaction) {
     } catch (err) {
       lines.push(`Seedbox rTorrent: ❌ ${err.message}`);
     }
+    // What rclone actually sees at the remote root — the fastest way to spot a broken
+    // rclone config or a root/download-folder mismatch when adoptions fail "not found".
+    if (CONFIG.GRAB_RCLONE_REMOTE) {
+      const res = await runRclone(['lsf', CONFIG.GRAB_RCLONE_REMOTE, '--max-depth', '1'], { timeoutMs: 60000, flags: CONFIG.GRAB_RCLONE_FLAGS })
+        .catch(err => ({ code: -1, stderr: err.message }));
+      if (res.code === 0) {
+        const entries = res.stdout.split('\n').map(s => s.trim()).filter(Boolean);
+        lines.push('', `Remote root \`${CONFIG.GRAB_RCLONE_REMOTE}\`: ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}`);
+        for (const e of entries.slice(0, 8)) lines.push(`• \`${e.slice(0, 100)}\``);
+        if (entries.length > 8) lines.push(`…and ${entries.length - 8} more`);
+      } else {
+        lines.push('', `⚠️ rclone can't list \`${CONFIG.GRAB_RCLONE_REMOTE}\`: ${String(res.stderr || `exit ${res.code}`).slice(0, 300)}`);
+      }
+    }
     lines.push('', `Adoption discovery sweep: **${CONFIG.RTORRENT_ADOPT_ENABLED ? `on (every ${CONFIG.RTORRENT_ADOPT_CHECK_MINUTES} min, ${CONFIG.RTORRENT_ADOPT_AUTO ? 'auto-adopts' : 'posts Adopt buttons'})` : 'off (`RTORRENT_ADOPT_ENABLED`)'}**`);
     lines.push(`Adoptable labels: ${CONFIG.RTORRENT_ADOPT_LABELS.map(l => `\`${l}\``).join(', ') || 'none'}`);
     if (!adoptPipelineReady()) lines.push('⚠️ Transfer pipeline incomplete — adoption needs `GRAB_RCLONE_REMOTE` and `GRAB_STAGING_PATH` too.');
@@ -3818,7 +3833,7 @@ async function handleButton(interaction) {
     if (outcome.dup) lines.push(`Skipped ${outcome.dup} already tracked.`);
     if (outcome.failed.length) {
       lines.push('', `**${outcome.failed.length} failed:**`);
-      for (const f of outcome.failed.slice(0, 8)) lines.push(`• ${String(f.name).slice(0, 80)} — ${String(f.why).slice(0, 120)}`);
+      for (const f of outcome.failed.slice(0, 8)) lines.push(`• ${String(f.name).slice(0, 80)} — ${String(f.why).slice(0, 220)}`);
       if (outcome.failed.length > 8) lines.push(`…and ${outcome.failed.length - 8} more (see the audit log).`);
       lines.push('Re-running the same `/rtorrent adopt` only offers what\'s still untracked.');
     }
