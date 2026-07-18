@@ -462,6 +462,13 @@ Safety properties, by construction:
 - Adopted jobs are durable `grab_jobs` rows — restarts keep watching/transferring them, and the
   `.incoming` rename guard applies unchanged.
 
+**Import verification**: after every transfer's arr scan, the bot checks the video files
+actually left staging. A scan that never completes raises a "command queue may be wedged"
+alert; a scan that completes but silently skips cleanly-matched files gets them forced
+through the arr's ManualImport API automatically; genuinely rejected files produce one
+alert naming the rejection reasons. `/rtorrent staging` runs the same match/rejection
+analysis on demand, summarized per staging folder.
+
 Commands: `/rtorrent status` (connectivity + adoption settings), `/rtorrent list [search]`,
 `/rtorrent adopt search:"..." [target:]`, `/rtorrent ignore search:"..."` (toggle — the sweep
 skips ignored torrents), `/rtorrent adopted` (adopted jobs + ignore list), and
