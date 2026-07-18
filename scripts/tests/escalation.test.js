@@ -25,6 +25,15 @@ const { loadSandbox } = require('./extract');
   assert.strictEqual(decideEscalationAction(row(), noFacts, 15 * 24 * HOUR, cfg), 'expire', 'past max age expires');
   assert.strictEqual(decideEscalationAction(row({ pre_authorized: 1 }), { ...noFacts, isAvailable: true }, 46 * MIN, cfg), 'resolve', 'resolve beats escalate');
 
+  // inArr=false (Seerr lost the arr hand-off): one alert after the grace period, then hold —
+  // never escalate a title the arr doesn't have. Unknown (null/undefined) changes nothing.
+  assert.strictEqual(decideEscalationAction(row(), { ...noFacts, inArr: false }, 5 * MIN, cfg), 'wait', 'missing from arr inside grace waits');
+  assert.strictEqual(decideEscalationAction(row(), { ...noFacts, inArr: false }, 15 * MIN, cfg), 'alert_missing', 'missing from arr past grace alerts');
+  assert.strictEqual(decideEscalationAction(row({ pre_authorized: 1 }), { ...noFacts, inArr: false }, 46 * MIN, cfg), 'alert_missing', 'missing-arr alert beats escalate');
+  assert.strictEqual(decideEscalationAction(row({ arr_missing_alerted: 1 }), { ...noFacts, inArr: false }, 46 * MIN, cfg), 'wait', 'already-alerted missing row holds');
+  assert.strictEqual(decideEscalationAction(row({ pre_authorized: 1 }), { ...noFacts, inArr: null }, 46 * MIN, cfg), 'escalate', 'unknown arr state never blocks escalation');
+  assert.strictEqual(decideEscalationAction(row(), { ...noFacts, inArr: false }, 15 * 24 * HOUR, cfg), 'expire', 'expiry beats the missing-arr alert');
+
   const eCfg = { enabled: true, radarrConfigured: true, sonarrConfigured: true };
   assert.strictEqual(escalationEligible({ mediaType: 'movie', is4k: false }, eCfg), true, 'movie eligible');
   assert.strictEqual(escalationEligible({ mediaType: 'tv', is4k: false }, eCfg), true, 'tv eligible');
@@ -36,10 +45,17 @@ const { loadSandbox } = require('./extract');
   // --- arr helpers against a mock Radarr/Sonarr ---
   const app = express();
   app.use(express.json());
-  const state = { tags: [{ id: 7, label: 'avistaz' }], movieEditor: [], seriesEditor: [], commands: [], movies: [], series: [] };
+  const state = { tags: [{ id: 7, label: 'avistaz' }], movieEditor: [], seriesEditor: [], commands: [], movies: [], series: [], movieAdds: [], seriesAdds: [] };
   app.get('/api/v3/tag', (req, res) => res.json(state.tags));
+  app.get('/api/v3/movie/lookup/tmdb', (req, res) => res.json({ title: 'Lost Movie', tmdbId: Number(req.query.tmdbId) }));
   app.get('/api/v3/movie', (req, res) => res.json(state.movies.filter(m => m.tmdbId === Number(req.query.tmdbId))));
+  app.get('/api/v3/series/lookup', (req, res) => res.json([{ title: 'Lost Show', tvdbId: 999 }]));
   app.get('/api/v3/series', (req, res) => res.json(state.series.filter(s => s.tvdbId === Number(req.query.tvdbId))));
+  app.get('/api/v3/rootfolder', (req, res) => res.json([{ path: '/data/media' }]));
+  app.get('/api/v3/qualityprofile', (req, res) => res.json([{ id: 5, name: 'HD-1080p' }]));
+  app.get('/api/v3/languageprofile', (req, res) => res.json([{ id: 2, name: 'English' }]));
+  app.post('/api/v3/movie', (req, res) => { state.movieAdds.push(req.body); res.json({ id: 77 }); });
+  app.post('/api/v3/series', (req, res) => { state.seriesAdds.push(req.body); res.json({ id: 88 }); });
   app.put('/api/v3/movie/editor', (req, res) => { state.movieEditor.push(req.body); res.json({}); });
   app.put('/api/v3/series/editor', (req, res) => { state.seriesEditor.push(req.body); res.json({}); });
   app.post('/api/v3/command', (req, res) => { state.commands.push(req.body); res.json({}); });
@@ -49,7 +65,7 @@ const { loadSandbox } = require('./extract');
   const CONFIG = { RADARR_URL: base, RADARR_API_KEY: 'rk', SONARR_URL: base, SONARR_API_KEY: 'sk', AVISTAZ_TAG: 'avistaz' };
   const audits = [];
   const sandbox = loadSandbox(
-    ['getArrTagId', 'getMovieByTmdbId', 'getSeriesByTvdbId', 'addTagToMovie', 'addTagToSeries', 'triggerMovieSearch', 'triggerSeriesSearch', 'applyAvistazTag', 'escalateMediaToAvistaz', 'verifyAvistazTags'],
+    ['getArrTagId', 'getMovieByTmdbId', 'getSeriesByTvdbId', 'addTagToMovie', 'addTagToSeries', 'triggerMovieSearch', 'triggerSeriesSearch', 'applyAvistazTag', 'escalateMediaToAvistaz', 'addMediaToArr', 'verifyAvistazTags'],
     {
       axios,
       CONFIG,
@@ -108,6 +124,34 @@ const { loadSandbox } = require('./extract');
   state.tags = [{ id: 7, label: 'avistaz' }];
   warnings = await sandbox.run("verifyAvistazTags('avistaz')");
   assert.strictEqual(warnings.length, 0, 'no warnings once the tag exists');
+
+  // Direct-add rescue (addMediaToArr): builds the add from the arr's own lookup + first
+  // root folder / quality profile, applies the tag when given, and starts a search.
+  state.series = [];
+  result = await sandbox.run("addMediaToArr({ mediaType: 'tv', tvdbId: 999, tagLabel: 'avistaz' })");
+  assert.strictEqual(result.ok, true, `series direct add ok (got ${JSON.stringify(result)})`);
+  const addedSeries = state.seriesAdds[0];
+  assert.strictEqual(addedSeries.tvdbId, 999, 'series lookup result posted');
+  assert.strictEqual(addedSeries.rootFolderPath, '/data/media', 'first root folder used');
+  assert.strictEqual(addedSeries.qualityProfileId, 5, 'first quality profile used');
+  assert.deepStrictEqual(addedSeries.tags, [7], 'tag applied in the same add call');
+  assert.strictEqual(addedSeries.monitored, true, 'series added monitored');
+  assert.strictEqual(addedSeries.addOptions.searchForMissingEpisodes, true, 'series add searches immediately');
+  assert.strictEqual(addedSeries.languageProfileId, 2, 'language profile set when the endpoint exists (Sonarr v3)');
+
+  state.series = [{ id: 9, tvdbId: 999, title: 'Lost Show' }];
+  result = await sandbox.run("addMediaToArr({ mediaType: 'tv', tvdbId: 999 })");
+  assert.deepStrictEqual({ ok: result.ok, already: result.already }, { ok: true, already: true }, 'already-in-arr short-circuits');
+  assert.strictEqual(state.seriesAdds.length, 1, 'no duplicate add posted');
+
+  state.movies = [];
+  result = await sandbox.run("addMediaToArr({ mediaType: 'movie', tmdbId: 777 })");
+  assert.strictEqual(result.ok, true, `movie direct add ok (got ${JSON.stringify(result)})`);
+  assert.deepStrictEqual(state.movieAdds[0].tags, [], 'no tag requested, none applied');
+  assert.strictEqual(state.movieAdds[0].addOptions.searchForMovie, true, 'movie add searches immediately');
+
+  result = await sandbox.run("addMediaToArr({ mediaType: 'tv' })");
+  assert.deepStrictEqual({ ok: result.ok, reason: result.reason }, { ok: false, reason: 'no_tvdb_id' }, 'tv without tvdbId fails cleanly');
 
   server.close();
   console.log('ok - escalation');

@@ -289,6 +289,63 @@ async function escalateMediaToAvistaz({ mediaType, tmdbId, tvdbId }) {
   }
 }
 
+// Add a movie/series straight to the arr, bypassing Seerr entirely — the rescue path for
+// requests Seerr accepted and then lost ('Media data not found' in its log, usually a broken
+// TMDB↔TVDB mapping). Root folder / quality profile come from RADARR_ROOT_FOLDER-style config
+// when set, else the arr's first of each. tagLabel (optional) is applied when that tag exists.
+// Never throws — callers branch on { ok, reason } with stable reason strings.
+async function addMediaToArr({ mediaType, tmdbId, tvdbId, tagLabel }) {
+  const source = escalationSources().find(s => (mediaType === 'movie' ? s.kind === 'movie' : s.kind === 'tv'));
+  if (!source) return { ok: false, reason: 'arr_not_configured' };
+  const H = { headers: { 'X-Api-Key': source.key }, timeout: 20000 };
+  try {
+    const roots = (await axios.get(`${source.url}/api/v3/rootfolder`, H)).data || [];
+    const wantRoot = mediaType === 'movie' ? CONFIG.RADARR_ROOT_FOLDER : CONFIG.SONARR_ROOT_FOLDER;
+    const rootFolderPath = wantRoot || roots[0]?.path;
+    if (!rootFolderPath) return { ok: false, reason: 'no_root_folder' };
+    const profiles = (await axios.get(`${source.url}/api/v3/qualityprofile`, H)).data || [];
+    const wantProfile = mediaType === 'movie' ? CONFIG.RADARR_QUALITY_PROFILE : CONFIG.SONARR_QUALITY_PROFILE;
+    const profile = wantProfile
+      ? profiles.find(p => String(p.name).toLowerCase() === wantProfile.toLowerCase())
+      : profiles[0];
+    if (!profile) return { ok: false, reason: 'no_quality_profile' };
+    const tagId = tagLabel ? await getArrTagId(source, tagLabel) : null;
+    const tags = tagId != null ? [tagId] : [];
+    const tagNote = tagId != null ? `, tag \`${tagLabel}\`` : '';
+
+    if (mediaType === 'movie') {
+      const existing = await getMovieByTmdbId(tmdbId);
+      if (existing) return { ok: true, already: true, arrId: existing.id, title: existing.title, detail: `Already in Radarr as movie #${existing.id} — nothing to add.` };
+      const looked = (await axios.get(`${source.url}/api/v3/movie/lookup/tmdb`, { params: { tmdbId }, ...H })).data;
+      const movie = Array.isArray(looked) ? looked[0] : looked;
+      if (!movie?.title) return { ok: false, reason: 'lookup_empty' };
+      const created = (await axios.post(`${source.url}/api/v3/movie`,
+        { ...movie, qualityProfileId: profile.id, rootFolderPath, monitored: true, tags, addOptions: { searchForMovie: true } }, H)).data;
+      audit('arr_direct_add', { mediaId: `tmdb:${tmdbId}`, title: movie.title, arr: source.label, arrId: created?.id ?? null });
+      return { ok: true, arrId: created?.id ?? null, title: movie.title, detail: `Added **${movie.title}** to Radarr (root \`${rootFolderPath}\`, profile \`${profile.name}\`${tagNote}) and started a search.` };
+    }
+
+    if (!tvdbId) return { ok: false, reason: 'no_tvdb_id' };
+    const existingSeries = await getSeriesByTvdbId(tvdbId);
+    if (existingSeries) return { ok: true, already: true, arrId: existingSeries.id, title: existingSeries.title, detail: `Already in Sonarr as series #${existingSeries.id} — nothing to add.` };
+    const results = (await axios.get(`${source.url}/api/v3/series/lookup`, { params: { term: `tvdb:${tvdbId}` }, ...H })).data || [];
+    const series = results[0];
+    if (!series?.title) return { ok: false, reason: 'lookup_empty' };
+    const body = { ...series, qualityProfileId: profile.id, rootFolderPath, monitored: true, seasonFolder: true, tags, addOptions: { searchForMissingEpisodes: true } };
+    // Sonarr v3 requires a language profile; v4 removed the endpoint and ignores the field.
+    try {
+      const langs = (await axios.get(`${source.url}/api/v3/languageprofile`, H)).data || [];
+      if (langs[0]?.id != null) body.languageProfileId = langs[0].id;
+    } catch (_e) { /* v4 — endpoint gone, field not needed */ }
+    const created = (await axios.post(`${source.url}/api/v3/series`, body, H)).data;
+    audit('arr_direct_add', { mediaId: `tvdb:${tvdbId}`, title: series.title, arr: source.label, arrId: created?.id ?? null });
+    return { ok: true, arrId: created?.id ?? null, title: series.title, detail: `Added **${series.title}** to Sonarr (root \`${rootFolderPath}\`, profile \`${profile.name}\`${tagNote}) and started a search for all episodes.` };
+  } catch (err) {
+    audit('external_api_error', { provider: source.label, error: err.message, action: 'arr_direct_add', mediaId: mediaType === 'movie' ? `tmdb:${tmdbId}` : `tvdb:${tvdbId}` });
+    return { ok: false, reason: `api_error:${err.message}` };
+  }
+}
+
 // Startup sanity check: warn (non-fatal) when an escalation-eligible instance has no tag named
 // AVISTAZ_TAG — escalation would fail with tag_missing on every attempt until it's created.
 async function verifyAvistazTags(tagName) {
@@ -353,4 +410,4 @@ function remapPath(hostPath) {
   return hostPath;
 }
 
-module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, applyAvistazTag, escalateMediaToAvistaz, verifyAvistazTags, fetchReleaseEta, remapPath };
+module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, verifyAvistazTags, fetchReleaseEta, remapPath };
