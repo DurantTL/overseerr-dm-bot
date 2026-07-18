@@ -7,7 +7,7 @@ const assert = require('assert');
 const express = require('express');
 
 (async () => {
-  const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, decideAdoption, bulkTargetChoices } = require('../../src/adopt');
+  const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, joinRemotePath, decideAdoption, bulkTargetChoices } = require('../../src/adopt');
   const { CONFIG } = require('../../src/config');
 
   // --- Name matching ---
@@ -51,6 +51,13 @@ const express = require('express');
   cands = remoteSubpathCandidates('/a/b/c/d/e/f/g/Ep.mkv', 'Ep.mkv', '');
   assert.strictEqual(cands.length, 5, 'suffix probing caps at 5 segments');
   assert.ok(!cands.includes(''), 'blank candidates are dropped');
+
+  // --- Remote path joining (SFTP home-relative vs root-relative) ---
+  assert.strictEqual(joinRemotePath('rapidseedbox:', 'Downloads/Ep.mkv'), 'rapidseedbox:Downloads/Ep.mkv',
+    'bare remote joins without a slash — remote:/path would be root-relative on SFTP');
+  assert.strictEqual(joinRemotePath('rapidseedbox:files', 'Ep.mkv'), 'rapidseedbox:files/Ep.mkv', 'remote with a path keeps the slash join');
+  assert.strictEqual(joinRemotePath('rapidseedbox:', ''), 'rapidseedbox:', 'empty subpath returns the remote itself');
+  assert.strictEqual(joinRemotePath('rapidseedbox:files', ''), 'rapidseedbox:files', 'empty subpath never appends a slash');
 
   // --- Adoption verdict ---
   const t = (over = {}) => ({ hash: 'ABC123', name: 'Blood.Vs.Duty.S01', complete: true, ...over });
