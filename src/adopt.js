@@ -79,6 +79,16 @@ function remoteSubpathCandidates(basePath, name, remoteRoot) {
   return out;
 }
 
+// Join a subpath onto an rclone remote without corrupting bare remotes: on SFTP,
+// 'remote:path' is home-relative while 'remote:/path' is root-relative, so
+// 'rapidseedbox:' + '/' + 'Downloads/x' would probe the absolute /Downloads/x instead of
+// ~/Downloads/x. Only insert '/' when the remote already carries a path.
+function joinRemotePath(remote, sub) {
+  const r = String(remote || '');
+  if (!sub) return r;
+  return r.endsWith(':') ? `${r}${sub}` : `${r}/${sub}`;
+}
+
 // Which bulk-adopt buttons a cohort should get: an explicit target pins one button; a
 // cohort whose labels all resolve to the same arr gets that one; anything mixed or
 // unresolved falls back to one button per configured arr — the admin picks, never a guess.
@@ -89,4 +99,4 @@ function bulkTargetChoices(candidates, explicitTarget, cfg = CONFIG) {
   return [cfg.SONARR_URL ? 'sonarr' : null, cfg.RADARR_URL ? 'radarr' : null].filter(Boolean);
 }
 
-module.exports = { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, decideAdoption, bulkTargetChoices };
+module.exports = { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, joinRemotePath, decideAdoption, bulkTargetChoices };
