@@ -25,11 +25,11 @@ const crypto = require('crypto');
 
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
-const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
+const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
 const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
-const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, escalateMediaToAvistaz, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
+const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
 const { decideEscalationAction, escalationEligible } = require('./src/escalation');
 const { tautulliConfigured, tautulliApi, describeSession } = require('./src/tautulli');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
@@ -199,6 +199,9 @@ function markApprovalNoticePosted(requestId) {
   if (postedApprovalNotices.size > 500) postedApprovalNotices.delete(postedApprovalNotices.values().next().value);
 }
 
+// "45m" / "1h 30m" — the escalation delay as shown in embeds and logs.
+const escalationDelayLabel = () => fmtDuration(CONFIG.ESCALATION_DELAY_MINUTES * 60000);
+
 // Whether this request could be escalated to AvistaZ (feature on, right media type, arr present).
 function canEscalate({ mediaType, is4k }) {
   return escalationEligible({ mediaType, is4k }, {
@@ -215,7 +218,7 @@ async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discord
   const azEligible = canEscalate({ mediaType, is4k });
   const embed = brandedEmbed(COLORS.INFO)
     .setTitle(`${mediaTypeEmoji(mediaType, is4k)} New Request`)
-    .setDescription(`**${label}**${azEligible ? `\n-# "+ AvistaZ Fallback" pre-authorizes the private tracker if nothing public shows up within ${CONFIG.ESCALATION_DELAY_HOURS}h.` : ''}`)
+    .setDescription(`**${label}**${azEligible ? `\n-# "+ AvistaZ Fallback" pre-authorizes the private tracker if nothing public shows up within ${escalationDelayLabel()}.` : ''}`)
     .addFields(
       { name: 'Requested by', value: `<@${discordId}> · \`${email}\``, inline: true },
       { name: 'Type', value: mediaTypeLabel(mediaType, is4k), inline: true },
@@ -262,6 +265,14 @@ async function handleGateApprove(interaction, nonce, { azPreAuth }) {
     // watchdog alert on requests that never reached the arrs at all.
     if (canEscalate(pending)) {
       recordEscalationWatch({ mediaType: pending.mediaType, tmdbId: pending.tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: pending.label, discordId: pending.discordId, preAuthorized: azPreAuth });
+      // Pre-authorized = this title is definitely AvistaZ-bound, so put the arr tag on right
+      // away instead of waiting for the watchdog — the tag-gated AvistaZ indexer then applies
+      // from the very first arr search. Background with retries: Seerr only adds the title to
+      // Radarr/Sonarr a few seconds after accepting the request.
+      if (azPreAuth) {
+        tagPreAuthorizedMedia({ mediaType: pending.mediaType, tmdbId: pending.tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: pending.label })
+          .catch(err => log.warn(`Approval-time AvistaZ tagging failed for ${pending.label}: ${err.message}`));
+      }
     }
     audit('request_approved_gate', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label, requestId: data?.id ?? null, azPreAuth });
     await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
@@ -269,7 +280,7 @@ async function handleGateApprove(interaction, nonce, { azPreAuth }) {
       .setDescription(`**${pending.label}** was approved and is being grabbed now. You'll get a DM when it's on Plex! 🍿`)] });
     return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`✅ Approved — ${pending.label}`)
-      .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}> — sent to Seerr${data?.id != null ? ` (request #${data.id})` : ''}.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — auto-escalates if nothing public is grabbed within ${CONFIG.ESCALATION_DELAY_HOURS}h.` : ''}`)], components: [] });
+      .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}> — sent to Seerr${data?.id != null ? ` (request #${data.id})` : ''}.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now; auto-escalates if nothing public is grabbed within ${escalationDelayLabel()}.` : ''}`)], components: [] });
   } catch (err) {
     const status = err.response?.status;
     const seerrMessage = err.response?.data?.message;
@@ -290,6 +301,31 @@ async function handleGateApprove(interaction, nonce, { azPreAuth }) {
     restashPendingRequest(nonce, pending);
     return interaction.followUp({ content: `❌ Approving failed: ${seerrMessage || err.message}. The buttons still work — try again.`, ephemeral: true });
   }
+}
+
+// Put the AvistaZ tag on a just-approved, pre-authorized title. Seerr adds the title to
+// Radarr/Sonarr a few seconds after accepting the request, so not_in_arr retries for a few
+// minutes; tag_missing aborts immediately (retrying can't create a tag — startup already
+// warns about it). Best-effort by design: if this never lands, the escalation itself still
+// applies the tag when it fires.
+async function tagPreAuthorizedMedia(meta, { attempts = 8, delayMs = 15000 } = {}) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    // TV needs the tvdb id to match in Sonarr; Seerr often only knows it after the arr add.
+    if (meta.mediaType === 'tv' && !meta.tvdbId) meta.tvdbId = await fetchSeerrTvdbId(meta.tmdbId).catch(() => null);
+    const result = await applyAvistazTag(meta);
+    if (result.ok) {
+      audit('avistaz_tag_applied', { mediaId: `tmdb:${meta.tmdbId}`, title: meta.title, origin: 'approval_preauth', detail: result.detail });
+      return result;
+    }
+    if (result.reason === 'tag_missing') {
+      audit('avistaz_tag_failed', { mediaId: `tmdb:${meta.tmdbId}`, title: meta.title, reason: result.reason, origin: 'approval_preauth' });
+      return result;
+    }
+    if (attempt < attempts) await sleepMs(delayMs);
+  }
+  audit('avistaz_tag_failed', { mediaId: `tmdb:${meta.tmdbId}`, title: meta.title, reason: 'not_in_arr_after_retries', origin: 'approval_preauth' });
+  log.warn(`Couldn't tag ${meta.title} for AvistaZ at approval (never appeared in the arr) — the escalation will tag it when it fires.`);
+  return { ok: false, reason: 'not_in_arr' };
 }
 
 // ---- Stuck-download watchdog ----
@@ -382,7 +418,7 @@ async function sweepStuckDownloads() {
 
 // ---- AvistaZ escalation watchdog ----
 // Public indexers get first crack at every approved request. When nothing has been grabbed after
-// ESCALATION_DELAY_HOURS, the request either auto-escalates to AvistaZ (admin pre-authorized it
+// ESCALATION_DELAY_MINUTES, the request either auto-escalates to AvistaZ (admin pre-authorized it
 // at approval time) or an admin gets an embed with an "Escalate to AvistaZ" button. Escalation
 // tags the movie/series so the tag-gated AvistaZ indexer applies to it, then re-searches.
 
@@ -418,6 +454,11 @@ async function runEscalation(row) {
     const direct = await runDirectGrabEscalation(row).catch(err => ({ ok: false, why: err.message }));
     if (direct.ok) {
       setEscalationState(row.id, 'escalated');
+      // Direct grabs bypass the arrs' indexers, but every escalated title still gets the arr
+      // tag: it marks AvistaZ provenance and future upgrade searches then include the indexer.
+      applyAvistazTag({ mediaType: row.media_type, tmdbId: row.tmdb_id, tvdbId: row.tvdb_id }).then(t => (t.ok
+        ? audit('avistaz_tag_applied', { mediaId: row.media_id, title: row.title, origin: 'escalation_direct', detail: t.detail })
+        : audit('avistaz_tag_failed', { mediaId: row.media_id, title: row.title, reason: t.reason, origin: 'escalation_direct' })));
       audit('avistaz_direct_escalation', { mediaId: row.media_id, title: row.title, detail: direct.detail });
       return direct;
     }
@@ -448,7 +489,7 @@ async function sweepEscalations() {
   const rows = getWatchingEscalations();
   if (!rows.length) return;
   const queue = await fetchArrQueues();
-  const cfg = { delayHours: CONFIG.ESCALATION_DELAY_HOURS, maxAgeDays: CONFIG.ESCALATION_MAX_AGE_DAYS };
+  const cfg = { delayMinutes: CONFIG.ESCALATION_DELAY_MINUTES, maxAgeDays: CONFIG.ESCALATION_MAX_AGE_DAYS };
   for (const row of rows) {
     const facts = await gatherEscalationFacts(row, queue);
     const action = decideEscalationAction(row, facts, Date.now(), cfg);
@@ -463,7 +504,7 @@ async function sweepEscalations() {
       audit('escalation_expired', { mediaId: row.media_id, title: row.title });
       continue;
     }
-    const waitedHours = Math.round((Date.now() - row.approved_at) / 3600000);
+    const waited = fmtDuration(Date.now() - row.approved_at);
     if (action === 'escalate') {
       const result = await runEscalation(row);
       if (result.deferred) {
@@ -475,20 +516,20 @@ async function sweepEscalations() {
       notifyChannel('downloads', { embeds: [brandedEmbed(result.ok ? COLORS.SUCCESS : COLORS.WARN)
         .setTitle(result.ok ? `🔐 Escalated to AvistaZ — ${row.title}` : `⚠️ AvistaZ Escalation Failed — ${row.title}`)
         .setDescription(result.ok
-          ? `Nothing public showed up in ${waitedHours}h and the fallback was pre-authorized at approval.\n${result.detail}`
+          ? `Nothing public showed up in ${waited} and the fallback was pre-authorized at approval.\n${result.detail}`
           : `Auto-escalation was pre-authorized but failed: ${result.why}`)] });
       continue;
     }
     // action === 'alert': one embed per title (state moves to 'alerted' and stays there until a
     // button is clicked or the media resolves). Buttons survive restarts — state is in SQLite.
     setEscalationState(row.id, 'alerted');
-    audit('escalation_alerted', { mediaId: row.media_id, title: row.title, waitedHours });
+    audit('escalation_alerted', { mediaId: row.media_id, title: row.title, waited });
     // Escalating a title that isn't out yet is pointless — surface the release timing so the
     // admin can tell "no seeders" apart from "not released".
     const eta = releaseEtaInfo(await fetchReleaseEta({ mediaType: row.media_type, tmdbId: row.tmdb_id, tvdbId: row.tvdb_id }));
     const alertEmbed = brandedEmbed(COLORS.WARN)
       .setTitle(`⏳ Nothing Found Yet — ${row.title}`)
-      .setDescription(`No public release grabbed in **${waitedHours}h** since approval. Escalate to AvistaZ (private tracker → seedbox)?`)
+      .setDescription(`No public release grabbed in **${waited}** since approval. Escalate to AvistaZ (private tracker → seedbox)?`)
       .addFields(
         { name: 'Requested by', value: row.requested_by_discord_id ? `<@${row.requested_by_discord_id}>` : 'Unknown', inline: true },
         { name: 'Type', value: mediaTypeLabel(row.media_type, false), inline: true },
@@ -525,7 +566,7 @@ function grabCandidatesMessage({ heading, candidates, nonce, allowance, footnote
   const lines = candidates.map((c, i) => {
     const bits = [
       [c.resolution, { webdl: 'WEB-DL', webrip: 'WEBRip', hdtv: 'HDTV', bluray: 'BluRay' }[c.source]].filter(Boolean).join(' ') || 'unknown quality',
-      c.seasonPack ? 'season pack' : null,
+      c.seasonPack ? (c.multiSeason ? `complete series${c.seasonEnd != null ? ` (S${pad(c.season)}–S${pad(c.seasonEnd)})` : ''}` : 'season pack') : null,
       fmtSpace(c.size),
       `${c.seeders} seeder${c.seeders === 1 ? '' : 's'}`,
       c.freeleech ? '🆓 freeleech' : null,
@@ -1645,7 +1686,7 @@ client.once('ready', async () => {
     }).catch(err => log.warn(`AvistaZ tag check failed: ${err.message}`));
     if (CONFIG.ESCALATION_CHECK_MINUTES > 0) {
       setInterval(() => sweepEscalations().catch(err => log.warn(`Escalation sweep failed: ${err.message}`)), CONFIG.ESCALATION_CHECK_MINUTES * 60000).unref();
-      log.ok(`AvistaZ escalation watchdog running every ${CONFIG.ESCALATION_CHECK_MINUTES} min (delay ${CONFIG.ESCALATION_DELAY_HOURS} h, tag '${CONFIG.AVISTAZ_TAG}')`);
+      log.ok(`AvistaZ escalation watchdog running every ${CONFIG.ESCALATION_CHECK_MINUTES} min (delay ${escalationDelayLabel()}, tag '${CONFIG.AVISTAZ_TAG}')`);
     }
   }
   if (grabConfigured()) {

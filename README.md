@@ -90,7 +90,7 @@ See `.env.example` for full values.
 - `TAUTULLI_URL`, `TAUTULLI_API_KEY` — enables `/watching` (live Plex sessions) and the heavy-transcode watchdog: every `PLAYBACK_CHECK_MINUTES` (default `5`, `0` disables) sessions that are **video**-transcoding trigger an alert to `PLAYBACK_CHANNEL_ID` (fallback admin channel), at most once per user+media per `TRANSCODE_ALERT_COOLDOWN_MINUTES` (default `60`)
 - `PREMIUMIZE_API_KEY` — enables `/debrid` (fair-use %, cloud storage, active/failed transfers, plus **Clear Stuck/0%** and **Clear Finished** buttons) and the **stuck-transfer watchdog**: every `PREMIUMIZE_CHECK_MINUTES` (default `15`, `0` disables) transfers that are errored or whose progress hasn't moved for `PREMIUMIZE_STUCK_AFTER_MINUTES` (default `45` — catches "0% forever") alert the downloads channel with **Retry / Clear Transfer / Ignore** buttons, at most once per transfer per `PREMIUMIZE_ALERT_COOLDOWN_HOURS` (default `6`)
 - `STUCK_CHECK_MINUTES` (default `10`), `STUCK_AFTER_MINUTES` (default `45`), `STUCK_ALERT_COOLDOWN_HOURS` (default `6`) — stuck-download watchdog: when a queue item makes no progress for `STUCK_AFTER_MINUTES` (e.g. no seeders), the admin channel gets an alert with **Remove & Try Another Release** (blocklist + auto re-search), **Remove Only**, and **Ignore** buttons. TV episodes are consolidated **per season** — a whole season stalling (from either download path, public indexers or the AvistaZ fallback) is one alert listing every stuck episode, and its buttons act on all of them at once, instead of one message per episode. Set `STUCK_CHECK_MINUTES=0` to disable.
-- `ESCALATION_ENABLED` (default `false`), `AVISTAZ_TAG` (default `avistaz`), `ESCALATION_DELAY_HOURS` (default `6`), `ESCALATION_CHECK_MINUTES` (default `30`), `ESCALATION_MAX_AGE_DAYS` (default `14`) — the AvistaZ private-tracker fallback; see the dedicated section below. Requires the one-time Radarr/Sonarr/Prowlarr setup described there.
+- `ESCALATION_ENABLED` (default `false`), `AVISTAZ_TAG` (default `avistaz`), `ESCALATION_DELAY_MINUTES` (default `45`; the legacy `ESCALATION_DELAY_HOURS` still works when the minutes key is unset), `ESCALATION_CHECK_MINUTES` (default `15`), `ESCALATION_MAX_AGE_DAYS` (default `14`) — the AvistaZ private-tracker fallback; see the dedicated section below. Requires the one-time Radarr/Sonarr/Prowlarr setup described there.
 - `RTORRENT_URL`, `RTORRENT_LABEL_MOVIE`/`RTORRENT_LABEL_TV` (defaults `radarr`/`sonarr`), `AVISTAZ_INDEXER_NAME` (default `avistaz`), `AVISTAZ_DAILY_GRAB_LIMIT` (default `4`, `0` = unlimited), `GRAB_MODE` (`approve` default / `auto`), `GRAB_AUTO_CONFIDENCE` (default `92`), `GRAB_RCLONE_REMOTE`, `GRAB_RCLONE_FLAGS`, `GRAB_STAGING_PATH`, `GRAB_IMPORT_PATH`, `GRAB_CHECK_MINUTES` (default `5`), `GRAB_COPY_TIMEOUT_MINUTES` (default `240`), `GRAB_MISSING_AFTER_MINUTES` (default `10`), `GRAB_DOWNLOAD_TIMEOUT_HOURS` (default `72`) — the AvistaZ **direct grab** pipeline (`/avistaz`, and the smarter escalation path); see the dedicated section below.
 - `RTORRENT_ADOPT_ENABLED` (default `false`), `RTORRENT_ADOPT_CHECK_MINUTES` (default `5`), `RTORRENT_ADOPT_LABELS` (default `sonarr,radarr`), `RTORRENT_ADOPT_AUTO` (default `false`), `RTORRENT_REMOTE_ROOT` (unset) — **adoption** of torrents that already exist in the seedbox rTorrent (`/rtorrent`); see "Adopting existing torrents" below. Manual `/rtorrent adopt` works whenever the direct-grab transfer pieces are configured; `RTORRENT_ADOPT_ENABLED` gates only the discovery sweep.
 - `JANITOR_CHECK_MINUTES` (default `60`) — janitor sweep interval; `0` disables. The janitor:
@@ -327,8 +327,9 @@ indexer is tagged, no title carries the tag by default, so nothing ever hits Avi
 
 ### How the bot uses it
 - The approval embed gets a third button, **Approve + AvistaZ Fallback**, which pre-authorizes the
-  fallback: if nothing public has been grabbed within `ESCALATION_DELAY_HOURS`, the bot tags the
-  title and re-searches automatically.
+  fallback: the `avistaz` tag goes onto the title in Radarr/Sonarr right at approval (it's
+  definitely AvistaZ-bound), and if nothing public has been grabbed within
+  `ESCALATION_DELAY_MINUTES` the bot escalates automatically.
 - Plain **Approve** (and admin self-requests) get the watchdog flavor instead: after the delay, the
   downloads channel gets a **⏳ Nothing Found Yet** embed with **Escalate to AvistaZ / Ignore**
   buttons.
@@ -401,8 +402,13 @@ Radarr DownloadedMoviesScan / Sonarr DownloadedEpisodesScan (importMode Move)
 Every grab (failed attempts included — the tracker may count the download the moment the
 `.torrent` is fetched) consumes one slot of `AVISTAZ_DAILY_GRAB_LIMIT` per UTC day, so
 automation can't drain a limited AvistaZ account. Scoring prefers season packs for exactly the
-reason the limit exists: one grab can deliver a whole season. Duplicate info-hashes are refused
-outright ("already grabbed as job #N").
+reason the limit exists: one grab can deliver a whole season. Multi-season / complete-series
+releases (`S01-S05`, `Complete Series` — common for older shows that only exist as one big
+torrent) are recognized too: they score as covering any requested season in their range, show up
+labeled "complete series" in the candidate embeds, and Sonarr sorts the episodes into the right
+seasons at import (per-file `SxxEyy` parsing — Sonarr's own automatic search can't grab
+multi-season packs, which is why the direct pipeline handles them). Duplicate info-hashes are
+refused outright ("already grabbed as job #N").
 
 ### Setup
 1. Add the AvistaZ indexer in **Prowlarr** (the bot finds it by name via `AVISTAZ_INDEXER_NAME`).

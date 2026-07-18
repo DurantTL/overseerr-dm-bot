@@ -245,10 +245,12 @@ async function triggerSeriesSearch(seriesId) {
     { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 15000 });
 }
 
-// Orchestrates one escalation: find the movie/series, add the AvistaZ tag, kick a search.
-// Never throws — callers branch on { ok, reason } and the reasons are stable strings the
-// Discord embeds can explain (tag_missing → README checklist, not_in_arr → arr add failed, …).
-async function escalateMediaToAvistaz({ mediaType, tmdbId, tvdbId }) {
+// Add the AvistaZ tag to a movie/series without searching — used at approval time (a
+// pre-authorized fallback is definitely AvistaZ-bound, so the tag goes on up front) and by
+// the direct-grab escalation (every escalated title must carry the tag for traceability and
+// so future arr searches include AvistaZ). Never throws — callers branch on { ok, reason }
+// and the reasons are stable strings (tag_missing, not_in_arr, no_tvdb_id, api_error:*).
+async function applyAvistazTag({ mediaType, tmdbId, tvdbId }) {
   const source = escalationSources().find(s => (mediaType === 'movie' ? s.kind === 'movie' : s.kind === 'tv'));
   if (!source) return { ok: false, reason: 'not_in_arr' };
   try {
@@ -258,19 +260,31 @@ async function escalateMediaToAvistaz({ mediaType, tmdbId, tvdbId }) {
       const movie = await getMovieByTmdbId(tmdbId);
       if (!movie) return { ok: false, reason: 'not_in_arr' };
       await addTagToMovie(movie.id, tagId);
-      await triggerMovieSearch(movie.id);
-      audit('avistaz_escalated', { mediaId: `tmdb:${tmdbId}`, title: movie.title, arr: source.label, tagId });
-      return { ok: true, detail: `Tagged Radarr movie #${movie.id} '${CONFIG.AVISTAZ_TAG}' and triggered a search.` };
+      return { ok: true, source, arrId: movie.id, title: movie.title, detail: `Tagged Radarr movie #${movie.id} '${CONFIG.AVISTAZ_TAG}'.` };
     }
     if (!tvdbId) return { ok: false, reason: 'no_tvdb_id' };
     const series = await getSeriesByTvdbId(tvdbId);
     if (!series) return { ok: false, reason: 'not_in_arr' };
     await addTagToSeries(series.id, tagId);
-    await triggerSeriesSearch(series.id);
-    audit('avistaz_escalated', { mediaId: `tmdb:${tmdbId}`, tvdbId, title: series.title, arr: source.label, tagId });
-    return { ok: true, detail: `Tagged Sonarr series #${series.id} '${CONFIG.AVISTAZ_TAG}' and triggered a search.` };
+    return { ok: true, source, arrId: series.id, title: series.title, detail: `Tagged Sonarr series #${series.id} '${CONFIG.AVISTAZ_TAG}'.` };
   } catch (err) {
-    audit('external_api_error', { provider: source.label, error: err.message, action: 'avistaz_escalate', mediaId: `tmdb:${tmdbId}` });
+    audit('external_api_error', { provider: source.label, error: err.message, action: 'avistaz_tag', mediaId: `tmdb:${tmdbId}` });
+    return { ok: false, reason: `api_error:${err.message}` };
+  }
+}
+
+// Orchestrates one tag-based escalation: add the AvistaZ tag, then kick a search so the
+// tag-gated indexer gets used immediately.
+async function escalateMediaToAvistaz({ mediaType, tmdbId, tvdbId }) {
+  const tagged = await applyAvistazTag({ mediaType, tmdbId, tvdbId });
+  if (!tagged.ok) return tagged;
+  try {
+    if (mediaType === 'movie') await triggerMovieSearch(tagged.arrId);
+    else await triggerSeriesSearch(tagged.arrId);
+    audit('avistaz_escalated', { mediaId: `tmdb:${tmdbId}`, ...(tvdbId ? { tvdbId } : {}), title: tagged.title, arr: tagged.source.label });
+    return { ok: true, detail: `${tagged.detail.replace(/\.$/, '')} and triggered a search.` };
+  } catch (err) {
+    audit('external_api_error', { provider: tagged.source.label, error: err.message, action: 'avistaz_escalate', mediaId: `tmdb:${tmdbId}` });
     return { ok: false, reason: `api_error:${err.message}` };
   }
 }
@@ -339,4 +353,4 @@ function remapPath(hostPath) {
   return hostPath;
 }
 
-module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, escalateMediaToAvistaz, verifyAvistazTags, fetchReleaseEta, remapPath };
+module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, applyAvistazTag, escalateMediaToAvistaz, verifyAvistazTags, fetchReleaseEta, remapPath };

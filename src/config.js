@@ -45,8 +45,11 @@ const CONFIG = {
   // Radarr/Sonarr lowercase tag labels, so the compare key is lowercased here too.
   AVISTAZ_TAG: (process.env.AVISTAZ_TAG || 'avistaz').toLowerCase(),
   ESCALATION_ENABLED: parseBool(process.env.ESCALATION_ENABLED, false),
-  ESCALATION_DELAY_HOURS: Number.parseInt(process.env.ESCALATION_DELAY_HOURS || '6', 10),
-  ESCALATION_CHECK_MINUTES: Number.parseInt(process.env.ESCALATION_CHECK_MINUTES || '30', 10),
+  // Minutes with nothing found/downloading before escalation. The legacy ESCALATION_DELAY_HOURS
+  // key still works when the minutes key is unset.
+  ESCALATION_DELAY_MINUTES: Number.parseInt(process.env.ESCALATION_DELAY_MINUTES
+    || (process.env.ESCALATION_DELAY_HOURS ? String(Number.parseInt(process.env.ESCALATION_DELAY_HOURS, 10) * 60) : '45'), 10),
+  ESCALATION_CHECK_MINUTES: Number.parseInt(process.env.ESCALATION_CHECK_MINUTES || '15', 10),
   ESCALATION_MAX_AGE_DAYS: Number.parseInt(process.env.ESCALATION_MAX_AGE_DAYS || '14', 10),
   // ---- AvistaZ direct grab: Prowlarr search → seedbox rTorrent → rclone → arr import ----
   // Full rTorrent XML-RPC endpoint incl. credentials, e.g.
