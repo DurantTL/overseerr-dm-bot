@@ -103,13 +103,15 @@ async function resolveStageSource(mediaId) {
 // reason a transfer died, and it's what lands in stage_jobs.error and the failure DM.
 // `flags` lets the AvistaZ grab pipeline pass its own tuning (GRAB_RCLONE_FLAGS) instead
 // of the PH staging flags.
-function runRclone(args, { timeoutMs = 0, flags = CONFIG.STAGE_RCLONE_FLAGS } = {}) {
+// `maxStdoutBytes` bounds memory while letting listing-heavy callers (rclone lsf -R for the
+// adoption filename search) keep more than the 64 KB default; the tail is kept on overflow.
+function runRclone(args, { timeoutMs = 0, flags = CONFIG.STAGE_RCLONE_FLAGS, maxStdoutBytes = 65536 } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(CONFIG.STAGE_RCLONE_BINARY, [...args, ...flags], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderrTail = '';
     let timedOut = false;
-    child.stdout.on('data', d => { stdout += d; if (stdout.length > 65536) stdout = stdout.slice(-65536); });
+    child.stdout.on('data', d => { stdout += d; if (stdout.length > maxStdoutBytes) stdout = stdout.slice(-maxStdoutBytes); });
     child.stderr.on('data', d => { stderrTail += d; if (stderrTail.length > 4000) stderrTail = stderrTail.slice(-4000); });
     const timer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, timeoutMs) : null;
     if (timer) timer.unref();

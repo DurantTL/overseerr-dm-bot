@@ -454,8 +454,11 @@ Safety properties, by construction:
   The probe self-corrects the path mapping: it tries the `RTORRENT_REMOTE_ROOT`-derived subpath
   (optional — the seedbox-side folder the remote points at), the bare torrent name, and every
   trailing suffix of the torrent's `d.base_path` — so an SFTP remote rooted at the login home
-  dir (where files appear as `Downloads/…`) still resolves. Failures report exactly which
-  paths were probed, and `/rtorrent status` previews what the remote root actually contains.
+  dir (where files appear as `Downloads/…`) still resolves. If every probe misses, a one-off
+  recursive listing searches the whole remote by exact torrent name (unique matches only —
+  ambiguity is refused, never guessed), catching data that was sorted into folders behind
+  rTorrent's back. Failures report exactly which paths were probed, and `/rtorrent status`
+  previews what the remote root actually contains.
 - Adopted jobs are durable `grab_jobs` rows — restarts keep watching/transferring them, and the
   `.incoming` rename guard applies unchanged.
 
