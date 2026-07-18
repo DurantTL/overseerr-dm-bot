@@ -729,16 +729,47 @@ async function runGrabTransfer(job) {
   const minutes = job.completed_at ? Math.max(1, Math.round((Date.now() - job.completed_at) / 60000)) : null;
   const adopted = String(job.origin || '').startsWith('adopt');
   audit(adopted ? 'rtorrent_adopt_imported' : 'avistaz_grab_imported', { jobId: job.id, mediaId: job.media_id, title: job.title, release: job.release_title, sizeBytes: st.sizeBytes, transferMinutes: minutes });
-  notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.SUCCESS)
-    .setTitle(`📦 ${adopted ? 'Adopted Torrent' : 'AvistaZ Grab'} Imported — ${job.title}`.slice(0, 256))
-    .setDescription(`**${job.release_title}** (${fmtSpace(st.sizeBytes || job.size_bytes)}) finished on the seedbox, copied home, and was handed to ${job.media_type === 'movie' ? 'Radarr' : 'Sonarr'} for import. It keeps seeding on the seedbox.`)] });
-  // Adopted jobs have no requester to congratulate — the discord id is the adopting admin,
-  // who already sees the channel embed.
-  if (!adopted) {
-    await dmUser(job.requested_by_discord_id, { embeds: [brandedEmbed(COLORS.SUCCESS)
-      .setTitle(`🎉 On Its Way — ${job.title}`)
-      .setDescription(`Your request came through the private-tracker route and just finished downloading. It should appear in Plex within a few minutes.`)] });
+  if (adopted) {
+    // Batch-friendly: a 39-episode adoption must not ping the channel 39 times. One rolling
+    // message is edited in place per import (edits don't notify); no requester DM either —
+    // the discord id on an adopted job is the adopting admin.
+    await updateAdoptTransferProgress(job, st.sizeBytes || job.size_bytes);
+    return;
   }
+  notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.SUCCESS)
+    .setTitle(`📦 AvistaZ Grab Imported — ${job.title}`)
+    .setDescription(`**${job.release_title}** (${fmtSpace(st.sizeBytes || job.size_bytes)}) finished on the seedbox, copied home, and was handed to ${job.media_type === 'movie' ? 'Radarr' : 'Sonarr'} for import. It keeps seeding on the seedbox.`)] });
+  await dmUser(job.requested_by_discord_id, { embeds: [brandedEmbed(COLORS.SUCCESS)
+    .setTitle(`🎉 On Its Way — ${job.title}`)
+    .setDescription(`Your request came through the private-tracker route and just finished downloading. It should appear in Plex within a few minutes.`)] });
+}
+
+// The rolling progress embed for adopted transfers. State (message id + running import
+// count) lives in app_settings so a restart mid-batch keeps editing the same message; the
+// message is swapped for a completion summary — and the state cleared — once no adopted job
+// remains active, so the next batch starts a fresh message (and a fresh notification).
+async function updateAdoptTransferProgress(job, sizeBytes) {
+  const remaining = listActiveGrabJobs().filter(j => String(j.origin || '').startsWith('adopt')).length;
+  let state = {};
+  try { state = JSON.parse(getSetting('adopt_progress_msg') || '{}'); } catch (_e) { state = {}; }
+  const imported = (state.imported || 0) + 1;
+  const done = remaining === 0;
+  const embed = brandedEmbed(done ? COLORS.SUCCESS : COLORS.INFO)
+    .setTitle(done ? `📦 Adopted Batch Complete — ${imported} imported` : `📦 Adopted Batch — ${imported} imported, ${remaining} to go`)
+    .setDescription(`Latest: **${String(job.title).slice(0, 150)}** (${fmtSpace(sizeBytes)}) → ${job.media_type === 'movie' ? 'Radarr' : 'Sonarr'}.\n${done ? 'Everything keeps seeding on the seedbox.' : 'This message updates in place as each transfer lands.'}`);
+  let edited = false;
+  if (state.messageId) {
+    const ch = await safeGetChannel(state.channelId || channelFor('downloads'));
+    const msg = ch && await ch.messages.fetch(state.messageId).catch(() => null);
+    if (msg) edited = await msg.edit({ embeds: [embed] }).then(() => true).catch(() => false);
+  }
+  if (!edited) {
+    const ch = await safeGetChannel(channelFor('downloads'));
+    const sent = ch && await ch.send({ embeds: [embed] }).catch(() => null);
+    if (sent) state = { channelId: sent.channelId, messageId: sent.id };
+  }
+  if (done) db.prepare('DELETE FROM app_settings WHERE key = ?').run('adopt_progress_msg');
+  else setSetting('adopt_progress_msg', JSON.stringify({ ...state, imported }));
 }
 
 // ---- rTorrent adoption (/rtorrent adopt + discovery sweep) ----
@@ -1435,7 +1466,11 @@ const slashCommands = [
       .addStringOption(o => o.setName('target').setDescription('Import target (default: derived from the rTorrent label)').addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' })))
     .addSubcommand(s => s.setName('ignore').setDescription('Toggle the discovery sweep\'s ignore flag for a torrent')
       .addStringOption(o => o.setName('search').setDescription('Words from the torrent name').setRequired(true)))
-    .addSubcommand(s => s.setName('adopted').setDescription('Adopted jobs + ignored torrents')),
+    .addSubcommand(s => s.setName('adopted').setDescription('Adopted jobs + ignored torrents'))
+    .addSubcommand(s => s.setName('import').setDescription('Trigger a Sonarr/Radarr import scan of the seedbox staging folder')
+      .addStringOption(o => o.setName('target').setDescription('Which arr should import').setRequired(true).addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }))
+      .addStringOption(o => o.setName('folder').setDescription('Subfolder of the staging share (default: the whole staging folder)'))
+      .addStringOption(o => o.setName('mode').setDescription('move (default, cleans up staging) or copy (leaves the files in place)').addChoices({ name: 'move', value: 'move' }, { name: 'copy', value: 'copy' }))),
   new SlashCommandBuilder().setName('cleanup-suggestions').setDescription('Largest/oldest media that could be cleaned up').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('stage').setDescription('Copy a title into the travel-server cache so it plays instantly there').addStringOption(o => o.setName('title').setDescription('Start typing — matches what\'s in the library').setRequired(true).setAutocomplete(true)),
   new SlashCommandBuilder().setName('staged').setDescription('Show the travel-server cache: what\'s warm, pinned, and copying'),
@@ -3125,6 +3160,42 @@ async function handleRtorrentCommand(interaction) {
       return interaction.editReply(`🙈 **${t.name}** is now ignored — the discovery sweep will skip it. Run the same command again to undo, or \`/rtorrent adopt\` to adopt it anyway.`);
     } catch (err) {
       return interaction.editReply(`❌ rTorrent query failed: ${err.message}`);
+    }
+  }
+
+  // Manual import trigger: hand a staging folder straight to the arr — for files that got
+  // there outside the pipeline (manual rclone copies, the pre-adoption era). mode:copy
+  // leaves the staging files in place; mode:move (default) is what the pipeline itself uses.
+  if (sub === 'import') {
+    if (!CONFIG.GRAB_STAGING_PATH || !CONFIG.GRAB_IMPORT_PATH) return interaction.reply({ content: '❌ Staging isn\'t configured (`GRAB_STAGING_PATH` + `GRAB_IMPORT_PATH`).', ephemeral: true });
+    const target = interaction.options.getString('target');
+    const arr = target === 'sonarr'
+      ? { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, cmd: 'DownloadedEpisodesScan', label: 'Sonarr' }
+      : { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr' };
+    if (!arr.url) return interaction.reply({ content: `❌ ${arr.label} isn't configured.`, ephemeral: true });
+    const clean = String(interaction.options.getString('folder') || '').replace(/^\/+|\/+$/g, '');
+    if (clean && clean.split('/').some(p => !p || p === '.' || p === '..')) return interaction.reply({ content: '❌ Unsafe folder path.', ephemeral: true });
+    if (clean === '.incoming' || clean.startsWith('.incoming/')) return interaction.reply({ content: '❌ `.incoming` holds in-flight copies — never import from there.', ephemeral: true });
+    const mode = interaction.options.getString('mode') === 'copy' ? 'Copy' : 'Move';
+    await interaction.deferReply({ ephemeral: true });
+    // The bot and the arr see the same share at different mount points; existence is
+    // checked through the bot's view before asking the arr to scan its own.
+    const localPath = clean ? path.join(CONFIG.GRAB_STAGING_PATH, clean) : CONFIG.GRAB_STAGING_PATH;
+    if (!fs.existsSync(localPath)) return interaction.editReply(`❌ \`${clean || '(staging root)'}\` doesn't exist under \`${CONFIG.GRAB_STAGING_PATH}\`.`);
+    if (!clean) {
+      const incoming = path.join(CONFIG.GRAB_STAGING_PATH, '.incoming');
+      const busy = fs.existsSync(incoming) && fs.readdirSync(incoming).length > 0;
+      if (busy) return interaction.editReply('❌ A transfer is mid-copy (`.incoming` isn\'t empty) — scanning the whole staging folder now could import half-copied files. Scan a specific `folder:`, or wait for the transfers to finish.');
+    }
+    const importPath = clean ? `${CONFIG.GRAB_IMPORT_PATH}/${clean}` : CONFIG.GRAB_IMPORT_PATH;
+    try {
+      const res = await axios.post(`${arr.url}/api/v3/command`, { name: arr.cmd, path: importPath, importMode: mode },
+        { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
+      audit('rtorrent_manual_import', { actorDiscordId: interaction.user.id, target, path: importPath, mode });
+      return interaction.editReply(`📦 ${arr.label} is scanning \`${importPath}\` (import mode: **${mode}**, command #${res.data?.id ?? '?'}). ${mode === 'Copy' ? 'The staging files stay where they are.' : 'Imported files are moved out of staging.'}`);
+    } catch (err) {
+      audit('external_api_error', { provider: target, error: err.message, action: 'rtorrent_manual_import' });
+      return interaction.editReply(`❌ ${arr.label} command failed: ${err.message}`);
     }
   }
 

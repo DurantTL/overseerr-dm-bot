@@ -464,7 +464,11 @@ Safety properties, by construction:
 
 Commands: `/rtorrent status` (connectivity + adoption settings), `/rtorrent list [search]`,
 `/rtorrent adopt search:"..." [target:]`, `/rtorrent ignore search:"..."` (toggle — the sweep
-skips ignored torrents), `/rtorrent adopted` (adopted jobs + ignore list).
+skips ignored torrents), `/rtorrent adopted` (adopted jobs + ignore list), and
+`/rtorrent import target: [folder:] [mode:move|copy]` — hand a staging folder straight to the
+arr's DownloadedScan, for files that got into staging outside the pipeline (manual rclone
+copies). `mode:copy` leaves the staging files in place; importing from `.incoming`, or the
+staging root while a transfer is mid-copy, is refused.
 
 **Bulk adoption**: when the search matches more than 3 untracked torrents (an
 episode-per-torrent series can be 80+), the offer collapses to a single **Adopt all N**
@@ -474,6 +478,9 @@ directory listing per unique seedbox folder instead of a stat per torrent), dupl
 skipped quietly so a re-run after a partial failure only adopts what's still missing, and a
 single summary reports adopted/skipped/failed counts. Completed torrents still transfer one
 at a time — the WAN link is the bottleneck — and each import triggers its own arr scan.
+Transfer progress for adopted batches is a single rolling embed in the downloads channel,
+edited in place per import (one notification per batch, not one per episode), replaced by a
+completion summary when the batch drains.
 
 With `RTORRENT_ADOPT_ENABLED=true`, a **discovery sweep** (every `RTORRENT_ADOPT_CHECK_MINUTES`)
 looks for torrents whose label is in `RTORRENT_ADOPT_LABELS` but which have no grab job, and
