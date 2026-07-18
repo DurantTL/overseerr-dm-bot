@@ -188,6 +188,9 @@ function runMigrations() {
   // box). Watch state never syncs between servers, so invites and auto-staging key off this.
   ensureColumn('users', 'home_server', "TEXT DEFAULT 'primary'");
   ensureColumn('keep_list', 'expires_at', 'INTEGER');
+  // Where the torrent's data lives under GRAB_RCLONE_REMOTE when it isn't just the torrent
+  // name (adopted torrents can sit in per-label subfolders). NULL = use the rTorrent name.
+  ensureColumn('grab_jobs', 'remote_path', 'TEXT');
 
   const dlCols = db.prepare('PRAGMA table_info(download_tokens)').all().map(c => c.name);
   if (dlCols.includes('token') && !dlCols.includes('token_hash')) {
@@ -390,10 +393,13 @@ function resolveEscalationForMediaKey(mediaKey) {
 // done (imported by the arr), or failed. Durable so a restart mid-download/mid-transfer
 // picks the pipeline back up.
 
-function recordGrabJob({ mediaId, mediaType, title, releaseTitle, infoHash, sizeBytes, label, discordId, origin }) {
-  const info = db.prepare(`INSERT INTO grab_jobs (media_id, media_type, title, release_title, info_hash, size_bytes, label, requested_by_discord_id, origin, state, sent_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?)`)
-    .run(mediaId || null, mediaType, title, releaseTitle, infoHash || null, sizeBytes || 0, label || null, discordId || null, origin || 'manual', Date.now());
+// state defaults to 'sent' (a torrent the bot just pushed); adoption records jobs directly
+// at 'downloading' or 'complete' since the torrent already exists in rTorrent.
+function recordGrabJob({ mediaId, mediaType, title, releaseTitle, infoHash, sizeBytes, label, discordId, origin, state = 'sent', remotePath }) {
+  const now = Date.now();
+  const info = db.prepare(`INSERT INTO grab_jobs (media_id, media_type, title, release_title, info_hash, size_bytes, label, requested_by_discord_id, origin, state, remote_path, sent_at, completed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(mediaId || null, mediaType, title, releaseTitle, infoHash || null, sizeBytes || 0, label || null, discordId || null, origin || 'manual', state, remotePath || null, now, state === 'complete' ? now : null);
   return db.prepare('SELECT * FROM grab_jobs WHERE id = ?').get(info.lastInsertRowid);
 }
 
@@ -420,7 +426,8 @@ function setGrabJobState(id, state, error = null) {
 
 // The allowance counts every grab attempted today (failed ones included — the tracker may
 // have counted the download the moment the .torrent was fetched). created_at is UTC.
-const countGrabJobsToday = () => db.prepare("SELECT COUNT(*) AS n FROM grab_jobs WHERE created_at >= datetime('now', 'start of day')").get().n;
+// Adopted jobs never fetched anything from a tracker, so they don't consume a slot.
+const countGrabJobsToday = () => db.prepare("SELECT COUNT(*) AS n FROM grab_jobs WHERE created_at >= datetime('now', 'start of day') AND origin NOT LIKE 'adopt%'").get().n;
 
 // Retry a failed transfer/import (the torrent is still seeding on the seedbox, so the
 // copy can simply run again). Only failed jobs are retryable.
@@ -450,6 +457,25 @@ function takeGrabOffer(nonce) {
 function restashGrabOffer(nonce, payload) {
   setSetting(`grab_offer:${nonce}`, JSON.stringify(payload));
 }
+
+// ---- rTorrent adoption bookkeeping ----
+// Adopted jobs are ordinary grab_jobs rows (origin 'adopt'/'adopt-auto') that start at
+// 'downloading' or 'complete' instead of 'sent'. The ignore list keeps the discovery sweep
+// quiet about torrents the admin never wants adopted; the offered markers make the sweep
+// post each candidate once (durably, so restarts don't re-post).
+const listAdoptedGrabJobs = (limit = 15) => db.prepare("SELECT * FROM grab_jobs WHERE origin LIKE 'adopt%' ORDER BY id DESC LIMIT ?").all(limit);
+
+const setAdoptIgnored = (infoHash, name) => setSetting(`adopt_ignore:${infoHash}`, name || '1');
+const clearAdoptIgnored = infoHash => db.prepare('DELETE FROM app_settings WHERE key = ?').run(`adopt_ignore:${infoHash}`);
+const isAdoptIgnored = infoHash => !!getSetting(`adopt_ignore:${infoHash}`);
+const listAdoptIgnored = () => db.prepare("SELECT key, value FROM app_settings WHERE key LIKE 'adopt_ignore:%'").all()
+  .map(r => ({ infoHash: r.key.slice('adopt_ignore:'.length), name: r.value === '1' ? null : r.value }));
+
+const markAdoptOffered = infoHash => setSetting(`adopt_offered:${infoHash}`, '1');
+const isAdoptOffered = infoHash => !!getSetting(`adopt_offered:${infoHash}`);
+const clearAdoptOffered = infoHash => db.prepare('DELETE FROM app_settings WHERE key = ?').run(`adopt_offered:${infoHash}`);
+const listAdoptOfferedHashes = () => db.prepare("SELECT key FROM app_settings WHERE key LIKE 'adopt_offered:%'").all()
+  .map(r => r.key.slice('adopt_offered:'.length));
 
 // ---- Plex Home staging queue + cache inventory ----
 // stage_jobs is the durable copy queue: a transpacific rclone copy can run 20+ minutes and WILL
@@ -588,4 +614,4 @@ function restashPendingRequest(nonce, payload) {
   setSetting(`pending_request:${nonce}`, JSON.stringify(payload));
 }
 
-module.exports = { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
+module.exports = { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
