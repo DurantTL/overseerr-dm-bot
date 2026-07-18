@@ -179,9 +179,27 @@ async function getRtorrentStatus(infoHash) {
   }
 }
 
+// Every torrent in the 'main' view with the fields adoption needs (d.multicall2 returns
+// one array per torrent, in the order the field selectors were passed). Hashes are
+// uppercased to match computeInfoHash so grab_jobs lookups compare cleanly.
+async function listRtorrentTorrents() {
+  const rows = await rtorrentCall('d.multicall2', ['', 'main',
+    'd.hash=', 'd.name=', 'd.complete=', 'd.custom1=', 'd.base_path=', 'd.size_bytes=', 'd.completed_bytes=', 'd.down.rate=']);
+  return (rows || []).map(r => ({
+    hash: String(r[0] || '').toUpperCase(),
+    name: String(r[1] || ''),
+    complete: Number(r[2]) === 1,
+    label: String(r[3] || ''),
+    basePath: String(r[4] || ''),
+    sizeBytes: Number(r[5]) || 0,
+    doneBytes: Number(r[6]) || 0,
+    downRate: Number(r[7]) || 0,
+  }));
+}
+
 // Cheap reachability probe for /avistaz status.
 async function getRtorrentVersion() {
   return rtorrentCall('system.client_version', []);
 }
 
-module.exports = { rtorrentConfigured, serializeXmlRpcCall, parseXmlRpcResponse, computeInfoHash, rtorrentCall, addTorrentToRtorrent, getRtorrentStatus, getRtorrentVersion };
+module.exports = { rtorrentConfigured, serializeXmlRpcCall, parseXmlRpcResponse, computeInfoHash, rtorrentCall, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion };

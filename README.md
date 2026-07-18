@@ -92,6 +92,7 @@ See `.env.example` for full values.
 - `STUCK_CHECK_MINUTES` (default `10`), `STUCK_AFTER_MINUTES` (default `45`), `STUCK_ALERT_COOLDOWN_HOURS` (default `6`) — stuck-download watchdog: when a queue item makes no progress for `STUCK_AFTER_MINUTES` (e.g. no seeders), the admin channel gets an alert with **Remove & Try Another Release** (blocklist + auto re-search), **Remove Only**, and **Ignore** buttons. TV episodes are consolidated **per season** — a whole season stalling (from either download path, public indexers or the AvistaZ fallback) is one alert listing every stuck episode, and its buttons act on all of them at once, instead of one message per episode. Set `STUCK_CHECK_MINUTES=0` to disable.
 - `ESCALATION_ENABLED` (default `false`), `AVISTAZ_TAG` (default `avistaz`), `ESCALATION_DELAY_HOURS` (default `6`), `ESCALATION_CHECK_MINUTES` (default `30`), `ESCALATION_MAX_AGE_DAYS` (default `14`) — the AvistaZ private-tracker fallback; see the dedicated section below. Requires the one-time Radarr/Sonarr/Prowlarr setup described there.
 - `RTORRENT_URL`, `RTORRENT_LABEL_MOVIE`/`RTORRENT_LABEL_TV` (defaults `radarr`/`sonarr`), `AVISTAZ_INDEXER_NAME` (default `avistaz`), `AVISTAZ_DAILY_GRAB_LIMIT` (default `4`, `0` = unlimited), `GRAB_MODE` (`approve` default / `auto`), `GRAB_AUTO_CONFIDENCE` (default `92`), `GRAB_RCLONE_REMOTE`, `GRAB_RCLONE_FLAGS`, `GRAB_STAGING_PATH`, `GRAB_IMPORT_PATH`, `GRAB_CHECK_MINUTES` (default `5`), `GRAB_COPY_TIMEOUT_MINUTES` (default `240`), `GRAB_MISSING_AFTER_MINUTES` (default `10`), `GRAB_DOWNLOAD_TIMEOUT_HOURS` (default `72`) — the AvistaZ **direct grab** pipeline (`/avistaz`, and the smarter escalation path); see the dedicated section below.
+- `RTORRENT_ADOPT_ENABLED` (default `false`), `RTORRENT_ADOPT_CHECK_MINUTES` (default `5`), `RTORRENT_ADOPT_LABELS` (default `sonarr,radarr`), `RTORRENT_ADOPT_AUTO` (default `false`), `RTORRENT_REMOTE_ROOT` (unset) — **adoption** of torrents that already exist in the seedbox rTorrent (`/rtorrent`); see "Adopting existing torrents" below. Manual `/rtorrent adopt` works whenever the direct-grab transfer pieces are configured; `RTORRENT_ADOPT_ENABLED` gates only the discovery sweep.
 - `JANITOR_CHECK_MINUTES` (default `60`) — janitor sweep interval; `0` disables. The janitor:
   1. **Grace deletes** — enforces the "Finished Watching" prompt's auto-delete promise: if nobody clicks Keep/Delete within `DELETION_GRACE_HOURS`, the media is deleted (requires `ENABLE_DELETION=true`; honors `DELETION_DRY_RUN`, keep list, and never-delete list). Requester gets a DM; admin channel gets a report. "Remind Me Later" restarts the grace window after the reminder.
   2. **Disk-space alerts** — warns the admin channel (24h cooldown) when any *arr-visible volume drops below `DISK_SPACE_WARN_GB` (default `100`, `0` disables). `/status` also shows a Storage section. Set `DISK_SPACE_PATHS` (comma-separated) to an allowlist of mounts/folders to report — this hides the container's own `/` and `/config` disks and relabels a mount with the more specific media folder (e.g. shows `/share/media` for the `/share` mount). Unset reports every *arr mount.
@@ -421,6 +422,50 @@ Grab jobs are durable (`grab_jobs` in SQLite): a restart mid-download keeps watc
 mid-transfer re-queues the copy, and rclone skips already-transferred files. Transfer failures
 alert the downloads channel with a **Retry Transfer** button.
 
+### Adopting existing torrents (`/rtorrent adopt`)
+The pipeline above tracks torrents by the info-hash the bot computes when **it** submits the
+`.torrent` — anything added to rTorrent by hand, by another private tracker's automation, or
+before the bot existed has no `grab_jobs` row and is invisible. Adoption closes that gap,
+provider-independently:
+
+```text
+/rtorrent adopt search:"Blood Vs Duty" [target:sonarr|radarr]
+        ↓
+Bot queries every torrent in rTorrent (d.multicall2) and matches names
+        ↓
+Embed shows name, progress, size, and label, with Adopt buttons
+(target from the rTorrent label; blank/unknown labels get an explicit
+per-arr button — nothing is ever adopted on a guessed target)
+        ↓
+Admin clicks Adopt → a grab job is created for the EXISTING info-hash
+at 'downloading' (watched to 100%) or 'complete' (transfers immediately)
+        ↓
+The normal chain finishes it: rclone → .incoming → rename → arr import
+```
+
+Safety properties, by construction:
+- **Never** downloads a `.torrent` from AvistaZ (or anywhere) and **never** consumes an
+  `AVISTAZ_DAILY_GRAB_LIMIT` slot — adopted jobs (`origin` `adopt`/`adopt-auto`) are excluded
+  from the allowance count.
+- **Never** removes the torrent or its data from rTorrent — transfers are `rclone copy`, and
+  seeding continues on the seedbox.
+- An info-hash already in `grab_jobs` is refused ("already tracked as job #N").
+- The matching file/folder must exist under `GRAB_RCLONE_REMOTE` **before** the job is created;
+  set `RTORRENT_REMOTE_ROOT` (the seedbox-side folder the remote points at, e.g.
+  `/home/user/Downloads`) so torrents living in per-label subfolders map correctly.
+- Adopted jobs are durable `grab_jobs` rows — restarts keep watching/transferring them, and the
+  `.incoming` rename guard applies unchanged.
+
+Commands: `/rtorrent status` (connectivity + adoption settings), `/rtorrent list [search]`,
+`/rtorrent adopt search:"..." [target:]`, `/rtorrent ignore search:"..."` (toggle — the sweep
+skips ignored torrents), `/rtorrent adopted` (adopted jobs + ignore list).
+
+With `RTORRENT_ADOPT_ENABLED=true`, a **discovery sweep** (every `RTORRENT_ADOPT_CHECK_MINUTES`)
+looks for torrents whose label is in `RTORRENT_ADOPT_LABELS` but which have no grab job, and
+posts Adopt buttons to the downloads channel — once per info-hash. `RTORRENT_ADOPT_AUTO=true`
+makes the sweep adopt label-resolved candidates outright; keep it `false` initially so the bot
+only discovers candidates instead of transferring every completed torrent on the seedbox.
+
 ## Plex Home Staging (remote cache box)
 A second, small Plex server (e.g. a NUC abroad, behind CGNAT and a VPS tunnel) serves a local
 **cache** of the master library. The bot manages that cache from Discord:
@@ -476,7 +521,7 @@ marks, separate Tautulli history. So each person belongs to exactly one server:
 
 ## Slash Command List
 Admin:
-- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`, `/avistaz`, `/stage-bulk`, `/assign-server`
+- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`, `/avistaz`, `/rtorrent`, `/stage-bulk`, `/assign-server`
 
 User:
 - `/request`, `/request-status`, `/download`, `/queue`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`, `/stage`, `/staged`, `/pin`, `/unpin`
@@ -491,7 +536,7 @@ User:
 - `app_settings`
 - `media_retention_rules`
 - `escalations` (AvistaZ fallback watch list)
-- `grab_jobs` (AvistaZ direct-grab pipeline: sent → downloading → complete → transferring → done)
+- `grab_jobs` (AvistaZ direct-grab pipeline: sent → downloading → complete → transferring → done; adopted torrents enter at downloading/complete with origin `adopt`/`adopt-auto`)
 - `stage_jobs` (durable Plex Home staging queue)
 - `staged_items` (PH cache inventory + LRU/pin state)
 
