@@ -2242,15 +2242,19 @@ async function handleRequestCommand(interaction) {
       return interaction.editReply(`⚠️ Seerr accepted **${label}** (request #${data.id}) but ${verified.reason}.\nNothing will download until that's fixed — check the Seerr container logs from the last minute for the underlying error, then try again.`);
     }
     upsertRequest(data?.id, mediaKey, mediaType, is4k, label, interaction.user.id, 'approved');
-    // Admin self-requests skip the gate (no pre-auth button), so they get the watchdog's
-    // alert-with-button flavor instead of auto-escalation.
-    if (canEscalate({ mediaType, is4k })) {
-      recordEscalationWatch({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label, discordId: interaction.user.id, preAuthorized: false });
+    // Admin self-requests skip the gate, so there's no "+ AvistaZ Fallback" button to click —
+    // pre-authorize the fallback automatically instead (the admin IS the person who'd click
+    // it), which also puts the arr tag on right away like a gate pre-auth does.
+    const azPreAuth = canEscalate({ mediaType, is4k });
+    if (azPreAuth) {
+      recordEscalationWatch({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label, discordId: interaction.user.id, preAuthorized: true });
+      tagPreAuthorizedMedia({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label })
+        .catch(err => log.warn(`Approval-time AvistaZ tagging failed for ${label}: ${err.message}`));
     }
-    audit('media_requested', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seerrUserId, requestId: data?.id ?? null });
+    audit('media_requested', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seerrUserId, requestId: data?.id ?? null, azPreAuth });
     await interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Request Sent`)
-      .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — approved and grabbing it now! 🚀\nYou\'ll get a DM when it\'s on Plex.`)] });
+      .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — approved and grabbing it now! 🚀\nYou\'ll get a DM when it\'s on Plex.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now; auto-escalates if nothing public is grabbed within ${escalationDelayLabel()}.` : ''}`)] });
   } catch (err) {
     // Seerr answered but said no (rejection body, or the created-nothing shapes from
     // createSeerrRequestAs) vs. never answered at all — show which, so "Couldn't reach Seerr"

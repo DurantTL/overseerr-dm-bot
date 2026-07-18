@@ -330,9 +330,11 @@ indexer is tagged, no title carries the tag by default, so nothing ever hits Avi
   fallback: the `avistaz` tag goes onto the title in Radarr/Sonarr right at approval (it's
   definitely AvistaZ-bound), and if nothing public has been grabbed within
   `ESCALATION_DELAY_MINUTES` the bot escalates automatically.
-- Plain **Approve** (and admin self-requests) get the watchdog flavor instead: after the delay, the
-  downloads channel gets a **⏳ Nothing Found Yet** embed with **Escalate to AvistaZ / Ignore**
-  buttons.
+- Plain **Approve** gets the watchdog flavor instead: after the delay, the downloads channel gets
+  a **⏳ Nothing Found Yet** embed with **Escalate to AvistaZ / Ignore** buttons.
+- Admin self-requests skip the gate entirely (no button to click), so they're pre-authorized
+  automatically — tagged at request time and auto-escalated after the delay, same as
+  **Approve + AvistaZ Fallback**.
 - A watch row resolves automatically the moment the media turns available, starts downloading, or
   the request is declined; unresolved rows expire after `ESCALATION_MAX_AGE_DAYS`.
 - 4K requests are never escalated (the fallback is for hard-to-find content, not 4K upgrades).
