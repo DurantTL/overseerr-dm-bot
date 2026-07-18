@@ -60,4 +60,14 @@ function decideAdoption({ torrent, existingJob, target }) {
   return { ok: true, state: torrent.complete ? 'complete' : 'downloading', mediaType: target === 'sonarr' ? 'tv' : 'movie' };
 }
 
-module.exports = { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, decideAdoption };
+// Which bulk-adopt buttons a cohort should get: an explicit target pins one button; a
+// cohort whose labels all resolve to the same arr gets that one; anything mixed or
+// unresolved falls back to one button per configured arr — the admin picks, never a guess.
+function bulkTargetChoices(candidates, explicitTarget, cfg = CONFIG) {
+  if (explicitTarget) return [explicitTarget];
+  const resolved = (candidates || []).map(t => adoptTargetForLabel(t.label, cfg));
+  if (resolved.length && resolved.every(t => t && t === resolved[0])) return [resolved[0]];
+  return [cfg.SONARR_URL ? 'sonarr' : null, cfg.RADARR_URL ? 'radarr' : null].filter(Boolean);
+}
+
+module.exports = { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, decideAdoption, bulkTargetChoices };
