@@ -79,6 +79,19 @@ const CONFIG = {
   GRAB_MISSING_AFTER_MINUTES: Number.parseInt(process.env.GRAB_MISSING_AFTER_MINUTES || '10', 10),
   // Give up watching a seedbox download after this long without completion.
   GRAB_DOWNLOAD_TIMEOUT_HOURS: Number.parseInt(process.env.GRAB_DOWNLOAD_TIMEOUT_HOURS || '72', 10),
+  // ---- rTorrent adoption (/rtorrent adopt): bring torrents the bot didn't submit into ----
+  // ---- the same transfer/import pipeline. See README "Adopting existing torrents". ----
+  // Enables the discovery sweep; /rtorrent adopt itself only needs the grab pipeline pieces.
+  RTORRENT_ADOPT_ENABLED: parseBool(process.env.RTORRENT_ADOPT_ENABLED, false),
+  RTORRENT_ADOPT_CHECK_MINUTES: Number.parseInt(process.env.RTORRENT_ADOPT_CHECK_MINUTES || '5', 10),
+  // rTorrent labels (d.custom1, lowercased) the discovery sweep considers adoptable.
+  RTORRENT_ADOPT_LABELS: (process.env.RTORRENT_ADOPT_LABELS || 'sonarr,radarr').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+  // Adopt discovered candidates automatically instead of posting Adopt buttons.
+  RTORRENT_ADOPT_AUTO: parseBool(process.env.RTORRENT_ADOPT_AUTO, false),
+  // Seedbox-side absolute folder that GRAB_RCLONE_REMOTE points at (e.g.
+  // /home/user/Downloads) — lets adoption map a torrent's d.base_path to the right rclone
+  // subpath when torrents live in per-label subfolders.
+  RTORRENT_REMOTE_ROOT: (process.env.RTORRENT_REMOTE_ROOT || '').replace(/\/$/, ''),
   JANITOR_CHECK_MINUTES: Number.parseInt(process.env.JANITOR_CHECK_MINUTES || '60', 10),
   RETENTION_ENFORCEMENT: parseBool(process.env.RETENTION_ENFORCEMENT, false),
   RETENTION_CHECK_HOURS: Number.parseInt(process.env.RETENTION_CHECK_HOURS || '24', 10),
@@ -195,6 +208,9 @@ function configWarnings() {
   }
   if (CONFIG.RTORRENT_URL && !CONFIG.RADARR_URL && !CONFIG.SONARR_URL) {
     warnings.push('`RTORRENT_URL` is set but neither Radarr nor Sonarr is configured — completed grabs could never be imported.');
+  }
+  if (CONFIG.RTORRENT_ADOPT_ENABLED && (!CONFIG.RTORRENT_URL || !CONFIG.GRAB_RCLONE_REMOTE || !CONFIG.GRAB_STAGING_PATH)) {
+    warnings.push('`RTORRENT_ADOPT_ENABLED=true` but the transfer pipeline is incomplete (`RTORRENT_URL` + `GRAB_RCLONE_REMOTE` + `GRAB_STAGING_PATH`) — adopted torrents could never be copied home.');
   }
   if (!['approve', 'auto'].includes(CONFIG.GRAB_MODE)) {
     warnings.push(`\`GRAB_MODE=${CONFIG.GRAB_MODE}\` is not a valid mode (use \`approve\` or \`auto\`) — treating it as \`approve\`.`);
