@@ -3,12 +3,12 @@
 
 // What the watchdog should do with one 'watching' escalations row.
 // facts = { isAvailable, hasQueueItem, hasFile } — any true means the public pipeline delivered.
-// cfg   = { delayHours, maxAgeDays }
+// cfg   = { delayMinutes, maxAgeDays }
 function decideEscalationAction(row, facts, now, cfg) {
   if (facts.isAvailable || facts.hasQueueItem || facts.hasFile) return 'resolve';
   const age = now - row.approved_at;
   if (age > cfg.maxAgeDays * 86400000) return 'expire';
-  if (age < cfg.delayHours * 3600000) return 'wait';
+  if (age < cfg.delayMinutes * 60000) return 'wait';
   return row.pre_authorized ? 'escalate' : 'alert';
 }
 

@@ -88,6 +88,17 @@ function statusEmoji(v) {
 
 function pad(n) { return String(n).padStart(2, '0'); }
 
+// Human-readable duration from milliseconds: "45m", "1h", "1h 30m", "2d 3h". Sub-hour values
+// must never round to "0h" — escalation delays are now configured in minutes.
+function fmtDuration(ms) {
+  const minutes = Math.max(0, Math.round(ms / 60000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 ? `${days}d ${hours % 24}h` : `${days}d`;
+}
+
 function mimeFor(ext) { return ({ '.mkv': 'video/x-matroska', '.mp4': 'video/mp4', '.avi': 'video/x-msvideo', '.mov': 'video/quicktime', '.wmv': 'video/x-ms-wmv' })[ext] || 'application/octet-stream'; }
 
 const gb = bytes => bytes / (1024 ** 3);
@@ -116,4 +127,4 @@ function queueItemLooksUnhealthy(item) {
   return item.trackedStatus === 'warning' || item.status === 'warning' || item.status === 'failed' || item.messages.length > 0;
 }
 
-module.exports = { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy };
+module.exports = { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy };

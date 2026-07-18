@@ -10,19 +10,20 @@ const { loadSandbox } = require('./extract');
 (async () => {
   // --- Pure state machine ---
   const { decideEscalationAction, escalationEligible } = require('../../src/escalation');
+  const MIN = 60000;
   const HOUR = 3600000;
-  const cfg = { delayHours: 6, maxAgeDays: 14 };
+  const cfg = { delayMinutes: 45, maxAgeDays: 14 };
   const row = (over = {}) => ({ approved_at: 0, pre_authorized: 0, ...over });
   const noFacts = { isAvailable: false, hasQueueItem: false, hasFile: false };
 
-  assert.strictEqual(decideEscalationAction(row(), { ...noFacts, isAvailable: true }, 10 * HOUR, cfg), 'resolve', 'available resolves');
-  assert.strictEqual(decideEscalationAction(row(), { ...noFacts, hasQueueItem: true }, 10 * HOUR, cfg), 'resolve', 'queue item resolves');
-  assert.strictEqual(decideEscalationAction(row(), { ...noFacts, hasFile: true }, 10 * HOUR, cfg), 'resolve', 'file on disk resolves');
-  assert.strictEqual(decideEscalationAction(row(), noFacts, 3 * HOUR, cfg), 'wait', 'before deadline waits');
-  assert.strictEqual(decideEscalationAction(row({ pre_authorized: 1 }), noFacts, 7 * HOUR, cfg), 'escalate', 'past deadline + pre-auth escalates');
-  assert.strictEqual(decideEscalationAction(row(), noFacts, 7 * HOUR, cfg), 'alert', 'past deadline without pre-auth alerts');
+  assert.strictEqual(decideEscalationAction(row(), { ...noFacts, isAvailable: true }, 2 * HOUR, cfg), 'resolve', 'available resolves');
+  assert.strictEqual(decideEscalationAction(row(), { ...noFacts, hasQueueItem: true }, 2 * HOUR, cfg), 'resolve', 'queue item resolves');
+  assert.strictEqual(decideEscalationAction(row(), { ...noFacts, hasFile: true }, 2 * HOUR, cfg), 'resolve', 'file on disk resolves');
+  assert.strictEqual(decideEscalationAction(row(), noFacts, 30 * MIN, cfg), 'wait', 'before deadline waits');
+  assert.strictEqual(decideEscalationAction(row({ pre_authorized: 1 }), noFacts, 46 * MIN, cfg), 'escalate', 'past deadline + pre-auth escalates');
+  assert.strictEqual(decideEscalationAction(row(), noFacts, 46 * MIN, cfg), 'alert', 'past deadline without pre-auth alerts');
   assert.strictEqual(decideEscalationAction(row(), noFacts, 15 * 24 * HOUR, cfg), 'expire', 'past max age expires');
-  assert.strictEqual(decideEscalationAction(row({ pre_authorized: 1 }), { ...noFacts, isAvailable: true }, 7 * HOUR, cfg), 'resolve', 'resolve beats escalate');
+  assert.strictEqual(decideEscalationAction(row({ pre_authorized: 1 }), { ...noFacts, isAvailable: true }, 46 * MIN, cfg), 'resolve', 'resolve beats escalate');
 
   const eCfg = { enabled: true, radarrConfigured: true, sonarrConfigured: true };
   assert.strictEqual(escalationEligible({ mediaType: 'movie', is4k: false }, eCfg), true, 'movie eligible');
@@ -48,7 +49,7 @@ const { loadSandbox } = require('./extract');
   const CONFIG = { RADARR_URL: base, RADARR_API_KEY: 'rk', SONARR_URL: base, SONARR_API_KEY: 'sk', AVISTAZ_TAG: 'avistaz' };
   const audits = [];
   const sandbox = loadSandbox(
-    ['getArrTagId', 'getMovieByTmdbId', 'getSeriesByTvdbId', 'addTagToMovie', 'addTagToSeries', 'triggerMovieSearch', 'triggerSeriesSearch', 'escalateMediaToAvistaz', 'verifyAvistazTags'],
+    ['getArrTagId', 'getMovieByTmdbId', 'getSeriesByTvdbId', 'addTagToMovie', 'addTagToSeries', 'triggerMovieSearch', 'triggerSeriesSearch', 'applyAvistazTag', 'escalateMediaToAvistaz', 'verifyAvistazTags'],
     {
       axios,
       CONFIG,
@@ -81,6 +82,16 @@ const { loadSandbox } = require('./extract');
   assert.strictEqual(result.ok, true, `tv escalation ok (got ${JSON.stringify(result)})`);
   assert.deepStrictEqual(state.seriesEditor, [{ seriesIds: [9], tags: [7], applyTags: 'add' }], 'series editor adds the tag');
   assert.deepStrictEqual(state.commands, [{ name: 'SeriesSearch', seriesId: 9 }], 'series search triggered');
+
+  // Tag-only helper (approval-time pre-auth / direct-grab provenance): adds the tag through
+  // the same additive editor but never triggers a search.
+  state.commands = []; state.seriesEditor = [];
+  result = await sandbox.run("applyAvistazTag({ mediaType: 'tv', tmdbId: 1396, tvdbId: 81189 })");
+  assert.strictEqual(result.ok, true, `tag-only tv ok (got ${JSON.stringify(result)})`);
+  assert.deepStrictEqual(state.seriesEditor, [{ seriesIds: [9], tags: [7], applyTags: 'add' }], 'tag-only uses the additive editor');
+  assert.deepStrictEqual(state.commands, [], 'tag-only never triggers a search');
+  result = await sandbox.run("applyAvistazTag({ mediaType: 'tv', tmdbId: 1396 })");
+  assert.deepStrictEqual({ ok: result.ok, reason: result.reason }, { ok: false, reason: 'no_tvdb_id' }, 'tag-only tv without tvdbId fails cleanly');
 
   // Failure modes are stable reason strings, never throws.
   result = await sandbox.run("escalateMediaToAvistaz({ mediaType: 'tv', tmdbId: 1396 })");

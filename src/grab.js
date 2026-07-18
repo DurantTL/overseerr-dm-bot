@@ -59,15 +59,26 @@ function parseReleaseName(name) {
         : /blu[-. ]?ray|bdrip|brrip|remux/i.test(n) ? 'bluray'
           : null;
   const se = n.match(/\bS(\d{1,2})[\s._-]*E(\d{1,3})\b/i);
-  const seasonOnly = se ? null : n.match(/\bS(\d{1,2})\b/i);
+  // Multi-season packs: "S01-S05", "S01~S03", "Season 1-3", "Seasons 1-5". Old shows are often
+  // only available as one complete-series torrent, so these must parse as covering a RANGE of
+  // seasons instead of mis-reading the first number as "season 1 only".
+  const range = se ? null
+    : n.match(/\bS(\d{1,2})\s*[-–~]\s*S?(\d{1,2})\b/i) || n.match(/\bseasons?[\s._]+(\d{1,2})\s*[-–~]\s*(\d{1,2})\b/i);
+  const seasonOnly = se || range ? null : n.match(/\bS(\d{1,2})\b/i) || n.match(/\bseason[\s._]+(\d{1,2})\b/i);
   const complete = /\bcomplete\b/i.test(n);
   const year = (n.match(/\b((?:19|20)\d{2})\b/) || [])[1];
+  const season = se ? Number(se[1]) : range ? Number(range[1]) : seasonOnly ? Number(seasonOnly[1]) : null;
+  const seasonEnd = range ? Number(range[2]) : null;
   return {
     resolution,
     source,
-    season: se ? Number(se[1]) : seasonOnly ? Number(seasonOnly[1]) : null,
+    season,
+    seasonEnd,
     episode: se ? Number(se[2]) : null,
-    seasonPack: (!!seasonOnly || complete) && !se,
+    seasonPack: (!!seasonOnly || !!range || complete) && !se,
+    // A whole show in one download: an explicit multi-season range, or "complete" with no
+    // season marker at all ("Old.Drama.Complete.Series" — vs "S01.COMPLETE", one season).
+    multiSeason: !se && ((!!range && Number(range[2]) > Number(range[1])) || (complete && season == null)),
     year: year ? Number(year) : null,
   };
 }
@@ -94,10 +105,15 @@ function scoreAvistazResult(result, ctx) {
     else if (Math.abs(parsed.year - ctx.year) <= 1) score += 15;
     else notes.push(`year mismatch (${parsed.year})`);
   } else if (ctx.season != null) {
-    if (parsed.seasonPack && (parsed.season === ctx.season || parsed.season == null)) score += 15;
+    // A pack "covers" the wanted season when it names it, names no season at all (complete
+    // series), or spans a range that includes it (S01-S05 covers a request for S03).
+    const coversWanted = parsed.seasonPack && (parsed.season == null
+      || parsed.season === ctx.season
+      || (parsed.seasonEnd != null && parsed.season <= ctx.season && ctx.season <= parsed.seasonEnd));
+    if (coversWanted) score += 15;
     else if (parsed.season === ctx.season) { score += 6; notes.push('single episode, not a season pack'); }
     else if (parsed.season == null) score += 5;
-    else notes.push(`wrong season (S${parsed.season})`);
+    else notes.push(`wrong season (S${parsed.season}${parsed.seasonEnd != null ? `-S${parsed.seasonEnd}` : ''})`);
   } else {
     // No season specified: prefer packs/complete runs, single episodes are a poor fit.
     if (parsed.seasonPack) score += 15;
@@ -146,6 +162,9 @@ function rankAvistazResults(results, ctx, { limit = 3 } = {}) {
         resolution: parsed.resolution,
         source: parsed.source,
         seasonPack: parsed.seasonPack,
+        multiSeason: parsed.multiSeason,
+        season: parsed.season,
+        seasonEnd: parsed.seasonEnd,
       };
     })
     .sort((a, b) => b.confidence - a.confidence)
