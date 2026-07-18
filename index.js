@@ -868,8 +868,9 @@ async function executeBulkAdoption(candidates, target, meta) {
 }
 
 // The bulk-adopt offer: one embed summarizing the cohort, one Adopt-all button per viable
-// target (bulkTargetChoices — a cohort never adopts on a guessed target).
-function adoptBulkMessage({ candidates, search, explicitTarget, nonce }) {
+// target (bulkTargetChoices — a cohort never adopts on a guessed target). Shared by
+// /rtorrent adopt and the discovery sweep (heading override).
+function adoptBulkMessage({ candidates, search, explicitTarget, nonce, heading, footnote }) {
   const completeCount = candidates.filter(t => t.complete).length;
   const totalBytes = candidates.reduce((a, t) => a + (t.sizeBytes || 0), 0);
   const preview = candidates.slice(0, 8).map(t => `• ${String(t.name).slice(0, 100)}`);
@@ -883,12 +884,13 @@ function adoptBulkMessage({ candidates, search, explicitTarget, nonce }) {
     'Adopt-all tracks every EXISTING torrent above — no tracker downloads, no AvistaZ allowance slots, nothing removed from rTorrent. Complete ones transfer immediately (one at a time); incomplete ones are watched to 100% first.',
   ];
   if (targets.length > 1) lines.push('Labels are mixed or unresolved, so pick the import target explicitly — it applies to the whole batch.');
+  if (footnote) lines.push(footnote);
   const buttons = targets.map(t =>
     new ButtonBuilder().setCustomId(`adopt_bulk:${nonce}:${t}`).setLabel(`Adopt all ${candidates.length} → ${t}`).setStyle(targets.length === 1 ? ButtonStyle.Success : ButtonStyle.Primary));
   buttons.push(new ButtonBuilder().setCustomId(`adopt_cancel:${nonce}`).setLabel('Dismiss').setStyle(ButtonStyle.Secondary));
   return {
     embeds: [brandedEmbed(COLORS.INFO)
-      .setTitle(`🧲 Bulk Adopt — “${String(search).slice(0, 80)}”`)
+      .setTitle(heading || `🧲 Bulk Adopt — “${String(search).slice(0, 80)}”`)
       .setDescription(lines.join('\n').slice(0, 4000))],
     components: [new ActionRowBuilder().addComponents(...buttons)],
   };
@@ -930,16 +932,28 @@ async function sweepAdoptCandidates() {
   }
 
   if (!forButtons.length) return;
-  const shown = forButtons.slice(0, 3).map(t => ({ ...t, target: adoptTargetForLabel(t.label) }));
-  for (const t of shown) markAdoptOffered(t.hash);
-  const extra = forButtons.length - shown.length;
-  const nonce = stashGrabOffer({ kind: 'adopt', candidates: shown, origin: 'adopt', discordId: null });
-  notifyChannel('downloads', adoptCandidatesMessage({
-    heading: `🧲 Adoptable Torrent${shown.length === 1 ? '' : 's'} Found in rTorrent`,
-    candidates: shown, nonce,
-    footnote: `These carry an adoptable label but no grab job. Adopting tracks the existing torrent — no tracker download, no AvistaZ allowance slot, nothing removed from rTorrent. \`/rtorrent ignore\` silences a torrent for good.${extra > 0 ? `\n**${extra}** more candidate(s) waiting — \`/rtorrent adopt search:"..."\` bulk-adopts a whole series in one click.` : ''}`,
-  }));
-  audit('rtorrent_adopt_discovered', { count: shown.length, waiting: extra, hashes: shown.map(t => t.hash) });
+  // ONE post covers the whole cohort, and every candidate in it is marked offered — showing
+  // 3 and marking 3 meant a channel message every sweep until a 50-episode backlog drained.
+  const cohort = forButtons.slice(0, 200);
+  for (const t of cohort) markAdoptOffered(t.hash);
+  if (cohort.length > 3) {
+    const candidates = cohort.map(t => ({ hash: t.hash, name: t.name, complete: t.complete, label: t.label, basePath: t.basePath, sizeBytes: t.sizeBytes, doneBytes: t.doneBytes }));
+    const nonce = stashGrabOffer({ kind: 'adopt-bulk', candidates, origin: 'adopt', discordId: null });
+    notifyChannel('downloads', adoptBulkMessage({
+      candidates, nonce,
+      heading: `🧲 ${candidates.length} Adoptable Torrents Found in rTorrent`,
+      footnote: 'For a finer pick, `/rtorrent adopt search:"..."` scopes the batch to one series; `/rtorrent ignore` silences a torrent for good. This won\'t be re-posted unless new torrents appear.',
+    }));
+  } else {
+    const shown = cohort.map(t => ({ ...t, target: adoptTargetForLabel(t.label) }));
+    const nonce = stashGrabOffer({ kind: 'adopt', candidates: shown, origin: 'adopt', discordId: null });
+    notifyChannel('downloads', adoptCandidatesMessage({
+      heading: `🧲 Adoptable Torrent${shown.length === 1 ? '' : 's'} Found in rTorrent`,
+      candidates: shown, nonce,
+      footnote: 'These carry an adoptable label but no grab job. Adopting tracks the existing torrent — no tracker download, no AvistaZ allowance slot, nothing removed from rTorrent. `/rtorrent ignore` silences a torrent for good.',
+    }));
+  }
+  audit('rtorrent_adopt_discovered', { count: cohort.length, hashes: cohort.slice(0, 20).map(t => t.hash) });
 }
 
 // ---- Janitor: grace-period auto-delete, retention rules, disk-space alerts ----
