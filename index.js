@@ -3212,7 +3212,9 @@ async function handleRtorrentCommand(interaction) {
       ? { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, cmd: 'DownloadedEpisodesScan', label: 'Sonarr' }
       : { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr' };
     if (!arr.url) return interaction.reply({ content: `❌ ${arr.label} isn't configured.`, ephemeral: true });
-    const clean = String(interaction.options.getString('folder') || '').replace(/^\/+|\/+$/g, '');
+    // Strip wrapping quotes: Discord passes option strings verbatim, and admins used to
+    // shell quoting will type folder:"Name With Spaces" — the quotes are not part of the name.
+    const clean = String(interaction.options.getString('folder') || '').trim().replace(/^["']+|["']+$/g, '').replace(/^\/+|\/+$/g, '');
     if (clean && clean.split('/').some(p => !p || p === '.' || p === '..')) return interaction.reply({ content: '❌ Unsafe folder path.', ephemeral: true });
     if (clean === '.incoming' || clean.startsWith('.incoming/')) return interaction.reply({ content: '❌ `.incoming` holds in-flight copies — never import from there.', ephemeral: true });
     const mode = interaction.options.getString('mode') === 'copy' ? 'Copy' : 'Move';
