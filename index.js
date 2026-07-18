@@ -35,7 +35,7 @@ const { tautulliConfigured, tautulliApi, describeSession } = require('./src/taut
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
-const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
+const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, indexRemoteListing, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
 
@@ -759,52 +759,79 @@ async function remotePathExistsByStat(sub) {
   return res.code === 0;
 }
 
-// Batched existence checker for bulk adoption: an 80-episode series would mean 80 per-path
-// stats over SFTP, so instead each unique parent directory is listed ONCE (rclone lsf) and
-// membership is checked in memory. Falls back to a per-path stat when a listing can't be
-// trusted (nonzero exit, or output at runRclone's 64 KB stdout cap ⇒ possibly truncated).
-function makeRemotePathChecker() {
+// Batched remote-path resolver, shared across a bulk adoption. Two layers:
+// - pathExists: each unique parent directory is listed ONCE (rclone lsf) and membership is
+//   checked in memory — an 80-episode series would otherwise mean 80 per-path stats over
+//   SFTP. Falls back to a per-path stat when a listing can't be trusted (nonzero exit, or
+//   output at the stdout cap ⇒ possibly truncated).
+// - findByName: last resort — one recursive listing of the whole remote, indexed by
+//   basename. Catches data that was moved on the seedbox behind rTorrent's back (stale
+//   d.base_path, e.g. episodes sorted into a per-series folder). Only a UNIQUE name match
+//   counts; partial listings are still usable since matches are only ever positive evidence.
+const SHALLOW_LIST_CAP = 1024 * 1024;
+const DEEP_LIST_CAP = 8 * 1024 * 1024;
+function makeRemotePathResolver() {
   const dirs = new Map(); // parent subpath ('' = remote root) -> Promise<Set<names> | null>
+  let deepIndex = null; // lazy Promise<Map<basename, subpath[]> | null>
   const listDir = async parent => {
-    const res = await runRclone(['lsf', joinRemotePath(CONFIG.GRAB_RCLONE_REMOTE, parent)], { timeoutMs: 120000, flags: CONFIG.GRAB_RCLONE_FLAGS });
-    if (res.code !== 0 || res.stdout.length >= 65536) return null;
+    const res = await runRclone(['lsf', joinRemotePath(CONFIG.GRAB_RCLONE_REMOTE, parent)],
+      { timeoutMs: 120000, flags: CONFIG.GRAB_RCLONE_FLAGS, maxStdoutBytes: SHALLOW_LIST_CAP });
+    if (res.code !== 0 || res.stdout.length >= SHALLOW_LIST_CAP) return null;
     return new Set(res.stdout.split('\n').map(s => s.replace(/\/$/, '').trim()).filter(Boolean));
   };
-  return async sub => {
+  const pathExists = async sub => {
     const i = sub.lastIndexOf('/');
     const [parent, base] = i === -1 ? ['', sub] : [sub.slice(0, i), sub.slice(i + 1)];
     if (!dirs.has(parent)) dirs.set(parent, listDir(parent).catch(() => null));
     const names = await dirs.get(parent);
     return names ? names.has(base) : remotePathExistsByStat(sub);
   };
+  const findByName = async name => {
+    if (!deepIndex) {
+      deepIndex = (async () => {
+        const res = await runRclone(['lsf', CONFIG.GRAB_RCLONE_REMOTE, '-R', '--max-depth', '4'],
+          { timeoutMs: 300000, flags: CONFIG.GRAB_RCLONE_FLAGS, maxStdoutBytes: DEEP_LIST_CAP });
+        return res.stdout ? indexRemoteListing(res.stdout) : null;
+      })().catch(() => null);
+    }
+    const idx = await deepIndex;
+    const hits = idx ? idx.get(name) || [] : [];
+    if (hits.length === 1) return { sub: hits[0] };
+    return hits.length ? { ambiguous: hits.length } : null;
+  };
+  return { pathExists, findByName };
 }
 
 // Does the torrent's data actually exist under GRAB_RCLONE_REMOTE, and where? Verified
 // BEFORE the job is created so adoption can't produce a transfer that was doomed from the
-// start. Probes every plausible mapping of d.base_path (remoteSubpathCandidates), so the
-// remote's root not being the rTorrent download folder self-corrects instead of failing.
-async function findAdoptRemotePath(torrent, pathExists = remotePathExistsByStat) {
+// start. Probes every plausible mapping of d.base_path (remoteSubpathCandidates), then
+// falls back to the recursive filename search for data that was moved out from under
+// rTorrent.
+async function findAdoptRemotePath(torrent, resolver) {
   const tried = remoteSubpathCandidates(torrent.basePath, torrent.name, CONFIG.RTORRENT_REMOTE_ROOT);
   for (const sub of tried) {
-    if (await pathExists(sub)) return { sub, tried };
+    if (await resolver.pathExists(sub)) return { sub, tried };
   }
-  return { sub: null, tried };
+  const hit = await resolver.findByName(torrent.name);
+  if (hit?.sub && !hit.sub.includes('..')) return { sub: hit.sub, tried, viaSearch: true };
+  return { sub: null, tried, ambiguous: hit?.ambiguous || 0 };
 }
 
 // Create the grab job for an existing torrent. Never throws — callers branch on
 // { ok, why, dup }. An explicit adoption overrides a standing ignore flag.
-async function executeAdoption(torrent, target, meta, pathExists = remotePathExistsByStat) {
+async function executeAdoption(torrent, target, meta, resolver = null) {
   const verdict = decideAdoption({ torrent, existingJob: torrent.hash ? getGrabJobByHash(torrent.hash) : null, target });
   if (!verdict.ok) return verdict;
   if (!grabImportTarget(verdict.mediaType)) {
     return { ok: false, why: `${target === 'sonarr' ? 'Sonarr' : 'Radarr'} isn't configured — the adopted torrent could never be imported` };
   }
-  const { sub: remotePath, tried } = await findAdoptRemotePath(torrent, pathExists);
+  const { sub: remotePath, tried, viaSearch, ambiguous } = await findAdoptRemotePath(torrent, resolver || makeRemotePathResolver());
   if (!remotePath) {
     const probed = tried.slice(0, 3).map(p => `\`${p}\``).join(', ') + (tried.length > 3 ? ', …' : '');
     // rTorrent's own base_path is the key diagnostic: when siblings adopt fine but this one
     // doesn't, the data usually isn't on disk where rTorrent last saw it.
-    return { ok: false, why: `not found under \`${CONFIG.GRAB_RCLONE_REMOTE}\` (probed ${probed}; rTorrent has the data at \`${torrent.basePath || 'unknown'}\`) — the file may have been moved or deleted on the seedbox` };
+    const searched = ambiguous ? `a filename search found ${ambiguous} matches — can't pick one safely` : 'a recursive filename search found nothing either';
+    return { ok: false, why: `not found under \`${CONFIG.GRAB_RCLONE_REMOTE}\` (probed ${probed}; ${searched}; rTorrent has the data at \`${torrent.basePath || 'unknown'}\`) — the file may have been moved or deleted on the seedbox` };
   }
   if (isAdoptIgnored(torrent.hash)) clearAdoptIgnored(torrent.hash);
   const job = recordGrabJob({
@@ -812,7 +839,7 @@ async function executeAdoption(torrent, target, meta, pathExists = remotePathExi
     infoHash: torrent.hash, sizeBytes: torrent.sizeBytes, label: torrent.label || target,
     discordId: meta.discordId, origin: meta.origin || 'adopt', state: verdict.state, remotePath,
   });
-  audit('rtorrent_adopted', { actorDiscordId: meta.actorDiscordId || null, jobId: job.id, infoHash: torrent.hash, name: torrent.name, target, state: verdict.state, remotePath, origin: meta.origin || 'adopt' });
+  audit('rtorrent_adopted', { actorDiscordId: meta.actorDiscordId || null, jobId: job.id, infoHash: torrent.hash, name: torrent.name, target, state: verdict.state, remotePath, viaSearch: !!viaSearch, origin: meta.origin || 'adopt' });
   if (verdict.state === 'complete') pumpGrabTransfers().catch(err => log.warn(`Grab transfer pump failed: ${err.message}`));
   return { ok: true, job, state: verdict.state };
 }
@@ -857,10 +884,10 @@ function adoptCandidatesMessage({ heading, candidates, nonce, footnote }) {
 // sequentially, sharing one directory-listing cache for the existence checks. Duplicates
 // are skipped quietly — a re-run after a partial failure only adopts what's still untracked.
 async function executeBulkAdoption(candidates, target, meta) {
-  const pathExists = makeRemotePathChecker();
+  const resolver = makeRemotePathResolver();
   const outcome = { adopted: 0, complete: 0, downloading: 0, dup: 0, failed: [] };
   for (const t of candidates) {
-    const result = await executeAdoption(t, target, meta, pathExists);
+    const result = await executeAdoption(t, target, meta, resolver);
     if (result.ok) { outcome.adopted++; outcome[result.state]++; }
     else if (result.dup) outcome.dup++;
     else outcome.failed.push({ name: t.name, why: result.why });
