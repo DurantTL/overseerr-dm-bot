@@ -802,7 +802,9 @@ async function executeAdoption(torrent, target, meta, pathExists = remotePathExi
   const { sub: remotePath, tried } = await findAdoptRemotePath(torrent, pathExists);
   if (!remotePath) {
     const probed = tried.slice(0, 3).map(p => `\`${p}\``).join(', ') + (tried.length > 3 ? ', …' : '');
-    return { ok: false, why: `not found under \`${CONFIG.GRAB_RCLONE_REMOTE}\` (probed ${probed}) — \`/rtorrent status\` shows what the remote root actually contains` };
+    // rTorrent's own base_path is the key diagnostic: when siblings adopt fine but this one
+    // doesn't, the data usually isn't on disk where rTorrent last saw it.
+    return { ok: false, why: `not found under \`${CONFIG.GRAB_RCLONE_REMOTE}\` (probed ${probed}; rTorrent has the data at \`${torrent.basePath || 'unknown'}\`) — the file may have been moved or deleted on the seedbox` };
   }
   if (isAdoptIgnored(torrent.hash)) clearAdoptIgnored(torrent.hash);
   const job = recordGrabJob({
@@ -3012,7 +3014,10 @@ async function handleRtorrentCommand(interaction) {
       const lines = shown.map(t => {
         const job = t.hash ? getGrabJobByHash(t.hash) : null;
         const tracked = job ? ` — tracked as job #${job.id} (${job.state})` : isAdoptIgnored(t.hash) ? ' — 🙈 ignored' : '';
-        return `• **${String(t.name).slice(0, 120)}**\n  ${t.complete ? '✅ complete' : `⬇️ ${adoptProgressPct(t)}%`} • ${fmtSpace(t.sizeBytes)} • label: ${t.label ? `\`${t.label}\`` : 'none'}${tracked}`;
+        // A search that narrows to few torrents gets the seedbox data path too — the thing
+        // to compare against the rclone remote when an adoption reports "not found".
+        const detail = search && shown.length <= 5 ? `\n  path: \`${String(t.basePath || 'unknown').slice(0, 150)}\`` : '';
+        return `• **${String(t.name).slice(0, 120)}**\n  ${t.complete ? '✅ complete' : `⬇️ ${adoptProgressPct(t)}%`} • ${fmtSpace(t.sizeBytes)} • label: ${t.label ? `\`${t.label}\`` : 'none'}${tracked}${detail}`;
       });
       return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
         .setTitle(`🧲 rTorrent — ${matched.length > shown.length ? `${shown.length} of ${matched.length}` : shown.length} torrent${matched.length === 1 ? '' : 's'}${search ? ` matching “${search}”` : ''}`)
