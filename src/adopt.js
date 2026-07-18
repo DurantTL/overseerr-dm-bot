@@ -79,22 +79,46 @@ function remoteSubpathCandidates(basePath, name, remoteRoot) {
   return out;
 }
 
-// Parse `rclone lsf -R` output into basename → [subpaths] (directories lose their trailing
-// '/'). This backs the last-resort filename search: when data was moved on the seedbox
-// behind rTorrent's back (stale d.base_path — e.g. episodes sorted into a per-series
-// folder), the exact torrent name is looked up anywhere in the tree. Only a UNIQUE match
-// may be used — two files with the same name is a guess, and adoption never guesses.
+// Parse `rclone lsf --format ps --separator ';'` output into [{ path, size }] entries.
+// Directories lose their trailing '/' and report size null (rclone prints -1); plain
+// `lsf` output without the size column parses too (size null).
+function parseRemoteListing(text) {
+  const entries = [];
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    const sep = line.lastIndexOf(';');
+    const rawSize = sep === -1 ? NaN : Number(line.slice(sep + 1));
+    const p = (sep === -1 ? line : line.slice(0, sep)).replace(/\/+$/, '');
+    if (!p) continue;
+    entries.push({ path: p, size: Number.isFinite(rawSize) && rawSize >= 0 ? rawSize : null });
+  }
+  return entries;
+}
+
+// basename → [{ path, size }]. This backs the last-resort filename search: when data was
+// moved on the seedbox behind rTorrent's back (stale d.base_path — e.g. episodes sorted
+// into a per-series folder), the exact torrent name is looked up anywhere in the tree.
+// Only a UNIQUE match may be used — two files with the same name is a guess, and adoption
+// never guesses.
 function indexRemoteListing(text) {
   const map = new Map();
-  for (const raw of String(text || '').split('\n')) {
-    const line = raw.replace(/\/+$/, '').trim();
-    if (!line) continue;
-    const base = line.slice(line.lastIndexOf('/') + 1);
+  for (const entry of parseRemoteListing(text)) {
+    const base = entry.path.slice(entry.path.lastIndexOf('/') + 1);
     if (!base) continue;
     if (!map.has(base)) map.set(base, []);
-    map.get(base).push(line);
+    map.get(base).push(entry);
   }
   return map;
+}
+
+// Does a listed size satisfy the torrent's size? Directories and unknown sizes can't be
+// checked (null); a FILE whose size differs is a re-allocated placeholder or partial copy —
+// rTorrent recreates 0-byte files at the old path when its data was moved away, and those
+// must never be adopted as the real thing.
+function remoteSizeMatches(size, expectedBytes) {
+  if (size == null || !expectedBytes) return true;
+  return size === expectedBytes;
 }
 
 // Join a subpath onto an rclone remote without corrupting bare remotes: on SFTP,
@@ -117,4 +141,4 @@ function bulkTargetChoices(candidates, explicitTarget, cfg = CONFIG) {
   return [cfg.SONARR_URL ? 'sonarr' : null, cfg.RADARR_URL ? 'radarr' : null].filter(Boolean);
 }
 
-module.exports = { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, indexRemoteListing, joinRemotePath, decideAdoption, bulkTargetChoices };
+module.exports = { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices };
