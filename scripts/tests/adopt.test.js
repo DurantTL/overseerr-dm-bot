@@ -7,7 +7,7 @@ const assert = require('assert');
 const express = require('express');
 
 (async () => {
-  const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, joinRemotePath, decideAdoption, bulkTargetChoices } = require('../../src/adopt');
+  const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, indexRemoteListing, joinRemotePath, decideAdoption, bulkTargetChoices } = require('../../src/adopt');
   const { CONFIG } = require('../../src/config');
 
   // --- Name matching ---
@@ -51,6 +51,21 @@ const express = require('express');
   cands = remoteSubpathCandidates('/a/b/c/d/e/f/g/Ep.mkv', 'Ep.mkv', '');
   assert.strictEqual(cands.length, 5, 'suffix probing caps at 5 segments');
   assert.ok(!cands.includes(''), 'blank candidates are dropped');
+
+  // --- Recursive listing index (last-resort filename search) ---
+  const idx = indexRemoteListing([
+    'Blood Vs Duty/',
+    'Blood Vs Duty/Blood.Vs.Duty.2026.S01.E001.mkv',
+    'Other.Show.S01.E001.mkv',
+    'dupe.mkv',
+    'somewhere/dupe.mkv',
+    '',
+  ].join('\n'));
+  assert.deepStrictEqual(idx.get('Blood.Vs.Duty.2026.S01.E001.mkv'), ['Blood Vs Duty/Blood.Vs.Duty.2026.S01.E001.mkv'],
+    'a file moved into a per-series folder is findable by exact name');
+  assert.deepStrictEqual(idx.get('Blood Vs Duty'), ['Blood Vs Duty'], 'directories index too (trailing slash stripped) for folder torrents');
+  assert.strictEqual(idx.get('dupe.mkv').length, 2, 'duplicate basenames keep every location — callers must refuse ambiguity');
+  assert.strictEqual(idx.get(''), undefined, 'blank lines never index');
 
   // --- Remote path joining (SFTP home-relative vs root-relative) ---
   assert.strictEqual(joinRemotePath('rapidseedbox:', 'Downloads/Ep.mkv'), 'rapidseedbox:Downloads/Ep.mkv',

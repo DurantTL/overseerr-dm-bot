@@ -92,7 +92,15 @@ function mimeFor(ext) { return ({ '.mkv': 'video/x-matroska', '.mp4': 'video/mp4
 
 const gb = bytes => bytes / (1024 ** 3);
 
-const fmtSpace = bytes => gb(bytes) >= 1024 ? `${(gb(bytes) / 1024).toFixed(2)} TB` : `${gb(bytes).toFixed(0)} GB`;
+// Human-readable size that stays honest at both ends: a 500 MB episode must not render as
+// "0 GB", and multi-TB libraries shouldn't show meaningless decimals.
+const fmtSpace = bytes => {
+  const g = gb(bytes);
+  if (g >= 1024) return `${(g / 1024).toFixed(2)} TB`;
+  if (g >= 10) return `${g.toFixed(0)} GB`;
+  if (g >= 1) return `${g.toFixed(1)} GB`;
+  return `${Math.max(0, Math.round(bytes / 1024 ** 2))} MB`;
+};
 
 function progressBar(pct) {
   const filled = Math.round(pct / 10);
