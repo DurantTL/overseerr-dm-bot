@@ -191,6 +191,8 @@ function runMigrations() {
   // Where the torrent's data lives under GRAB_RCLONE_REMOTE when it isn't just the torrent
   // name (adopted torrents can sit in per-label subfolders). NULL = use the rTorrent name.
   ensureColumn('grab_jobs', 'remote_path', 'TEXT');
+  // One-shot flag: the "request never landed in the arr" alert was posted for this watch row.
+  ensureColumn('escalations', 'arr_missing_alerted', 'INTEGER DEFAULT 0');
 
   const dlCols = db.prepare('PRAGMA table_info(download_tokens)').all().map(c => c.name);
   if (dlCols.includes('token') && !dlCols.includes('token_hash')) {
@@ -370,6 +372,16 @@ function setEscalationState(id, state) {
 
 function setEscalationTvdbId(id, tvdbId) {
   db.prepare('UPDATE escalations SET tvdb_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(tvdbId, id);
+}
+
+function markEscalationArrMissingAlerted(id) {
+  db.prepare('UPDATE escalations SET arr_missing_alerted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(id);
+}
+
+// Restart the escalation clock — used after a direct arr add so public indexers get the full
+// delay before the AvistaZ fallback, instead of escalating on the very next sweep.
+function touchEscalationApprovedAt(id) {
+  db.prepare('UPDATE escalations SET approved_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(Date.now(), id);
 }
 
 // Called from the Seerr webhook when media becomes available (or the request is declined) so
@@ -614,4 +626,4 @@ function restashPendingRequest(nonce, payload) {
   setSetting(`pending_request:${nonce}`, JSON.stringify(payload));
 }
 
-module.exports = { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
+module.exports = { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
