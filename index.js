@@ -26,10 +26,10 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
-const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
+const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
 const { decideEscalationAction, escalationEligible } = require('./src/escalation');
 const { tautulliConfigured, tautulliApi, describeSession } = require('./src/tautulli');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
@@ -426,12 +426,15 @@ async function sweepStuckDownloads() {
 async function gatherEscalationFacts(row, queue) {
   const keys = [`tmdb:${row.tmdb_id}`, row.tvdb_id ? `tvdb:${row.tvdb_id}` : null].filter(Boolean);
   const isAvailable = keys.some(k => db.prepare("SELECT 1 FROM requests WHERE media_id = ? AND status = 'available'").get(k));
-  if (isAvailable) return { isAvailable: true, hasQueueItem: false, hasFile: false };
+  if (isAvailable) return { isAvailable: true, hasQueueItem: false, hasFile: false, inArr: true };
   if (row.media_type === 'movie') {
     const hasQueueItem = queue.some(q => q.source.kind === 'movie' && q.movieTmdbId === row.tmdb_id);
-    if (hasQueueItem) return { isAvailable: false, hasQueueItem: true, hasFile: false };
-    const movie = await getMovieByTmdbId(row.tmdb_id).catch(() => null);
-    return { isAvailable: false, hasQueueItem: false, hasFile: !!movie?.hasFile };
+    if (hasQueueItem) return { isAvailable: false, hasQueueItem: true, hasFile: false, inArr: true };
+    // inArr is three-valued: a definite "the arr does not have this title" (false — Seerr lost
+    // the hand-off) must be distinguishable from "couldn't ask" (null — arr down, no alarms).
+    let movie = null, inArr = null;
+    try { movie = await getMovieByTmdbId(row.tmdb_id); inArr = !!movie; } catch (_e) { /* unreachable arr */ }
+    return { isAvailable: false, hasQueueItem: false, hasFile: !!movie?.hasFile, inArr };
   }
   // TV: Sonarr keys off tvdb — backfill it from Seerr once if the request-create response
   // didn't carry it (Seerr sometimes only knows it after the arr add completes).
@@ -440,9 +443,12 @@ async function gatherEscalationFacts(row, queue) {
     if (tvdbId) { setEscalationTvdbId(row.id, tvdbId); row.tvdb_id = tvdbId; }
   }
   const hasQueueItem = !!row.tvdb_id && queue.some(q => q.source.kind === 'tv' && q.seriesTvdbId === row.tvdb_id);
-  if (hasQueueItem) return { isAvailable: false, hasQueueItem: true, hasFile: false };
-  const series = row.tvdb_id ? await getSeriesByTvdbId(row.tvdb_id).catch(() => null) : null;
-  return { isAvailable: false, hasQueueItem: false, hasFile: (series?.statistics?.episodeFileCount || 0) > 0 };
+  if (hasQueueItem) return { isAvailable: false, hasQueueItem: true, hasFile: false, inArr: true };
+  let series = null, inArr = null;
+  if (row.tvdb_id) {
+    try { series = await getSeriesByTvdbId(row.tvdb_id); inArr = !!series; } catch (_e) { /* unreachable arr */ }
+  }
+  return { isAvailable: false, hasQueueItem: false, hasFile: (series?.statistics?.episodeFileCount || 0) > 0, inArr };
 }
 
 async function runEscalation(row) {
@@ -489,7 +495,7 @@ async function sweepEscalations() {
   const rows = getWatchingEscalations();
   if (!rows.length) return;
   const queue = await fetchArrQueues();
-  const cfg = { delayMinutes: CONFIG.ESCALATION_DELAY_MINUTES, maxAgeDays: CONFIG.ESCALATION_MAX_AGE_DAYS };
+  const cfg = { delayMinutes: CONFIG.ESCALATION_DELAY_MINUTES, maxAgeDays: CONFIG.ESCALATION_MAX_AGE_DAYS, arrGraceMinutes: CONFIG.ESCALATION_ARR_GRACE_MINUTES };
   for (const row of rows) {
     const facts = await gatherEscalationFacts(row, queue);
     const action = decideEscalationAction(row, facts, Date.now(), cfg);
@@ -505,6 +511,24 @@ async function sweepEscalations() {
       continue;
     }
     const waited = fmtDuration(Date.now() - row.approved_at);
+    // action === 'alert_missing': Seerr approved the request but the title never landed in its
+    // arr (Seerr can accept and then lose a request — 'Media data not found' in its log).
+    // Nothing can download until the title exists there, so offer a direct add that bypasses
+    // Seerr entirely. One alert per row; the watch then holds until the title appears.
+    if (action === 'alert_missing') {
+      markEscalationArrMissingAlerted(row.id);
+      const arrName = row.media_type === 'movie' ? 'Radarr' : 'Sonarr';
+      audit('escalation_arr_missing', { mediaId: row.media_id, title: row.title, waited });
+      notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
+        .setTitle(`🕳️ Request Never Landed — ${row.title}`)
+        .setDescription(`Seerr approved this request **${waited}** ago, but the title isn't in ${arrName} — Seerr most likely lost it right after accepting (its log shows \`Media data not found\` when this happens, usually a broken TMDB↔TVDB mapping). **Nothing will download until it exists in ${arrName}.**\nThe button adds it straight to ${arrName}${row.pre_authorized ? ` with the \`${CONFIG.AVISTAZ_TAG}\` tag` : ''} and starts a search — no Seerr involved.`)
+        .addFields({ name: 'Requested by', value: row.requested_by_discord_id ? `<@${row.requested_by_discord_id}>` : 'Unknown', inline: true })],
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`arrfix_add:${row.id}`).setLabel(`Add to ${arrName} & Search`).setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId(`escalate_ignore:${row.id}`).setLabel('Ignore').setStyle(ButtonStyle.Secondary),
+        )] });
+      continue;
+    }
     if (action === 'escalate') {
       const result = await runEscalation(row);
       if (result.deferred) {
@@ -2242,15 +2266,19 @@ async function handleRequestCommand(interaction) {
       return interaction.editReply(`⚠️ Seerr accepted **${label}** (request #${data.id}) but ${verified.reason}.\nNothing will download until that's fixed — check the Seerr container logs from the last minute for the underlying error, then try again.`);
     }
     upsertRequest(data?.id, mediaKey, mediaType, is4k, label, interaction.user.id, 'approved');
-    // Admin self-requests skip the gate (no pre-auth button), so they get the watchdog's
-    // alert-with-button flavor instead of auto-escalation.
-    if (canEscalate({ mediaType, is4k })) {
-      recordEscalationWatch({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label, discordId: interaction.user.id, preAuthorized: false });
+    // Admin self-requests skip the gate, so there's no "+ AvistaZ Fallback" button to click —
+    // pre-authorize the fallback automatically instead (the admin IS the person who'd click
+    // it), which also puts the arr tag on right away like a gate pre-auth does.
+    const azPreAuth = canEscalate({ mediaType, is4k });
+    if (azPreAuth) {
+      recordEscalationWatch({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label, discordId: interaction.user.id, preAuthorized: true });
+      tagPreAuthorizedMedia({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label })
+        .catch(err => log.warn(`Approval-time AvistaZ tagging failed for ${label}: ${err.message}`));
     }
-    audit('media_requested', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seerrUserId, requestId: data?.id ?? null });
+    audit('media_requested', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seerrUserId, requestId: data?.id ?? null, azPreAuth });
     await interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Request Sent`)
-      .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — approved and grabbing it now! 🚀\nYou\'ll get a DM when it\'s on Plex.`)] });
+      .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — approved and grabbing it now! 🚀\nYou\'ll get a DM when it\'s on Plex.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now; auto-escalates if nothing public is grabbed within ${escalationDelayLabel()}.` : ''}`)] });
   } catch (err) {
     // Seerr answered but said no (rejection body, or the created-nothing shapes from
     // createSeerrRequestAs) vs. never answered at all — show which, so "Couldn't reach Seerr"
@@ -4060,6 +4088,35 @@ async function handleButton(interaction) {
     }
     // Keep the buttons (omit components) so the admin can retry after fixing the cause.
     return interaction.followUp({ content: `❌ Escalation failed: ${result.why} The buttons still work — try again once that's fixed.`, ephemeral: true });
+  }
+
+  // "Add to Sonarr/Radarr & Search" (from the request-never-landed alert): add the title
+  // directly to the arr, bypassing Seerr's broken metadata. The watch row stays 'watching'
+  // with a fresh clock, so public indexers get the full delay before any AvistaZ fallback.
+  if (action === 'arrfix_add') {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const row = getEscalationById(Number(parts[0]));
+    if (!row || !['watching', 'alerted', 'error'].includes(row.state)) {
+      return interaction.update({ content: 'ℹ️ Already handled (escalated, resolved, or dismissed).', components: [] });
+    }
+    await interaction.deferUpdate();
+    const result = await addMediaToArr({ mediaType: row.media_type, tmdbId: row.tmdb_id, tvdbId: row.tvdb_id, tagLabel: row.pre_authorized ? CONFIG.AVISTAZ_TAG : null });
+    audit('arr_direct_add_button', { actorDiscordId: interaction.user.id, mediaId: row.media_id, title: row.title, ok: result.ok, reason: result.reason || null });
+    if (result.ok) {
+      touchEscalationApprovedAt(row.id);
+      const arrName = row.media_type === 'movie' ? 'Radarr' : 'Sonarr';
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+        .setTitle(`🛠️ Added Directly to ${arrName} — ${row.title}`)
+        .setDescription(`${result.detail}\nAdded by <@${interaction.user.id}>. Public indexers get ${escalationDelayLabel()} first; the AvistaZ fallback ${row.pre_authorized ? 'is pre-authorized and fires automatically' : 'will ask before firing'} if nothing lands.`)], components: [] });
+    }
+    const why = {
+      arr_not_configured: 'that arr isn\'t configured',
+      no_root_folder: 'the arr reports no root folders',
+      no_quality_profile: 'no quality profile matched (check the *_QUALITY_PROFILE config)',
+      no_tvdb_id: 'no TVDB id could be resolved for this show — find it on thetvdb.com and add it in Sonarr by hand',
+      lookup_empty: 'the arr\'s metadata lookup returned nothing for this id — add it in the arr UI by hand (search by name; the show may be listed under a different title there)',
+    }[result.reason] || `API error: ${String(result.reason || '').replace(/^api_error:/, '')}`;
+    return interaction.followUp({ content: `❌ Couldn't add it: ${why}. The buttons still work — try again once that's fixed.`, ephemeral: true });
   }
 
   // AvistaZ candidate buttons (from /avistaz search or an escalation post). The offer is
