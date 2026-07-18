@@ -79,6 +79,24 @@ function remoteSubpathCandidates(basePath, name, remoteRoot) {
   return out;
 }
 
+// Parse `rclone lsf -R` output into basename → [subpaths] (directories lose their trailing
+// '/'). This backs the last-resort filename search: when data was moved on the seedbox
+// behind rTorrent's back (stale d.base_path — e.g. episodes sorted into a per-series
+// folder), the exact torrent name is looked up anywhere in the tree. Only a UNIQUE match
+// may be used — two files with the same name is a guess, and adoption never guesses.
+function indexRemoteListing(text) {
+  const map = new Map();
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.replace(/\/+$/, '').trim();
+    if (!line) continue;
+    const base = line.slice(line.lastIndexOf('/') + 1);
+    if (!base) continue;
+    if (!map.has(base)) map.set(base, []);
+    map.get(base).push(line);
+  }
+  return map;
+}
+
 // Join a subpath onto an rclone remote without corrupting bare remotes: on SFTP,
 // 'remote:path' is home-relative while 'remote:/path' is root-relative, so
 // 'rapidseedbox:' + '/' + 'Downloads/x' would probe the absolute /Downloads/x instead of
@@ -99,4 +117,4 @@ function bulkTargetChoices(candidates, explicitTarget, cfg = CONFIG) {
   return [cfg.SONARR_URL ? 'sonarr' : null, cfg.RADARR_URL ? 'radarr' : null].filter(Boolean);
 }
 
-module.exports = { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, joinRemotePath, decideAdoption, bulkTargetChoices };
+module.exports = { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, indexRemoteListing, joinRemotePath, decideAdoption, bulkTargetChoices };

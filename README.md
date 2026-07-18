@@ -454,14 +454,21 @@ Safety properties, by construction:
   The probe self-corrects the path mapping: it tries the `RTORRENT_REMOTE_ROOT`-derived subpath
   (optional — the seedbox-side folder the remote points at), the bare torrent name, and every
   trailing suffix of the torrent's `d.base_path` — so an SFTP remote rooted at the login home
-  dir (where files appear as `Downloads/…`) still resolves. Failures report exactly which
-  paths were probed, and `/rtorrent status` previews what the remote root actually contains.
+  dir (where files appear as `Downloads/…`) still resolves. If every probe misses, a one-off
+  recursive listing searches the whole remote by exact torrent name (unique matches only —
+  ambiguity is refused, never guessed), catching data that was sorted into folders behind
+  rTorrent's back. Failures report exactly which paths were probed, and `/rtorrent status`
+  previews what the remote root actually contains.
 - Adopted jobs are durable `grab_jobs` rows — restarts keep watching/transferring them, and the
   `.incoming` rename guard applies unchanged.
 
 Commands: `/rtorrent status` (connectivity + adoption settings), `/rtorrent list [search]`,
 `/rtorrent adopt search:"..." [target:]`, `/rtorrent ignore search:"..."` (toggle — the sweep
-skips ignored torrents), `/rtorrent adopted` (adopted jobs + ignore list).
+skips ignored torrents), `/rtorrent adopted` (adopted jobs + ignore list), and
+`/rtorrent import target: [folder:] [mode:move|copy]` — hand a staging folder straight to the
+arr's DownloadedScan, for files that got into staging outside the pipeline (manual rclone
+copies). `mode:copy` leaves the staging files in place; importing from `.incoming`, or the
+staging root while a transfer is mid-copy, is refused.
 
 **Bulk adoption**: when the search matches more than 3 untracked torrents (an
 episode-per-torrent series can be 80+), the offer collapses to a single **Adopt all N**
@@ -471,12 +478,18 @@ directory listing per unique seedbox folder instead of a stat per torrent), dupl
 skipped quietly so a re-run after a partial failure only adopts what's still missing, and a
 single summary reports adopted/skipped/failed counts. Completed torrents still transfer one
 at a time — the WAN link is the bottleneck — and each import triggers its own arr scan.
+Transfer progress for adopted batches is a single rolling embed in the downloads channel,
+edited in place per import (one notification per batch, not one per episode), replaced by a
+completion summary when the batch drains.
 
 With `RTORRENT_ADOPT_ENABLED=true`, a **discovery sweep** (every `RTORRENT_ADOPT_CHECK_MINUTES`)
 looks for torrents whose label is in `RTORRENT_ADOPT_LABELS` but which have no grab job, and
-posts Adopt buttons to the downloads channel — once per info-hash. `RTORRENT_ADOPT_AUTO=true`
-makes the sweep adopt label-resolved candidates outright; keep it `false` initially so the bot
-only discovers candidates instead of transferring every completed torrent on the seedbox.
+posts **one** message to the downloads channel covering the whole cohort — a bulk Adopt-all
+offer when more than 3 are waiting, per-torrent buttons otherwise. Every posted candidate is
+marked offered (durably, per info-hash), so nothing is re-posted unless new torrents appear.
+`RTORRENT_ADOPT_AUTO=true` makes the sweep adopt label-resolved candidates outright; keep it
+`false` initially so the bot only discovers candidates instead of transferring every completed
+torrent on the seedbox.
 
 ## Plex Home Staging (remote cache box)
 A second, small Plex server (e.g. a NUC abroad, behind CGNAT and a VPS tunnel) serves a local
