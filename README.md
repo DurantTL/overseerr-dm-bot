@@ -474,9 +474,12 @@ at a time — the WAN link is the bottleneck — and each import triggers its ow
 
 With `RTORRENT_ADOPT_ENABLED=true`, a **discovery sweep** (every `RTORRENT_ADOPT_CHECK_MINUTES`)
 looks for torrents whose label is in `RTORRENT_ADOPT_LABELS` but which have no grab job, and
-posts Adopt buttons to the downloads channel — once per info-hash. `RTORRENT_ADOPT_AUTO=true`
-makes the sweep adopt label-resolved candidates outright; keep it `false` initially so the bot
-only discovers candidates instead of transferring every completed torrent on the seedbox.
+posts **one** message to the downloads channel covering the whole cohort — a bulk Adopt-all
+offer when more than 3 are waiting, per-torrent buttons otherwise. Every posted candidate is
+marked offered (durably, per info-hash), so nothing is re-posted unless new torrents appear.
+`RTORRENT_ADOPT_AUTO=true` makes the sweep adopt label-resolved candidates outright; keep it
+`false` initially so the bot only discovers candidates instead of transferring every completed
+torrent on the seedbox.
 
 ## Plex Home Staging (remote cache box)
 A second, small Plex server (e.g. a NUC abroad, behind CGNAT and a VPS tunnel) serves a local
