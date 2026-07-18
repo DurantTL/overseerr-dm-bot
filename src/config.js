@@ -51,6 +51,15 @@ const CONFIG = {
     || (process.env.ESCALATION_DELAY_HOURS ? String(Number.parseInt(process.env.ESCALATION_DELAY_HOURS, 10) * 60) : '45'), 10),
   ESCALATION_CHECK_MINUTES: Number.parseInt(process.env.ESCALATION_CHECK_MINUTES || '15', 10),
   ESCALATION_MAX_AGE_DAYS: Number.parseInt(process.env.ESCALATION_MAX_AGE_DAYS || '14', 10),
+  // Minutes after approval before a title that verifiably ISN'T in its arr triggers the
+  // "request never landed" alert (Seerr can accept a request and lose it moments later).
+  ESCALATION_ARR_GRACE_MINUTES: Number.parseInt(process.env.ESCALATION_ARR_GRACE_MINUTES || '10', 10),
+  // Optional overrides for the direct-add rescue path (the "Add to Sonarr/Radarr & Search"
+  // button on lost-request alerts). Unset = the arr's first root folder / first quality profile.
+  RADARR_ROOT_FOLDER: process.env.RADARR_ROOT_FOLDER || '',
+  SONARR_ROOT_FOLDER: process.env.SONARR_ROOT_FOLDER || '',
+  RADARR_QUALITY_PROFILE: process.env.RADARR_QUALITY_PROFILE || '',
+  SONARR_QUALITY_PROFILE: process.env.SONARR_QUALITY_PROFILE || '',
   // ---- AvistaZ direct grab: Prowlarr search → seedbox rTorrent → rclone → arr import ----
   // Full rTorrent XML-RPC endpoint incl. credentials, e.g.
   // https://user:pass@server.rapidseedbox.com/plugins/rpc/rpc.php
