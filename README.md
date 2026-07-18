@@ -450,9 +450,12 @@ Safety properties, by construction:
 - **Never** removes the torrent or its data from rTorrent — transfers are `rclone copy`, and
   seeding continues on the seedbox.
 - An info-hash already in `grab_jobs` is refused ("already tracked as job #N").
-- The matching file/folder must exist under `GRAB_RCLONE_REMOTE` **before** the job is created;
-  set `RTORRENT_REMOTE_ROOT` (the seedbox-side folder the remote points at, e.g.
-  `/home/user/Downloads`) so torrents living in per-label subfolders map correctly.
+- The matching file/folder must exist under `GRAB_RCLONE_REMOTE` **before** the job is created.
+  The probe self-corrects the path mapping: it tries the `RTORRENT_REMOTE_ROOT`-derived subpath
+  (optional — the seedbox-side folder the remote points at), the bare torrent name, and every
+  trailing suffix of the torrent's `d.base_path` — so an SFTP remote rooted at the login home
+  dir (where files appear as `Downloads/…`) still resolves. Failures report exactly which
+  paths were probed, and `/rtorrent status` previews what the remote root actually contains.
 - Adopted jobs are durable `grab_jobs` rows — restarts keep watching/transferring them, and the
   `.incoming` rename guard applies unchanged.
 

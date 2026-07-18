@@ -60,6 +60,35 @@ function decideAdoption({ torrent, existingJob, target }) {
   return { ok: true, state: torrent.complete ? 'complete' : 'downloading', mediaType: target === 'sonarr' ? 'tv' : 'movie' };
 }
 
+// Every plausible location of the torrent's data under GRAB_RCLONE_REMOTE, best guess
+// first: the RTORRENT_REMOTE_ROOT-derived subpath when configured, the bare torrent name,
+// then every trailing suffix of d.base_path (up to 5 segments — 'file.mkv',
+// 'Downloads/file.mkv', 'localclient/Downloads/file.mkv', …). rclone verifies which one is
+// real, so an unset or wrong RTORRENT_REMOTE_ROOT self-corrects instead of failing the
+// adoption: an SFTP remote with no path= points at the login home dir, making files appear
+// as 'Downloads/…' rather than at the root.
+function remoteSubpathCandidates(basePath, name, remoteRoot) {
+  const out = [];
+  const push = p => {
+    if (p && !out.includes(p) && p.split('/').every(part => part && part !== '.' && part !== '..')) out.push(p);
+  };
+  push(remoteSubpathFor(basePath, remoteRoot));
+  push(String(name || ''));
+  const segs = String(basePath || '').split('/').filter(Boolean);
+  for (let n = 1; n <= Math.min(segs.length, 5); n++) push(segs.slice(segs.length - n).join('/'));
+  return out;
+}
+
+// Join a subpath onto an rclone remote without corrupting bare remotes: on SFTP,
+// 'remote:path' is home-relative while 'remote:/path' is root-relative, so
+// 'rapidseedbox:' + '/' + 'Downloads/x' would probe the absolute /Downloads/x instead of
+// ~/Downloads/x. Only insert '/' when the remote already carries a path.
+function joinRemotePath(remote, sub) {
+  const r = String(remote || '');
+  if (!sub) return r;
+  return r.endsWith(':') ? `${r}${sub}` : `${r}/${sub}`;
+}
+
 // Which bulk-adopt buttons a cohort should get: an explicit target pins one button; a
 // cohort whose labels all resolve to the same arr gets that one; anything mixed or
 // unresolved falls back to one button per configured arr — the admin picks, never a guess.
@@ -70,4 +99,4 @@ function bulkTargetChoices(candidates, explicitTarget, cfg = CONFIG) {
   return [cfg.SONARR_URL ? 'sonarr' : null, cfg.RADARR_URL ? 'radarr' : null].filter(Boolean);
 }
 
-module.exports = { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, decideAdoption, bulkTargetChoices };
+module.exports = { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, joinRemotePath, decideAdoption, bulkTargetChoices };
