@@ -7,7 +7,7 @@ const assert = require('assert');
 const express = require('express');
 
 (async () => {
-  const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, indexRemoteListing, joinRemotePath, decideAdoption, bulkTargetChoices } = require('../../src/adopt');
+  const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('../../src/adopt');
   const { CONFIG } = require('../../src/config');
 
   // --- Name matching ---
@@ -52,20 +52,38 @@ const express = require('express');
   assert.strictEqual(cands.length, 5, 'suffix probing caps at 5 segments');
   assert.ok(!cands.includes(''), 'blank candidates are dropped');
 
-  // --- Recursive listing index (last-resort filename search) ---
+  // --- Recursive listing parse + index (last-resort filename search) ---
+  const parsed = parseRemoteListing('Blood Vs Duty/;-1\nSeason.Pack/;0\nStat.Sized.Dir/;4096\nBlood Vs Duty/Ep.mkv;220248144\nplain-lsf-line.mkv\nweird;name.mkv\n\n');
+  assert.deepStrictEqual(parsed, [
+    { path: 'Blood Vs Duty', size: null },
+    { path: 'Season.Pack', size: null },
+    { path: 'Stat.Sized.Dir', size: null },
+    { path: 'Blood Vs Duty/Ep.mkv', size: 220248144 },
+    { path: 'plain-lsf-line.mkv', size: null },
+    { path: 'weird;name.mkv', size: null },
+  ], 'the trailing slash decides dir-ness — a dir reporting -1, 0, or a stat size is never size-gated; a ; inside a filename is not a size column');
+
   const idx = indexRemoteListing([
-    'Blood Vs Duty/',
-    'Blood Vs Duty/Blood.Vs.Duty.2026.S01.E001.mkv',
-    'Other.Show.S01.E001.mkv',
-    'dupe.mkv',
-    'somewhere/dupe.mkv',
+    'Blood Vs Duty/;-1',
+    'Blood Vs Duty/Blood.Vs.Duty.2026.S01.E001.mkv;376830706',
+    'Blood.Vs.Duty.2026.S01.E001.mkv;0',
+    'dupe.mkv;10',
+    'somewhere/dupe.mkv;10',
     '',
   ].join('\n'));
-  assert.deepStrictEqual(idx.get('Blood.Vs.Duty.2026.S01.E001.mkv'), ['Blood Vs Duty/Blood.Vs.Duty.2026.S01.E001.mkv'],
-    'a file moved into a per-series folder is findable by exact name');
-  assert.deepStrictEqual(idx.get('Blood Vs Duty'), ['Blood Vs Duty'], 'directories index too (trailing slash stripped) for folder torrents');
+  assert.deepStrictEqual(idx.get('Blood.Vs.Duty.2026.S01.E001.mkv'),
+    [{ path: 'Blood Vs Duty/Blood.Vs.Duty.2026.S01.E001.mkv', size: 376830706 }, { path: 'Blood.Vs.Duty.2026.S01.E001.mkv', size: 0 }],
+    'a file moved into a per-series folder indexes by exact name, alongside its 0-byte placeholder');
+  assert.deepStrictEqual(idx.get('Blood Vs Duty'), [{ path: 'Blood Vs Duty', size: null }], 'directories index too for folder torrents');
   assert.strictEqual(idx.get('dupe.mkv').length, 2, 'duplicate basenames keep every location — callers must refuse ambiguity');
   assert.strictEqual(idx.get(''), undefined, 'blank lines never index');
+
+  // Size gate: a listed FILE must match the torrent's byte count; dirs/unknowns pass.
+  assert.strictEqual(remoteSizeMatches(376830706, 376830706), true, 'exact size matches');
+  assert.strictEqual(remoteSizeMatches(0, 376830706), false, 'a 0-byte re-allocated placeholder is NOT the data');
+  assert.strictEqual(remoteSizeMatches(123, 376830706), false, 'partial data is not the data');
+  assert.strictEqual(remoteSizeMatches(null, 376830706), true, 'directories (unknown size) cannot be size-gated');
+  assert.strictEqual(remoteSizeMatches(0, null), true, 'no expected size means no gate');
 
   // --- Remote path joining (SFTP home-relative vs root-relative) ---
   assert.strictEqual(joinRemotePath('rapidseedbox:', 'Downloads/Ep.mkv'), 'rapidseedbox:Downloads/Ep.mkv',

@@ -35,7 +35,7 @@ const { tautulliConfigured, tautulliApi, describeSession } = require('./src/taut
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
-const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, indexRemoteListing, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
+const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
 
@@ -710,6 +710,15 @@ async function runGrabTransfer(job) {
   if (res.timedOut) throw new Error(`rclone copy timed out after ${CONFIG.GRAB_COPY_TIMEOUT_MINUTES} min`);
   if (res.code !== 0) throw new Error(res.stderr || `rclone exited ${res.code}`);
 
+  // The arr must never see fewer bytes than the torrent contains: a 0-byte placeholder on
+  // the seedbox (rTorrent re-allocating after its data was moved) copies "successfully"
+  // and then poisons the import as an unreadable file. More bytes than expected is fine —
+  // seedboxes sprinkle .nfo/screens next to the payload.
+  const gotBytes = localSizeOf(incoming);
+  if (st.sizeBytes && gotBytes < st.sizeBytes) {
+    throw new Error(`copy landed ${fmtSpace(gotBytes)} but the torrent is ${fmtSpace(st.sizeBytes)} — the seedbox path \`${remoteSub}\` looks like a placeholder or partial data, not the real files`);
+  }
+
   fs.rmSync(finalPath, { recursive: true, force: true }); // leftover from an earlier retry
   fs.renameSync(incoming, finalPath);
 
@@ -717,13 +726,14 @@ async function runGrabTransfer(job) {
   // into the library, fires its own notifications, and Bazarr picks up subtitle work.
   // importMode Move so staging cleans itself (the seedbox copy keeps seeding).
   const importPath = `${CONFIG.GRAB_IMPORT_PATH}/${name}`;
-  if (job.media_type === 'movie') {
-    await axios.post(`${CONFIG.RADARR_URL}/api/v3/command`, { name: 'DownloadedMoviesScan', path: importPath, importMode: 'Move' },
-      { headers: { 'X-Api-Key': CONFIG.RADARR_API_KEY }, timeout: 15000 });
-  } else {
-    await axios.post(`${CONFIG.SONARR_URL}/api/v3/command`, { name: 'DownloadedEpisodesScan', path: importPath, importMode: 'Move' },
-      { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 15000 });
-  }
+  const arr = arrForMediaType(job.media_type);
+  const cmdRes = await axios.post(`${arr.url}/api/v3/command`, { name: arr.scan, path: importPath, importMode: 'Move' },
+    { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
+  // Fire-and-forget verification: an arr scan can complete while silently declining every
+  // file, and a wedged command queue completes nothing at all — both used to go unnoticed
+  // until someone checked the library by hand. Never blocks or un-does the job.
+  verifyArrImport(job, arr, cmdRes.data?.id, importPath, finalPath)
+    .catch(err => log.warn(`Import verification failed for job #${job.id}: ${err.message}`));
 
   setGrabJobState(job.id, 'done');
   const minutes = job.completed_at ? Math.max(1, Math.round((Date.now() - job.completed_at) / 60000)) : null;
@@ -742,6 +752,80 @@ async function runGrabTransfer(job) {
   await dmUser(job.requested_by_discord_id, { embeds: [brandedEmbed(COLORS.SUCCESS)
     .setTitle(`🎉 On Its Way — ${job.title}`)
     .setDescription(`Your request came through the private-tracker route and just finished downloading. It should appear in Plex within a few minutes.`)] });
+}
+
+const arrForMediaType = mediaType => (mediaType === 'movie'
+  ? { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, scan: 'DownloadedMoviesScan', label: 'Radarr' }
+  : { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, scan: 'DownloadedEpisodesScan', label: 'Sonarr' });
+
+// Video files still sitting under a path — after a Move-mode import these should be gone,
+// so leftovers are the tell that the arr declined (or never ran) the import.
+const VIDEO_EXTS = new Set(['.mkv', '.mp4', '.avi', '.m4v', '.ts', '.wmv', '.mov']);
+function leftoverVideoFiles(p) {
+  const out = [];
+  const walk = q => {
+    let st;
+    try { st = fs.statSync(q); } catch (_e) { return; }
+    if (!st.isDirectory()) { if (VIDEO_EXTS.has(path.extname(q).toLowerCase())) out.push(q); return; }
+    for (const e of fs.readdirSync(q)) walk(path.join(q, e));
+  };
+  walk(p);
+  return out;
+}
+
+const sleepMs = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// Post-import verification: wait for the scan command, then check the video files actually
+// left staging. Three outcomes beyond silent success:
+//   - scan never completes → the arr's command queue is wedged; say so (a restart clears it).
+//   - scan completed but skipped cleanly-matched files → force them through the arr's
+//     ManualImport API (exactly what an admin would do in the Manual Import screen).
+//   - files are genuinely rejected → one alert NAMING the rejection reasons, instead of the
+//     silence that used to require API spelunking to explain.
+async function verifyArrImport(job, arr, commandId, importPath, finalPath) {
+  const deadline = Date.now() + 10 * 60000;
+  let status = 'unknown';
+  while (Date.now() < deadline && commandId) {
+    await sleepMs(15000);
+    try {
+      const r = await axios.get(`${arr.url}/api/v3/command/${commandId}`, { headers: { 'X-Api-Key': arr.key }, timeout: 10000 });
+      status = r.data?.status || status;
+      if (['completed', 'failed', 'aborted'].includes(status)) break;
+    } catch (_e) { /* transient — keep polling until the deadline */ }
+  }
+  if (!leftoverVideoFiles(finalPath).length) return; // consumed — the import really happened
+
+  if (status !== 'completed') {
+    audit('grab_import_unverified', { jobId: job.id, title: job.title, commandId, status });
+    notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle(`⏳ Import Not Confirmed — ${job.title}`.slice(0, 256))
+      .setDescription(`${arr.label}'s scan is still \`${status}\` after 10 minutes and the files are still in staging — its command queue may be wedged (one stuck scan blocks everything behind it). Check ${arr.label} → System → Tasks; restarting ${arr.label} clears the queue, then \`/rtorrent import\` re-triggers this folder.`)] });
+    return;
+  }
+
+  // Scan finished yet videos remain: ask the arr what it thinks of each file.
+  const preview = await axios.get(`${arr.url}/api/v3/manualimport`, {
+    params: { folder: importPath, filterExistingFiles: true }, headers: { 'X-Api-Key': arr.key }, timeout: 120000,
+  }).then(r => r.data || []);
+  const clean = preview.filter(f => !(f.rejections || []).length
+    && (job.media_type === 'movie' ? f.movie : (f.series && (f.episodes || []).length)));
+  if (clean.length) {
+    const files = clean.map(f => (job.media_type === 'movie'
+      ? { path: f.path, movieId: f.movie.id, quality: f.quality, languages: f.languages, releaseGroup: f.releaseGroup || undefined, indexerFlags: f.indexerFlags || 0 }
+      : { path: f.path, seriesId: f.series.id, episodeIds: f.episodes.map(e => e.id), quality: f.quality, languages: f.languages, releaseGroup: f.releaseGroup || undefined, indexerFlags: f.indexerFlags || 0 }));
+    await axios.post(`${arr.url}/api/v3/command`, { name: 'ManualImport', files, importMode: 'move' },
+      { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
+    audit('grab_import_forced', { jobId: job.id, title: job.title, files: files.length });
+    notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle(`🔧 Import Nudged — ${job.title}`.slice(0, 256))
+      .setDescription(`${arr.label}'s scan completed but quietly skipped **${files.length}** cleanly-matched file(s); they've been forced through ManualImport (move). They should appear in the library shortly.`)] });
+    return;
+  }
+  const reasons = [...new Set(preview.flatMap(f => (f.rejections || []).map(x => x.reason)))].slice(0, 5);
+  audit('grab_import_rejected', { jobId: job.id, title: job.title, reasons });
+  notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
+    .setTitle(`🚫 ${arr.label} Declined the Import — ${job.title}`.slice(0, 256))
+    .setDescription(`The files copied home fine but ${arr.label} won't take them:\n${reasons.length ? reasons.map(r => `• ${r}`).join('\n') : '• (no reason reported — the series may be missing or the names unparseable)'}\n\nThey're still in staging. Fix the cause, then \`/rtorrent import target:${job.media_type === 'movie' ? 'radarr' : 'sonarr'} folder:${String(path.basename(finalPath)).slice(0, 80)}\` — or use ${arr.label}'s Manual Import screen for hand-mapping.`)] });
 }
 
 // The rolling progress embed for adopted transfers. State (message id + running import
@@ -783,11 +867,18 @@ async function updateAdoptTransferProgress(job, sizeBytes) {
 // Everything an adoption needs besides RTORRENT_URL: somewhere to copy from and to.
 const adoptPipelineReady = () => !!(rtorrentConfigured() && CONFIG.GRAB_RCLONE_REMOTE && CONFIG.GRAB_STAGING_PATH);
 
-// One rclone stat: does this exact path exist under GRAB_RCLONE_REMOTE?
-async function remotePathExistsByStat(sub) {
+// One rclone stat: does this exact path exist under GRAB_RCLONE_REMOTE, and how big is it?
+// Returns { exists, size } — size null for directories or when the stat can't be parsed.
+async function remoteStat(sub) {
   const res = await runRclone(['lsjson', '--stat', joinRemotePath(CONFIG.GRAB_RCLONE_REMOTE, sub)],
     { timeoutMs: 60000, flags: CONFIG.GRAB_RCLONE_FLAGS });
-  return res.code === 0;
+  if (res.code !== 0) return { exists: false, size: null };
+  try {
+    const data = JSON.parse(res.stdout);
+    return { exists: true, size: data.IsDir ? null : (Number.isFinite(data.Size) && data.Size >= 0 ? data.Size : null) };
+  } catch (_e) {
+    return { exists: true, size: null };
+  }
 }
 
 // Batched remote-path resolver, shared across a bulk adoption. Two layers:
@@ -802,50 +893,61 @@ async function remotePathExistsByStat(sub) {
 const SHALLOW_LIST_CAP = 1024 * 1024;
 const DEEP_LIST_CAP = 8 * 1024 * 1024;
 function makeRemotePathResolver() {
-  const dirs = new Map(); // parent subpath ('' = remote root) -> Promise<Set<names> | null>
-  let deepIndex = null; // lazy Promise<Map<basename, subpath[]> | null>
+  const dirs = new Map(); // parent subpath ('' = remote root) -> Promise<Map<name, size> | null>
+  let deepIndex = null; // lazy Promise<Map<basename, [{path, size}]> | null>
   const listDir = async parent => {
-    const res = await runRclone(['lsf', joinRemotePath(CONFIG.GRAB_RCLONE_REMOTE, parent)],
+    const res = await runRclone(['lsf', joinRemotePath(CONFIG.GRAB_RCLONE_REMOTE, parent), '--format', 'ps', '--separator', ';'],
       { timeoutMs: 120000, flags: CONFIG.GRAB_RCLONE_FLAGS, maxStdoutBytes: SHALLOW_LIST_CAP });
     if (res.code !== 0 || res.stdout.length >= SHALLOW_LIST_CAP) return null;
-    return new Set(res.stdout.split('\n').map(s => s.replace(/\/$/, '').trim()).filter(Boolean));
+    return new Map(parseRemoteListing(res.stdout).map(e => [e.path, e.size]));
   };
-  const pathExists = async sub => {
+  // { exists, size } for one candidate subpath, from the cached parent listing when
+  // possible, a single stat otherwise.
+  const statPath = async sub => {
     const i = sub.lastIndexOf('/');
     const [parent, base] = i === -1 ? ['', sub] : [sub.slice(0, i), sub.slice(i + 1)];
     if (!dirs.has(parent)) dirs.set(parent, listDir(parent).catch(() => null));
     const names = await dirs.get(parent);
-    return names ? names.has(base) : remotePathExistsByStat(sub);
+    if (names) return names.has(base) ? { exists: true, size: names.get(base) } : { exists: false, size: null };
+    return remoteStat(sub);
   };
-  const findByName = async name => {
+  const findByName = async (name, expectedBytes) => {
     if (!deepIndex) {
       deepIndex = (async () => {
-        const res = await runRclone(['lsf', CONFIG.GRAB_RCLONE_REMOTE, '-R', '--max-depth', '4'],
+        const res = await runRclone(['lsf', CONFIG.GRAB_RCLONE_REMOTE, '-R', '--max-depth', '4', '--format', 'ps', '--separator', ';'],
           { timeoutMs: 300000, flags: CONFIG.GRAB_RCLONE_FLAGS, maxStdoutBytes: DEEP_LIST_CAP });
         return res.stdout ? indexRemoteListing(res.stdout) : null;
       })().catch(() => null);
     }
     const idx = await deepIndex;
-    const hits = idx ? idx.get(name) || [] : [];
-    if (hits.length === 1) return { sub: hits[0] };
+    // Size filtering happens BEFORE uniqueness: the re-allocated 0-byte placeholder at the
+    // old path must not make the real copy elsewhere look ambiguous.
+    const hits = (idx ? idx.get(name) || [] : []).filter(h => remoteSizeMatches(h.size, expectedBytes));
+    if (hits.length === 1) return { sub: hits[0].path };
     return hits.length ? { ambiguous: hits.length } : null;
   };
-  return { pathExists, findByName };
+  return { statPath, findByName };
 }
 
 // Does the torrent's data actually exist under GRAB_RCLONE_REMOTE, and where? Verified
 // BEFORE the job is created so adoption can't produce a transfer that was doomed from the
-// start. Probes every plausible mapping of d.base_path (remoteSubpathCandidates), then
-// falls back to the recursive filename search for data that was moved out from under
-// rTorrent.
+// start. Probes every plausible mapping of d.base_path (remoteSubpathCandidates) — a path
+// whose SIZE doesn't match the torrent is treated as not-found (rTorrent re-creates 0-byte
+// placeholders at the old path when its data was moved away) — then falls back to the
+// size-filtered recursive filename search.
 async function findAdoptRemotePath(torrent, resolver) {
+  const expected = torrent.sizeBytes || null;
   const tried = remoteSubpathCandidates(torrent.basePath, torrent.name, CONFIG.RTORRENT_REMOTE_ROOT);
+  let mismatch = null;
   for (const sub of tried) {
-    if (await resolver.pathExists(sub)) return { sub, tried };
+    const st = await resolver.statPath(sub);
+    if (!st.exists) continue;
+    if (remoteSizeMatches(st.size, expected)) return { sub, tried };
+    if (!mismatch) mismatch = { sub, size: st.size };
   }
-  const hit = await resolver.findByName(torrent.name);
+  const hit = await resolver.findByName(torrent.name, expected);
   if (hit?.sub && !hit.sub.includes('..')) return { sub: hit.sub, tried, viaSearch: true };
-  return { sub: null, tried, ambiguous: hit?.ambiguous || 0 };
+  return { sub: null, tried, ambiguous: hit?.ambiguous || 0, mismatch };
 }
 
 // Create the grab job for an existing torrent. Never throws — callers branch on
@@ -856,13 +958,14 @@ async function executeAdoption(torrent, target, meta, resolver = null) {
   if (!grabImportTarget(verdict.mediaType)) {
     return { ok: false, why: `${target === 'sonarr' ? 'Sonarr' : 'Radarr'} isn't configured — the adopted torrent could never be imported` };
   }
-  const { sub: remotePath, tried, viaSearch, ambiguous } = await findAdoptRemotePath(torrent, resolver || makeRemotePathResolver());
+  const { sub: remotePath, tried, viaSearch, ambiguous, mismatch } = await findAdoptRemotePath(torrent, resolver || makeRemotePathResolver());
   if (!remotePath) {
     const probed = tried.slice(0, 3).map(p => `\`${p}\``).join(', ') + (tried.length > 3 ? ', …' : '');
     // rTorrent's own base_path is the key diagnostic: when siblings adopt fine but this one
     // doesn't, the data usually isn't on disk where rTorrent last saw it.
-    const searched = ambiguous ? `a filename search found ${ambiguous} matches — can't pick one safely` : 'a recursive filename search found nothing either';
-    return { ok: false, why: `not found under \`${CONFIG.GRAB_RCLONE_REMOTE}\` (probed ${probed}; ${searched}; rTorrent has the data at \`${torrent.basePath || 'unknown'}\`) — the file may have been moved or deleted on the seedbox` };
+    const searched = ambiguous ? `a filename search found ${ambiguous} same-size matches — can't pick one safely` : 'a size-checked filename search found nothing either';
+    const placeholder = mismatch ? ` \`${mismatch.sub}\` exists but is ${fmtSpace(mismatch.size || 0)} instead of ${fmtSpace(torrent.sizeBytes)} — a re-allocated placeholder, not the data.` : '';
+    return { ok: false, why: `no full-size copy under \`${CONFIG.GRAB_RCLONE_REMOTE}\` (probed ${probed}; ${searched}).${placeholder} rTorrent has the data at \`${torrent.basePath || 'unknown'}\` — it may have been moved or deleted on the seedbox` };
   }
   if (isAdoptIgnored(torrent.hash)) clearAdoptIgnored(torrent.hash);
   const job = recordGrabJob({
@@ -876,6 +979,17 @@ async function executeAdoption(torrent, target, meta, resolver = null) {
 }
 
 const adoptProgressPct = t => (t.sizeBytes ? Math.min(100, Math.round((t.doneBytes / t.sizeBytes) * 100)) : 0);
+
+// Total on-disk bytes of a file or directory tree (the post-copy verification).
+function localSizeOf(p) {
+  const st = fs.statSync(p);
+  if (!st.isDirectory()) return st.size;
+  let total = 0;
+  for (const e of fs.readdirSync(p, { withFileTypes: true })) {
+    total += localSizeOf(path.join(p, e.name));
+  }
+  return total;
+}
 
 // The adopt-candidates embed + buttons, shared by /rtorrent adopt and the discovery sweep.
 // The import target rides in each button's customId: a resolved label gets one Adopt
@@ -1470,7 +1584,9 @@ const slashCommands = [
     .addSubcommand(s => s.setName('import').setDescription('Trigger a Sonarr/Radarr import scan of the seedbox staging folder')
       .addStringOption(o => o.setName('target').setDescription('Which arr should import').setRequired(true).addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }))
       .addStringOption(o => o.setName('folder').setDescription('Subfolder of the staging share (default: the whole staging folder)'))
-      .addStringOption(o => o.setName('mode').setDescription('move (default, cleans up staging) or copy (leaves the files in place)').addChoices({ name: 'move', value: 'move' }, { name: 'copy', value: 'copy' }))),
+      .addStringOption(o => o.setName('mode').setDescription('move (default, cleans up staging) or copy (leaves the files in place)').addChoices({ name: 'move', value: 'move' }, { name: 'copy', value: 'copy' })))
+    .addSubcommand(s => s.setName('staging').setDescription('Why-won\'t-it-import report: per-folder match/rejection summary of the staging share')
+      .addStringOption(o => o.setName('target').setDescription('Which arr to ask (default sonarr)').addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }))),
   new SlashCommandBuilder().setName('cleanup-suggestions').setDescription('Largest/oldest media that could be cleaned up').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('stage').setDescription('Copy a title into the travel-server cache so it plays instantly there').addStringOption(o => o.setName('title').setDescription('Start typing — matches what\'s in the library').setRequired(true).setAutocomplete(true)),
   new SlashCommandBuilder().setName('staged').setDescription('Show the travel-server cache: what\'s warm, pinned, and copying'),
@@ -3173,7 +3289,9 @@ async function handleRtorrentCommand(interaction) {
       ? { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, cmd: 'DownloadedEpisodesScan', label: 'Sonarr' }
       : { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr' };
     if (!arr.url) return interaction.reply({ content: `❌ ${arr.label} isn't configured.`, ephemeral: true });
-    const clean = String(interaction.options.getString('folder') || '').replace(/^\/+|\/+$/g, '');
+    // Strip wrapping quotes: Discord passes option strings verbatim, and admins used to
+    // shell quoting will type folder:"Name With Spaces" — the quotes are not part of the name.
+    const clean = String(interaction.options.getString('folder') || '').trim().replace(/^["']+|["']+$/g, '').replace(/^\/+|\/+$/g, '');
     if (clean && clean.split('/').some(p => !p || p === '.' || p === '..')) return interaction.reply({ content: '❌ Unsafe folder path.', ephemeral: true });
     if (clean === '.incoming' || clean.startsWith('.incoming/')) return interaction.reply({ content: '❌ `.incoming` holds in-flight copies — never import from there.', ephemeral: true });
     const mode = interaction.options.getString('mode') === 'copy' ? 'Copy' : 'Move';
@@ -3196,6 +3314,42 @@ async function handleRtorrentCommand(interaction) {
     } catch (err) {
       audit('external_api_error', { provider: target, error: err.message, action: 'rtorrent_manual_import' });
       return interaction.editReply(`❌ ${arr.label} command failed: ${err.message}`);
+    }
+  }
+
+  // The "why won't it import" report: the arr's own manual-import preview, aggregated per
+  // staging folder — match counts and rejection reasons at a glance, no API spelunking.
+  if (sub === 'staging') {
+    if (!CONFIG.GRAB_IMPORT_PATH) return interaction.reply({ content: '❌ Staging isn\'t configured (`GRAB_IMPORT_PATH`).', ephemeral: true });
+    const target = interaction.options.getString('target') || 'sonarr';
+    const arr = arrForMediaType(target === 'radarr' ? 'movie' : 'tv');
+    if (!arr.url) return interaction.reply({ content: `❌ ${arr.label} isn't configured.`, ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const preview = await axios.get(`${arr.url}/api/v3/manualimport`, {
+        params: { folder: CONFIG.GRAB_IMPORT_PATH, filterExistingFiles: false }, headers: { 'X-Api-Key': arr.key }, timeout: 120000,
+      }).then(r => r.data || []);
+      if (!preview.length) return interaction.editReply(`Staging looks empty to ${arr.label} — nothing at \`${CONFIG.GRAB_IMPORT_PATH}\`.`);
+      const byFolder = new Map();
+      for (const f of preview) {
+        const rel = f.relativePath || f.path || '';
+        const folder = rel.includes('/') ? rel.split('/')[0] : '(loose files)';
+        const b = byFolder.get(folder) || { files: 0, matched: 0, reasons: new Map() };
+        b.files++;
+        if (target === 'radarr' ? f.movie : f.series) b.matched++;
+        for (const rej of (f.rejections || [])) b.reasons.set(rej.reason, (b.reasons.get(rej.reason) || 0) + 1);
+        byFolder.set(folder, b);
+      }
+      const lines = [...byFolder.entries()].map(([folder, b]) => {
+        const rej = [...b.reasons.entries()].map(([r, n]) => `${r} ×${n}`).join('; ');
+        const verdict = !b.reasons.size && b.matched === b.files ? '✅ importable' : rej ? `⚠️ ${rej}` : '⚠️ some files unmatched';
+        return `**${folder.slice(0, 80)}** — ${b.files} file(s), ${b.matched} matched\n${verdict}`;
+      });
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
+        .setTitle(`🩺 Staging Report (${arr.label})`)
+        .setDescription(`${lines.join('\n\n')}\n\n✅ folders import with \`/rtorrent import\`; "Unknown Series" needs the series added/matched in ${arr.label}; "Invalid season or episode" usually means the series type or numbering doesn't fit (try Series Type: Anime for absolute-numbered dramas); already-imported leftovers show as matched with no rejections.`.slice(0, 4000))] });
+    } catch (err) {
+      return interaction.editReply(`❌ ${arr.label} manual-import preview failed: ${err.message}`);
     }
   }
 
