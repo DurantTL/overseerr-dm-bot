@@ -7,7 +7,7 @@ const assert = require('assert');
 const express = require('express');
 
 (async () => {
-  const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, decideAdoption } = require('../../src/adopt');
+  const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, decideAdoption, bulkTargetChoices } = require('../../src/adopt');
   const { CONFIG } = require('../../src/config');
 
   // --- Name matching ---
@@ -53,6 +53,15 @@ const express = require('express');
   assert.deepStrictEqual(v, { ok: true, state: 'complete', mediaType: 'tv' }, 'complete torrent starts at complete, sonarr means tv');
   v = decideAdoption({ torrent: t({ complete: false }), existingJob: null, target: 'radarr' });
   assert.deepStrictEqual(v, { ok: true, state: 'downloading', mediaType: 'movie' }, 'incomplete torrent starts at downloading, radarr means movie');
+
+  // --- Bulk target choices ---
+  const sonarrish = [{ label: 'sonarr' }, { label: 'sonarr' }];
+  assert.deepStrictEqual(bulkTargetChoices(sonarrish, null, cfg), ['sonarr'], 'uniform resolved labels pin one Adopt-all button');
+  assert.deepStrictEqual(bulkTargetChoices(sonarrish, 'radarr', cfg), ['radarr'], 'explicit target overrides labels');
+  assert.deepStrictEqual(bulkTargetChoices([{ label: 'sonarr' }, { label: '' }], null, cfg), ['sonarr', 'radarr'], 'a blank label in the cohort forces an explicit choice');
+  assert.deepStrictEqual(bulkTargetChoices([{ label: 'sonarr' }, { label: 'radarr' }], null, cfg), ['sonarr', 'radarr'], 'mixed labels force an explicit choice');
+  assert.deepStrictEqual(bulkTargetChoices([{ label: '' }], null, { ...cfg, RADARR_URL: '' }), ['sonarr'], 'only configured arrs are offered');
+  assert.deepStrictEqual(bulkTargetChoices([], null, cfg), ['sonarr', 'radarr'], 'an empty cohort still never invents a target');
 
   // --- d.multicall2 listing against a mock XML-RPC endpoint ---
   const xmlValue = v2 => typeof v2 === 'number' ? `<i8>${v2}</i8>` : `<string>${v2}</string>`;
