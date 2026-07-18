@@ -35,7 +35,7 @@ const { tautulliConfigured, tautulliApi, describeSession } = require('./src/taut
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
-const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, decideAdoption } = require('./src/adopt');
+const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
 
@@ -752,28 +752,54 @@ async function runGrabTransfer(job) {
 // Everything an adoption needs besides RTORRENT_URL: somewhere to copy from and to.
 const adoptPipelineReady = () => !!(rtorrentConfigured() && CONFIG.GRAB_RCLONE_REMOTE && CONFIG.GRAB_STAGING_PATH);
 
+// One rclone stat: does this exact path exist under GRAB_RCLONE_REMOTE?
+async function remotePathExistsByStat(sub) {
+  const res = await runRclone(['lsjson', '--stat', `${CONFIG.GRAB_RCLONE_REMOTE}/${sub}`],
+    { timeoutMs: 60000, flags: CONFIG.GRAB_RCLONE_FLAGS });
+  return res.code === 0;
+}
+
+// Batched existence checker for bulk adoption: an 80-episode series would mean 80 per-path
+// stats over SFTP, so instead each unique parent directory is listed ONCE (rclone lsf) and
+// membership is checked in memory. Falls back to a per-path stat when a listing can't be
+// trusted (nonzero exit, or output at runRclone's 64 KB stdout cap ⇒ possibly truncated).
+function makeRemotePathChecker() {
+  const dirs = new Map(); // parent subpath ('' = remote root) -> Promise<Set<names> | null>
+  const listDir = async parent => {
+    const target = parent ? `${CONFIG.GRAB_RCLONE_REMOTE}/${parent}` : CONFIG.GRAB_RCLONE_REMOTE;
+    const res = await runRclone(['lsf', target], { timeoutMs: 120000, flags: CONFIG.GRAB_RCLONE_FLAGS });
+    if (res.code !== 0 || res.stdout.length >= 65536) return null;
+    return new Set(res.stdout.split('\n').map(s => s.replace(/\/$/, '').trim()).filter(Boolean));
+  };
+  return async sub => {
+    const i = sub.lastIndexOf('/');
+    const [parent, base] = i === -1 ? ['', sub] : [sub.slice(0, i), sub.slice(i + 1)];
+    if (!dirs.has(parent)) dirs.set(parent, listDir(parent).catch(() => null));
+    const names = await dirs.get(parent);
+    return names ? names.has(base) : remotePathExistsByStat(sub);
+  };
+}
+
 // Does the torrent's data actually exist under GRAB_RCLONE_REMOTE? Verified BEFORE the job
 // is created so adoption can't produce a transfer that was doomed from the start. Tries the
 // RTORRENT_REMOTE_ROOT-derived subpath first (per-label subfolders), then the bare name.
-async function findAdoptRemotePath(torrent) {
+async function findAdoptRemotePath(torrent, pathExists = remotePathExistsByStat) {
   const candidates = [...new Set([remoteSubpathFor(torrent.basePath, CONFIG.RTORRENT_REMOTE_ROOT), torrent.name].filter(Boolean))];
   for (const sub of candidates) {
-    const res = await runRclone(['lsjson', '--stat', `${CONFIG.GRAB_RCLONE_REMOTE}/${sub}`],
-      { timeoutMs: 60000, flags: CONFIG.GRAB_RCLONE_FLAGS });
-    if (res.code === 0) return sub;
+    if (await pathExists(sub)) return sub;
   }
   return null;
 }
 
 // Create the grab job for an existing torrent. Never throws — callers branch on
 // { ok, why, dup }. An explicit adoption overrides a standing ignore flag.
-async function executeAdoption(torrent, target, meta) {
+async function executeAdoption(torrent, target, meta, pathExists = remotePathExistsByStat) {
   const verdict = decideAdoption({ torrent, existingJob: torrent.hash ? getGrabJobByHash(torrent.hash) : null, target });
   if (!verdict.ok) return verdict;
   if (!grabImportTarget(verdict.mediaType)) {
     return { ok: false, why: `${target === 'sonarr' ? 'Sonarr' : 'Radarr'} isn't configured — the adopted torrent could never be imported` };
   }
-  const remotePath = await findAdoptRemotePath(torrent);
+  const remotePath = await findAdoptRemotePath(torrent, pathExists);
   if (!remotePath) {
     return { ok: false, why: `no matching file/folder under \`${CONFIG.GRAB_RCLONE_REMOTE}\` — check the rclone remote (and \`RTORRENT_REMOTE_ROOT\` if torrents live in subfolders)` };
   }
@@ -824,6 +850,49 @@ function adoptCandidatesMessage({ heading, candidates, nonce, footnote }) {
   return { embeds: [embed], components: rows };
 }
 
+// Adopt a whole cohort (e.g. an 80-episode series stored as individual torrents)
+// sequentially, sharing one directory-listing cache for the existence checks. Duplicates
+// are skipped quietly — a re-run after a partial failure only adopts what's still untracked.
+async function executeBulkAdoption(candidates, target, meta) {
+  const pathExists = makeRemotePathChecker();
+  const outcome = { adopted: 0, complete: 0, downloading: 0, dup: 0, failed: [] };
+  for (const t of candidates) {
+    const result = await executeAdoption(t, target, meta, pathExists);
+    if (result.ok) { outcome.adopted++; outcome[result.state]++; }
+    else if (result.dup) outcome.dup++;
+    else outcome.failed.push({ name: t.name, why: result.why });
+  }
+  audit('rtorrent_adopt_bulk', { actorDiscordId: meta.actorDiscordId || null, target, requested: candidates.length, adopted: outcome.adopted, dup: outcome.dup, failed: outcome.failed.length });
+  return outcome;
+}
+
+// The bulk-adopt offer: one embed summarizing the cohort, one Adopt-all button per viable
+// target (bulkTargetChoices — a cohort never adopts on a guessed target).
+function adoptBulkMessage({ candidates, search, explicitTarget, nonce }) {
+  const completeCount = candidates.filter(t => t.complete).length;
+  const totalBytes = candidates.reduce((a, t) => a + (t.sizeBytes || 0), 0);
+  const preview = candidates.slice(0, 8).map(t => `• ${String(t.name).slice(0, 100)}`);
+  if (candidates.length > preview.length) preview.push(`…and **${candidates.length - preview.length}** more`);
+  const targets = bulkTargetChoices(candidates, explicitTarget);
+  const lines = [
+    `**${candidates.length}** untracked torrents match — ${completeCount} complete, ${candidates.length - completeCount} still downloading, ${fmtSpace(totalBytes)} total.`,
+    '',
+    ...preview,
+    '',
+    'Adopt-all tracks every EXISTING torrent above — no tracker downloads, no AvistaZ allowance slots, nothing removed from rTorrent. Complete ones transfer immediately (one at a time); incomplete ones are watched to 100% first.',
+  ];
+  if (targets.length > 1) lines.push('Labels are mixed or unresolved, so pick the import target explicitly — it applies to the whole batch.');
+  const buttons = targets.map(t =>
+    new ButtonBuilder().setCustomId(`adopt_bulk:${nonce}:${t}`).setLabel(`Adopt all ${candidates.length} → ${t}`).setStyle(targets.length === 1 ? ButtonStyle.Success : ButtonStyle.Primary));
+  buttons.push(new ButtonBuilder().setCustomId(`adopt_cancel:${nonce}`).setLabel('Dismiss').setStyle(ButtonStyle.Secondary));
+  return {
+    embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle(`🧲 Bulk Adopt — “${String(search).slice(0, 80)}”`)
+      .setDescription(lines.join('\n').slice(0, 4000))],
+    components: [new ActionRowBuilder().addComponents(...buttons)],
+  };
+}
+
 // Discovery sweep: surface torrents that carry an adoptable label but no grab job. Auto
 // mode (RTORRENT_ADOPT_AUTO) adopts label-resolved candidates outright; otherwise (and for
 // blank-target labels) it posts Adopt buttons to the downloads channel — once per
@@ -862,13 +931,14 @@ async function sweepAdoptCandidates() {
   if (!forButtons.length) return;
   const shown = forButtons.slice(0, 3).map(t => ({ ...t, target: adoptTargetForLabel(t.label) }));
   for (const t of shown) markAdoptOffered(t.hash);
+  const extra = forButtons.length - shown.length;
   const nonce = stashGrabOffer({ kind: 'adopt', candidates: shown, origin: 'adopt', discordId: null });
   notifyChannel('downloads', adoptCandidatesMessage({
     heading: `🧲 Adoptable Torrent${shown.length === 1 ? '' : 's'} Found in rTorrent`,
     candidates: shown, nonce,
-    footnote: 'These carry an adoptable label but no grab job. Adopting tracks the existing torrent — no tracker download, no AvistaZ allowance slot, nothing removed from rTorrent. `/rtorrent ignore` silences a torrent for good.',
+    footnote: `These carry an adoptable label but no grab job. Adopting tracks the existing torrent — no tracker download, no AvistaZ allowance slot, nothing removed from rTorrent. \`/rtorrent ignore\` silences a torrent for good.${extra > 0 ? `\n**${extra}** more candidate(s) waiting — \`/rtorrent adopt search:"..."\` bulk-adopts a whole series in one click.` : ''}`,
   }));
-  audit('rtorrent_adopt_discovered', { count: shown.length, hashes: shown.map(t => t.hash) });
+  audit('rtorrent_adopt_discovered', { count: shown.length, waiting: extra, hashes: shown.map(t => t.hash) });
 }
 
 // ---- Janitor: grace-period auto-delete, retention rules, disk-space alerts ----
@@ -2907,7 +2977,8 @@ async function handleRtorrentCommand(interaction) {
     const search = interaction.options.getString('search');
     try {
       const torrents = await listRtorrentTorrents();
-      const shown = (search ? matchTorrentsByName(torrents, search) : torrents).slice(0, 15);
+      const matched = search ? matchTorrentsByName(torrents, search) : torrents;
+      const shown = matched.slice(0, 15);
       if (!shown.length) return interaction.editReply(search ? `🔍 No torrents matching **${search}**.` : 'rTorrent has no torrents.');
       const lines = shown.map(t => {
         const job = t.hash ? getGrabJobByHash(t.hash) : null;
@@ -2915,7 +2986,7 @@ async function handleRtorrentCommand(interaction) {
         return `• **${String(t.name).slice(0, 120)}**\n  ${t.complete ? '✅ complete' : `⬇️ ${adoptProgressPct(t)}%`} • ${fmtSpace(t.sizeBytes)} • label: ${t.label ? `\`${t.label}\`` : 'none'}${tracked}`;
       });
       return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
-        .setTitle(`🧲 rTorrent — ${shown.length} torrent${shown.length === 1 ? '' : 's'}${search ? ` matching “${search}”` : ''}`)
+        .setTitle(`🧲 rTorrent — ${matched.length > shown.length ? `${shown.length} of ${matched.length}` : shown.length} torrent${matched.length === 1 ? '' : 's'}${search ? ` matching “${search}”` : ''}`)
         .setDescription(lines.join('\n').slice(0, 4000))] });
     } catch (err) {
       return interaction.editReply(`❌ rTorrent query failed: ${err.message}`);
@@ -2937,9 +3008,18 @@ async function handleRtorrentCommand(interaction) {
         const j = getGrabJobByHash(matches[0].hash);
         return interaction.editReply(`ℹ️ Every match is already tracked${j ? ` (e.g. **${String(matches[0].name).slice(0, 100)}** as job #${j.id}, ${j.state})` : ''} — nothing to adopt.`);
       }
-      const candidates = fresh.slice(0, 3).map(t => ({ ...t, target: explicitTarget || adoptTargetForLabel(t.label) }));
+      audit('rtorrent_adopt_search', { actorDiscordId: interaction.user.id, search, target: explicitTarget || null, matches: matches.length, untracked: fresh.length });
+      // More than a handful of matches (an episode-per-torrent series can be 80+) gets the
+      // bulk flow: one Adopt-all button instead of per-torrent picks.
+      if (fresh.length > 3) {
+        const candidates = fresh.slice(0, 200).map(t => ({ hash: t.hash, name: t.name, complete: t.complete, label: t.label, basePath: t.basePath, sizeBytes: t.sizeBytes, doneBytes: t.doneBytes }));
+        const nonce = stashGrabOffer({ kind: 'adopt-bulk', candidates, search, explicitTarget: explicitTarget || null, discordId: interaction.user.id, origin: 'adopt' });
+        const msg = adoptBulkMessage({ candidates, search, explicitTarget, nonce });
+        if (fresh.length > 200) msg.embeds[0].setFooter({ text: `Capped at 200 of ${fresh.length} matches — re-run after this batch for the rest.` });
+        return interaction.editReply(msg);
+      }
+      const candidates = fresh.map(t => ({ ...t, target: explicitTarget || adoptTargetForLabel(t.label) }));
       const nonce = stashGrabOffer({ kind: 'adopt', candidates, discordId: interaction.user.id, origin: 'adopt' });
-      audit('rtorrent_adopt_search', { actorDiscordId: interaction.user.id, search, target: explicitTarget || null, matches: matches.length, shown: candidates.length });
       return interaction.editReply(adoptCandidatesMessage({
         heading: `🧲 Adoptable — ${candidates.length} match${candidates.length === 1 ? '' : 'es'} for “${search}”`,
         candidates, nonce,
@@ -3344,7 +3424,7 @@ async function handleButton(interaction) {
     return interaction.showModal(modal);
   }
 
-  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_cancel', 'grab_retry', 'adopt_do', 'adopt_cancel'].includes(action) && !isAdminInteraction(interaction)) {
+  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_cancel', 'grab_retry', 'adopt_do', 'adopt_bulk', 'adopt_cancel'].includes(action) && !isAdminInteraction(interaction)) {
     return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
   }
 
@@ -3718,6 +3798,36 @@ async function handleButton(interaction) {
       .setDescription(result.state === 'complete'
         ? `Job #${result.job.id} created as **complete** by <@${interaction.user.id}> — transferring home now, then handed to ${target === 'sonarr' ? 'Sonarr' : 'Radarr'} for import. The torrent keeps seeding on the seedbox.`
         : `Job #${result.job.id} created as **downloading** (${adoptProgressPct(torrent)}%) by <@${interaction.user.id}> — I'll watch it and transfer + import via ${target === 'sonarr' ? 'Sonarr' : 'Radarr'} when it hits 100%.`)], components: [] });
+  }
+  if (action === 'adopt_bulk') {
+    const offer = takeGrabOffer(parts[0]);
+    if (!offer) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
+    const target = ['sonarr', 'radarr'].includes(parts[1]) ? parts[1] : null;
+    const candidates = offer.candidates || [];
+    if (!target || !candidates.length) return interaction.update({ content: 'ℹ️ That option no longer exists.', components: [] });
+    await interaction.deferUpdate();
+    await interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle(`⏳ Adopting ${candidates.length} Torrents → ${target}`)
+      .setDescription(`Started by <@${interaction.user.id}>. Verifying seedbox paths and creating jobs — a summary follows here when it's done.`)], components: [] });
+    const outcome = await executeBulkAdoption(candidates, target, {
+      discordId: offer.discordId || interaction.user.id, origin: offer.origin || 'adopt', actorDiscordId: interaction.user.id,
+    });
+    const lines = [
+      `Adopted **${outcome.adopted}** of ${candidates.length} → ${target === 'sonarr' ? 'Sonarr' : 'Radarr'} (${outcome.complete} complete → transferring one at a time, ${outcome.downloading} watched until 100%).`,
+    ];
+    if (outcome.dup) lines.push(`Skipped ${outcome.dup} already tracked.`);
+    if (outcome.failed.length) {
+      lines.push('', `**${outcome.failed.length} failed:**`);
+      for (const f of outcome.failed.slice(0, 8)) lines.push(`• ${String(f.name).slice(0, 80)} — ${String(f.why).slice(0, 120)}`);
+      if (outcome.failed.length > 8) lines.push(`…and ${outcome.failed.length - 8} more (see the audit log).`);
+      lines.push('Re-running the same `/rtorrent adopt` only offers what\'s still untracked.');
+    }
+    const summary = { embeds: [brandedEmbed(outcome.failed.length ? COLORS.WARN : COLORS.SUCCESS)
+      .setTitle(`🧲 Bulk Adoption ${outcome.failed.length ? 'Finished With Failures' : 'Complete'}`)
+      .setDescription(lines.join('\n').slice(0, 4000))], components: [] };
+    // The interaction token dies after 15 min; a slow stat-fallback batch can outlive it,
+    // so the summary falls back to a fresh channel message.
+    return interaction.editReply(summary).catch(() => notifyChannel('downloads', summary));
   }
   if (action === 'adopt_cancel') {
     const offer = takeGrabOffer(parts[0]);

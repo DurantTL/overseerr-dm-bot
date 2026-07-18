@@ -460,6 +460,15 @@ Commands: `/rtorrent status` (connectivity + adoption settings), `/rtorrent list
 `/rtorrent adopt search:"..." [target:]`, `/rtorrent ignore search:"..."` (toggle — the sweep
 skips ignored torrents), `/rtorrent adopted` (adopted jobs + ignore list).
 
+**Bulk adoption**: when the search matches more than 3 untracked torrents (an
+episode-per-torrent series can be 80+), the offer collapses to a single **Adopt all N**
+button. One target applies to the whole batch (from `target:`, or from the labels when they
+all agree — mixed/blank labels get one button per arr). Existence checks are batched (one
+directory listing per unique seedbox folder instead of a stat per torrent), duplicates are
+skipped quietly so a re-run after a partial failure only adopts what's still missing, and a
+single summary reports adopted/skipped/failed counts. Completed torrents still transfer one
+at a time — the WAN link is the bottleneck — and each import triggers its own arr scan.
+
 With `RTORRENT_ADOPT_ENABLED=true`, a **discovery sweep** (every `RTORRENT_ADOPT_CHECK_MINUTES`)
 looks for torrents whose label is in `RTORRENT_ADOPT_LABELS` but which have no grab job, and
 posts Adopt buttons to the downloads channel — once per info-hash. `RTORRENT_ADOPT_AUTO=true`
