@@ -53,12 +53,15 @@ const express = require('express');
   assert.ok(!cands.includes(''), 'blank candidates are dropped');
 
   // --- Recursive listing parse + index (last-resort filename search) ---
-  const parsed = parseRemoteListing('Blood Vs Duty/;-1\nBlood Vs Duty/Ep.mkv;220248144\nplain-lsf-line.mkv\n\n');
+  const parsed = parseRemoteListing('Blood Vs Duty/;-1\nSeason.Pack/;0\nStat.Sized.Dir/;4096\nBlood Vs Duty/Ep.mkv;220248144\nplain-lsf-line.mkv\nweird;name.mkv\n\n');
   assert.deepStrictEqual(parsed, [
     { path: 'Blood Vs Duty', size: null },
+    { path: 'Season.Pack', size: null },
+    { path: 'Stat.Sized.Dir', size: null },
     { path: 'Blood Vs Duty/Ep.mkv', size: 220248144 },
     { path: 'plain-lsf-line.mkv', size: null },
-  ], 'sized lsf lines parse (dirs → null size); plain lsf output still parses');
+    { path: 'weird;name.mkv', size: null },
+  ], 'the trailing slash decides dir-ness — a dir reporting -1, 0, or a stat size is never size-gated; a ; inside a filename is not a size column');
 
   const idx = indexRemoteListing([
     'Blood Vs Duty/;-1',

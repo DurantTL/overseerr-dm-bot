@@ -80,18 +80,24 @@ function remoteSubpathCandidates(basePath, name, remoteRoot) {
 }
 
 // Parse `rclone lsf --format ps --separator ';'` output into [{ path, size }] entries.
-// Directories lose their trailing '/' and report size null (rclone prints -1); plain
-// `lsf` output without the size column parses too (size null).
+// Directory-ness comes from the trailing '/' (rclone's --dir-slash marker), NOT from the
+// size column — backends report directory "sizes" inconsistently (-1, 0, or a stat size),
+// and any of those must become size null so folder torrents are never size-gated against a
+// meaningless number. Plain `lsf` output without the size column parses too (size null).
 function parseRemoteListing(text) {
   const entries = [];
   for (const raw of String(text || '').split('\n')) {
     const line = raw.trim();
     if (!line) continue;
     const sep = line.lastIndexOf(';');
-    const rawSize = sep === -1 ? NaN : Number(line.slice(sep + 1));
-    const p = (sep === -1 ? line : line.slice(0, sep)).replace(/\/+$/, '');
+    const tail = sep === -1 ? null : line.slice(sep + 1);
+    const sized = tail !== null && /^-?\d+$/.test(tail); // a ';' inside a filename isn't a size column
+    let p = sized ? line.slice(0, sep) : line;
+    const isDir = /\/+$/.test(p);
+    p = p.replace(/\/+$/, '');
     if (!p) continue;
-    entries.push({ path: p, size: Number.isFinite(rawSize) && rawSize >= 0 ? rawSize : null });
+    const rawSize = sized ? Number(tail) : NaN;
+    entries.push({ path: p, size: !isDir && Number.isFinite(rawSize) && rawSize >= 0 ? rawSize : null });
   }
   return entries;
 }
