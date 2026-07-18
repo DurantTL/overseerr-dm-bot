@@ -934,28 +934,40 @@ async function sweepAdoptCandidates() {
   }
 
   if (!forButtons.length) return;
-  // ONE post covers the whole cohort, and every candidate in it is marked offered — showing
-  // 3 and marking 3 meant a channel message every sweep until a 50-episode backlog drained.
-  const cohort = forButtons.slice(0, 200);
-  for (const t of cohort) markAdoptOffered(t.hash);
-  if (cohort.length > 3) {
-    const candidates = cohort.map(t => ({ hash: t.hash, name: t.name, complete: t.complete, label: t.label, basePath: t.basePath, sizeBytes: t.sizeBytes, doneBytes: t.doneBytes }));
-    const nonce = stashGrabOffer({ kind: 'adopt-bulk', candidates, origin: 'adopt', discordId: null });
-    notifyChannel('downloads', adoptBulkMessage({
-      candidates, nonce,
-      heading: `🧲 ${candidates.length} Adoptable Torrents Found in rTorrent`,
-      footnote: 'For a finer pick, `/rtorrent adopt search:"..."` scopes the batch to one series; `/rtorrent ignore` silences a torrent for good. This won\'t be re-posted unless new torrents appear.',
-    }));
-  } else {
-    const shown = cohort.map(t => ({ ...t, target: adoptTargetForLabel(t.label) }));
-    const nonce = stashGrabOffer({ kind: 'adopt', candidates: shown, origin: 'adopt', discordId: null });
-    notifyChannel('downloads', adoptCandidatesMessage({
-      heading: `🧲 Adoptable Torrent${shown.length === 1 ? '' : 's'} Found in rTorrent`,
-      candidates: shown, nonce,
-      footnote: 'These carry an adoptable label but no grab job. Adopting tracks the existing torrent — no tracker download, no AvistaZ allowance slot, nothing removed from rTorrent. `/rtorrent ignore` silences a torrent for good.',
-    }));
+  // One post per TARGET group, every posted candidate marked offered. Two rules interact
+  // here: showing 3 and marking 3 meant a channel message every sweep until a 50-episode
+  // backlog drained (so post whole cohorts), and one bulk button applies one target to
+  // everything under it (so sonarr- and radarr-labeled torrents must never share a button —
+  // a movie would be adopted as a TV job or vice versa). Unresolved labels get their own
+  // post with explicit per-arr buttons.
+  const groups = new Map(); // resolved target ('' = needs an explicit choice) -> torrents
+  for (const t of forButtons) {
+    const key = adoptTargetForLabel(t.label) || '';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(t);
   }
-  audit('rtorrent_adopt_discovered', { count: cohort.length, hashes: cohort.slice(0, 20).map(t => t.hash) });
+  for (const [target, group] of groups) {
+    const cohort = group.slice(0, 200);
+    for (const t of cohort) markAdoptOffered(t.hash);
+    if (cohort.length > 3) {
+      const candidates = cohort.map(t => ({ hash: t.hash, name: t.name, complete: t.complete, label: t.label, basePath: t.basePath, sizeBytes: t.sizeBytes, doneBytes: t.doneBytes }));
+      const nonce = stashGrabOffer({ kind: 'adopt-bulk', candidates, origin: 'adopt', discordId: null });
+      notifyChannel('downloads', adoptBulkMessage({
+        candidates, nonce, explicitTarget: target || null,
+        heading: `🧲 ${candidates.length} Adoptable Torrents Found in rTorrent${target ? ` (label → ${target})` : ''}`,
+        footnote: 'For a finer pick, `/rtorrent adopt search:"..."` scopes the batch to one series; `/rtorrent ignore` silences a torrent for good. This won\'t be re-posted unless new torrents appear.',
+      }));
+    } else {
+      const shown = cohort.map(t => ({ ...t, target: target || null }));
+      const nonce = stashGrabOffer({ kind: 'adopt', candidates: shown, origin: 'adopt', discordId: null });
+      notifyChannel('downloads', adoptCandidatesMessage({
+        heading: `🧲 Adoptable Torrent${shown.length === 1 ? '' : 's'} Found in rTorrent`,
+        candidates: shown, nonce,
+        footnote: 'These carry an adoptable label but no grab job. Adopting tracks the existing torrent — no tracker download, no AvistaZ allowance slot, nothing removed from rTorrent. `/rtorrent ignore` silences a torrent for good.',
+      }));
+    }
+  }
+  audit('rtorrent_adopt_discovered', { count: forButtons.length, groups: [...groups.keys()].map(k => k || 'unresolved') });
 }
 
 // ---- Janitor: grace-period auto-delete, retention rules, disk-space alerts ----
