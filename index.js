@@ -5112,45 +5112,192 @@ function startExpressServer() {
     });
 
     app.get('/admin', dashboardAuth, async (_req, res) => {
+      const now = Date.now();
+      // Live activity: every external read is failure-tolerant so one dead integration never
+      // takes the dashboard down — null means "couldn't reach it", rendered as such.
+      const [health, sessions, queue, disks] = await Promise.all([
+        gatherHealth(),
+        tautulliConfigured() ? tautulliApi('get_activity').then(d => d?.sessions || []).catch(() => null) : Promise.resolve(null),
+        arrSources().length ? fetchArrQueues().catch(() => null) : Promise.resolve(null),
+        arrSources().length ? fetchDiskSpace().catch(() => null) : Promise.resolve(null),
+      ]);
+      const grabJobs = listActiveGrabJobs();
+      const stageJobs = listActiveStageJobs();
+      const escalations = getWatchingEscalations();
+      const pendingDeletions = db.prepare("SELECT * FROM pending_deletions WHERE status = 'pending' ORDER BY delete_after LIMIT 25").all();
+      const tierNodes = listTierNodes();
+      // Latest agent report per tier node, from the audit log.
+      const lastReportByNode = {};
+      for (const r of db.prepare("SELECT * FROM audit_log WHERE action = 'tier_agent_report' ORDER BY id DESC LIMIT 100").all()) {
+        try {
+          const m = JSON.parse(r.metadata_json);
+          if (m.node && !lastReportByNode[m.node]) lastReportByNode[m.node] = { ...m, at: r.created_at };
+        } catch (_e) {}
+      }
+
       const pendingPlex = db.prepare('SELECT * FROM users WHERE invited = 0 ORDER BY requested_at DESC LIMIT 25').all();
       const pendingRequests = db.prepare('SELECT * FROM requests WHERE status = ? ORDER BY id DESC LIMIT 25').all('pending');
       const linkedUsers = db.prepare('SELECT discord_id, email, invited, requested_at FROM users ORDER BY requested_at DESC LIMIT 100').all();
       const recentDownloads = db.prepare('SELECT * FROM download_access_log ORDER BY id DESC LIMIT 25').all();
-      const keepDecisions = db.prepare("SELECT * FROM audit_log WHERE action = 'keep_delete_decision_made' ORDER BY id DESC LIMIT 25").all();
       const auditRows = db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 50').all();
       const linkedTotal = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
-      const activeLinks = db.prepare('SELECT COUNT(*) AS c FROM download_tokens WHERE revoked = 0 AND expires_at > ?').get(Date.now()).c;
-      const health = await gatherHealth();
+      const activeLinks = db.prepare('SELECT COUNT(*) AS c FROM download_tokens WHERE revoked = 0 AND expires_at > ?').get(now).c;
 
       const stats = [
-        renderStat('Pending Plex users', pendingPlex.length),
+        renderStat('Streaming', sessions === null ? '—' : sessions.length),
+        renderStat('Downloading', queue === null ? '—' : queue.length),
+        renderStat('Active jobs', grabJobs.length + stageJobs.length),
+        renderStat('Watching', escalations.length),
+        renderStat('Tier nodes', `${tierNodes.filter(n => n.enabled).length}/${tierNodes.length}`),
         renderStat('Pending requests', pendingRequests.length),
         renderStat('Linked users', linkedTotal),
-        renderStat('Active download links', activeLinks),
+        renderStat('Download links', activeLinks),
       ].join('');
 
+      const decisionLabel = s => (s.transcode_decision === 'transcode' || s.video_decision === 'transcode' ? '🔥 transcoding'
+        : s.transcode_decision === 'copy' ? '📼 direct stream' : '▶️ direct play');
+      const nowPlayingItems = (sessions || []).map(s => ({
+        state: (s.transcode_decision === 'transcode' || s.video_decision === 'transcode') ? 'warn' : 'ok',
+        title: s.full_title || 'Unknown',
+        sub: `${s.friendly_name || s.user || 'Unknown'} · ${decisionLabel(s)}${s.stream_video_full_resolution ? ` · ${s.stream_video_full_resolution}` : ''}${s.player ? ` · ${s.player}` : ''}`,
+        pct: Number(s.progress_percent) || 0,
+      }));
+
+      const queueItems = (queue || []).map(q => ({
+        state: queueItemLooksUnhealthy(q) ? 'warn' : 'ok',
+        title: q.title,
+        sub: `${q.source.label} · ${q.status}${q.trackedState ? ` (${q.trackedState})` : ''}${q.messages.length ? ` · ⚠️ ${q.messages[0]}` : ''}`,
+        right: `${fmtSpace(Math.max(0, q.size - q.sizeleft))} / ${fmtSpace(q.size)}${q.timeleft ? ` · ${q.timeleft}` : ''}`,
+        pct: queuePercent(q),
+      }));
+
+      const jobItems = [
+        ...grabJobs.map(j => ({
+          state: j.state === 'failed' ? 'down' : 'ok',
+          title: j.release_title || j.title,
+          sub: `seedbox grab #${j.id} · ${j.state}${j.error ? ` · ${j.error}` : ''}`,
+          right: `${fmtSpace(j.size_bytes || 0)}${j.sent_at ? ` · started ${fmtAgo(j.sent_at)}` : ''}`,
+        })),
+        ...stageJobs.map(j => ({
+          state: j.status === 'failed' ? 'down' : 'ok',
+          title: j.title,
+          sub: `PH stage #${j.id} · ${j.status}`,
+          right: `${fmtSpace(j.size_bytes || 0)}${j.started_at ? ` · started ${fmtAgo(j.started_at)}` : ''}`,
+        })),
+      ];
+      const watchItems = [
+        ...escalations.map(e => ({
+          state: 'warn',
+          title: e.title,
+          sub: `escalation watch · ${e.state}${e.pre_authorized ? ' · pre-authorized' : ''}`,
+          right: `approved ${fmtAgo(e.approved_at)}`,
+        })),
+        ...pendingDeletions.map(p => ({
+          state: 'skip',
+          title: p.title || p.media_id,
+          sub: 'pending deletion (finished-watching prompt)',
+          right: `deletes ${fmtAgo(p.delete_after)}`,
+        })),
+      ];
+
+      const tierItems = tierNodes.map(n => {
+        const plan = getTierPlan(n.name);
+        const rep = lastReportByNode[n.name];
+        const repBits = rep
+          ? `agent ${fmtAgo(sqliteUtcMs(rep.at))}${rep.bytesFreed ? ` · freed ${fmtSpace(rep.bytesFreed)}` : ''}${rep.errors ? ' · ⚠️ errors' : ''}`
+          : 'no agent report yet';
+        return {
+          state: !n.enabled ? 'skip' : (rep && rep.errors ? 'warn' : 'ok'),
+          title: `${n.name}${n.full ? ' · full master' : ''}${n.sticky ? ' · sticky' : ''}`,
+          sub: `${n.access} · ${n.demand_source}${n.demand_source === 'atime' && n.atime_mask ? ` (mask ${n.atime_mask})` : ''} · ${n.transport} · ${fmtSpace(n.usable_bytes || 0)} @ ${n.headroom_pct}% headroom`,
+          right: `${plan ? `plan ${plan.planHash} · applied ${fmtAgo(plan.appliedAt)}` : 'no plan applied'} · ${repBits}`,
+        };
+      });
+
+      const diskItems = (disks || []).map(d => {
+        const used = (d.totalSpace || 0) - (d.freeSpace || 0);
+        const pct = d.totalSpace ? Math.round((used / d.totalSpace) * 100) : 0;
+        return {
+          state: (d.freeSpace || 0) < CONFIG.DISK_SPACE_WARN_GB * 1024 ** 3 ? 'warn' : 'ok',
+          title: d.displayPath || d.path,
+          sub: `${fmtSpace(d.freeSpace || 0)} free of ${fmtSpace(d.totalSpace || 0)}`,
+          right: `${pct}% used`,
+          pct,
+        };
+      });
+
+      const plexUserRows = pendingPlex.map(u => ({ email: u.email, discord: u.discord_id, requested: fmtAgo(u.requested_at) }));
+      const requestRows = pendingRequests.map(r => ({ title: r.title, type: mediaTypeLabel(r.media_type, r.is_4k), requester: r.requested_by_discord_id || '—', when: fmtAgo(sqliteUtcMs(r.created_at)) }));
+      const linkedRows = linkedUsers.map(u => ({ email: u.email, discord: u.discord_id, invited: u.invited ? '✅' : '⏳', since: fmtAgo(u.requested_at) }));
+      const downloadRows = recentDownloads.map(d => ({ when: fmtAgo(sqliteUtcMs(d.created_at)), file: (d.file_path || '').split('/').pop() || '—', status: d.status, sent: d.bytes_sent ? fmtSpace(d.bytes_sent) : '', ip: d.ip || '' }));
+      const auditTableRows = auditRows.map(a => ({ when: fmtAgo(sqliteUtcMs(a.created_at)), action: a.action, details: String(a.metadata_json || '').slice(0, 160) }));
+
+      const unavailable = which => `<p class="muted">${escapeHtml(which)} unreachable or not configured.</p>`;
+      const nav = [['now', 'Now'], ['jobs', 'Jobs'], ['tier', 'Tiering'], ['disks', 'Disks'], ['users', 'Users'], ['requests', 'Requests'], ['logs', 'Logs']];
+
       const body = `
-        <div class="overall ${health.overall === 'ok' ? 'ok' : 'warn'}">Overall status: <strong>${escapeHtml(String(health.overall).toUpperCase())}</strong></div>
+        <div class="overall ${health.overall === 'ok' ? 'ok' : 'warn'}">
+          <span>Overall: <strong>${escapeHtml(String(health.overall).toUpperCase())}</strong></span>
+          <span class="updated">updated ${new Date(now).toISOString().slice(11, 19)} UTC · auto-refreshes</span>
+        </div>
         <div class="stats">${stats}</div>
         <div class="card">
           <h2>Integrations</h2>
           <div class="badges">${renderHealthBadges(health)}</div>
         </div>
+        <div class="card" id="now">
+          <h2>▶️ Now Streaming</h2>
+          ${sessions === null ? unavailable('Tautulli') : renderItemList(nowPlayingItems, 'Nobody is streaming right now.')}
+        </div>
+        <div class="card">
+          <h2>⬇️ Downloading</h2>
+          ${queue === null ? unavailable('Radarr/Sonarr') : renderItemList(queueItems, 'Nothing in the download queues.')}
+        </div>
+        <div class="card" id="jobs">
+          <h2>⚙️ Active Jobs</h2>
+          ${renderItemList(jobItems, 'No seedbox grabs or staging copies running.')}
+        </div>
+        <div class="card">
+          <h2>👀 Watching / Scheduled</h2>
+          ${renderItemList(watchItems, 'No escalation watches or pending deletions.')}
+        </div>
+        <div class="card" id="tier">
+          <h2>📦 Tier Nodes</h2>
+          ${renderItemList(tierItems, 'No tier nodes registered — /tier-node add creates one.')}
+        </div>
+        <div class="card" id="disks">
+          <h2>💾 Disk Space</h2>
+          ${disks === null ? unavailable('*arr diskspace') : renderItemList(diskItems, 'No disks reported.')}
+        </div>
         <div class="card">
           <h2>Manual Actions</h2>
           <div class="actions">
             <a class="btn" href="/admin/health">Health JSON</a>
-            <a class="btn" href="/admin/action/sync-preview">Run Sync Preview</a>
-            <a class="btn" href="/admin/action/cleanup-preview">Run Cleanup Preview</a>
+            <a class="btn" href="/admin/action/sync-preview">Sync Preview</a>
+            <a class="btn" href="/admin/action/cleanup-preview">Cleanup Preview</a>
             <button class="btn danger" type="button" onclick="revokeAll()">Revoke All Download Links</button>
           </div>
         </div>
-        ${renderSection('Pending Plex Users', pendingPlex)}
-        ${renderSection('Pending Media Requests', pendingRequests)}
-        ${renderSection('Linked Users', linkedUsers)}
-        ${renderSection('Recent Downloads', recentDownloads)}
-        ${renderSection('Keep/Delete Decisions', keepDecisions)}
-        ${renderSection('Recent Audit Logs', auditRows)}
+        <div class="card" id="users">
+          <h2>Pending Plex Users</h2>
+          ${renderTable(plexUserRows)}
+        </div>
+        <div class="card">
+          <h2>Linked Users</h2>
+          ${renderTable(linkedRows)}
+        </div>
+        <div class="card" id="requests">
+          <h2>Pending Media Requests</h2>
+          ${renderTable(requestRows)}
+        </div>
+        <div class="card">
+          <h2>Recent Downloads</h2>
+          ${renderTable(downloadRows)}
+        </div>
+        <div class="card" id="logs">
+          <h2>Recent Audit Log</h2>
+          ${renderTable(auditTableRows)}
+        </div>
         <script>
           async function revokeAll() {
             if (!confirm('Revoke ALL active download links? This cannot be undone.')) return;
@@ -5159,7 +5306,7 @@ function startExpressServer() {
             if (r.ok) location.reload();
           }
         </script>`;
-      res.type('html').send(renderPage('Admin Dashboard', body, true));
+      res.type('html').send(renderPage('Dashboard', body, { showLogout: true, nav, autoRefresh: true }));
     });
 
     app.get('/admin/health', dashboardAuth, async (_req, res) => res.json(await gatherHealth()));
@@ -5192,61 +5339,151 @@ function escapeHtml(str) {
 
 // ---- Dashboard rendering (dark Plex/Overseerr-style theme, all inline, no build step) ----
 
+// Mobile-first: sticky header with a horizontally-scrolling section nav, activity rendered as
+// touch-friendly item rows with progress bars, and tables that collapse into labeled cards on
+// narrow screens. All inline, no build step, dark Plex/Overseerr look.
 const DASHBOARD_CSS = `
-  :root { --bg:#1b1b1d; --panel:#26282c; --panel2:#2e3035; --accent:#e5a00d; --text:#e8e8ea; --muted:#9aa0a6; --border:#3a3d42; --ok:#22c55e; --warn:#f59e0b; --down:#ef4444; --skip:#6b7280; }
+  :root { --bg:#131316; --panel:#1d1e23; --panel2:#26272e; --accent:#e5a00d; --text:#ececf0; --muted:#9aa0a6; --border:#33343c; --ok:#22c55e; --warn:#f59e0b; --down:#ef4444; --skip:#6b7280; }
   * { box-sizing: border-box; }
-  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); }
-  .topbar { position:sticky; top:0; z-index:10; display:flex; align-items:center; justify-content:space-between; padding:14px 20px; background:#141416; border-bottom:1px solid var(--border); }
-  .topbar h1 { margin:0; font-size:18px; }
+  html { -webkit-text-size-adjust:100%; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); padding-bottom:env(safe-area-inset-bottom); }
+  header.hdr { position:sticky; top:0; z-index:20; background:rgba(19,19,22,.94); backdrop-filter:blur(10px); border-bottom:1px solid var(--border); padding-top:env(safe-area-inset-top); }
+  .topbar { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 16px 8px; }
+  .topbar h1 { margin:0; font-size:16px; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .topbar .brand { color:var(--accent); }
-  .container { max-width:1100px; margin:0 auto; padding:20px; }
-  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px 18px; margin-bottom:18px; }
-  .card h2 { margin:0 0 12px; font-size:15px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
-  .overall { padding:12px 16px; border-radius:10px; margin-bottom:18px; font-size:15px; }
-  .overall.ok { background:rgba(34,197,94,.12); border:1px solid var(--ok); }
-  .overall.warn { background:rgba(245,158,11,.12); border:1px solid var(--warn); }
-  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:18px; }
-  .stat { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
-  .stat .n { font-size:26px; font-weight:700; color:var(--accent); }
-  .stat .l { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .nav { display:flex; gap:8px; overflow-x:auto; padding:4px 16px 10px; scrollbar-width:none; }
+  .nav::-webkit-scrollbar { display:none; }
+  .chip { flex:0 0 auto; padding:7px 14px; border-radius:999px; background:var(--panel2); border:1px solid var(--border); color:var(--text); font-size:13px; text-decoration:none; }
+  .chip:hover, .chip:active { border-color:var(--accent); }
+  .container { max-width:1100px; margin:0 auto; padding:16px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:14px 16px; margin-bottom:14px; scroll-margin-top:110px; }
+  .card h2 { margin:0 0 10px; font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+  .overall { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:baseline; justify-content:space-between; padding:12px 16px; border-radius:14px; margin-bottom:14px; font-size:14px; }
+  .overall.ok { background:rgba(34,197,94,.10); border:1px solid rgba(34,197,94,.5); }
+  .overall.warn { background:rgba(245,158,11,.10); border:1px solid rgba(245,158,11,.5); }
+  .overall .updated { color:var(--muted); font-size:12px; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:10px; margin-bottom:14px; }
+  .stat { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:12px 14px; }
+  .stat .n { font-size:22px; font-weight:700; color:var(--accent); line-height:1.2; }
+  .stat .l { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin-top:2px; }
   .badges { display:flex; flex-wrap:wrap; gap:8px; }
-  .badge { display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:999px; font-size:13px; background:var(--panel2); border:1px solid var(--border); }
-  .dot { width:9px; height:9px; border-radius:50%; }
+  .badge { display:inline-flex; align-items:center; gap:6px; padding:7px 11px; border-radius:999px; font-size:12.5px; background:var(--panel2); border:1px solid var(--border); }
+  .dot { width:9px; height:9px; border-radius:50%; flex:0 0 auto; }
   .dot.ok { background:var(--ok); } .dot.warn { background:var(--warn); } .dot.down { background:var(--down); } .dot.skip { background:var(--skip); }
+  .items { display:flex; flex-direction:column; }
+  .item { display:flex; gap:10px; align-items:flex-start; padding:10px 0; border-bottom:1px solid var(--border); }
+  .item:last-child { border-bottom:none; }
+  .item > .dot { margin-top:6px; }
+  .item-main { flex:1 1 auto; min-width:0; }
+  .item-title { font-size:14px; font-weight:600; overflow-wrap:anywhere; }
+  .item-sub { font-size:12.5px; color:var(--muted); margin-top:2px; overflow-wrap:anywhere; }
+  .item-right { flex:0 0 auto; font-size:12px; color:var(--muted); text-align:right; max-width:42%; overflow-wrap:anywhere; }
+  .bar { height:6px; background:var(--panel2); border-radius:999px; margin-top:7px; overflow:hidden; }
+  .bar-fill { height:100%; background:var(--accent); border-radius:999px; }
+  .bar-fill.hot { background:var(--ok); }
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); white-space:nowrap; max-width:340px; overflow:hidden; text-overflow:ellipsis; }
   th { color:var(--muted); font-weight:600; text-transform:uppercase; font-size:11px; letter-spacing:.04em; }
   tbody tr:nth-child(odd) { background:rgba(255,255,255,.02); }
-  .table-wrap { overflow-x:auto; }
-  .muted { color:var(--muted); font-style:italic; }
+  .table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  .muted { color:var(--muted); font-style:italic; font-size:13px; }
   .actions { display:flex; flex-wrap:wrap; gap:10px; }
-  .btn { display:inline-block; padding:9px 14px; border-radius:8px; background:var(--panel2); color:var(--text); border:1px solid var(--border); text-decoration:none; font-size:13px; cursor:pointer; }
+  .btn { display:inline-flex; align-items:center; justify-content:center; min-height:42px; padding:10px 16px; border-radius:10px; background:var(--panel2); color:var(--text); border:1px solid var(--border); text-decoration:none; font-size:13px; cursor:pointer; }
   .btn:hover { border-color:var(--accent); }
   .btn.danger { border-color:var(--down); color:#fca5a5; }
-  .btn.primary { background:var(--accent); color:#1b1b1d; border-color:var(--accent); font-weight:600; }
+  .btn.primary { background:var(--accent); color:#131316; border-color:var(--accent); font-weight:600; }
   form.logout { margin:0; }
-  .login-wrap { min-height:100vh; display:flex; align-items:center; justify-content:center; }
-  .login-card { width:100%; max-width:360px; background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:28px; }
+  .login-wrap { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:16px; }
+  .login-card { width:100%; max-width:360px; background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:28px; }
   .login-card h1 { margin:0 0 4px; font-size:20px; }
   .login-card h1 .brand { color:var(--accent); }
   .login-card p { margin:0 0 20px; color:var(--muted); font-size:13px; }
   .login-card label { display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
-  .login-card input { width:100%; padding:11px 12px; border-radius:8px; border:1px solid var(--border); background:#1b1b1d; color:var(--text); font-size:14px; margin-bottom:16px; }
+  .login-card input { width:100%; padding:12px; border-radius:10px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:16px; margin-bottom:16px; }
   .login-card .btn.primary { width:100%; text-align:center; }
-  .error { background:rgba(239,68,68,.12); border:1px solid var(--down); color:#fca5a5; padding:10px 12px; border-radius:8px; font-size:13px; margin-bottom:16px; }
+  .error { background:rgba(239,68,68,.12); border:1px solid var(--down); color:#fca5a5; padding:10px 12px; border-radius:10px; font-size:13px; margin-bottom:16px; }
+  @media (max-width:560px) {
+    .item { flex-wrap:wrap; }
+    .item-right { flex-basis:100%; max-width:none; text-align:left; margin-left:19px; margin-top:2px; }
+    .actions .btn { flex:1 1 45%; }
+  }
+  @media (max-width:640px) {
+    table, tbody, tr, td { display:block; }
+    thead { display:none; }
+    tbody tr { border:1px solid var(--border); border-radius:12px; margin-bottom:10px; padding:8px 12px; background:var(--panel2); }
+    tbody tr:nth-child(odd) { background:var(--panel2); }
+    td { border:none; padding:3px 0; white-space:normal; max-width:none; display:flex; gap:10px; overflow:visible; }
+    td::before { content:attr(data-label); flex:0 0 84px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; padding-top:2px; }
+  }
 `;
 
-function renderPage(title, bodyHtml, showLogout = false) {
+function renderPage(title, bodyHtml, { showLogout = false, nav = [], autoRefresh = false } = {}) {
+  const navHtml = nav.length
+    ? `<nav class="nav">${nav.map(([id, label]) => `<a class="chip" href="#${escapeHtml(id)}">${escapeHtml(label)}</a>`).join('')}</nav>`
+    : '';
+  // Auto-refresh pauses while the tab is hidden so a backgrounded phone doesn't burn
+  // battery/API calls re-checking every integration.
+  const refreshScript = autoRefresh ? `<script>
+    (function () {
+      var t;
+      function arm() { t = setTimeout(function () { location.reload(); }, 60000); }
+      document.addEventListener('visibilitychange', function () { if (document.hidden) clearTimeout(t); else arm(); });
+      if (!document.hidden) arm();
+    })();
+  </script>` : '';
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#131316">
   <title>${escapeHtml(title)} — Durant Media Server</title>
   <style>${DASHBOARD_CSS}</style></head><body>
-  <div class="topbar">
-    <h1><span class="brand">Durant</span> Media Server — ${escapeHtml(title)}</h1>
-    ${showLogout ? '<form class="logout" method="post" action="/admin/logout"><button class="btn" type="submit">Log out</button></form>' : ''}
-  </div>
+  <header class="hdr">
+    <div class="topbar">
+      <h1><span class="brand">Durant</span> Media Server</h1>
+      ${showLogout ? '<form class="logout" method="post" action="/admin/logout"><button class="btn" type="submit">Log out</button></form>' : ''}
+    </div>
+    ${navHtml}
+  </header>
   <div class="container">${bodyHtml}</div>
+  ${refreshScript}
   </body></html>`;
+}
+
+// Epoch ms from a SQLite CURRENT_TIMESTAMP string ('YYYY-MM-DD HH:MM:SS', UTC) or anything
+// Date.parse understands; null when unparseable.
+function sqliteUtcMs(v) {
+  if (typeof v === 'number') return v;
+  const s = String(v || '');
+  const t = Date.parse(/^\d{4}-\d{2}-\d{2} /.test(s) ? `${s.replace(' ', 'T')}Z` : s);
+  return Number.isFinite(t) ? t : null;
+}
+
+// '3m ago' / 'in 2h' for dashboard rows; empty string when the timestamp is unknown.
+function fmtAgo(ts) {
+  const t = typeof ts === 'number' ? ts : sqliteUtcMs(ts);
+  if (!Number.isFinite(t) || !t) return '';
+  const d = Date.now() - t;
+  return d >= 0 ? `${fmtDuration(d)} ago` : `in ${fmtDuration(-d)}`;
+}
+
+function renderBar(pct) {
+  const p = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+  return `<div class="bar"><div class="bar-fill${p >= 95 ? ' hot' : ''}" style="width:${p}%"></div></div>`;
+}
+
+// Touch-friendly activity rows: state dot, title + sub, optional right-side metric and
+// progress bar. Wraps gracefully on small screens (see the 560px media query).
+function renderItemList(items, emptyText = 'Nothing right now.') {
+  if (!items || !items.length) return `<p class="muted">${escapeHtml(emptyText)}</p>`;
+  return `<div class="items">${items.map(i => `
+    <div class="item">
+      <span class="dot ${['ok', 'warn', 'down', 'skip'].includes(i.state) ? i.state : 'skip'}"></span>
+      <div class="item-main">
+        <div class="item-title">${escapeHtml(i.title || '')}</div>
+        ${i.sub ? `<div class="item-sub">${escapeHtml(i.sub)}</div>` : ''}
+        ${typeof i.pct === 'number' ? renderBar(i.pct) : ''}
+      </div>
+      ${i.right ? `<div class="item-right">${escapeHtml(i.right)}</div>` : ''}
+    </div>`).join('')}</div>`;
 }
 
 function renderLogin(isError, message) {
@@ -5286,13 +5523,16 @@ function renderHealthBadges(health) {
     .join('');
 }
 
+// data-label on every cell powers the mobile collapse: under 640px the table becomes a stack
+// of labeled cards (CSS-only, no JS).
 function renderTable(rows) {
   if (!Array.isArray(rows) || rows.length === 0) return '<p class="muted">No records.</p>';
   const cols = Object.keys(rows[0]);
   const head = cols.map(c => `<th>${escapeHtml(c)}</th>`).join('');
   const bodyRows = rows.map(r => `<tr>${cols.map(c => {
     const v = r[c];
-    return `<td title="${escapeHtml(v == null ? '' : String(v))}">${escapeHtml(v == null ? '' : String(v))}</td>`;
+    const text = escapeHtml(v == null ? '' : String(v));
+    return `<td data-label="${escapeHtml(c)}" title="${text}">${text}</td>`;
   }).join('')}</tr>`).join('');
   return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${bodyRows}</tbody></table></div>`;
 }
