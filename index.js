@@ -27,13 +27,13 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPlan, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPlan, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
 const { decideEscalationAction, escalationEligible } = require('./src/escalation');
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
-const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, renderSyncthingStignore, renderRclone } = require('./src/tier');
+const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
@@ -1849,7 +1849,17 @@ const slashCommands = [
     .addSubcommand(s => s.setName('list').setDescription('List all nodes'))
     .addSubcommand(s => s.setName('enable').setDescription('Enable a node').addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true)))
     .addSubcommand(s => s.setName('disable').setDescription('Disable a node (skipped by the planner entirely)').addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true)))
-    .addSubcommand(s => s.setName('token').setDescription('(Re)generate the node\'s sync-agent bearer token — shown once').addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true))),
+    .addSubcommand(s => s.setName('token').setDescription('(Re)generate the node\'s sync-agent bearer token — shown once').addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true)))
+    .addSubcommandGroup(g => g.setName('folder').setDescription('Manage a node\'s Syncthing folders (multi-folder nodes)')
+      .addSubcommand(s => s.setName('add').setDescription('Add or update a Syncthing folder on a node')
+        .addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true))
+        .addStringOption(o => o.setName('folder_id').setDescription('Syncthing folder id, e.g. eeeee-fffff').setRequired(true))
+        .addStringOption(o => o.setName('folder_root').setDescription('Folder root path on that node, e.g. /mnt/media/Media/Movies').setRequired(true)))
+      .addSubcommand(s => s.setName('remove').setDescription('Remove a Syncthing folder from a node')
+        .addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true))
+        .addStringOption(o => o.setName('folder_id').setDescription('Syncthing folder id').setRequired(true)))
+      .addSubcommand(s => s.setName('list').setDescription('List a node\'s Syncthing folders')
+        .addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true)))),
   new SlashCommandBuilder().setName('tier-member').setDescription('Manage a restricted node\'s member set').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('add').setDescription('Add a member').addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('node').setDescription('Restricted node name').setRequired(true)))
     .addSubcommand(s => s.setName('remove').setDescription('Remove a member').addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('node').setDescription('Restricted node name').setRequired(true)))
@@ -3956,7 +3966,7 @@ async function handleHelpCommand(interaction) {
       '`/debrid` — Premiumize account + transfer status',
       '`/cleanup-suggestions` — Largest/oldest media that could be cleaned up',
       '`/tier` — Regional tiering: preview/apply per-node edge-cache plans',
-      '`/tier-node` — Manage the tiering node registry (capacity, access mode, demand source)',
+      '`/tier-node` — Manage the tiering node registry (capacity, access mode, demand source, `folder add|remove|list`)',
       '`/tier-member` — Manage a restricted node\'s member set',
     ];
     if (grabConfigured()) {
@@ -3984,7 +3994,10 @@ function tierKeepListIds() {
 }
 
 async function buildTierPlans() {
-  const nodes = listTierNodes();
+  // Attach each node's one-to-many Syncthing folders (R2.1). listTierNodeFolders falls back to a
+  // single synthesized folder from the legacy folder_root column, so single-folder nodes are
+  // unchanged. The planner resolves every title to the right folder per node.
+  const nodes = listTierNodes().map(n => ({ ...n, folders: listTierNodeFolders(n.name) }));
   const enabled = nodes.filter(n => n.enabled);
   if (!enabled.length) return { manifests: {}, warnings: ['No enabled tier nodes — add one with `/tier-node add`.'], nodes };
   const inventory = await fetchTierInventory({
@@ -4048,7 +4061,15 @@ function tierManifestField(node, m, prevPlan) {
       : `Δ vs applied: +${added} / −${removed} titles`);
   } else lines.push('No plan applied yet');
   if (m.forceKept.length) lines.push(`⚠️ ${m.forceKept.length} force-kept (no full-node copy)`);
-  return { name: `${m.full ? '🏠' : '📦'} ${m.node} (${m.access}, ${m.demandSource})`, value: lines.join('\n'), inline: false };
+  // Per-folder drop breakdown under the node total (R2.1) — only when the node spans >1 folder.
+  const multi = (m.folders || []).filter(f => f.folder_id || (m.folders || []).length > 1);
+  if (multi.length > 1) {
+    for (const f of m.folders) {
+      const bytes = (f.drop || []).reduce((a, e) => a + (e.sizeBytes || 0), 0);
+      lines.push(`  └ \`${f.folder_id || 'default'}\`: keep ${f.keep?.length || 0} · drop ${f.drop?.length || 0} (${fmtSpace(bytes)})`);
+    }
+  }
+  return { name: `${m.full ? '🏠' : '📦'} ${m.node} (${m.access}, ${m.demandSource})`, value: lines.join('\n').slice(0, 1024), inline: false };
 }
 
 async function handleTierCommand(interaction) {
@@ -4074,7 +4095,10 @@ async function handleTierCommand(interaction) {
     for (const name of names) {
       const m = plans.manifests[name];
       const stignore = renderSyncthingStignore(m);
-      setSetting(`tier_manifest:${name}`, JSON.stringify({ ...m, stignore, rcloneFilesFrom: m.transport === 'rclone' ? renderRclone(m) : undefined }));
+      // Render each folder's own .stignore into the served manifest so the agent writes one per
+      // folder root; the aggregate `stignore` stays for single-folder agents.
+      const folders = (m.folders || []).map(f => ({ ...f, stignore: renderFolderStignore(f, m) }));
+      setSetting(`tier_manifest:${name}`, JSON.stringify({ ...m, folders, stignore, rcloneFilesFrom: m.transport === 'rclone' ? renderRclone(m) : undefined }));
       setTierPlan(name, { planHash: m.planHash, keepMediaIds: m.keep.map(e => e.mediaId), appliedAt: Date.now() });
       audit('tier_plan_applied', { actorDiscordId: interaction.user.id, node: name, planHash: m.planHash, keepCount: m.stats.keepCount, dropCount: m.stats.dropCount, dropBytes: m.stats.dropBytes });
     }
@@ -4094,6 +4118,10 @@ async function handleTierCommand(interaction) {
 
 async function handleTierNodeCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
+
+  // R2.1 multi-folder: `/tier-node folder add|remove|list`.
+  if (interaction.options.getSubcommandGroup(false) === 'folder') return handleTierNodeFolderCommand(interaction);
+
   const sub = interaction.options.getSubcommand();
 
   if (sub === 'list') {
@@ -4102,7 +4130,9 @@ async function handleTierNodeCommand(interaction) {
     const lines = nodes.map(n => {
       const members = n.access === 'restricted' ? ` · ${listTierNodeMembers(n.name).length} member(s)` : '';
       const plan = getTierPlan(n.name);
-      return `${n.enabled ? '🟢' : '⚫'} **${n.name}** — ${fmtSpace(n.usable_bytes || 0)}, headroom ${n.headroom_pct}%${n.full ? ', **full master**' : ''}${n.sticky ? ', sticky' : ''} · ${n.access}/${n.demand_source}/${n.transport}${members}${plan ? ` · plan \`${plan.planHash}\`` : ' · no plan applied'}`;
+      const folders = listTierNodeFolders(n.name);
+      const folderNote = folders.length > 1 ? ` · ${folders.length} folders` : '';
+      return `${n.enabled ? '🟢' : '⚫'} **${n.name}** — ${fmtSpace(n.usable_bytes || 0)}, headroom ${n.headroom_pct}%${n.full ? ', **full master**' : ''}${n.sticky ? ', sticky' : ''} · ${n.access}/${n.demand_source}/${n.transport}${folderNote}${members}${plan ? ` · plan \`${plan.planHash}\`` : ' · no plan applied'}`;
     });
     return interaction.reply({ embeds: [brandedEmbed(COLORS.INFO).setTitle('📦 Tier Nodes').setDescription(lines.join('\n').slice(0, 4000))], ephemeral: true });
   }
@@ -4149,7 +4179,11 @@ async function handleTierNodeCommand(interaction) {
     .setDescription([
       `Capacity **${fmtSpace(node.usable_bytes || 0)}**, headroom **${node.headroom_pct}%** → budget ${fmtSpace(Math.floor((node.usable_bytes || 0) * (1 - node.headroom_pct / 100)))}`,
       `Access **${node.access}** · demand **${node.demand_source}** · transport **${node.transport}**${node.full ? ' · **full master**' : ''}${node.sticky ? ' · sticky' : ''}`,
-      node.folder_root ? `Folder root \`${node.folder_root}\`` : '⚠️ No `folder_root` set — the agent needs it.',
+      (() => {
+        const folders = listTierNodeFolders(name);
+        if (folders.length > 1 || folders.some(f => f.folderId)) return `Folders (${folders.length}): ${folders.map(f => `\`${f.folderId || 'default'}\`→\`${f.folderRoot}\``).join(', ')}`;
+        return node.folder_root ? `Folder root \`${node.folder_root}\` — add more with \`/tier-node folder add\` for a multi-folder node.` : '⚠️ No `folder_root`/folders set — the agent needs at least one (`folder_root:` or `/tier-node folder add`).';
+      })(),
       node.demand_source === 'tautulli' && !node.tautulli_url ? '⚠️ No Tautulli configured — this node contributes no demand signal (floor + pins only).' : null,
       node.demand_source === 'plex' && !node.plex_url ? '⚠️ `demand_source` is plex but no `plex_url`/`plex_token` set — this node contributes no demand signal until they are.' : null,
       node.demand_source === 'atime' && node.atime_mask ? `atime mask \`${node.atime_mask}\` UTC — reads in that window are treated as Plex maintenance, not watches.` : null,
@@ -4157,6 +4191,35 @@ async function handleTierNodeCommand(interaction) {
       created ? `Next: \`/tier-node token name:${name}\` for the agent, then \`/tier preview\`.` : null,
     ].filter(Boolean).join('\n'));
   return interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+// R2.1: `/tier-node folder add|remove|list` — a node's library can span several Receive-Only
+// Syncthing folders while staying one budget pool. Legacy single-folder nodes keep working via
+// the tier_nodes.folder_root column (surfaced here as the `default` folder).
+async function handleTierNodeFolderCommand(interaction) {
+  const sub = interaction.options.getSubcommand();
+  const name = interaction.options.getString('name', true).toLowerCase();
+  if (!getTierNode(name)) return interaction.reply({ content: `❌ Unknown node \`${name}\` — add it first with \`/tier-node add\`.`, ephemeral: true });
+
+  if (sub === 'list') {
+    const folders = listTierNodeFolders(name);
+    if (!folders.length) return interaction.reply({ content: `\`${name}\` has no folders yet — add one with \`/tier-node folder add\`, or set \`folder_root\` on the node.`, ephemeral: true });
+    const lines = folders.map(f => `• \`${f.folderId || '(default / SYNCTHING_FOLDER_ID)'}\` → \`${f.folderRoot}\``);
+    return interaction.reply({ embeds: [brandedEmbed(COLORS.INFO).setTitle(`📁 Folders — ${name}`).setDescription(lines.join('\n').slice(0, 4000))], ephemeral: true });
+  }
+
+  const folderId = interaction.options.getString('folder_id', true).trim();
+  if (sub === 'add') {
+    const folderRoot = interaction.options.getString('folder_root', true).trim();
+    addTierNodeFolder(name, folderId, folderRoot);
+    audit('tier_node_folder_added', { actorDiscordId: interaction.user.id, node: name, folderId });
+    const folders = listTierNodeFolders(name);
+    return interaction.reply({ content: `✅ Folder \`${folderId}\` → \`${folderRoot}\` set on \`${name}\` (${folders.length} folder(s) total). Re-run \`/tier preview ${name}\` to see the per-folder split.`, ephemeral: true });
+  }
+  // remove
+  const removed = removeTierNodeFolder(name, folderId);
+  audit('tier_node_folder_removed', { actorDiscordId: interaction.user.id, node: name, folderId });
+  return interaction.reply({ content: removed ? `✅ Folder \`${folderId}\` removed from \`${name}\`.` : `\`${folderId}\` wasn't a folder of \`${name}\`.`, ephemeral: true });
 }
 
 async function handleTierMemberCommand(interaction) {

@@ -6,8 +6,8 @@
 const assert = require('assert');
 const {
   recencyDecay, titleKey, computeUniversalCore, computeNodeValues, planNode, planTier,
-  computePlanHash, renderSyncthingStignore, renderRclone, toRelPath,
-  parseAtimeMask, inAtimeMask, maskSuspectAtimes,
+  computePlanHash, renderSyncthingStignore, renderFolderStignore, renderRclone, toRelPath,
+  parseAtimeMask, inAtimeMask, maskSuspectAtimes, nodeFolders, resolveTitleFolder,
 } = require('../../src/tier');
 
 const GB = 1024 ** 3;
@@ -334,6 +334,127 @@ const home = { name: 'home', enabled: 1, full: 1, usable_bytes: 10000 * GB, head
   assert.strictEqual(masked[2].atime, at(11), 'suspect with no prior row keeps the reported value');
   assert.strictEqual(masked[3].atime, null, 'missing atime untouched');
   assert.deepStrictEqual(maskSuspectAtimes(files, prevFiles, null), files, 'no mask → passthrough');
+}
+
+// --- R2.1 multi-folder: title paths split to the correct folder, single budget pool ---
+const homeFull = { name: 'home', enabled: 1, full: 1, usable_bytes: 10000 * GB, headroom_pct: 0, access: 'open', demand_source: 'tautulli' };
+const caliFolders = [
+  { folderId: 'mov', folderRoot: '/mnt/media/Media/Movies' },
+  { folderId: 'fourk', folderRoot: '/mnt/media/Media/4k' },
+  { folderId: 'tv', folderRoot: '/mnt/media/Media/TV Shows' },
+];
+const mfTitle = (mediaId, mediaType, absPath, sizeGb = 10) => ({
+  mediaId, title: mediaId, mediaType, sizeBytes: sizeGb * GB, addedAt: daysAgo(400), path: absPath, relPath: absPath,
+});
+{
+  // resolveTitleFolder: longest-prefix match, folder-relative path.
+  const r = resolveTitleFolder({ path: '/mnt/media/Media/Movies/Alpha (2020)', relPath: 'x' }, caliFolders);
+  assert.deepStrictEqual(r, { folderId: 'mov', relPath: 'Alpha (2020)' }, 'title routed to its folder, path made folder-relative');
+  // A title outside every folder root falls back to the first folder + its precomputed relPath.
+  const miss = resolveTitleFolder({ path: '/somewhere/else/X', relPath: 'kept' }, caliFolders);
+  assert.strictEqual(miss.folderId, 'mov', 'unmatched title assigned to first folder (fallback)');
+}
+{
+  const inv = [
+    mfTitle('tmdb:1', 'movie', '/mnt/media/Media/Movies/Alpha (2020)'),
+    mfTitle('tmdb:2', 'movie', '/mnt/media/Media/4k/Beta (2021)'),
+    mfTitle('tvdb:3', 'tv', '/mnt/media/Media/TV Shows/Gamma'),
+  ];
+  const cali = { name: 'cali', enabled: 1, usable_bytes: 20 * GB, headroom_pct: 0, access: 'open', demand_source: 'atime', folders: caliFolders };
+  // atime spread across two different folders — the LRU still runs over the whole node.
+  const atimeReports = { cali: [
+    { folderId: 'mov', relPath: 'Alpha (2020)/a.mkv', sizeBytes: 10 * GB, atime: daysAgo(2) },
+    { folderId: 'tv', relPath: 'Gamma/S01/e1.mkv', sizeBytes: 10 * GB, atime: daysAgo(90) },
+    // Beta (4k): no atime → coldest, evict-first.
+  ] };
+  const m = planTier({ nodes: [homeFull, cali], inventory: inv, atimeReports, now: NOW }).manifests.cali;
+  assert.strictEqual(keepIds(m), 'tmdb:1,tvdb:3', 'single-pool LRU across folders: hottest two kept');
+  assert.strictEqual(dropIds(m), 'tmdb:2', 'coldest (no-atime) title dropped regardless of which folder it is in');
+
+  // Manifest folder split: each folder carries only its own titles, folder-relative.
+  const byId = Object.fromEntries(m.folders.map(f => [f.folder_id, f]));
+  assert.deepStrictEqual(byId.mov.keep.map(e => e.relPath), ['Alpha (2020)'], 'Movies folder keeps Alpha (folder-relative)');
+  assert.deepStrictEqual(byId.fourk.drop.map(e => e.relPath), ['Beta (2021)'], 'the drop lands under the 4k folder');
+  assert.deepStrictEqual(byId.tv.keep.map(e => e.relPath), ['Gamma'], 'TV folder keeps Gamma');
+  assert.strictEqual(byId.mov.folder_root, '/mnt/media/Media/Movies', 'folder carries its root for the agent');
+
+  // Per-folder stignore correctness: a folder ignores only its own drops, nobody else's.
+  const fourkIgnore = renderFolderStignore(byId.fourk, m);
+  assert.ok(fourkIgnore.includes('/Beta (2021)'), '4k stignore ignores its dropped title, folder-relative');
+  assert.ok(fourkIgnore.includes('folder: fourk'), 'stignore header names the folder');
+  const movIgnore = renderFolderStignore(byId.mov, m);
+  assert.ok(!movIgnore.includes('Beta'), 'Movies stignore does not leak the 4k folder\'s drop');
+  assert.ok(movIgnore.trim().split('\n').every(l => l.startsWith('//')), 'Movies folder drops nothing → header-only stignore');
+}
+{
+  // Same title held in BOTH Movies and 4k (identical relPath after folder-relativization):
+  // the folder id keeps them distinct in the manifest and the plan hash.
+  const inv = [
+    mfTitle('tmdb:1', 'movie', '/mnt/media/Media/Movies/Dune (2021)'),
+    mfTitle('tmdb:2', 'movie', '/mnt/media/Media/4k/Dune (2021)'),
+  ];
+  const cali = { name: 'cali', enabled: 1, usable_bytes: 500 * GB, headroom_pct: 0, access: 'open', demand_source: 'atime', folders: caliFolders };
+  const m = planTier({ nodes: [homeFull, cali], inventory: inv, now: NOW }).manifests.cali;
+  const relOf = id => m.keep.find(e => e.mediaId === id).relPath;
+  assert.strictEqual(relOf('tmdb:1'), 'Dune (2021)', 'Movies copy folder-relative');
+  assert.strictEqual(relOf('tmdb:2'), 'Dune (2021)', '4k copy shares the relPath but a different folder');
+  const folderOf = id => m.keep.find(e => e.mediaId === id).folderId;
+  assert.notStrictEqual(folderOf('tmdb:1'), folderOf('tmdb:2'), 'same relPath disambiguated by folder id');
+}
+
+// --- R2.1 single-folder fallback unchanged: legacy node yields one default folder ---
+{
+  const inv = [title('tmdb:1', 10, 'movies/Solo'), title('tmdb:2', 10, 'movies/Duo')];
+  const legacy = node({ name: 'legacy', usable_bytes: 500 * GB, folder_root: '/mnt/raid' });
+  const m = planTier({ nodes: [homeFull, legacy], inventory: inv, now: NOW }).manifests.legacy;
+  assert.strictEqual(m.folders.length, 1, 'legacy node has exactly one folder');
+  assert.strictEqual(m.folders[0].folder_id, '', 'legacy folder id is empty (agent uses SYNCTHING_FOLDER_ID)');
+  assert.deepStrictEqual(m.keep.map(e => e.relPath).sort(), ['movies/Duo', 'movies/Solo'], 'relPaths untouched (source-root-relative)');
+  assert.deepStrictEqual(nodeFolders({ folder_root: '/mnt/raid' }), [{ folderId: '', folderRoot: '/mnt/raid' }], 'nodeFolders synthesizes the single legacy folder');
+}
+
+// --- R2.2 plex demand: recencyDecay(lastViewedAt)×log1p(viewCount), per-title atime fallback ---
+{
+  // A title Plex has a view record for ranks above an atime-only title.
+  const inv = [title('tmdb:watched', 10, 'movies/Watched'), title('tmdb:read', 10, 'movies/Read')];
+  const cali = { name: 'cali', enabled: 1, usable_bytes: 10 * GB, headroom_pct: 0, access: 'open', demand_source: 'plex' };
+  const m = planTier({
+    nodes: [homeFull, cali], inventory: inv,
+    historiesByNode: { cali: [{ title: 'tmdb:watched', mediaType: 'movie', plays: 5, distinctUsers: 2, lastPlayed: daysAgo(2) }] },
+    atimeReports: { cali: [{ relPath: 'movies/Read/r.mkv', sizeBytes: 10 * GB, atime: daysAgo(40) }] },
+    now: NOW, config: { coreTopK: 0 },
+  }).manifests.cali;
+  assert.strictEqual(keepIds(m), 'tmdb:watched', 'real Plex playback outranks an older atime-only read');
+  assert.strictEqual(dropIds(m), 'tmdb:read', 'atime-only title gives way');
+}
+{
+  // Missing Plex record falls back to atime; a title with neither is coldest (evict-first).
+  const inv = [title('tmdb:plex', 10, 'movies/Plex'), title('tmdb:atime', 10, 'movies/Atime'), title('tmdb:none', 10, 'movies/None')];
+  const cali = { name: 'cali', enabled: 1, usable_bytes: 20 * GB, headroom_pct: 0, access: 'open', demand_source: 'plex' };
+  const m = planTier({
+    nodes: [homeFull, cali], inventory: inv,
+    historiesByNode: { cali: [{ title: 'tmdb:plex', mediaType: 'movie', plays: 1, distinctUsers: 1, lastPlayed: daysAgo(50) }] },
+    atimeReports: { cali: [{ relPath: 'movies/Atime/a.mkv', sizeBytes: 10 * GB, atime: daysAgo(1) }] },
+    now: NOW, config: { coreTopK: 0 },
+  }).manifests.cali;
+  assert.strictEqual(dropIds(m), 'tmdb:none', 'title with neither Plex nor atime is the eviction candidate');
+  assert.ok(m.keep.some(e => e.mediaId === 'tmdb:atime'), 'missing-Plex-record title kept via its atime fallback');
+}
+{
+  // Unreachable local Plex ⇒ empty history ⇒ the whole node falls back to atime, no failure.
+  const inv = [title('tmdb:1', 10, 'movies/M1'), title('tmdb:2', 10, 'movies/M2')];
+  const cali = { name: 'cali', enabled: 1, usable_bytes: 10 * GB, headroom_pct: 0, access: 'open', demand_source: 'plex' };
+  const m = planTier({
+    nodes: [homeFull, cali], inventory: inv,
+    historiesByNode: { cali: [] }, // PMS unreachable → gatherNodeHistories returned []
+    atimeReports: { cali: [
+      { relPath: 'movies/M1/x.mkv', sizeBytes: 10 * GB, atime: daysAgo(3) },
+      { relPath: 'movies/M2/x.mkv', sizeBytes: 10 * GB, atime: daysAgo(80) },
+    ] },
+    now: NOW, config: { coreTopK: 0 },
+  }).manifests.cali;
+  assert.strictEqual(keepIds(m), 'tmdb:1', 'unreachable Plex → node ranks purely by atime LRU');
+  assert.strictEqual(dropIds(m), 'tmdb:2', 'coldest atime dropped, plan still produced');
 }
 
 console.log('tier.test.js: all assertions passed');
