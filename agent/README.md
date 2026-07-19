@@ -28,13 +28,23 @@ Requires Node 18+ (uses global `fetch`). No other dependencies.
 | `TIER_BOT_URL` | ✅ | Bot base URL, e.g. `https://bot.example.com` |
 | `TIER_NODE` | ✅ | This node's name in the bot's registry, e.g. `california` |
 | `TIER_AGENT_TOKEN` | ✅ | Bearer token from `/tier-node token name:<node>` |
-| `TIER_FOLDER_ROOT` | ✅ | Local path of the Syncthing folder (media root) |
+| `TIER_FOLDER_ROOT` | ✅ (single-folder) | Local path of the Syncthing folder (media root) |
+| `TIER_FOLDERS` | ✅ (multi-folder) | Folder list for nodes whose library spans several Syncthing folders — replaces `TIER_FOLDER_ROOT`/`SYNCTHING_FOLDER_ID`. JSON `[{"id":"mafyh-4dn5b","path":"/mnt/media/Media/Movies"}, …]` **or** the compact `id:path;id:path` form. The agent asserts Receive-Only, writes a `.stignore`, rescans, and prunes **each** folder every run. |
 | `SYNCTHING_URL` | | Syncthing GUI/REST address (default `http://127.0.0.1:8384`) |
 | `SYNCTHING_API_KEY` | ✅ in practice | Syncthing REST API key |
-| `SYNCTHING_FOLDER_ID` | ✅ in practice | The media folder's Syncthing folder ID |
+| `SYNCTHING_FOLDER_ID` | ✅ (single-folder) | The media folder's Syncthing folder ID (multi-folder nodes carry ids in `TIER_FOLDERS`) |
 | `TIER_STATE_DIR` | | Where plan/inventory state lives (default `/var/lib/tier-agent`) |
 | `TIER_REPORT_INVENTORY` | | `0` disables the inventory report (leave on for atime nodes) |
 | `TIER_DRY_RUN` | | `1` = log what would happen, write and delete nothing |
+
+Multi-folder example (California's four folders):
+
+```sh
+TIER_FOLDERS='cfjvc-ykzis:/mnt/media/Media/Family Films;ch3dl-xnzem:/mnt/media/Media/4k;mafyh-4dn5b:/mnt/media/Media/Movies;wg9fc-ntkc4:/mnt/media/Media/TV Shows'
+```
+
+The node is still one budget pool with one eviction plan; the manifest just splits `drop`
+per folder and the agent converges each folder root independently.
 
 ## systemd
 
