@@ -5040,7 +5040,9 @@ function startExpressServer() {
     const body = req.body || {};
     const errors = Array.isArray(body.errors) ? body.errors.slice(0, 10).map(e => String(e).slice(0, 300)) : [];
     // The atime demand signal (§3.2a): full local inventory snapshots replace the stored set.
-    if (Array.isArray(body.inventory) && body.inventory.length) {
+    // An EMPTY array is still a snapshot (the node may have pruned its last media file) —
+    // only an absent field means "no inventory in this report".
+    if (Array.isArray(body.inventory)) {
       try {
         replaceTierNodeFiles(node, body.inventory.slice(0, 200000));
       } catch (err) {
