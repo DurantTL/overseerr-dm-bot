@@ -91,6 +91,9 @@ async function fetchTierInventory({ sources, remap, sourceRoot, onError }) {
             mediaType: 'movie',
             sizeBytes: m.sizeOnDisk,
             addedAt: Date.parse(m.movieFile?.dateAdded || m.added || '') || now,
+            // path = full remapped on-disk path (for multi-folder resolution against each node's
+            // folder roots); relPath = source-root-relative (legacy single-folder manifests).
+            path: remap(m.path),
             relPath: toRelPath(remap(m.path), sourceRoot),
           });
         }
@@ -105,6 +108,7 @@ async function fetchTierInventory({ sources, remap, sourceRoot, onError }) {
             mediaType: 'tv',
             sizeBytes: size,
             addedAt: Date.parse(t.added || '') || now,
+            path: remap(t.path),
             relPath: toRelPath(remap(t.path), sourceRoot),
           });
         }
@@ -197,11 +201,11 @@ function inAtimeMask(tsMs, mask) {
 // stored, that value is what gets carried forward on later suspect reads.
 function maskSuspectAtimes(files, prevFiles, mask) {
   if (!mask) return files;
-  const prev = new Map(prevFiles.map(f => [f.relPath, f.atime]));
+  const prev = new Map(prevFiles.map(f => [folderKey(f), f.atime]));
   return files.map(f => {
     const t = Number(f.atime);
     if (!Number.isFinite(t) || t <= 0 || !inAtimeMask(t, mask)) return f;
-    const prior = prev.get(f.relPath);
+    const prior = prev.get(folderKey(f));
     return prior != null ? { ...f, atime: prior } : f;
   });
 }
@@ -213,45 +217,110 @@ function toRelPath(absPath, sourceRoot) {
   return p.replace(/^\/+/, '');
 }
 
-// Per-node title values (Tier 1). Returns Map mediaId → { value, lastActivity }.
-//   tautulli: history rows joined to inventory by titleKey, scored per §3.2
-//   atime:    agent-reported file atimes rolled up to the owning title folder — an LRU where
-//             "recently read by that node's Plex" is the demand signal (§3.2a). Files with no
-//             reported atime contribute nothing (graceful fallback).
-function computeNodeValues({ node, inventory, history = [], files = [], now, cfg }) {
-  const values = new Map();
-  if (node.demand_source === 'atime') {
-    const byRel = new Map(inventory.map(t => [t.relPath, t]));
-    const latest = new Map(); // mediaId → newest atime among the title's files
-    for (const f of files) {
-      const atimeMs = Number(f.atime);
-      if (!Number.isFinite(atimeMs) || atimeMs <= 0) continue;
-      // Walk up the file's directories to find the owning title folder.
-      let dir = String(f.relPath);
-      while (dir.includes('/')) {
-        dir = dir.slice(0, dir.lastIndexOf('/'));
-        const t = byRel.get(dir);
-        if (t) {
-          if ((latest.get(t.mediaId) || 0) < atimeMs) latest.set(t.mediaId, atimeMs);
-          break;
-        }
-      }
-    }
-    for (const [mediaId, atimeMs] of latest) {
-      values.set(mediaId, { value: recencyDecay(atimeMs, now, cfg.halfLifeDays), lastActivity: atimeMs });
-    }
-    return values;
+// R2.1: a node's Syncthing folders as { folderId, folderRoot }. Reads node.folders when the
+// caller (planTier / index.js) supplies the one-to-many list; otherwise synthesizes a single
+// folder from the legacy folder_root/folder_id columns so single-folder nodes are unchanged.
+function nodeFolders(node) {
+  const raw = Array.isArray(node.folders) && node.folders.length ? node.folders : null;
+  if (raw) {
+    return raw.map(f => ({
+      folderId: String(f.folderId ?? f.syncthing_folder_id ?? f.folder_id ?? ''),
+      folderRoot: String(f.folderRoot ?? f.folder_root ?? '').replace(/\/+$/, ''),
+    }));
   }
+  return [{ folderId: String(node.folder_id ?? ''), folderRoot: String(node.folder_root ?? '').replace(/\/+$/, '') }];
+}
+
+// Resolve one inventory title to { folderId, relPath } for a node. Multi-folder nodes match the
+// title's absolute (remapped) path against each folder root, longest prefix wins; a legacy
+// single folder (one row, empty id, no explicit root matching) keeps the precomputed
+// source-root-relative relPath untouched — that's the backward-compatible path.
+function resolveTitleFolder(title, folders) {
+  const useRoots = folders.length > 1 || folders.some(f => f.folderId);
+  if (useRoots && title.path) {
+    const abs = String(title.path).replace(/\/+$/, '');
+    let best = null;
+    for (const f of folders) {
+      if (!f.folderRoot) continue;
+      if ((abs === f.folderRoot || abs.startsWith(`${f.folderRoot}/`)) && (!best || f.folderRoot.length > best.folderRoot.length)) best = f;
+    }
+    if (best) return { folderId: best.folderId, relPath: toRelPath(abs, best.folderRoot) };
+  }
+  return { folderId: folders[0]?.folderId || '', relPath: title.relPath };
+}
+
+const folderKey = e => `${e.folderId || e.folder_id || ''}\u0000${e.relPath}`;
+
+// Roll a node's watch history (Tautulli or Plex rows) up to one entry per titleKey — the same
+// title seen under two rating keys (library rescan, movie vs 4k edition) merges conservatively.
+function rollHistoryByTitle(history) {
   const byKey = new Map();
   for (const r of history) {
     const key = titleKey(r.title, r.mediaType);
     const prev = byKey.get(key);
-    // Same title key seen under two rating keys (e.g. library rescan) — merge conservatively.
     if (prev) {
       prev.plays += r.plays; prev.distinctUsers = Math.max(prev.distinctUsers, r.distinctUsers);
       prev.lastPlayed = Math.max(prev.lastPlayed, r.lastPlayed);
     } else byKey.set(key, { ...r });
   }
+  return byKey;
+}
+
+// atime LRU value per title (§3.2a): agent-reported file atimes rolled up to the owning title
+// folder — "recently read by that node's Plex" is the demand signal. Files with no reported
+// atime contribute nothing (graceful fallback). Multi-folder aware: a file only matches a title
+// in the SAME folder (folderKey), so identical relPaths in two folders don't cross-contaminate.
+function computeAtimeValues({ inventory, files = [], now, cfg }) {
+  const values = new Map();
+  const byRel = new Map(inventory.map(t => [folderKey(t), t]));
+  const latest = new Map(); // mediaId → newest atime among the title's files
+  for (const f of files) {
+    const atimeMs = Number(f.atime);
+    if (!Number.isFinite(atimeMs) || atimeMs <= 0) continue;
+    const fid = f.folderId ?? f.folder_id ?? '';
+    let dir = String(f.relPath);
+    while (dir.includes('/')) {
+      dir = dir.slice(0, dir.lastIndexOf('/'));
+      const t = byRel.get(folderKey({ folderId: fid, relPath: dir }));
+      if (t) {
+        if ((latest.get(t.mediaId) || 0) < atimeMs) latest.set(t.mediaId, atimeMs);
+        break;
+      }
+    }
+  }
+  for (const [mediaId, atimeMs] of latest) {
+    values.set(mediaId, { value: recencyDecay(atimeMs, now, cfg.halfLifeDays), lastActivity: atimeMs });
+  }
+  return values;
+}
+
+// Per-node title values (Tier 1). Returns Map mediaId → { value, lastActivity }.
+//   tautulli: history rows joined to inventory by titleKey, scored per §3.2
+//   plex:     node's own PMS watch history (R2.2) scored recencyDecay(lastViewedAt)×log1p(viewCount),
+//             with a PER-TITLE fallback to the atime LRU for any title Plex has no view record
+//             for. If the PMS was unreachable the history is empty ⇒ the whole node falls back to
+//             atime, no plan failure.
+//   atime:    the atime LRU only (§3.2a).
+function computeNodeValues({ node, inventory, history = [], files = [], now, cfg }) {
+  if (node.demand_source === 'atime') return computeAtimeValues({ inventory, files, now, cfg });
+
+  if (node.demand_source === 'plex') {
+    const atimeValues = computeAtimeValues({ inventory, files, now, cfg });
+    const byKey = rollHistoryByTitle(history);
+    const values = new Map();
+    for (const t of inventory) {
+      const r = byKey.get(titleKey(t.title, t.mediaType));
+      if (r) {
+        values.set(t.mediaId, { value: recencyDecay(r.lastPlayed, now, cfg.halfLifeDays) * Math.log1p(r.plays || 0), lastActivity: r.lastPlayed || null });
+      } else if (atimeValues.has(t.mediaId)) {
+        values.set(t.mediaId, atimeValues.get(t.mediaId));
+      }
+    }
+    return values;
+  }
+
+  const byKey = rollHistoryByTitle(history);
+  const values = new Map();
   for (const t of inventory) {
     const r = byKey.get(titleKey(t.title, t.mediaType));
     if (!r) continue;
@@ -265,8 +334,9 @@ function computeNodeValues({ node, inventory, history = [], files = [], now, cfg
 //              universal core and/or member pins) — never evictable
 //   values   — Map mediaId → { value, lastActivity }
 //   prevKeepIds — mediaIds kept by the last applied plan (null = first run: floor + admits)
-function planNode({ node, inventory, values, floorIds, coreIds = new Set(), prevKeepIds = null, now = Date.now(), config = {} }) {
+function planNode({ node, inventory, values, floorIds, coreIds = new Set(), prevKeepIds = null, now = Date.now(), config = {}, folders = null }) {
   const cfg = { ...TIER_DEFAULTS, ...config };
+  const flds = folders || nodeFolders(node);
   const warmDays = node.warm_days ?? (node.sticky ? cfg.warmDays * cfg.stickyWarmFactor : cfg.warmDays);
   const freshDays = node.fresh_days ?? cfg.freshDays;
   const budget = Math.floor((node.usable_bytes || 0) * (1 - (node.headroom_pct ?? 15) / 100));
@@ -286,7 +356,7 @@ function planNode({ node, inventory, values, floorIds, coreIds = new Set(), prev
 
   if (node.full) {
     // Never-pruned master: keeps the entire library, drops nothing, regardless of budget.
-    return finishManifest({ node, keep: entries, drop: [], admits: [], evict: [], forceKept: [], budget, libraryBytes, now });
+    return finishManifest({ node, keep: entries, drop: [], admits: [], evict: [], forceKept: [], budget, libraryBytes, now, folders: flds });
   }
 
   const inventoryIds = new Set(entries.map(e => e.mediaId));
@@ -335,11 +405,32 @@ function planNode({ node, inventory, values, floorIds, coreIds = new Set(), prev
   const keep = entries.filter(e => keepSet.has(e) && !evicted.has(e));
   const drop = entries.filter(e => !keepSet.has(e) || evicted.has(e));
   const forceKept = keep.filter(e => floor.has(e.mediaId) && floorIds.has(e.mediaId) && e.noFullCopy).map(e => e.mediaId);
-  return finishManifest({ node, keep, drop, admits, evict: [...evicted], forceKept, budget, libraryBytes, now });
+  return finishManifest({ node, keep, drop, admits, evict: [...evicted], forceKept, budget, libraryBytes, now, folders: flds });
 }
 
-function finishManifest({ node, keep, drop, admits, evict, forceKept, budget, libraryBytes, now }) {
-  const strip = e => ({ mediaId: e.mediaId, title: e.title, relPath: e.relPath, sizeBytes: e.sizeBytes });
+// Group a node's keep/drop entries by folder (R2.1). Every declared folder appears (even with an
+// empty drop, so the agent writes an empty .stignore rather than leaving a stale one), plus any
+// folder that only shows up in the entries. drop paths within a folder are folder-relative.
+function groupByFolder(folders, keep, drop) {
+  const byId = new Map();
+  const bucket = fid => {
+    const key = fid || '';
+    if (!byId.has(key)) byId.set(key, { folder_id: key, folder_root: '', keep: [], drop: [] });
+    return byId.get(key);
+  };
+  for (const f of folders || []) {
+    const b = bucket(f.folderId || '');
+    b.folder_root = f.folderRoot || b.folder_root;
+  }
+  for (const e of keep) bucket(e.folderId).keep.push(e);
+  for (const e of drop) bucket(e.folderId).drop.push(e);
+  return [...byId.values()];
+}
+
+function finishManifest({ node, keep, drop, admits, evict, forceKept, budget, libraryBytes, now, folders = null }) {
+  const strip = e => ({ mediaId: e.mediaId, title: e.title, folderId: e.folderId || '', relPath: e.relPath, sizeBytes: e.sizeBytes });
+  const keepStripped = keep.map(strip).sort((a, b) => a.relPath.localeCompare(b.relPath));
+  const dropStripped = drop.map(strip).sort((a, b) => a.relPath.localeCompare(b.relPath));
   const manifest = {
     node: node.name,
     access: node.access || 'open',
@@ -350,8 +441,11 @@ function finishManifest({ node, keep, drop, admits, evict, forceKept, budget, li
     receiveOnly: !node.full,
     full: !!node.full,
     generatedAt: new Date(now).toISOString(),
-    keep: keep.map(strip).sort((a, b) => a.relPath.localeCompare(b.relPath)),
-    drop: drop.map(strip).sort((a, b) => a.relPath.localeCompare(b.relPath)),
+    // Aggregate keep/drop across the whole node (single budget pool) — kept for /tier preview,
+    // rclone, and the single-folder agent. `folders` splits the same sets per Syncthing folder.
+    keep: keepStripped,
+    drop: dropStripped,
+    folders: groupByFolder(folders || nodeFolders(node), keepStripped, dropStripped),
     admits: admits.map(e => e.mediaId),
     evict: evict.map(e => e.mediaId),
     forceKept,
@@ -368,13 +462,14 @@ function finishManifest({ node, keep, drop, admits, evict, forceKept, budget, li
   return manifest;
 }
 
-// Stable hash of the plan's OUTCOME (what to keep/drop, by path) — timestamps and stats are
-// excluded so an unchanged plan hashes identically and agents can skip no-op runs.
+// Stable hash of the plan's OUTCOME (what to keep/drop, by folder + path) — timestamps and stats
+// are excluded so an unchanged plan hashes identically and agents can skip no-op runs. The folder
+// id is part of the identity so the same relPath in two folders can't collide in the hash.
 function computePlanHash(manifest) {
   const basis = JSON.stringify({
     node: manifest.node,
-    keep: manifest.keep.map(e => e.relPath).sort(),
-    drop: manifest.drop.map(e => e.relPath).sort(),
+    keep: manifest.keep.map(folderKey).sort(),
+    drop: manifest.drop.map(folderKey).sort(),
   });
   return crypto.createHash('sha256').update(basis).digest('hex').slice(0, 16);
 }
@@ -407,9 +502,18 @@ function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, m
 
   const manifests = {};
   for (const node of enabled) {
+    // R2.1: resolve every title to THIS node's folders once — annotates { folderId, relPath }
+    // (folder-relative). Multi-folder nodes match the title's absolute path against each folder
+    // root; single-folder/legacy nodes keep the source-root-relative relPath. Both the scoring
+    // (atime file→title matching) and the manifest split then run over the same resolved set.
+    const folders = nodeFolders(node);
+    const resolvedInventory = inventoryMarked.map(t => {
+      const { folderId, relPath } = resolveTitleFolder(t, folders);
+      return { ...t, folderId, relPath };
+    });
     const values = computeNodeValues({
       node,
-      inventory: inventoryMarked,
+      inventory: resolvedInventory,
       history: enabledHistories[node.name],
       files: atimeReports[node.name] || [],
       now,
@@ -428,13 +532,14 @@ function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, m
     }
     manifests[node.name] = planNode({
       node,
-      inventory: inventoryMarked,
+      inventory: resolvedInventory,
       values,
       floorIds,
       coreIds,
       prevKeepIds: prevPlans[node.name]?.keepMediaIds || null,
       now,
       config: cfg,
+      folders,
     });
   }
   return { manifests, warnings, coreIds: [...coreIds] };
@@ -471,20 +576,39 @@ function escapeStignore(relPath) {
   return String(relPath).replace(/[\\*?[\]{}]/g, ch => `\\${ch}`);
 }
 
-// The node's .stignore body: ignore everything in `drop`, folder-relative. Deliberately no
+// One folder's .stignore body from a list of drop entries (folder-relative). Deliberately no
 // (?d) — deletion is the agent's explicit, logged, ignore-first prune (§4a), never Syncthing
 // cleanup. The plan hash header lets humans and the agent correlate file ↔ plan.
-function renderSyncthingStignore(manifest) {
+function stignoreBody(drop, headerLines) {
   const lines = [
     `// Managed by overseerr-dm-bot regional tiering — DO NOT EDIT BY HAND.`,
-    `// node: ${manifest.node}`,
-    `// plan: ${manifest.planHash}`,
-    `// generated: ${manifest.generatedAt}`,
+    ...headerLines,
     `// Drops are pruned by the sync agent AFTER these ignores load; deliberately no`,
     `// delete-on-ignore prefix — Syncthing cleanup must never do the deleting.`,
   ];
-  for (const e of manifest.drop) lines.push(`/${escapeStignore(e.relPath)}`);
+  for (const e of drop) lines.push(`/${escapeStignore(e.relPath)}`);
   return `${lines.join('\n')}\n`;
+}
+
+// The node's aggregate .stignore (all folders' drops together) — single-folder agents and the
+// legacy path use this. Multi-folder agents render one .stignore per folder via renderFolderStignore.
+function renderSyncthingStignore(manifest) {
+  return stignoreBody(manifest.drop, [
+    `// node: ${manifest.node}`,
+    `// plan: ${manifest.planHash}`,
+    `// generated: ${manifest.generatedAt}`,
+  ]);
+}
+
+// One folder's .stignore (R2.1). `folder` is a manifest.folders entry ({ folder_id, folder_root,
+// drop }). Written into that folder's own root by the agent.
+function renderFolderStignore(folder, manifest) {
+  return stignoreBody(folder.drop || [], [
+    `// node: ${manifest.node}`,
+    `// folder: ${folder.folder_id || '(default)'}${folder.folder_root ? ` @ ${folder.folder_root}` : ''}`,
+    `// plan: ${manifest.planHash}`,
+    `// generated: ${manifest.generatedAt}`,
+  ]);
 }
 
 // rclone renderer: an --include-from style files-from list of what the node SHOULD hold.
@@ -506,11 +630,15 @@ module.exports = {
   inAtimeMask,
   maskSuspectAtimes,
   toRelPath,
+  nodeFolders,
+  resolveTitleFolder,
+  computeAtimeValues,
   computeNodeValues,
   planNode,
   planTier,
   gatherNodeHistories,
   computePlanHash,
   renderSyncthingStignore,
+  renderFolderStignore,
   renderRclone,
 };
