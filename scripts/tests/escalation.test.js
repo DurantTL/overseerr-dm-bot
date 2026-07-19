@@ -65,7 +65,7 @@ const { loadSandbox } = require('./extract');
   const CONFIG = { RADARR_URL: base, RADARR_API_KEY: 'rk', SONARR_URL: base, SONARR_API_KEY: 'sk', AVISTAZ_TAG: 'avistaz' };
   const audits = [];
   const sandbox = loadSandbox(
-    ['getArrTagId', 'getMovieByTmdbId', 'getSeriesByTvdbId', 'addTagToMovie', 'addTagToSeries', 'triggerMovieSearch', 'triggerSeriesSearch', 'applyAvistazTag', 'escalateMediaToAvistaz', 'addMediaToArr', 'verifyAvistazTags'],
+    ['getArrTagId', 'getMovieByTmdbId', 'getSeriesByTvdbId', 'addTagToMovie', 'addTagToSeries', 'triggerMovieSearch', 'triggerSeriesSearch', 'applyAvistazTag', 'escalateMediaToAvistaz', 'addMediaToArr', 'extractEpisodeNumber', 'pairFilesToEpisodes', 'verifyAvistazTags'],
     {
       axios,
       CONFIG,
@@ -152,6 +152,25 @@ const { loadSandbox } = require('./extract');
 
   result = await sandbox.run("addMediaToArr({ mediaType: 'tv' })");
   assert.deepStrictEqual({ ok: result.ok, reason: result.reason }, { ok: false, reason: 'no_tvdb_id' }, 'tv without tvdbId fails cleanly');
+
+  // Guided-import pairing: episode numbers from filenames when they parse (skipping years and
+  // resolutions), natural-order fallback when they don't.
+  assert.strictEqual(sandbox.run("extractEpisodeNumber('Show.E05.1080p.mkv', 20)"), 5, 'E05 marker wins');
+  assert.strictEqual(sandbox.run("extractEpisodeNumber('They Kiss Again (2007) ep12 hardsub.avi', 20)"), 12, 'ep12 marker parses');
+  assert.strictEqual(sandbox.run("extractEpisodeNumber('TKA.2007.03.720p.mkv', 20)"), 3, 'year and resolution are skipped, last plausible number wins');
+  assert.strictEqual(sandbox.run("extractEpisodeNumber('finale.mkv', 20)"), null, 'no number at all is null');
+  const eps = JSON.stringify([{ id: 101, episodeNumber: 1 }, { id: 102, episodeNumber: 2 }, { id: 103, episodeNumber: 3 }]);
+  let mapped = sandbox.run(`pairFilesToEpisodes([{ path: '/x/ep02.avi' }, { path: '/x/ep01.avi' }, { path: '/x/ep03.avi' }], ${eps})`);
+  assert.strictEqual(mapped.strategy, 'numbered', 'clean episode markers use numbered strategy');
+  assert.strictEqual(JSON.stringify(mapped.pairs.map(p => [String(p.path).split('/').pop(), p.episodeId])),
+    JSON.stringify([['ep01.avi', 101], ['ep02.avi', 102], ['ep03.avi', 103]]), 'files map to the right episode ids regardless of input order');
+  mapped = sandbox.run(`pairFilesToEpisodes([{ path: '/x/part-b.avi' }, { path: '/x/part-a.avi' }], ${eps})`);
+  assert.strictEqual(mapped.strategy, 'ordinal', 'numberless names fall back to ordinal order');
+  assert.strictEqual(JSON.stringify(mapped.pairs.map(p => [String(p.path).split('/').pop(), p.episodeNumber])),
+    JSON.stringify([['part-a.avi', 1], ['part-b.avi', 2]]), 'ordinal pairing follows natural filename order');
+  assert.strictEqual(mapped.leftoverEpisodes, 1, 'unmatched episodes are counted');
+  mapped = sandbox.run(`pairFilesToEpisodes([{ path: '/x/ep2.avi' }, { path: '/x/ep02.avi' }], ${eps})`);
+  assert.strictEqual(mapped.strategy, 'ordinal', 'duplicate episode numbers fall back to ordinal (never two files on one episode)');
 
   server.close();
   console.log('ok - escalation');
