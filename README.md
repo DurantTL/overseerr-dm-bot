@@ -581,9 +581,60 @@ marks, separate Tautulli history. So each person belongs to exactly one server:
   server in the account — including ones in `PLEX_EXCLUDE_SERVERS` — so nobody keeps quiet access
   to an "excluded" box after losing access.
 
+## Regional Tiering ("edge cache")
+
+Multiple nodes each run their own Plex against a local Syncthing replica of the media tree
+(home is the sole sender; every other node is Receive Only). The tiering planner keeps each
+edge node's replica curated to its disk budget: a per-node keep/drop manifest, published by the
+bot and converged by a tiny standalone sync agent on each node (`agent/`).
+
+How each node is curated:
+- **Tier 0 (floor, never evicted):** keep list ∪ `NEVER_DELETE_MEDIA_IDS` ∪ the universal core
+  (top-K titles by summed plays across every node's Tautulli). Any title with no copy on an
+  enabled `full` master is force-kept everywhere — edge pruning can never lose data.
+- **Tier 1 (node demand):** per `demand_source`:
+  - `tautulli` — the node's own Tautulli history
+    (`recencyDecay × log1p(plays) × log1p(distinctUsers)`).
+  - `plex` — the same score from the node's PMS **directly**
+    (`/status/sessions/history/all` with `plex_url`/`plex_token`) — real watch history with no
+    Tautulli install; PMS history is per-server, so it's inherently node-local.
+  - `atime` — an LRU over file last-read times reported by the agent; atime only moves when
+    *that node's* Plex reads a file. The media filesystem must be mounted `relatime` (not
+    `noatime`), and Plex's nightly read-heavy tasks (extensive analysis, preview thumbnails,
+    intro/credit detection) should be disabled on that server or they count as watches. As a
+    backstop, set the node's `atime_mask` (`HH:MM-HH:MM`, UTC, may wrap midnight) to the
+    maintenance window: reads landing in that window are laundered at report ingest — the
+    previously stored atime (the last plausible human read) is carried forward instead.
+- **Tier 2 (member pins, `restricted` nodes only):** requests by the node's member set
+  (`/tier-member`) pin for `TIER_REQUEST_GRACE_DAYS` — cold-start before Tautulli has signal.
+  `open` nodes never pin (a requester could stream from any node), and on `restricted` nodes
+  the members' own history outranks the universal core when the budget is tight.
+
+The fill is an incremental watermark LRU: eviction happens **only to admit** something warmer
+(never a scheduled purge), recently-watched (`warm_days`) and recently-added (`fresh_days`)
+titles are never evicted, and a new title is admitted only if it outranks the coldest victim.
+`sticky` nodes (old drives — California) get a doubled warm window and a bigger headroom floor.
+If a node's budget covers the whole library, nothing is ever dropped.
+
+Safety model (§ the agent enforces this order every run):
+1. Assert the Syncthing folder is still **Receive Only** — abort + report otherwise.
+2. Write the manifest's `.stignore` (drops, folder-relative; no delete-on-ignore directive).
+3. Rescan and **confirm the ignores loaded**.
+4. Only then delete local files that are dropped *and* ignored (ignored ⇒ never re-pulled).
+
+Commands: `/tier preview [node]` (dry-run, shows the delta vs the last applied plan),
+`/tier apply [node]` (publish manifests), `/tier-node add|list|enable|disable|token`,
+`/tier-member add|remove|list`. Agents authenticate to `GET /agent/manifest/:node` /
+`POST /agent/report/:node` with the per-node bearer token from `/tier-node token` (hash-stored,
+shown once). Env knobs: `TIER_CORE_TOP_K`, `TIER_HALF_LIFE_DAYS`, `TIER_WARM_DAYS`,
+`TIER_FRESH_DAYS`, `TIER_REQUEST_GRACE_DAYS`, `TIER_HISTORY_DAYS`, `TIER_SOURCE_ROOT`,
+`TIER_NODES_SEED` (JSON seed applied only when the `tier_nodes` table is empty).
+
+See `agent/README.md` for deploying the node agent (systemd timer or Docker).
+
 ## Slash Command List
 Admin:
-- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`, `/avistaz`, `/rtorrent`, `/stage-bulk`, `/assign-server`
+- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`, `/avistaz`, `/rtorrent`, `/stage-bulk`, `/assign-server`, `/tier`, `/tier-node`, `/tier-member`
 
 User:
 - `/request`, `/request-status`, `/download`, `/queue`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`, `/stage`, `/staged`, `/pin`, `/unpin`
@@ -601,6 +652,10 @@ User:
 - `grab_jobs` (AvistaZ direct-grab pipeline: sent → downloading → complete → transferring → done; adopted torrents enter at downloading/complete with origin `adopt`/`adopt-auto`)
 - `stage_jobs` (durable Plex Home staging queue)
 - `staged_items` (PH cache inventory + LRU/pin state)
+- `tier_nodes` (regional tiering node registry)
+- `tier_node_members` (restricted nodes' closed access sets)
+- `tier_agent_tokens` (per-node sync-agent bearer token hashes)
+- `tier_node_files` (agent-reported local inventory — the atime demand signal)
 
 ## Migration Notes
 On startup the bot creates missing tables and adds missing columns with non-destructive migrations. Existing data is preserved.
