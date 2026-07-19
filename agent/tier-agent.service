@@ -1,0 +1,15 @@
+[Unit]
+Description=overseerr-dm-bot tiering sync agent (one run)
+Wants=network-online.target
+After=network-online.target syncthing.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/tier-agent/agent.env
+ExecStart=/usr/bin/node /opt/tier-agent/agent.js
+StateDirectory=tier-agent
+# StateDirectory gives us /var/lib/tier-agent owned by the service user.
+Environment=TIER_STATE_DIR=/var/lib/tier-agent
+User=syncthing
+Nice=10
+IOSchedulingClass=idle

@@ -27,12 +27,13 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPlan, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
 const { decideEscalationAction, escalationEligible } = require('./src/escalation');
-const { tautulliConfigured, tautulliApi, describeSession } = require('./src/tautulli');
+const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
+const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, renderSyncthingStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
@@ -1824,6 +1825,35 @@ const slashCommands = [
   new SlashCommandBuilder().setName('downloads').setDescription('Show your active download links'),
   new SlashCommandBuilder().setName('keep').setDescription('Show your keep list'),
   new SlashCommandBuilder().setName('help').setDescription('How this media server works'),
+  new SlashCommandBuilder().setName('tier').setDescription('Regional tiering: per-node edge-cache plans').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(s => s.setName('preview').setDescription('Dry-run the planner — shows keep/drop per node, writes nothing').addStringOption(o => o.setName('node').setDescription('Only this node')))
+    .addSubcommand(s => s.setName('apply').setDescription('Publish manifests — agents converge on their next run').addStringOption(o => o.setName('node').setDescription('Only this node'))),
+  new SlashCommandBuilder().setName('tier-node').setDescription('Manage the tiering node registry').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(s => s.setName('add').setDescription('Add or update a node')
+      .addStringOption(o => o.setName('name').setDescription('Node name, e.g. california').setRequired(true))
+      .addIntegerOption(o => o.setName('usable_gb').setDescription('Pool usable capacity in GB'))
+      .addIntegerOption(o => o.setName('headroom_pct').setDescription('Free-space floor % (default 15; ~25 for old drives)'))
+      .addStringOption(o => o.setName('access').setDescription('Who may stream from it').addChoices({ name: 'open (all linked users)', value: 'open' }, { name: 'restricted (explicit member set)', value: 'restricted' }))
+      .addStringOption(o => o.setName('demand_source').setDescription('Demand signal').addChoices({ name: 'tautulli (watch history)', value: 'tautulli' }, { name: 'plex (PMS watch history, no Tautulli)', value: 'plex' }, { name: 'atime (file last-read LRU)', value: 'atime' }))
+      .addStringOption(o => o.setName('transport').setDescription('Sync transport').addChoices({ name: 'syncthing', value: 'syncthing' }, { name: 'rclone', value: 'rclone' }))
+      .addStringOption(o => o.setName('folder_root').setDescription('Syncthing folder root on that node'))
+      .addStringOption(o => o.setName('tautulli_url').setDescription('That node\'s Tautulli URL'))
+      .addStringOption(o => o.setName('tautulli_api_key').setDescription('That node\'s Tautulli API key'))
+      .addStringOption(o => o.setName('plex_url').setDescription('That node\'s Plex server URL (for demand_source plex)'))
+      .addStringOption(o => o.setName('plex_token').setDescription('That node\'s Plex server token'))
+      .addStringOption(o => o.setName('atime_mask').setDescription('UTC window to launder Plex-maintenance reads from atime, e.g. 09:00-13:00'))
+      .addBooleanOption(o => o.setName('full').setDescription('Never-pruned master (holds everything)'))
+      .addBooleanOption(o => o.setName('sticky').setDescription('Extra-low churn (old drives): longer warm window'))
+      .addIntegerOption(o => o.setName('warm_days').setDescription('Override: recently-watched protection window'))
+      .addIntegerOption(o => o.setName('fresh_days').setDescription('Override: newly-added grace window')))
+    .addSubcommand(s => s.setName('list').setDescription('List all nodes'))
+    .addSubcommand(s => s.setName('enable').setDescription('Enable a node').addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true)))
+    .addSubcommand(s => s.setName('disable').setDescription('Disable a node (skipped by the planner entirely)').addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true)))
+    .addSubcommand(s => s.setName('token').setDescription('(Re)generate the node\'s sync-agent bearer token — shown once').addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true))),
+  new SlashCommandBuilder().setName('tier-member').setDescription('Manage a restricted node\'s member set').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(s => s.setName('add').setDescription('Add a member').addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('node').setDescription('Restricted node name').setRequired(true)))
+    .addSubcommand(s => s.setName('remove').setDescription('Remove a member').addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('node').setDescription('Restricted node name').setRequired(true)))
+    .addSubcommand(s => s.setName('list').setDescription('List members').addStringOption(o => o.setName('node').setDescription('Restricted node name').setRequired(true))),
   new SlashCommandBuilder().setName('revoke-downloads').setDescription('Revoke download links').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption(o => o.setName('scope').setDescription('all or user').setRequired(true).addChoices({ name: 'all', value: 'all' }, { name: 'user', value: 'user' }))
     .addUserOption(o => o.setName('user').setDescription('User for user scope').setRequired(false)),
@@ -2212,6 +2242,9 @@ async function handleSlashCommand(interaction) {
   if (n === 'downloads') return handleDownloadsCommand(interaction);
   if (n === 'keep') return handleKeepCommand(interaction);
   if (n === 'help') return handleHelpCommand(interaction);
+  if (n === 'tier') return handleTierCommand(interaction);
+  if (n === 'tier-node') return handleTierNodeCommand(interaction);
+  if (n === 'tier-member') return handleTierMemberCommand(interaction);
   if (n === 'revoke-downloads') return handleRevokeDownloadsCommand(interaction);
 }
 
@@ -3922,6 +3955,9 @@ async function handleHelpCommand(interaction) {
       '`/indexers` — Prowlarr indexer + Byparr health',
       '`/debrid` — Premiumize account + transfer status',
       '`/cleanup-suggestions` — Largest/oldest media that could be cleaned up',
+      '`/tier` — Regional tiering: preview/apply per-node edge-cache plans',
+      '`/tier-node` — Manage the tiering node registry (capacity, access mode, demand source)',
+      '`/tier-member` — Manage a restricted node\'s member set',
     ];
     if (grabConfigured()) {
       adminCommands.push('`/avistaz` — Search AvistaZ directly and send a release to the seedbox');
@@ -3938,6 +3974,215 @@ async function handleHelpCommand(interaction) {
   }
   await interaction.reply({ embeds: [embed], ephemeral: true });
 }
+// ---- Regional tiering ("edge cache") ----
+// The planner itself lives in src/tier.js (Discord-free, DB-free); this block feeds it real
+// data (node registry, per-node Tautulli history, agent atime reports, member requests,
+// keep list, previous plans) and turns the result into embeds / published manifests.
+
+function tierKeepListIds() {
+  return db.prepare('SELECT DISTINCT media_id FROM keep_list WHERE expires_at IS NULL OR expires_at > ?').all(Date.now()).map(r => r.media_id);
+}
+
+async function buildTierPlans() {
+  const nodes = listTierNodes();
+  const enabled = nodes.filter(n => n.enabled);
+  if (!enabled.length) return { manifests: {}, warnings: ['No enabled tier nodes — add one with `/tier-node add`.'], nodes };
+  const inventory = await fetchTierInventory({
+    sources: arrSources(),
+    remap: remapPath,
+    sourceRoot: CONFIG.TIER_SOURCE_ROOT,
+    onError: (s, err) => audit('external_api_error', { provider: s.label, error: err.message, action: 'tier_inventory' }),
+  });
+  const historiesByNode = await gatherNodeHistories(enabled, {
+    fetchHistory,
+    fetchPlexHistory,
+    afterDays: CONFIG.TIER_HISTORY_DAYS,
+    onError: (n, err) => audit('external_api_error', { provider: `${n.demand_source}:${n.name}`, error: err.message, action: 'tier_history' }),
+  });
+  const atimeReports = {};
+  const memberRequests = {};
+  const prevPlans = {};
+  for (const n of enabled) {
+    if (n.demand_source === 'atime') atimeReports[n.name] = listTierNodeFiles(n.name);
+    if (n.access === 'restricted') {
+      memberRequests[n.name] = listRequestsByRequesters(listTierNodeMembers(n.name), CONFIG.TIER_REQUEST_GRACE_DAYS);
+    }
+    const prev = getTierPlan(n.name);
+    if (prev) prevPlans[n.name] = prev;
+  }
+  const result = planTier({
+    nodes,
+    inventory,
+    historiesByNode,
+    atimeReports,
+    memberRequests,
+    keepListIds: tierKeepListIds(),
+    neverDeleteIds: CONFIG.NEVER_DELETE_MEDIA_IDS,
+    prevPlans,
+    config: {
+      coreTopK: CONFIG.TIER_CORE_TOP_K,
+      halfLifeDays: CONFIG.TIER_HALF_LIFE_DAYS,
+      warmDays: CONFIG.TIER_WARM_DAYS,
+      freshDays: CONFIG.TIER_FRESH_DAYS,
+      requestGraceDays: CONFIG.TIER_REQUEST_GRACE_DAYS,
+    },
+  });
+  return { ...result, nodes, prevPlans };
+}
+
+function tierManifestField(node, m, prevPlan) {
+  const free = Math.max(0, (node.usable_bytes || 0) - m.stats.keepBytes);
+  const lines = [
+    `Keep: **${m.stats.keepCount}** titles · ${fmtSpace(m.stats.keepBytes)}`,
+    `Drop: **${m.stats.dropCount}** titles · ${fmtSpace(m.stats.dropBytes)}`,
+    `Budget ${fmtSpace(m.stats.budgetBytes)} → ${fmtSpace(free)} free of ${fmtSpace(node.usable_bytes || 0)}`,
+  ];
+  if (m.full) lines.push('🔒 Full master — never pruned');
+  if (prevPlan) {
+    const prevKeep = new Set(prevPlan.keepMediaIds || []);
+    const nowKeep = m.keep.map(e => e.mediaId);
+    const added = nowKeep.filter(id => !prevKeep.has(id)).length;
+    const removed = [...prevKeep].filter(id => !nowKeep.includes(id)).length;
+    lines.push(prevPlan.planHash === m.planHash
+      ? 'No change vs applied plan'
+      : `Δ vs applied: +${added} / −${removed} titles`);
+  } else lines.push('No plan applied yet');
+  if (m.forceKept.length) lines.push(`⚠️ ${m.forceKept.length} force-kept (no full-node copy)`);
+  return { name: `${m.full ? '🏠' : '📦'} ${m.node} (${m.access}, ${m.demandSource})`, value: lines.join('\n'), inline: false };
+}
+
+async function handleTierCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  const sub = interaction.options.getSubcommand();
+  const only = interaction.options.getString('node')?.toLowerCase() || null;
+  await interaction.deferReply({ ephemeral: true });
+  let plans;
+  try {
+    plans = await buildTierPlans();
+  } catch (err) {
+    return interaction.editReply(`❌ Planning failed: ${err.message}`);
+  }
+  let names = Object.keys(plans.manifests);
+  if (only) names = names.filter(n => n === only);
+  if (!names.length) {
+    return interaction.editReply(only
+      ? `❌ No plan for node \`${only}\` — is it registered and enabled? (\`/tier-node list\`)`
+      : `❌ Nothing to plan.\n${(plans.warnings || []).map(w => `• ${w}`).join('\n')}`);
+  }
+
+  if (sub === 'apply') {
+    for (const name of names) {
+      const m = plans.manifests[name];
+      const stignore = renderSyncthingStignore(m);
+      setSetting(`tier_manifest:${name}`, JSON.stringify({ ...m, stignore, rcloneFilesFrom: m.transport === 'rclone' ? renderRclone(m) : undefined }));
+      setTierPlan(name, { planHash: m.planHash, keepMediaIds: m.keep.map(e => e.mediaId), appliedAt: Date.now() });
+      audit('tier_plan_applied', { actorDiscordId: interaction.user.id, node: name, planHash: m.planHash, keepCount: m.stats.keepCount, dropCount: m.stats.dropCount, dropBytes: m.stats.dropBytes });
+    }
+  }
+
+  const embed = brandedEmbed(sub === 'apply' ? COLORS.SUCCESS : COLORS.INFO)
+    .setTitle(sub === 'apply' ? '🗺️ Tier Plans Published' : '🗺️ Tier Preview (dry run — nothing written)')
+    .setDescription(sub === 'apply'
+      ? 'Manifests are live at `/agent/manifest/:node` — each node\'s sync agent converges on its next run (ignore-first, then prune).'
+      : 'What `/tier apply` would publish. Drops only ever remove edge copies — every title stays on a full master.');
+  for (const name of names.slice(0, 12)) {
+    embed.addFields(tierManifestField(plans.nodes.find(n => n.name === name), plans.manifests[name], plans.prevPlans?.[name]));
+  }
+  if (plans.warnings?.length) embed.addFields({ name: '⚠️ Warnings', value: plans.warnings.slice(0, 8).map(w => `• ${w}`).join('\n').slice(0, 1024), inline: false });
+  return interaction.editReply({ embeds: [embed] });
+}
+
+async function handleTierNodeCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  const sub = interaction.options.getSubcommand();
+
+  if (sub === 'list') {
+    const nodes = listTierNodes();
+    if (!nodes.length) return interaction.reply({ content: 'No tier nodes yet — `/tier-node add name:<node>` creates one.', ephemeral: true });
+    const lines = nodes.map(n => {
+      const members = n.access === 'restricted' ? ` · ${listTierNodeMembers(n.name).length} member(s)` : '';
+      const plan = getTierPlan(n.name);
+      return `${n.enabled ? '🟢' : '⚫'} **${n.name}** — ${fmtSpace(n.usable_bytes || 0)}, headroom ${n.headroom_pct}%${n.full ? ', **full master**' : ''}${n.sticky ? ', sticky' : ''} · ${n.access}/${n.demand_source}/${n.transport}${members}${plan ? ` · plan \`${plan.planHash}\`` : ' · no plan applied'}`;
+    });
+    return interaction.reply({ embeds: [brandedEmbed(COLORS.INFO).setTitle('📦 Tier Nodes').setDescription(lines.join('\n').slice(0, 4000))], ephemeral: true });
+  }
+
+  const name = interaction.options.getString('name', true).toLowerCase();
+
+  if (sub === 'enable' || sub === 'disable') {
+    if (!getTierNode(name)) return interaction.reply({ content: `❌ Unknown node \`${name}\`.`, ephemeral: true });
+    setTierNodeEnabled(name, sub === 'enable');
+    audit('tier_node_toggled', { actorDiscordId: interaction.user.id, node: name, enabled: sub === 'enable' });
+    return interaction.reply({ content: sub === 'enable' ? `✅ Node \`${name}\` enabled — it joins the next plan.` : `✅ Node \`${name}\` disabled — the planner skips it entirely (no manifest, no pins, history excluded from the universal core).`, ephemeral: true });
+  }
+
+  if (sub === 'token') {
+    if (!getTierNode(name)) return interaction.reply({ content: `❌ Unknown node \`${name}\` — add it first.`, ephemeral: true });
+    const raw = setTierAgentToken(name);
+    audit('tier_agent_token_rotated', { actorDiscordId: interaction.user.id, node: name });
+    return interaction.reply({ content: `🔑 Agent token for \`${name}\` (shown once, replaces any previous token):\n\`\`\`\n${raw}\n\`\`\`\nSet it as \`TIER_AGENT_TOKEN\` on that node's sync agent.`, ephemeral: true });
+  }
+
+  // sub === 'add' (also edits an existing node — only supplied options change)
+  const usableGb = interaction.options.getInteger('usable_gb');
+  const fields = { name };
+  if (usableGb != null) fields.usable_bytes = usableGb * 1024 ** 3;
+  for (const [opt, col] of [['headroom_pct', 'headroom_pct'], ['warm_days', 'warm_days'], ['fresh_days', 'fresh_days']]) {
+    const v = interaction.options.getInteger(opt);
+    if (v != null) fields[col] = v;
+  }
+  for (const opt of ['access', 'demand_source', 'transport', 'folder_root', 'tautulli_url', 'tautulli_api_key', 'plex_url', 'plex_token', 'atime_mask']) {
+    const v = interaction.options.getString(opt);
+    if (v != null) fields[opt] = v;
+  }
+  if (fields.atime_mask !== undefined && fields.atime_mask !== '' && !parseAtimeMask(fields.atime_mask)) {
+    return interaction.reply({ content: `❌ \`atime_mask\` must be a UTC time window like \`09:00-13:00\` (may wrap midnight). Got \`${fields.atime_mask}\`.`, ephemeral: true });
+  }
+  for (const opt of ['full', 'sticky']) {
+    const v = interaction.options.getBoolean(opt);
+    if (v != null) fields[opt] = v;
+  }
+  const { created, node } = upsertTierNode(fields);
+  audit('tier_node_upserted', { actorDiscordId: interaction.user.id, node: name, created, fields: Object.keys(fields) });
+  const embed = brandedEmbed(COLORS.SUCCESS)
+    .setTitle(created ? `📦 Node Added: ${name}` : `📦 Node Updated: ${name}`)
+    .setDescription([
+      `Capacity **${fmtSpace(node.usable_bytes || 0)}**, headroom **${node.headroom_pct}%** → budget ${fmtSpace(Math.floor((node.usable_bytes || 0) * (1 - node.headroom_pct / 100)))}`,
+      `Access **${node.access}** · demand **${node.demand_source}** · transport **${node.transport}**${node.full ? ' · **full master**' : ''}${node.sticky ? ' · sticky' : ''}`,
+      node.folder_root ? `Folder root \`${node.folder_root}\`` : '⚠️ No `folder_root` set — the agent needs it.',
+      node.demand_source === 'tautulli' && !node.tautulli_url ? '⚠️ No Tautulli configured — this node contributes no demand signal (floor + pins only).' : null,
+      node.demand_source === 'plex' && !node.plex_url ? '⚠️ `demand_source` is plex but no `plex_url`/`plex_token` set — this node contributes no demand signal until they are.' : null,
+      node.demand_source === 'atime' && node.atime_mask ? `atime mask \`${node.atime_mask}\` UTC — reads in that window are treated as Plex maintenance, not watches.` : null,
+      node.demand_source === 'atime' && !node.atime_mask ? '💡 Tip: if Plex scheduled tasks read files nightly on this node, set `atime_mask` to that window (UTC) or they will count as watches.' : null,
+      created ? `Next: \`/tier-node token name:${name}\` for the agent, then \`/tier preview\`.` : null,
+    ].filter(Boolean).join('\n'));
+  return interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+async function handleTierMemberCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  const sub = interaction.options.getSubcommand();
+  const nodeName = interaction.options.getString('node', true).toLowerCase();
+  const node = getTierNode(nodeName);
+  if (!node) return interaction.reply({ content: `❌ Unknown node \`${nodeName}\`.`, ephemeral: true });
+  if (node.access !== 'restricted') {
+    return interaction.reply({ content: `❌ \`${nodeName}\` is an **open** node — membership doesn't apply (any linked user may stream; its own watch history defines its audience). Use \`/tier-node add name:${nodeName} access:restricted\` first if you mean to close it.`, ephemeral: true });
+  }
+  if (sub === 'list') {
+    const members = listTierNodeMembers(nodeName);
+    return interaction.reply({ content: members.length ? `Members of \`${nodeName}\` (${members.length}):\n${members.map(id => `• <@${id}>`).join('\n')}` : `\`${nodeName}\` has no members yet — it curates on demand + core only until you add some.`, ephemeral: true, allowedMentions: { parse: [] } });
+  }
+  const user = interaction.options.getUser('user', true);
+  if (sub === 'add') {
+    const added = addTierNodeMember(nodeName, user.id);
+    audit('tier_member_added', { actorDiscordId: interaction.user.id, targetDiscordId: user.id, node: nodeName });
+    return interaction.reply({ content: added ? `✅ <@${user.id}> added to \`${nodeName}\` — their requests now pin there for ${CONFIG.TIER_REQUEST_GRACE_DAYS} days.` : `<@${user.id}> is already a member of \`${nodeName}\`.`, ephemeral: true, allowedMentions: { parse: [] } });
+  }
+  const removed = removeTierNodeMember(nodeName, user.id);
+  audit('tier_member_removed', { actorDiscordId: interaction.user.id, targetDiscordId: user.id, node: nodeName });
+  return interaction.reply({ content: removed ? `✅ <@${user.id}> removed from \`${nodeName}\`.` : `<@${user.id}> wasn't a member of \`${nodeName}\`.`, ephemeral: true, allowedMentions: { parse: [] } });
+}
+
 async function handleRevokeDownloadsCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
   const scope = interaction.options.getString('scope', true);
@@ -4653,7 +4898,14 @@ function startExpressServer() {
   const app = express();
   app.disable('x-powered-by');
   const upload = multer({ limits: { fileSize: 5 * 1024 * 1024, files: 5 } });
-  app.use((req, res, next) => { if (req.is('multipart/form-data')) return next(); bodyParser.json({ limit: '1mb' })(req, res, next); });
+  // Agent reports can carry a full atime inventory (thousands of file rows), so /agent/ gets a
+  // larger JSON limit than the webhook/dashboard routes.
+  const agentJsonParser = bodyParser.json({ limit: '25mb' });
+  app.use((req, res, next) => {
+    if (req.is('multipart/form-data')) return next();
+    if (req.path.startsWith('/agent/')) return agentJsonParser(req, res, next);
+    bodyParser.json({ limit: '1mb' })(req, res, next);
+  });
 
   app.get('/health', async (_req, res) => res.json(await gatherHealth()));
 
@@ -4773,6 +5025,58 @@ function startExpressServer() {
     }
   });
 
+  // ---- Regional tiering: per-node sync-agent API ----
+  // Same auth style as download links: only a hash of each node's bearer token is stored;
+  // compare in constant time. A node's token only unlocks that node's manifest/report.
+  const tierAgentAuth = (req, res, next) => {
+    const node = String(req.params.node || '').toLowerCase();
+    const m = /^Bearer\s+(\S+)$/.exec(String(req.headers.authorization || ''));
+    const storedHash = getTierAgentTokenHash(node);
+    if (!m || !storedHash || !safeEqual(sha256(m[1]), storedHash)) {
+      audit('tier_agent_auth_failed', { node, ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown' });
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    next();
+  };
+
+  app.get('/agent/manifest/:node', tierAgentAuth, (req, res) => {
+    const raw = getSetting(`tier_manifest:${String(req.params.node).toLowerCase()}`);
+    if (!raw) return res.status(404).json({ error: 'No manifest published for this node — run /tier apply.' });
+    res.type('json').send(raw);
+  });
+
+  app.post('/agent/report/:node', tierAgentAuth, (req, res) => {
+    const node = String(req.params.node).toLowerCase();
+    const body = req.body || {};
+    const errors = Array.isArray(body.errors) ? body.errors.slice(0, 10).map(e => String(e).slice(0, 300)) : [];
+    // The atime demand signal (§3.2a): full local inventory snapshots replace the stored set.
+    // An EMPTY array is still a snapshot (the node may have pruned its last media file) —
+    // only an absent field means "no inventory in this report". When the node has an
+    // atime_mask, suspect (maintenance-window) atimes are laundered against the previously
+    // stored rows BEFORE the replace, so the DB always holds the last plausible human read.
+    if (Array.isArray(body.inventory)) {
+      try {
+        let files = body.inventory.slice(0, 200000);
+        const mask = parseAtimeMask(getTierNode(node)?.atime_mask);
+        if (mask) files = maskSuspectAtimes(files, listTierNodeFiles(node), mask);
+        replaceTierNodeFiles(node, files);
+      } catch (err) {
+        errors.push(`inventory store failed: ${err.message}`);
+      }
+    }
+    audit('tier_agent_report', { node, planHash: body.planHash || null, bytesFreed: body.bytesFreed || 0, droppedCount: (body.dropped || []).length, inventoryCount: Array.isArray(body.inventory) ? body.inventory.length : 0, errors: errors.join('; ').slice(0, 500) || undefined });
+    if ((body.bytesFreed || 0) > 0 || errors.length) {
+      notifyChannel('cleanup', { embeds: [brandedEmbed(errors.length ? COLORS.WARN : COLORS.SUCCESS)
+        .setTitle(`📦 Tier Agent Report — ${node}`)
+        .setDescription([
+          `Plan \`${body.planHash || '?'}\` converged.`,
+          (body.bytesFreed || 0) > 0 ? `Freed **${fmtSpace(body.bytesFreed)}** across ${(body.dropped || []).length} title(s). Master copies untouched.` : null,
+          errors.length ? `⚠️ Errors:\n${errors.map(e => `• ${e}`).join('\n')}` : null,
+        ].filter(Boolean).join('\n').slice(0, 4000))] });
+    }
+    res.json({ ok: true });
+  });
+
   if (CONFIG.DASHBOARD_ENABLED) {
     const loginLimits = new Map();
     RATE_LIMIT_MAPS.push(loginLimits);
@@ -4808,45 +5112,192 @@ function startExpressServer() {
     });
 
     app.get('/admin', dashboardAuth, async (_req, res) => {
+      const now = Date.now();
+      // Live activity: every external read is failure-tolerant so one dead integration never
+      // takes the dashboard down — null means "couldn't reach it", rendered as such.
+      const [health, sessions, queue, disks] = await Promise.all([
+        gatherHealth(),
+        tautulliConfigured() ? tautulliApi('get_activity').then(d => d?.sessions || []).catch(() => null) : Promise.resolve(null),
+        arrSources().length ? fetchArrQueues().catch(() => null) : Promise.resolve(null),
+        arrSources().length ? fetchDiskSpace().catch(() => null) : Promise.resolve(null),
+      ]);
+      const grabJobs = listActiveGrabJobs();
+      const stageJobs = listActiveStageJobs();
+      const escalations = getWatchingEscalations();
+      const pendingDeletions = db.prepare("SELECT * FROM pending_deletions WHERE status = 'pending' ORDER BY delete_after LIMIT 25").all();
+      const tierNodes = listTierNodes();
+      // Latest agent report per tier node, from the audit log.
+      const lastReportByNode = {};
+      for (const r of db.prepare("SELECT * FROM audit_log WHERE action = 'tier_agent_report' ORDER BY id DESC LIMIT 100").all()) {
+        try {
+          const m = JSON.parse(r.metadata_json);
+          if (m.node && !lastReportByNode[m.node]) lastReportByNode[m.node] = { ...m, at: r.created_at };
+        } catch (_e) {}
+      }
+
       const pendingPlex = db.prepare('SELECT * FROM users WHERE invited = 0 ORDER BY requested_at DESC LIMIT 25').all();
       const pendingRequests = db.prepare('SELECT * FROM requests WHERE status = ? ORDER BY id DESC LIMIT 25').all('pending');
       const linkedUsers = db.prepare('SELECT discord_id, email, invited, requested_at FROM users ORDER BY requested_at DESC LIMIT 100').all();
       const recentDownloads = db.prepare('SELECT * FROM download_access_log ORDER BY id DESC LIMIT 25').all();
-      const keepDecisions = db.prepare("SELECT * FROM audit_log WHERE action = 'keep_delete_decision_made' ORDER BY id DESC LIMIT 25").all();
       const auditRows = db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 50').all();
       const linkedTotal = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
-      const activeLinks = db.prepare('SELECT COUNT(*) AS c FROM download_tokens WHERE revoked = 0 AND expires_at > ?').get(Date.now()).c;
-      const health = await gatherHealth();
+      const activeLinks = db.prepare('SELECT COUNT(*) AS c FROM download_tokens WHERE revoked = 0 AND expires_at > ?').get(now).c;
 
       const stats = [
-        renderStat('Pending Plex users', pendingPlex.length),
+        renderStat('Streaming', sessions === null ? '—' : sessions.length),
+        renderStat('Downloading', queue === null ? '—' : queue.length),
+        renderStat('Active jobs', grabJobs.length + stageJobs.length),
+        renderStat('Watching', escalations.length),
+        renderStat('Tier nodes', `${tierNodes.filter(n => n.enabled).length}/${tierNodes.length}`),
         renderStat('Pending requests', pendingRequests.length),
         renderStat('Linked users', linkedTotal),
-        renderStat('Active download links', activeLinks),
+        renderStat('Download links', activeLinks),
       ].join('');
 
+      const decisionLabel = s => (s.transcode_decision === 'transcode' || s.video_decision === 'transcode' ? '🔥 transcoding'
+        : s.transcode_decision === 'copy' ? '📼 direct stream' : '▶️ direct play');
+      const nowPlayingItems = (sessions || []).map(s => ({
+        state: (s.transcode_decision === 'transcode' || s.video_decision === 'transcode') ? 'warn' : 'ok',
+        title: s.full_title || 'Unknown',
+        sub: `${s.friendly_name || s.user || 'Unknown'} · ${decisionLabel(s)}${s.stream_video_full_resolution ? ` · ${s.stream_video_full_resolution}` : ''}${s.player ? ` · ${s.player}` : ''}`,
+        pct: Number(s.progress_percent) || 0,
+      }));
+
+      const queueItems = (queue || []).map(q => ({
+        state: queueItemLooksUnhealthy(q) ? 'warn' : 'ok',
+        title: q.title,
+        sub: `${q.source.label} · ${q.status}${q.trackedState ? ` (${q.trackedState})` : ''}${q.messages.length ? ` · ⚠️ ${q.messages[0]}` : ''}`,
+        right: `${fmtSpace(Math.max(0, q.size - q.sizeleft))} / ${fmtSpace(q.size)}${q.timeleft ? ` · ${q.timeleft}` : ''}`,
+        pct: queuePercent(q),
+      }));
+
+      const jobItems = [
+        ...grabJobs.map(j => ({
+          state: j.state === 'failed' ? 'down' : 'ok',
+          title: j.release_title || j.title,
+          sub: `seedbox grab #${j.id} · ${j.state}${j.error ? ` · ${j.error}` : ''}`,
+          right: `${fmtSpace(j.size_bytes || 0)}${j.sent_at ? ` · started ${fmtAgo(j.sent_at)}` : ''}`,
+        })),
+        ...stageJobs.map(j => ({
+          state: j.status === 'failed' ? 'down' : 'ok',
+          title: j.title,
+          sub: `PH stage #${j.id} · ${j.status}`,
+          right: `${fmtSpace(j.size_bytes || 0)}${j.started_at ? ` · started ${fmtAgo(j.started_at)}` : ''}`,
+        })),
+      ];
+      const watchItems = [
+        ...escalations.map(e => ({
+          state: 'warn',
+          title: e.title,
+          sub: `escalation watch · ${e.state}${e.pre_authorized ? ' · pre-authorized' : ''}`,
+          right: `approved ${fmtAgo(e.approved_at)}`,
+        })),
+        ...pendingDeletions.map(p => ({
+          state: 'skip',
+          title: p.title || p.media_id,
+          sub: 'pending deletion (finished-watching prompt)',
+          right: `deletes ${fmtAgo(p.delete_after)}`,
+        })),
+      ];
+
+      const tierItems = tierNodes.map(n => {
+        const plan = getTierPlan(n.name);
+        const rep = lastReportByNode[n.name];
+        const repBits = rep
+          ? `agent ${fmtAgo(sqliteUtcMs(rep.at))}${rep.bytesFreed ? ` · freed ${fmtSpace(rep.bytesFreed)}` : ''}${rep.errors ? ' · ⚠️ errors' : ''}`
+          : 'no agent report yet';
+        return {
+          state: !n.enabled ? 'skip' : (rep && rep.errors ? 'warn' : 'ok'),
+          title: `${n.name}${n.full ? ' · full master' : ''}${n.sticky ? ' · sticky' : ''}`,
+          sub: `${n.access} · ${n.demand_source}${n.demand_source === 'atime' && n.atime_mask ? ` (mask ${n.atime_mask})` : ''} · ${n.transport} · ${fmtSpace(n.usable_bytes || 0)} @ ${n.headroom_pct}% headroom`,
+          right: `${plan ? `plan ${plan.planHash} · applied ${fmtAgo(plan.appliedAt)}` : 'no plan applied'} · ${repBits}`,
+        };
+      });
+
+      const diskItems = (disks || []).map(d => {
+        const used = (d.totalSpace || 0) - (d.freeSpace || 0);
+        const pct = d.totalSpace ? Math.round((used / d.totalSpace) * 100) : 0;
+        return {
+          state: (d.freeSpace || 0) < CONFIG.DISK_SPACE_WARN_GB * 1024 ** 3 ? 'warn' : 'ok',
+          title: d.displayPath || d.path,
+          sub: `${fmtSpace(d.freeSpace || 0)} free of ${fmtSpace(d.totalSpace || 0)}`,
+          right: `${pct}% used`,
+          pct,
+        };
+      });
+
+      const plexUserRows = pendingPlex.map(u => ({ email: u.email, discord: u.discord_id, requested: fmtAgo(u.requested_at) }));
+      const requestRows = pendingRequests.map(r => ({ title: r.title, type: mediaTypeLabel(r.media_type, r.is_4k), requester: r.requested_by_discord_id || '—', when: fmtAgo(sqliteUtcMs(r.created_at)) }));
+      const linkedRows = linkedUsers.map(u => ({ email: u.email, discord: u.discord_id, invited: u.invited ? '✅' : '⏳', since: fmtAgo(u.requested_at) }));
+      const downloadRows = recentDownloads.map(d => ({ when: fmtAgo(sqliteUtcMs(d.created_at)), file: (d.file_path || '').split('/').pop() || '—', status: d.status, sent: d.bytes_sent ? fmtSpace(d.bytes_sent) : '', ip: d.ip || '' }));
+      const auditTableRows = auditRows.map(a => ({ when: fmtAgo(sqliteUtcMs(a.created_at)), action: a.action, details: String(a.metadata_json || '').slice(0, 160) }));
+
+      const unavailable = which => `<p class="muted">${escapeHtml(which)} unreachable or not configured.</p>`;
+      const nav = [['now', 'Now'], ['jobs', 'Jobs'], ['tier', 'Tiering'], ['disks', 'Disks'], ['users', 'Users'], ['requests', 'Requests'], ['logs', 'Logs']];
+
       const body = `
-        <div class="overall ${health.overall === 'ok' ? 'ok' : 'warn'}">Overall status: <strong>${escapeHtml(String(health.overall).toUpperCase())}</strong></div>
+        <div class="overall ${health.overall === 'ok' ? 'ok' : 'warn'}">
+          <span>Overall: <strong>${escapeHtml(String(health.overall).toUpperCase())}</strong></span>
+          <span class="updated">updated ${new Date(now).toISOString().slice(11, 19)} UTC · auto-refreshes</span>
+        </div>
         <div class="stats">${stats}</div>
         <div class="card">
           <h2>Integrations</h2>
           <div class="badges">${renderHealthBadges(health)}</div>
         </div>
+        <div class="card" id="now">
+          <h2>▶️ Now Streaming</h2>
+          ${sessions === null ? unavailable('Tautulli') : renderItemList(nowPlayingItems, 'Nobody is streaming right now.')}
+        </div>
+        <div class="card">
+          <h2>⬇️ Downloading</h2>
+          ${queue === null ? unavailable('Radarr/Sonarr') : renderItemList(queueItems, 'Nothing in the download queues.')}
+        </div>
+        <div class="card" id="jobs">
+          <h2>⚙️ Active Jobs</h2>
+          ${renderItemList(jobItems, 'No seedbox grabs or staging copies running.')}
+        </div>
+        <div class="card">
+          <h2>👀 Watching / Scheduled</h2>
+          ${renderItemList(watchItems, 'No escalation watches or pending deletions.')}
+        </div>
+        <div class="card" id="tier">
+          <h2>📦 Tier Nodes</h2>
+          ${renderItemList(tierItems, 'No tier nodes registered — /tier-node add creates one.')}
+        </div>
+        <div class="card" id="disks">
+          <h2>💾 Disk Space</h2>
+          ${disks === null ? unavailable('*arr diskspace') : renderItemList(diskItems, 'No disks reported.')}
+        </div>
         <div class="card">
           <h2>Manual Actions</h2>
           <div class="actions">
             <a class="btn" href="/admin/health">Health JSON</a>
-            <a class="btn" href="/admin/action/sync-preview">Run Sync Preview</a>
-            <a class="btn" href="/admin/action/cleanup-preview">Run Cleanup Preview</a>
+            <a class="btn" href="/admin/action/sync-preview">Sync Preview</a>
+            <a class="btn" href="/admin/action/cleanup-preview">Cleanup Preview</a>
             <button class="btn danger" type="button" onclick="revokeAll()">Revoke All Download Links</button>
           </div>
         </div>
-        ${renderSection('Pending Plex Users', pendingPlex)}
-        ${renderSection('Pending Media Requests', pendingRequests)}
-        ${renderSection('Linked Users', linkedUsers)}
-        ${renderSection('Recent Downloads', recentDownloads)}
-        ${renderSection('Keep/Delete Decisions', keepDecisions)}
-        ${renderSection('Recent Audit Logs', auditRows)}
+        <div class="card" id="users">
+          <h2>Pending Plex Users</h2>
+          ${renderTable(plexUserRows)}
+        </div>
+        <div class="card">
+          <h2>Linked Users</h2>
+          ${renderTable(linkedRows)}
+        </div>
+        <div class="card" id="requests">
+          <h2>Pending Media Requests</h2>
+          ${renderTable(requestRows)}
+        </div>
+        <div class="card">
+          <h2>Recent Downloads</h2>
+          ${renderTable(downloadRows)}
+        </div>
+        <div class="card" id="logs">
+          <h2>Recent Audit Log</h2>
+          ${renderTable(auditTableRows)}
+        </div>
         <script>
           async function revokeAll() {
             if (!confirm('Revoke ALL active download links? This cannot be undone.')) return;
@@ -4855,7 +5306,7 @@ function startExpressServer() {
             if (r.ok) location.reload();
           }
         </script>`;
-      res.type('html').send(renderPage('Admin Dashboard', body, true));
+      res.type('html').send(renderPage('Dashboard', body, { showLogout: true, nav, autoRefresh: true }));
     });
 
     app.get('/admin/health', dashboardAuth, async (_req, res) => res.json(await gatherHealth()));
@@ -4888,61 +5339,151 @@ function escapeHtml(str) {
 
 // ---- Dashboard rendering (dark Plex/Overseerr-style theme, all inline, no build step) ----
 
+// Mobile-first: sticky header with a horizontally-scrolling section nav, activity rendered as
+// touch-friendly item rows with progress bars, and tables that collapse into labeled cards on
+// narrow screens. All inline, no build step, dark Plex/Overseerr look.
 const DASHBOARD_CSS = `
-  :root { --bg:#1b1b1d; --panel:#26282c; --panel2:#2e3035; --accent:#e5a00d; --text:#e8e8ea; --muted:#9aa0a6; --border:#3a3d42; --ok:#22c55e; --warn:#f59e0b; --down:#ef4444; --skip:#6b7280; }
+  :root { --bg:#131316; --panel:#1d1e23; --panel2:#26272e; --accent:#e5a00d; --text:#ececf0; --muted:#9aa0a6; --border:#33343c; --ok:#22c55e; --warn:#f59e0b; --down:#ef4444; --skip:#6b7280; }
   * { box-sizing: border-box; }
-  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); }
-  .topbar { position:sticky; top:0; z-index:10; display:flex; align-items:center; justify-content:space-between; padding:14px 20px; background:#141416; border-bottom:1px solid var(--border); }
-  .topbar h1 { margin:0; font-size:18px; }
+  html { -webkit-text-size-adjust:100%; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); padding-bottom:env(safe-area-inset-bottom); }
+  header.hdr { position:sticky; top:0; z-index:20; background:rgba(19,19,22,.94); backdrop-filter:blur(10px); border-bottom:1px solid var(--border); padding-top:env(safe-area-inset-top); }
+  .topbar { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 16px 8px; }
+  .topbar h1 { margin:0; font-size:16px; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .topbar .brand { color:var(--accent); }
-  .container { max-width:1100px; margin:0 auto; padding:20px; }
-  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px 18px; margin-bottom:18px; }
-  .card h2 { margin:0 0 12px; font-size:15px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
-  .overall { padding:12px 16px; border-radius:10px; margin-bottom:18px; font-size:15px; }
-  .overall.ok { background:rgba(34,197,94,.12); border:1px solid var(--ok); }
-  .overall.warn { background:rgba(245,158,11,.12); border:1px solid var(--warn); }
-  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:18px; }
-  .stat { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
-  .stat .n { font-size:26px; font-weight:700; color:var(--accent); }
-  .stat .l { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .nav { display:flex; gap:8px; overflow-x:auto; padding:4px 16px 10px; scrollbar-width:none; }
+  .nav::-webkit-scrollbar { display:none; }
+  .chip { flex:0 0 auto; padding:7px 14px; border-radius:999px; background:var(--panel2); border:1px solid var(--border); color:var(--text); font-size:13px; text-decoration:none; }
+  .chip:hover, .chip:active { border-color:var(--accent); }
+  .container { max-width:1100px; margin:0 auto; padding:16px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:14px 16px; margin-bottom:14px; scroll-margin-top:110px; }
+  .card h2 { margin:0 0 10px; font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+  .overall { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:baseline; justify-content:space-between; padding:12px 16px; border-radius:14px; margin-bottom:14px; font-size:14px; }
+  .overall.ok { background:rgba(34,197,94,.10); border:1px solid rgba(34,197,94,.5); }
+  .overall.warn { background:rgba(245,158,11,.10); border:1px solid rgba(245,158,11,.5); }
+  .overall .updated { color:var(--muted); font-size:12px; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:10px; margin-bottom:14px; }
+  .stat { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:12px 14px; }
+  .stat .n { font-size:22px; font-weight:700; color:var(--accent); line-height:1.2; }
+  .stat .l { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin-top:2px; }
   .badges { display:flex; flex-wrap:wrap; gap:8px; }
-  .badge { display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:999px; font-size:13px; background:var(--panel2); border:1px solid var(--border); }
-  .dot { width:9px; height:9px; border-radius:50%; }
+  .badge { display:inline-flex; align-items:center; gap:6px; padding:7px 11px; border-radius:999px; font-size:12.5px; background:var(--panel2); border:1px solid var(--border); }
+  .dot { width:9px; height:9px; border-radius:50%; flex:0 0 auto; }
   .dot.ok { background:var(--ok); } .dot.warn { background:var(--warn); } .dot.down { background:var(--down); } .dot.skip { background:var(--skip); }
+  .items { display:flex; flex-direction:column; }
+  .item { display:flex; gap:10px; align-items:flex-start; padding:10px 0; border-bottom:1px solid var(--border); }
+  .item:last-child { border-bottom:none; }
+  .item > .dot { margin-top:6px; }
+  .item-main { flex:1 1 auto; min-width:0; }
+  .item-title { font-size:14px; font-weight:600; overflow-wrap:anywhere; }
+  .item-sub { font-size:12.5px; color:var(--muted); margin-top:2px; overflow-wrap:anywhere; }
+  .item-right { flex:0 0 auto; font-size:12px; color:var(--muted); text-align:right; max-width:42%; overflow-wrap:anywhere; }
+  .bar { height:6px; background:var(--panel2); border-radius:999px; margin-top:7px; overflow:hidden; }
+  .bar-fill { height:100%; background:var(--accent); border-radius:999px; }
+  .bar-fill.hot { background:var(--ok); }
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); white-space:nowrap; max-width:340px; overflow:hidden; text-overflow:ellipsis; }
   th { color:var(--muted); font-weight:600; text-transform:uppercase; font-size:11px; letter-spacing:.04em; }
   tbody tr:nth-child(odd) { background:rgba(255,255,255,.02); }
-  .table-wrap { overflow-x:auto; }
-  .muted { color:var(--muted); font-style:italic; }
+  .table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  .muted { color:var(--muted); font-style:italic; font-size:13px; }
   .actions { display:flex; flex-wrap:wrap; gap:10px; }
-  .btn { display:inline-block; padding:9px 14px; border-radius:8px; background:var(--panel2); color:var(--text); border:1px solid var(--border); text-decoration:none; font-size:13px; cursor:pointer; }
+  .btn { display:inline-flex; align-items:center; justify-content:center; min-height:42px; padding:10px 16px; border-radius:10px; background:var(--panel2); color:var(--text); border:1px solid var(--border); text-decoration:none; font-size:13px; cursor:pointer; }
   .btn:hover { border-color:var(--accent); }
   .btn.danger { border-color:var(--down); color:#fca5a5; }
-  .btn.primary { background:var(--accent); color:#1b1b1d; border-color:var(--accent); font-weight:600; }
+  .btn.primary { background:var(--accent); color:#131316; border-color:var(--accent); font-weight:600; }
   form.logout { margin:0; }
-  .login-wrap { min-height:100vh; display:flex; align-items:center; justify-content:center; }
-  .login-card { width:100%; max-width:360px; background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:28px; }
+  .login-wrap { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:16px; }
+  .login-card { width:100%; max-width:360px; background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:28px; }
   .login-card h1 { margin:0 0 4px; font-size:20px; }
   .login-card h1 .brand { color:var(--accent); }
   .login-card p { margin:0 0 20px; color:var(--muted); font-size:13px; }
   .login-card label { display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
-  .login-card input { width:100%; padding:11px 12px; border-radius:8px; border:1px solid var(--border); background:#1b1b1d; color:var(--text); font-size:14px; margin-bottom:16px; }
+  .login-card input { width:100%; padding:12px; border-radius:10px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:16px; margin-bottom:16px; }
   .login-card .btn.primary { width:100%; text-align:center; }
-  .error { background:rgba(239,68,68,.12); border:1px solid var(--down); color:#fca5a5; padding:10px 12px; border-radius:8px; font-size:13px; margin-bottom:16px; }
+  .error { background:rgba(239,68,68,.12); border:1px solid var(--down); color:#fca5a5; padding:10px 12px; border-radius:10px; font-size:13px; margin-bottom:16px; }
+  @media (max-width:560px) {
+    .item { flex-wrap:wrap; }
+    .item-right { flex-basis:100%; max-width:none; text-align:left; margin-left:19px; margin-top:2px; }
+    .actions .btn { flex:1 1 45%; }
+  }
+  @media (max-width:640px) {
+    table, tbody, tr, td { display:block; }
+    thead { display:none; }
+    tbody tr { border:1px solid var(--border); border-radius:12px; margin-bottom:10px; padding:8px 12px; background:var(--panel2); }
+    tbody tr:nth-child(odd) { background:var(--panel2); }
+    td { border:none; padding:3px 0; white-space:normal; max-width:none; display:flex; gap:10px; overflow:visible; }
+    td::before { content:attr(data-label); flex:0 0 84px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; padding-top:2px; }
+  }
 `;
 
-function renderPage(title, bodyHtml, showLogout = false) {
+function renderPage(title, bodyHtml, { showLogout = false, nav = [], autoRefresh = false } = {}) {
+  const navHtml = nav.length
+    ? `<nav class="nav">${nav.map(([id, label]) => `<a class="chip" href="#${escapeHtml(id)}">${escapeHtml(label)}</a>`).join('')}</nav>`
+    : '';
+  // Auto-refresh pauses while the tab is hidden so a backgrounded phone doesn't burn
+  // battery/API calls re-checking every integration.
+  const refreshScript = autoRefresh ? `<script>
+    (function () {
+      var t;
+      function arm() { t = setTimeout(function () { location.reload(); }, 60000); }
+      document.addEventListener('visibilitychange', function () { if (document.hidden) clearTimeout(t); else arm(); });
+      if (!document.hidden) arm();
+    })();
+  </script>` : '';
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#131316">
   <title>${escapeHtml(title)} — Durant Media Server</title>
   <style>${DASHBOARD_CSS}</style></head><body>
-  <div class="topbar">
-    <h1><span class="brand">Durant</span> Media Server — ${escapeHtml(title)}</h1>
-    ${showLogout ? '<form class="logout" method="post" action="/admin/logout"><button class="btn" type="submit">Log out</button></form>' : ''}
-  </div>
+  <header class="hdr">
+    <div class="topbar">
+      <h1><span class="brand">Durant</span> Media Server</h1>
+      ${showLogout ? '<form class="logout" method="post" action="/admin/logout"><button class="btn" type="submit">Log out</button></form>' : ''}
+    </div>
+    ${navHtml}
+  </header>
   <div class="container">${bodyHtml}</div>
+  ${refreshScript}
   </body></html>`;
+}
+
+// Epoch ms from a SQLite CURRENT_TIMESTAMP string ('YYYY-MM-DD HH:MM:SS', UTC) or anything
+// Date.parse understands; null when unparseable.
+function sqliteUtcMs(v) {
+  if (typeof v === 'number') return v;
+  const s = String(v || '');
+  const t = Date.parse(/^\d{4}-\d{2}-\d{2} /.test(s) ? `${s.replace(' ', 'T')}Z` : s);
+  return Number.isFinite(t) ? t : null;
+}
+
+// '3m ago' / 'in 2h' for dashboard rows; empty string when the timestamp is unknown.
+function fmtAgo(ts) {
+  const t = typeof ts === 'number' ? ts : sqliteUtcMs(ts);
+  if (!Number.isFinite(t) || !t) return '';
+  const d = Date.now() - t;
+  return d >= 0 ? `${fmtDuration(d)} ago` : `in ${fmtDuration(-d)}`;
+}
+
+function renderBar(pct) {
+  const p = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+  return `<div class="bar"><div class="bar-fill${p >= 95 ? ' hot' : ''}" style="width:${p}%"></div></div>`;
+}
+
+// Touch-friendly activity rows: state dot, title + sub, optional right-side metric and
+// progress bar. Wraps gracefully on small screens (see the 560px media query).
+function renderItemList(items, emptyText = 'Nothing right now.') {
+  if (!items || !items.length) return `<p class="muted">${escapeHtml(emptyText)}</p>`;
+  return `<div class="items">${items.map(i => `
+    <div class="item">
+      <span class="dot ${['ok', 'warn', 'down', 'skip'].includes(i.state) ? i.state : 'skip'}"></span>
+      <div class="item-main">
+        <div class="item-title">${escapeHtml(i.title || '')}</div>
+        ${i.sub ? `<div class="item-sub">${escapeHtml(i.sub)}</div>` : ''}
+        ${typeof i.pct === 'number' ? renderBar(i.pct) : ''}
+      </div>
+      ${i.right ? `<div class="item-right">${escapeHtml(i.right)}</div>` : ''}
+    </div>`).join('')}</div>`;
 }
 
 function renderLogin(isError, message) {
@@ -4982,13 +5523,16 @@ function renderHealthBadges(health) {
     .join('');
 }
 
+// data-label on every cell powers the mobile collapse: under 640px the table becomes a stack
+// of labeled cards (CSS-only, no JS).
 function renderTable(rows) {
   if (!Array.isArray(rows) || rows.length === 0) return '<p class="muted">No records.</p>';
   const cols = Object.keys(rows[0]);
   const head = cols.map(c => `<th>${escapeHtml(c)}</th>`).join('');
   const bodyRows = rows.map(r => `<tr>${cols.map(c => {
     const v = r[c];
-    return `<td title="${escapeHtml(v == null ? '' : String(v))}">${escapeHtml(v == null ? '' : String(v))}</td>`;
+    const text = escapeHtml(v == null ? '' : String(v));
+    return `<td data-label="${escapeHtml(c)}" title="${text}">${text}</td>`;
   }).join('')}</tr>`).join('');
   return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${bodyRows}</tbody></table></div>`;
 }
