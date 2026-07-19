@@ -7,6 +7,7 @@ const assert = require('assert');
 const {
   recencyDecay, titleKey, computeUniversalCore, computeNodeValues, planNode, planTier,
   computePlanHash, renderSyncthingStignore, renderRclone, toRelPath,
+  parseAtimeMask, inAtimeMask, maskSuspectAtimes,
 } = require('../../src/tier');
 
 const GB = 1024 ** 3;
@@ -296,6 +297,43 @@ const home = { name: 'home', enabled: 1, full: 1, usable_bytes: 10000 * GB, head
   const mk = (keep, drop) => ({ node: 'x', keep: keep.map(p => ({ relPath: p })), drop: drop.map(p => ({ relPath: p })) });
   assert.strictEqual(computePlanHash(mk(['a', 'b'], ['c'])), computePlanHash(mk(['b', 'a'], ['c'])), 'order-insensitive');
   assert.notStrictEqual(computePlanHash(mk(['a', 'b'], ['c'])), computePlanHash(mk(['a'], ['b', 'c'])), 'outcome-sensitive');
+}
+
+// --- atime maintenance-window mask (Plex nightly analysis must not count as watches) ---
+{
+  assert.deepStrictEqual(parseAtimeMask('09:00-13:00'), { startMin: 540, endMin: 780 }, 'plain window parses');
+  assert.deepStrictEqual(parseAtimeMask('22:00-03:00'), { startMin: 1320, endMin: 180 }, 'midnight-wrapping window parses');
+  assert.strictEqual(parseAtimeMask('garbage'), null, 'junk rejected');
+  assert.strictEqual(parseAtimeMask('25:00-13:00'), null, 'invalid hour rejected');
+  assert.strictEqual(parseAtimeMask('09:00-09:00'), null, 'empty window rejected');
+  assert.strictEqual(parseAtimeMask(null), null, 'unset mask → null (mask disabled)');
+
+  const at = (h, m = 0) => Date.UTC(2026, 6, 1, h, m);
+  const plain = parseAtimeMask('09:00-13:00');
+  assert.strictEqual(inAtimeMask(at(10), plain), true, '10:00 UTC inside 09-13');
+  assert.strictEqual(inAtimeMask(at(13), plain), false, 'end is exclusive');
+  assert.strictEqual(inAtimeMask(at(20), plain), false, 'evening outside');
+  const wrap = parseAtimeMask('22:00-03:00');
+  assert.strictEqual(inAtimeMask(at(23, 30), wrap), true, 'pre-midnight inside wrapped window');
+  assert.strictEqual(inAtimeMask(at(2), wrap), true, 'post-midnight inside wrapped window');
+  assert.strictEqual(inAtimeMask(at(12), wrap), false, 'midday outside wrapped window');
+
+  const files = [
+    { relPath: 'm/A/a.mkv', sizeBytes: 1, atime: at(10) },      // suspect: maintenance read
+    { relPath: 'm/B/b.mkv', sizeBytes: 1, atime: at(20) },      // real evening watch
+    { relPath: 'm/C/c.mkv', sizeBytes: 1, atime: at(11) },      // suspect, but never seen before
+    { relPath: 'm/D/d.mkv', sizeBytes: 1, atime: null },        // no atime at all
+  ];
+  const prevFiles = [
+    { relPath: 'm/A/a.mkv', sizeBytes: 1, atime: at(19) - 30 * 86400000 }, // last real read: a month ago
+    { relPath: 'm/B/b.mkv', sizeBytes: 1, atime: at(19) - 30 * 86400000 },
+  ];
+  const masked = maskSuspectAtimes(files, prevFiles, plain);
+  assert.strictEqual(masked[0].atime, at(19) - 30 * 86400000, 'suspect atime → previous plausible read carried forward');
+  assert.strictEqual(masked[1].atime, at(20), 'real watch outside the window kept as-is');
+  assert.strictEqual(masked[2].atime, at(11), 'suspect with no prior row keeps the reported value');
+  assert.strictEqual(masked[3].atime, null, 'missing atime untouched');
+  assert.deepStrictEqual(maskSuspectAtimes(files, prevFiles, null), files, 'no mask → passthrough');
 }
 
 console.log('tier.test.js: all assertions passed');

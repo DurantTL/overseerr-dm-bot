@@ -33,7 +33,7 @@ const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, 
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
 const { decideEscalationAction, escalationEligible } = require('./src/escalation');
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
-const { planTier, gatherNodeHistories, fetchTierInventory, renderSyncthingStignore, renderRclone } = require('./src/tier');
+const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, renderSyncthingStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
@@ -1834,11 +1834,14 @@ const slashCommands = [
       .addIntegerOption(o => o.setName('usable_gb').setDescription('Pool usable capacity in GB'))
       .addIntegerOption(o => o.setName('headroom_pct').setDescription('Free-space floor % (default 15; ~25 for old drives)'))
       .addStringOption(o => o.setName('access').setDescription('Who may stream from it').addChoices({ name: 'open (all linked users)', value: 'open' }, { name: 'restricted (explicit member set)', value: 'restricted' }))
-      .addStringOption(o => o.setName('demand_source').setDescription('Demand signal').addChoices({ name: 'tautulli (watch history)', value: 'tautulli' }, { name: 'atime (file last-read LRU)', value: 'atime' }))
+      .addStringOption(o => o.setName('demand_source').setDescription('Demand signal').addChoices({ name: 'tautulli (watch history)', value: 'tautulli' }, { name: 'plex (PMS watch history, no Tautulli)', value: 'plex' }, { name: 'atime (file last-read LRU)', value: 'atime' }))
       .addStringOption(o => o.setName('transport').setDescription('Sync transport').addChoices({ name: 'syncthing', value: 'syncthing' }, { name: 'rclone', value: 'rclone' }))
       .addStringOption(o => o.setName('folder_root').setDescription('Syncthing folder root on that node'))
       .addStringOption(o => o.setName('tautulli_url').setDescription('That node\'s Tautulli URL'))
       .addStringOption(o => o.setName('tautulli_api_key').setDescription('That node\'s Tautulli API key'))
+      .addStringOption(o => o.setName('plex_url').setDescription('That node\'s Plex server URL (for demand_source plex)'))
+      .addStringOption(o => o.setName('plex_token').setDescription('That node\'s Plex server token'))
+      .addStringOption(o => o.setName('atime_mask').setDescription('UTC window to launder Plex-maintenance reads from atime, e.g. 09:00-13:00'))
       .addBooleanOption(o => o.setName('full').setDescription('Never-pruned master (holds everything)'))
       .addBooleanOption(o => o.setName('sticky').setDescription('Extra-low churn (old drives): longer warm window'))
       .addIntegerOption(o => o.setName('warm_days').setDescription('Override: recently-watched protection window'))
@@ -3992,8 +3995,9 @@ async function buildTierPlans() {
   });
   const historiesByNode = await gatherNodeHistories(enabled, {
     fetchHistory,
+    fetchPlexHistory,
     afterDays: CONFIG.TIER_HISTORY_DAYS,
-    onError: (n, err) => audit('external_api_error', { provider: `tautulli:${n.name}`, error: err.message, action: 'tier_history' }),
+    onError: (n, err) => audit('external_api_error', { provider: `${n.demand_source}:${n.name}`, error: err.message, action: 'tier_history' }),
   });
   const atimeReports = {};
   const memberRequests = {};
@@ -4127,9 +4131,12 @@ async function handleTierNodeCommand(interaction) {
     const v = interaction.options.getInteger(opt);
     if (v != null) fields[col] = v;
   }
-  for (const opt of ['access', 'demand_source', 'transport', 'folder_root', 'tautulli_url', 'tautulli_api_key']) {
+  for (const opt of ['access', 'demand_source', 'transport', 'folder_root', 'tautulli_url', 'tautulli_api_key', 'plex_url', 'plex_token', 'atime_mask']) {
     const v = interaction.options.getString(opt);
     if (v != null) fields[opt] = v;
+  }
+  if (fields.atime_mask !== undefined && fields.atime_mask !== '' && !parseAtimeMask(fields.atime_mask)) {
+    return interaction.reply({ content: `❌ \`atime_mask\` must be a UTC time window like \`09:00-13:00\` (may wrap midnight). Got \`${fields.atime_mask}\`.`, ephemeral: true });
   }
   for (const opt of ['full', 'sticky']) {
     const v = interaction.options.getBoolean(opt);
@@ -4144,6 +4151,9 @@ async function handleTierNodeCommand(interaction) {
       `Access **${node.access}** · demand **${node.demand_source}** · transport **${node.transport}**${node.full ? ' · **full master**' : ''}${node.sticky ? ' · sticky' : ''}`,
       node.folder_root ? `Folder root \`${node.folder_root}\`` : '⚠️ No `folder_root` set — the agent needs it.',
       node.demand_source === 'tautulli' && !node.tautulli_url ? '⚠️ No Tautulli configured — this node contributes no demand signal (floor + pins only).' : null,
+      node.demand_source === 'plex' && !node.plex_url ? '⚠️ `demand_source` is plex but no `plex_url`/`plex_token` set — this node contributes no demand signal until they are.' : null,
+      node.demand_source === 'atime' && node.atime_mask ? `atime mask \`${node.atime_mask}\` UTC — reads in that window are treated as Plex maintenance, not watches.` : null,
+      node.demand_source === 'atime' && !node.atime_mask ? '💡 Tip: if Plex scheduled tasks read files nightly on this node, set `atime_mask` to that window (UTC) or they will count as watches.' : null,
       created ? `Next: \`/tier-node token name:${name}\` for the agent, then \`/tier preview\`.` : null,
     ].filter(Boolean).join('\n'));
   return interaction.reply({ embeds: [embed], ephemeral: true });
@@ -5041,10 +5051,15 @@ function startExpressServer() {
     const errors = Array.isArray(body.errors) ? body.errors.slice(0, 10).map(e => String(e).slice(0, 300)) : [];
     // The atime demand signal (§3.2a): full local inventory snapshots replace the stored set.
     // An EMPTY array is still a snapshot (the node may have pruned its last media file) —
-    // only an absent field means "no inventory in this report".
+    // only an absent field means "no inventory in this report". When the node has an
+    // atime_mask, suspect (maintenance-window) atimes are laundered against the previously
+    // stored rows BEFORE the replace, so the DB always holds the last plausible human read.
     if (Array.isArray(body.inventory)) {
       try {
-        replaceTierNodeFiles(node, body.inventory.slice(0, 200000));
+        let files = body.inventory.slice(0, 200000);
+        const mask = parseAtimeMask(getTierNode(node)?.atime_mask);
+        if (mask) files = maskSuspectAtimes(files, listTierNodeFiles(node), mask);
+        replaceTierNodeFiles(node, files);
       } catch (err) {
         errors.push(`inventory store failed: ${err.message}`);
       }

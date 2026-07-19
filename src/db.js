@@ -233,6 +233,12 @@ function runMigrations() {
   ensureColumn('grab_jobs', 'remote_path', 'TEXT');
   // One-shot flag: the "request never landed in the arr" alert was posted for this watch row.
   ensureColumn('escalations', 'arr_missing_alerted', 'INTEGER DEFAULT 0');
+  // Tiering: demand_source 'plex' reads watch history straight from the node's PMS (no
+  // Tautulli); atime_mask ('HH:MM-HH:MM' UTC) launders Plex-maintenance reads out of the
+  // atime LRU signal at report ingest.
+  ensureColumn('tier_nodes', 'plex_url', 'TEXT');
+  ensureColumn('tier_nodes', 'plex_token', 'TEXT');
+  ensureColumn('tier_nodes', 'atime_mask', 'TEXT');
 
   const dlCols = db.prepare('PRAGMA table_info(download_tokens)').all().map(c => c.name);
   if (dlCols.includes('token') && !dlCols.includes('token_hash')) {
@@ -618,23 +624,16 @@ function setStagedItemPinned(mediaId, pinned, discordId) {
 // manifest/report routes; tier_node_files the agent-reported local inventory that atime nodes
 // use as their demand signal. Last published plans live in app_settings (tier_plan:/tier_manifest:).
 
-const TIER_NODE_FIELDS = ['usable_bytes', 'headroom_pct', 'full', 'access', 'demand_source', 'transport', 'folder_root', 'tautulli_url', 'tautulli_api_key', 'enabled', 'sticky', 'warm_days', 'fresh_days'];
+const TIER_NODE_FIELDS = ['usable_bytes', 'headroom_pct', 'full', 'access', 'demand_source', 'transport', 'folder_root', 'tautulli_url', 'tautulli_api_key', 'plex_url', 'plex_token', 'atime_mask', 'enabled', 'sticky', 'warm_days', 'fresh_days'];
 
 // Insert-or-partial-update: only the fields present in `fields` change, so /tier-node edit can
 // tweak one column without callers round-tripping the whole row.
 function upsertTierNode(fields) {
   const name = String(fields.name).toLowerCase();
-  const existing = db.prepare('SELECT * FROM tier_nodes WHERE name = ?').get(name);
-  if (!existing) {
-    db.prepare(`INSERT INTO tier_nodes (name, usable_bytes, headroom_pct, full, access, demand_source, transport, folder_root, tautulli_url, tautulli_api_key, enabled, sticky, warm_days, fresh_days)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(name, fields.usable_bytes ?? 0, fields.headroom_pct ?? 15, fields.full ? 1 : 0,
-        fields.access ?? 'open', fields.demand_source ?? 'tautulli', fields.transport ?? 'syncthing',
-        fields.folder_root ?? null, fields.tautulli_url ?? null, fields.tautulli_api_key ?? null,
-        fields.enabled === undefined ? 1 : (fields.enabled ? 1 : 0), fields.sticky ? 1 : 0,
-        fields.warm_days ?? null, fields.fresh_days ?? null);
-    return { created: true, node: getTierNode(name) };
-  }
+  const existing = db.prepare('SELECT name FROM tier_nodes WHERE name = ?').get(name);
+  // New rows start from column defaults; the shared update below then applies every supplied
+  // field, so create and edit take the same path.
+  if (!existing) db.prepare('INSERT INTO tier_nodes (name) VALUES (?)').run(name);
   const sets = [];
   const args = [];
   for (const col of TIER_NODE_FIELDS) {
@@ -645,7 +644,7 @@ function upsertTierNode(fields) {
   if (sets.length) {
     db.prepare(`UPDATE tier_nodes SET ${sets.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE name = ?`).run(...args, name);
   }
-  return { created: false, node: getTierNode(name) };
+  return { created: !existing, node: getTierNode(name) };
 }
 
 const getTierNode = name => db.prepare('SELECT * FROM tier_nodes WHERE name = ?').get(String(name).toLowerCase());
