@@ -518,6 +518,21 @@ async function sweepEscalations() {
     if (action === 'alert_missing') {
       markEscalationArrMissingAlerted(row.id);
       const arrName = row.media_type === 'movie' ? 'Radarr' : 'Sonarr';
+      // Pre-authorized requests don't wait for a button: the admin already said "definitely
+      // get this" at approval, so a lost Seerr hand-off is repaired with a direct add on the
+      // spot (tag included). Falls through to the button alert only when the add itself fails.
+      if (row.pre_authorized) {
+        const added = await addMediaToArr({ mediaType: row.media_type, tmdbId: row.tmdb_id, tvdbId: row.tvdb_id, tagLabel: CONFIG.AVISTAZ_TAG });
+        if (added.ok) {
+          touchEscalationApprovedAt(row.id);
+          audit('escalation_arr_missing_autofixed', { mediaId: row.media_id, title: row.title, detail: added.detail });
+          notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.INFO)
+            .setTitle(`🛠️ Fixed a Lost Request — ${row.title}`)
+            .setDescription(`Seerr approved this request **${waited}** ago but never handed it to ${arrName} (\`Media data not found\` in its log — usually a broken TMDB↔TVDB mapping). The AvistaZ fallback was pre-authorized, so I repaired it automatically:\n${added.detail}\nPublic indexers get ${escalationDelayLabel()}; the AvistaZ fallback fires on its own after that if nothing lands.`)] });
+          continue;
+        }
+        audit('escalation_arr_missing_autofix_failed', { mediaId: row.media_id, title: row.title, reason: added.reason });
+      }
       audit('escalation_arr_missing', { mediaId: row.media_id, title: row.title, waited });
       notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
         .setTitle(`🕳️ Request Never Landed — ${row.title}`)
