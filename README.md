@@ -339,12 +339,14 @@ indexer is tagged, no title carries the tag by default, so nothing ever hits Avi
   the request is declined; unresolved rows expire after `ESCALATION_MAX_AGE_DAYS`.
 - If an approved request never lands in Radarr/Sonarr at all — Seerr can accept a request and
   lose it moments later (its log shows `Media data not found`, usually a broken TMDB↔TVDB
-  mapping) — the downloads channel gets a **🕳️ Request Never Landed** alert after
-  `ESCALATION_ARR_GRACE_MINUTES` (default 10) with an **Add to Sonarr/Radarr & Search** button
-  that adds the title directly to the arr, bypassing Seerr entirely (root folder / quality
-  profile from `SONARR_ROOT_FOLDER` / `SONARR_QUALITY_PROFILE` etc. when set, else the arr's
-  first of each; pre-authorized titles get the AvistaZ tag in the same call). The escalation
-  clock restarts from the add, so public indexers get the full delay before any fallback.
+  mapping) — the bot repairs it after `ESCALATION_ARR_GRACE_MINUTES` (default 10). A
+  **pre-authorized** request is fixed automatically: the title is added directly to the arr
+  (bypassing Seerr; AvistaZ tag included) and the downloads channel just gets told. Anything
+  else gets a **🕳️ Request Never Landed** alert with an **Add to Sonarr/Radarr & Search**
+  button that does the same add on click. Direct adds use `SONARR_ROOT_FOLDER` /
+  `SONARR_QUALITY_PROFILE` etc. when set, else the arr's first root folder / quality profile.
+  The escalation clock restarts from the add, so public indexers get the full delay before
+  any fallback.
 - 4K requests are never escalated (the fallback is for hard-to-find content, not 4K upgrades).
 
 ### One-time arr/Prowlarr setup
@@ -437,6 +439,18 @@ refused outright ("already grabbed as job #N").
 Grab jobs are durable (`grab_jobs` in SQLite): a restart mid-download keeps watching, a restart
 mid-transfer re-queues the copy, and rclone skips already-transferred files. Transfer failures
 alert the downloads channel with a **Retry Transfer** button.
+
+### Guided import ("Map to a Series…")
+When Sonarr declines an import (`Unknown Series` — TVDB files the show under another title,
+common for Asian dramas whose sequels are listed as a season of the original; or fansub names
+with no `SxxEyy` to parse), the decline alert carries a **Map to a Series…** button that runs
+Sonarr's Manual Import as a short conversation in the downloads channel: pick the series
+(library fuzzy-matched, recently-added first, with a search-by-name modal), pick the season,
+review the file→episode mapping (episode numbers read from filenames when possible, natural
+order otherwise — mismatches are called out), confirm. The bot then pushes the exact mapping
+through Sonarr's ManualImport API (move mode). `/rtorrent import` in move mode gets the same
+post-scan verification, so silent declines there surface with the wizard too. Wizard state
+lives in SQLite, so a bot restart mid-conversation doesn't strand the message.
 
 ### Adopting existing torrents (`/rtorrent adopt`)
 The pipeline above tracks torrents by the info-hash the bot computes when **it** submits the

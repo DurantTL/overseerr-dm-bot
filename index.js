@@ -8,6 +8,7 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  StringSelectMenuBuilder,
   Partials,
   REST,
   Routes,
@@ -29,11 +30,11 @@ const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTy
 const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
-const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
+const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
 const { decideEscalationAction, escalationEligible } = require('./src/escalation');
 const { tautulliConfigured, tautulliApi, describeSession } = require('./src/tautulli');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
-const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
+const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
 const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
@@ -518,6 +519,21 @@ async function sweepEscalations() {
     if (action === 'alert_missing') {
       markEscalationArrMissingAlerted(row.id);
       const arrName = row.media_type === 'movie' ? 'Radarr' : 'Sonarr';
+      // Pre-authorized requests don't wait for a button: the admin already said "definitely
+      // get this" at approval, so a lost Seerr hand-off is repaired with a direct add on the
+      // spot (tag included). Falls through to the button alert only when the add itself fails.
+      if (row.pre_authorized) {
+        const added = await addMediaToArr({ mediaType: row.media_type, tmdbId: row.tmdb_id, tvdbId: row.tvdb_id, tagLabel: CONFIG.AVISTAZ_TAG });
+        if (added.ok) {
+          touchEscalationApprovedAt(row.id);
+          audit('escalation_arr_missing_autofixed', { mediaId: row.media_id, title: row.title, detail: added.detail });
+          notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.INFO)
+            .setTitle(`🛠️ Fixed a Lost Request — ${row.title}`)
+            .setDescription(`Seerr approved this request **${waited}** ago but never handed it to ${arrName} (\`Media data not found\` in its log — usually a broken TMDB↔TVDB mapping). The AvistaZ fallback was pre-authorized, so I repaired it automatically:\n${added.detail}\nPublic indexers get ${escalationDelayLabel()}; the AvistaZ fallback fires on its own after that if nothing lands.`)] });
+          continue;
+        }
+        audit('escalation_arr_missing_autofix_failed', { mediaId: row.media_id, title: row.title, reason: added.reason });
+      }
       audit('escalation_arr_missing', { mediaId: row.media_id, title: row.title, waited });
       notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
         .setTitle(`🕳️ Request Never Landed — ${row.title}`)
@@ -888,9 +904,151 @@ async function verifyArrImport(job, arr, commandId, importPath, finalPath) {
   }
   const reasons = [...new Set(preview.flatMap(f => (f.rejections || []).map(x => x.reason)))].slice(0, 5);
   audit('grab_import_rejected', { jobId: job.id, title: job.title, reasons });
+  // TV declines get the guided-import wizard: pick series + season in Discord, the bot pushes
+  // the mapping through ManualImport — covers TVDB filing the show under another title and
+  // fansub names Sonarr can't parse, without touching the Sonarr UI.
+  const components = [];
+  let mapHint = `use ${arr.label}'s Manual Import screen for hand-mapping`;
+  if (job.media_type !== 'movie') {
+    const nonce = stashMapOffer({ title: job.title, folder: path.basename(finalPath), importPath, finalPath, jobId: job.id });
+    components.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`mapimp_start:${nonce}`).setLabel('Map to a Series…').setStyle(ButtonStyle.Primary)));
+    mapHint = '**Map to a Series…** below walks through picking the series + season right here and pushes the mapping into Sonarr';
+  }
   notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
     .setTitle(`🚫 ${arr.label} Declined the Import — ${job.title}`.slice(0, 256))
-    .setDescription(`The files copied home fine but ${arr.label} won't take them:\n${reasons.length ? reasons.map(r => `• ${r}`).join('\n') : '• (no reason reported — the series may be missing or the names unparseable)'}\n\nThey're still in staging. Fix the cause, then \`/rtorrent import target:${job.media_type === 'movie' ? 'radarr' : 'sonarr'} folder:${String(path.basename(finalPath)).slice(0, 80)}\` — or use ${arr.label}'s Manual Import screen for hand-mapping.`)] });
+    .setDescription(`The files copied home fine but ${arr.label} won't take them:\n${reasons.length ? reasons.map(r => `• ${r}`).join('\n') : '• (no reason reported — the series may be missing or the names unparseable)'}\n\nThey're still in staging. Fix the cause and re-run \`/rtorrent import target:${job.media_type === 'movie' ? 'radarr' : 'sonarr'} folder:${String(path.basename(finalPath)).slice(0, 80)}\` — or ${mapHint}.`)], components });
+}
+
+// ---- Guided manual import ("Map to a Series…") ----
+// TVDB often files a foreign show under a different title than the release (sequels listed as
+// "season 2 of the original"), and old fansub rips carry no SxxEyy pattern — Sonarr then
+// declines the import with "Unknown Series" and an admin used to hand-map files in Sonarr's
+// Manual Import screen. The wizard does that conversation in the downloads channel instead:
+// the decline alert's button walks series → season → confirm, then pushes the exact mapping
+// through Sonarr's ManualImport API. State lives in app_settings (mapimp:<nonce>) so a
+// restart mid-conversation doesn't strand the message.
+const readMapOffer = nonce => { try { return JSON.parse(getSetting(`mapimp:${String(nonce)}`) || 'null'); } catch (_e) { return null; } };
+const writeMapOffer = (nonce, state) => setSetting(`mapimp:${nonce}`, JSON.stringify(state));
+const dropMapOffer = nonce => db.prepare('DELETE FROM app_settings WHERE key = ?').run(`mapimp:${nonce}`);
+function stashMapOffer(payload) {
+  const nonce = crypto.randomBytes(4).toString('hex');
+  writeMapOffer(nonce, { ...payload, createdAt: Date.now() });
+  return nonce;
+}
+
+const mapCancelRow = nonce => new ActionRowBuilder().addComponents(
+  new ButtonBuilder().setCustomId(`mapimp_cancel:${nonce}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary));
+
+// Step 1: pick the series. Candidates are the whole Sonarr library scored by token overlap
+// with the release title (or the admin's typed query), recently-added first on ties — the
+// admin usually just added the right series moments ago.
+async function mapWizardSeriesStep(nonce, state, query) {
+  const all = await sonarrGet('/series');
+  if (!all.length) {
+    return { content: null, components: [mapCancelRow(nonce)], embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle(`🧭 Map & Import — ${state.title}`.slice(0, 256))
+      .setDescription('Sonarr\'s library is empty — add the series there first (Series → Add New), then click the decline alert\'s button again.')] };
+  }
+  const tokens = normalizeTitle(query || state.title).split(' ').filter(Boolean);
+  const scored = all.map(s => {
+    const hay = ` ${normalizeTitle(`${s.title} ${(s.alternateTitles || []).map(t => t.title).join(' ')}`)} `;
+    return { s, score: tokens.filter(t => hay.includes(` ${t} `)).length };
+  }).sort((a, b) => b.score - a.score || String(b.s.added || '').localeCompare(String(a.s.added || '')));
+  const pool = query ? (scored.filter(x => x.score > 0).length ? scored.filter(x => x.score > 0) : scored) : scored;
+  const options = pool.slice(0, 25).map(({ s }) => ({
+    label: `${s.title}${s.year ? ` (${s.year})` : ''}`.slice(0, 100),
+    value: String(s.id),
+    description: `${(s.seasons || []).filter(x => x.seasonNumber > 0).length} season(s) · added ${String(s.added || '').slice(0, 10) || '?'}`.slice(0, 100),
+  }));
+  const noMatch = query && !scored.some(x => x.score > 0);
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle(`🧭 Map & Import — ${state.title}`.slice(0, 256))
+    .setDescription(`**Step 1 of 3 — which Sonarr series should these files land in?**\n${noMatch ? `Nothing matched \`${query}\` — showing the library instead (recently added first).` : query ? `Matches for \`${query}\`.` : 'Best matches from the library, recently added first.'}\n-# TVDB may list this show under a different name (sequels often live as a season of the original) — pick whatever series Sonarr has it as.`);
+  return { content: null, embeds: [embed], components: [
+    new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(`mapimp_series:${nonce}`).setPlaceholder('Pick the series…').addOptions(...options)),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`mapimp_find:${nonce}`).setLabel('Search by name').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`mapimp_cancel:${nonce}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
+    ),
+  ] };
+}
+
+// Step 2: pick the season within the chosen series.
+function mapWizardSeasonStep(nonce, state, series) {
+  const seasons = (series?.seasons || []).slice(0, 25);
+  if (!seasons.length) {
+    return { content: null, components: [mapCancelRow(nonce)], embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle(`🧭 Map & Import — ${state.title}`.slice(0, 256))
+      .setDescription(`**${state.seriesTitle}** reports no seasons in Sonarr — refresh the series there, then restart from the decline alert.`)] };
+  }
+  const options = seasons.map(x => ({
+    label: x.seasonNumber === 0 ? 'Specials' : `Season ${x.seasonNumber}`,
+    value: String(x.seasonNumber),
+    description: `${x.statistics?.totalEpisodeCount ?? '?'} episode(s)`.slice(0, 100),
+  }));
+  return { content: null, embeds: [brandedEmbed(COLORS.INFO)
+    .setTitle(`🧭 Map & Import — ${state.title}`.slice(0, 256))
+    .setDescription(`**Step 2 of 3 — which season of ${state.seriesTitle}?**\n-# If TVDB files this show as a continuation, the right season may not be "1" (e.g. a sequel drama as Season 2 of the original).`)],
+  components: [
+    new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(`mapimp_season:${nonce}`).setPlaceholder('Pick the season…').addOptions(...options)),
+    mapCancelRow(nonce),
+  ] };
+}
+
+// Step 3: preview the file→episode pairing and ask for one confirming click.
+async function mapWizardConfirmStep(nonce, state) {
+  const arr = arrForMediaType('tv');
+  const preview = await axios.get(`${arr.url}/api/v3/manualimport`, {
+    params: { folder: state.importPath, filterExistingFiles: true }, headers: { 'X-Api-Key': arr.key }, timeout: 120000,
+  }).then(r => r.data || []);
+  const files = preview.filter(f => f.path).map(f => ({ path: f.path, quality: f.quality, languages: f.languages, releaseGroup: f.releaseGroup || null, indexerFlags: f.indexerFlags || 0 }));
+  if (!files.length) {
+    dropMapOffer(nonce);
+    return { content: null, components: [], embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle(`🧭 Nothing Left to Map — ${state.title}`.slice(0, 256))
+      .setDescription('Sonarr sees no importable files in that folder any more — they were probably imported in the meantime. Check the series in Sonarr.')] };
+  }
+  const episodes = (await sonarrGet('/episode', { seriesId: state.seriesId })).filter(e => e.seasonNumber === state.season);
+  if (!episodes.length) {
+    return { content: null, components: [mapCancelRow(nonce)], embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle(`🧭 Map & Import — ${state.title}`.slice(0, 256))
+      .setDescription(`**${state.seriesTitle}** Season ${state.season} has no episodes in Sonarr — refresh the series metadata there, then restart from the decline alert.`)] };
+  }
+  const mapped = pairFilesToEpisodes(files, episodes.map(e => ({ id: e.id, episodeNumber: e.episodeNumber })));
+  state.pairs = mapped.pairs;
+  state.strategy = mapped.strategy;
+  writeMapOffer(nonce, state);
+  const lines = mapped.pairs.slice(0, 15).map(p => `\`S${pad(state.season)}E${pad(p.episodeNumber)}\` ← ${String(p.path).split('/').pop().slice(0, 90)}`);
+  if (mapped.pairs.length > 15) lines.push(`…and ${mapped.pairs.length - 15} more`);
+  const notes = [];
+  notes.push(mapped.strategy === 'numbered'
+    ? 'Episode numbers were read from the filenames.'
+    : 'Filenames carry no usable episode numbers — files are mapped **in name order** (file 1 → first episode, …). Double-check the first few lines.');
+  if (mapped.leftoverFiles > 0) notes.push(`⚠️ ${mapped.leftoverFiles} file(s) have no episode to land in and will be left in staging.`);
+  if (mapped.leftoverEpisodes > 0) notes.push(`ℹ️ ${mapped.leftoverEpisodes} episode(s) of the season have no file in this folder.`);
+  return { content: null, embeds: [brandedEmbed(COLORS.INFO)
+    .setTitle(`🧭 Map & Import — ${state.title}`.slice(0, 256))
+    .setDescription(`**Step 3 of 3 — confirm the mapping into ${state.seriesTitle} S${pad(state.season)}**\n${lines.join('\n')}\n\n${notes.join('\n')}`.slice(0, 4000))],
+  components: [new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`mapimp_go:${nonce}`).setLabel(`Import ${mapped.pairs.length} file(s)`).setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`mapimp_cancel:${nonce}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
+  )] };
+}
+
+async function mapWizardImport(interaction, nonce, state) {
+  const arr = arrForMediaType('tv');
+  const files = state.pairs.map(p => ({
+    path: p.path, seriesId: state.seriesId, episodeIds: [p.episodeId],
+    quality: p.quality, languages: p.languages, releaseGroup: p.releaseGroup || undefined, indexerFlags: p.indexerFlags || 0,
+  }));
+  await axios.post(`${arr.url}/api/v3/command`, { name: 'ManualImport', files, importMode: 'move' },
+    { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
+  dropMapOffer(nonce);
+  audit('guided_import', { actorDiscordId: interaction.user.id, title: state.title, seriesId: state.seriesId, seriesTitle: state.seriesTitle, season: state.season, files: files.length, strategy: state.strategy, jobId: state.jobId ?? null });
+  return interaction.editReply({ content: null, components: [], embeds: [brandedEmbed(COLORS.SUCCESS)
+    .setTitle(`📦 Mapped & Importing — ${state.title}`.slice(0, 256))
+    .setDescription(`**${files.length}** file(s) handed to Sonarr as **${state.seriesTitle}** Season ${state.season} (mapped by <@${interaction.user.id}>). Sonarr renames and moves them out of staging; they should appear in the library within a few minutes.`)] });
 }
 
 // The rolling progress embed for adopted transfers. State (message id + running import
@@ -1855,6 +2013,7 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isAutocomplete()) return handleAutocomplete(interaction);
     if (interaction.isChatInputCommand()) await handleSlashCommand(interaction);
     if (interaction.isButton()) await handleButton(interaction);
+    if (interaction.isStringSelectMenu()) await handleSelectMenu(interaction);
     if (interaction.isModalSubmit()) await handleModalSubmit(interaction);
   } catch (err) {
     audit('external_api_error', { actorDiscordId: interaction.user?.id, error: err.message, action: 'interaction' });
@@ -2874,7 +3033,38 @@ async function handleInvitePostCommand(interaction) {
   await interaction.reply({ content: '✅ Posted. Tip: pin the message so it\'s easy to find — the button keeps working forever.', ephemeral: true });
 }
 
+// Guided-import wizard select menus (series / season picks).
+async function handleSelectMenu(interaction) {
+  const [action, nonce] = interaction.customId.split(':');
+  if (!['mapimp_series', 'mapimp_season'].includes(action)) return;
+  if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+  const state = readMapOffer(nonce);
+  if (!state) return interaction.update({ content: 'ℹ️ This mapping session expired (or already finished).', embeds: [], components: [] });
+  await interaction.deferUpdate();
+  if (action === 'mapimp_series') {
+    state.seriesId = Number(interaction.values[0]);
+    const series = await sonarrGet(`/series/${state.seriesId}`).catch(() => null);
+    state.seriesTitle = series?.title || `series #${state.seriesId}`;
+    writeMapOffer(nonce, state);
+    return interaction.editReply(mapWizardSeasonStep(nonce, state, series));
+  }
+  state.season = Number(interaction.values[0]);
+  writeMapOffer(nonce, state);
+  return interaction.editReply(await mapWizardConfirmStep(nonce, state));
+}
+
 async function handleModalSubmit(interaction) {
+  // Guided-import series search (opened from the wizard's "Search by name" button, so the
+  // submit is bound to the wizard message — deferUpdate + editReply steps it in place).
+  if (interaction.customId.startsWith('mapimp_findm:')) {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const nonce = interaction.customId.split(':')[1];
+    const state = readMapOffer(nonce);
+    if (!state) return interaction.reply({ content: 'ℹ️ This mapping session expired (or already finished).', ephemeral: true });
+    const query = String(interaction.fields.getTextInputValue('series_query') || '').trim();
+    await interaction.deferUpdate();
+    return interaction.editReply(await mapWizardSeriesStep(nonce, state, query));
+  }
   if (interaction.customId === 'stage_bulk_modal') {
     if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
     return handleStageBulkModal(interaction);
@@ -3379,7 +3569,15 @@ async function handleRtorrentCommand(interaction) {
       const res = await axios.post(`${arr.url}/api/v3/command`, { name: arr.cmd, path: importPath, importMode: mode },
         { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
       audit('rtorrent_manual_import', { actorDiscordId: interaction.user.id, target, path: importPath, mode });
-      return interaction.editReply(`📦 ${arr.label} is scanning \`${importPath}\` (import mode: **${mode}**, command #${res.data?.id ?? '?'}). ${mode === 'Copy' ? 'The staging files stay where they are.' : 'Imported files are moved out of staging.'}`);
+      // Same post-scan verification the grab pipeline gets: silent declines surface as the
+      // decline alert (with the Map to a Series… wizard for TV) instead of nothing happening.
+      // Copy mode is excluded — files staying put is expected there, not a decline.
+      if (mode === 'Move') {
+        verifyArrImport({ id: null, title: clean || 'staging import', media_type: target === 'sonarr' ? 'tv' : 'movie' },
+          { url: arr.url, key: arr.key, label: arr.label }, res.data?.id, importPath, localPath)
+          .catch(err => log.warn(`Manual-import verification failed: ${err.message}`));
+      }
+      return interaction.editReply(`📦 ${arr.label} is scanning \`${importPath}\` (import mode: **${mode}**, command #${res.data?.id ?? '?'}). ${mode === 'Copy' ? 'The staging files stay where they are.' : 'Imported files are moved out of staging — if the import is declined, an alert with next steps lands in the downloads channel.'}`);
     } catch (err) {
       audit('external_api_error', { provider: target, error: err.message, action: 'rtorrent_manual_import' });
       return interaction.editReply(`❌ ${arr.label} command failed: ${err.message}`);
@@ -4117,6 +4315,32 @@ async function handleButton(interaction) {
       lookup_empty: 'the arr\'s metadata lookup returned nothing for this id — add it in the arr UI by hand (search by name; the show may be listed under a different title there)',
     }[result.reason] || `API error: ${String(result.reason || '').replace(/^api_error:/, '')}`;
     return interaction.followUp({ content: `❌ Couldn't add it: ${why}. The buttons still work — try again once that's fixed.`, ephemeral: true });
+  }
+
+  // Guided-import wizard buttons (from the Sonarr decline alert).
+  if (['mapimp_start', 'mapimp_find', 'mapimp_cancel', 'mapimp_go'].includes(action)) {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const nonce = parts[0];
+    const state = readMapOffer(nonce);
+    if (!state) return interaction.update({ content: 'ℹ️ This mapping session expired (or already finished).', embeds: [], components: [] });
+    if (action === 'mapimp_cancel') {
+      dropMapOffer(nonce);
+      return interaction.update({ content: null, components: [], embeds: [brandedEmbed(COLORS.INFO)
+        .setTitle(`🧭 Mapping Cancelled — ${state.title}`.slice(0, 256))
+        .setDescription(`The files stay in staging. Re-run \`/rtorrent import target:sonarr folder:${String(state.folder).slice(0, 80)}\` for another try, or use Sonarr's Manual Import screen.`)] });
+    }
+    if (action === 'mapimp_find') {
+      return interaction.showModal(new ModalBuilder()
+        .setCustomId(`mapimp_findm:${nonce}`)
+        .setTitle('Find the series in Sonarr')
+        .addComponents(new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId('series_query').setLabel('Series name (as Sonarr knows it)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80))));
+    }
+    await interaction.deferUpdate();
+    if (action === 'mapimp_start') return interaction.editReply(await mapWizardSeriesStep(nonce, state));
+    // action === 'mapimp_go'
+    if (!state.pairs?.length || state.seriesId == null) return interaction.editReply(await mapWizardSeriesStep(nonce, state));
+    return mapWizardImport(interaction, nonce, state);
   }
 
   // AvistaZ candidate buttons (from /avistaz search or an escalation post). The offer is

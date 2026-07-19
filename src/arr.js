@@ -346,6 +346,52 @@ async function addMediaToArr({ mediaType, tmdbId, tvdbId, tagLabel }) {
   }
 }
 
+// ---- Guided manual import: pair loose episode files with Sonarr episodes ----
+// Old/foreign releases ("They Kiss Again (2007) Complete (hardsubbed)") often carry no SxxEyy
+// pattern Sonarr can parse, and TVDB may file the show under a different title entirely. The
+// guided-import wizard lets an admin pick the series+season in Discord; these pure helpers do
+// the file→episode matching.
+
+// Best-effort episode number from a filename. Prefers explicit markers (E05 / EP05 /
+// Episode 5), else the last standalone digit-run that fits within the season's episode count
+// (which naturally skips years, resolutions, and season numbers).
+function extractEpisodeNumber(name, maxEp) {
+  const base = String(name || '').replace(/\.[^.]+$/, '');
+  const marked = base.match(/(?:^|[^a-z0-9])e(?:p(?:isode)?)?[\s._-]*(\d{1,3})(?![0-9])/i);
+  if (marked && +marked[1] >= 1 && (!maxEp || +marked[1] <= maxEp)) return +marked[1];
+  const nums = (base.match(/\d+/g) || []).map(Number).filter(n => n >= 1 && (!maxEp || n <= maxEp));
+  return nums.length ? nums[nums.length - 1] : null;
+}
+
+// Pair files (natural filename order) with a season's episodes. Uses per-file episode numbers
+// when every file yields a unique, valid one; otherwise falls back to ordinal order (file 1 →
+// episode 1, ...). files = [{ path, ... }], episodes = [{ id, episodeNumber }].
+// Returns { strategy, pairs: [{ ...file, episodeId, episodeNumber }], leftoverFiles, leftoverEpisodes }.
+function pairFilesToEpisodes(files, episodes) {
+  const natural = (a, b) => String(a.path).localeCompare(String(b.path), undefined, { numeric: true, sensitivity: 'base' });
+  const sorted = [...files].sort(natural);
+  const epSorted = [...episodes].sort((a, b) => a.episodeNumber - b.episodeNumber);
+  const maxEp = epSorted.length ? epSorted[epSorted.length - 1].episodeNumber : 0;
+  const byNumber = new Map(epSorted.map(e => [e.episodeNumber, e]));
+
+  const numbered = sorted.map(f => {
+    const base = String(f.path).split('/').pop();
+    return { file: f, ep: byNumber.get(extractEpisodeNumber(base, maxEp)) ?? null };
+  });
+  const hits = numbered.filter(x => x.ep);
+  const unique = new Set(hits.map(x => x.ep.id)).size === hits.length;
+  if (hits.length === sorted.length && sorted.length > 0 && unique) {
+    return { strategy: 'numbered', pairs: numbered.map(x => ({ ...x.file, episodeId: x.ep.id, episodeNumber: x.ep.episodeNumber })), leftoverFiles: 0, leftoverEpisodes: epSorted.length - sorted.length };
+  }
+  const n = Math.min(sorted.length, epSorted.length);
+  return {
+    strategy: 'ordinal',
+    pairs: sorted.slice(0, n).map((f, i) => ({ ...f, episodeId: epSorted[i].id, episodeNumber: epSorted[i].episodeNumber })),
+    leftoverFiles: sorted.length - n,
+    leftoverEpisodes: epSorted.length - n,
+  };
+}
+
 // Startup sanity check: warn (non-fatal) when an escalation-eligible instance has no tag named
 // AVISTAZ_TAG — escalation would fail with tag_missing on every attempt until it's created.
 async function verifyAvistazTags(tagName) {
@@ -410,4 +456,4 @@ function remapPath(hostPath) {
   return hostPath;
 }
 
-module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, verifyAvistazTags, fetchReleaseEta, remapPath };
+module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };
