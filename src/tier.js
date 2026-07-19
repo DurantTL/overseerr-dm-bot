@@ -116,6 +116,96 @@ async function fetchTierInventory({ sources, remap, sourceRoot, onError }) {
   return items;
 }
 
+// Watch history straight from a node's Plex Media Server (no Tautulli needed):
+// GET /status/sessions/history/all with the server token, normalized to the same per-title
+// rows fetchHistory produces. PMS history is per-server (watch state never syncs between
+// servers), so this is inherently node-local demand — the accurate replacement for the atime
+// LRU wherever the bot can reach the node's PMS.
+async function fetchPlexHistory({ url, token }, { afterDays = 90, length = 5000 } = {}) {
+  const afterSec = Math.floor((Date.now() - afterDays * 86400000) / 1000);
+  const pageSize = 1000;
+  const rows = [];
+  for (let start = 0; rows.length < length; start += pageSize) {
+    const res = await axios.get(`${String(url).replace(/\/$/, '')}/status/sessions/history/all`, {
+      params: {
+        'viewedAt>': afterSec,
+        'X-Plex-Container-Start': start,
+        'X-Plex-Container-Size': Math.min(pageSize, length - rows.length),
+      },
+      headers: { 'X-Plex-Token': token, Accept: 'application/json' },
+      timeout: 15000,
+    });
+    const page = res.data?.MediaContainer?.Metadata || [];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+  const byTitle = new Map();
+  for (const r of rows) {
+    if (!['movie', 'episode'].includes(r.type)) continue;
+    const tv = r.type === 'episode';
+    // Episode rows carry the series as grandparentKey ('/library/metadata/<ratingKey>').
+    const key = tv
+      ? String(r.grandparentKey || '').split('/').pop() || `title:${r.grandparentTitle}`
+      : String(r.ratingKey || `title:${r.title}`);
+    const entry = byTitle.get(key) || {
+      ratingKey: key,
+      title: (tv ? r.grandparentTitle : r.title) || 'Unknown',
+      mediaType: tv ? 'tv' : 'movie',
+      plays: 0,
+      lastPlayed: 0,
+      users: new Set(),
+    };
+    entry.plays++;
+    const playedMs = (Number(r.viewedAt) || 0) * 1000;
+    if (playedMs > entry.lastPlayed) entry.lastPlayed = playedMs;
+    entry.users.add(String(r.accountID ?? 'unknown'));
+    byTitle.set(key, entry);
+  }
+  return [...byTitle.values()].map(({ users, ...e }) => ({ ...e, distinctUsers: users.size }));
+}
+
+// ---- atime maintenance-window mask ----
+// Plex's nightly scheduled tasks (extensive analysis, preview thumbnails, intro detection)
+// READ media files, and under relatime that refreshes atime once a day — every title then
+// looks "watched last night" and the LRU flattens. The mask launders the signal: an atime
+// whose UTC time-of-day falls inside the node's maintenance window is presumed to be a
+// scheduled read, and the previously stored atime (the last plausible human read) is carried
+// forward instead. Format 'HH:MM-HH:MM' in UTC; windows may wrap midnight. Pad generously
+// for DST — a real 3am viewer lost to the mask is acceptable noise, a flattened LRU is not.
+function parseAtimeMask(raw) {
+  const m = /^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$/.exec(String(raw || '').trim());
+  if (!m) return null;
+  const [h1, m1, h2, m2] = [+m[1], +m[2], +m[3], +m[4]];
+  if (h1 > 23 || h2 > 23 || m1 > 59 || m2 > 59) return null;
+  const startMin = h1 * 60 + m1;
+  const endMin = h2 * 60 + m2;
+  if (startMin === endMin) return null;
+  return { startMin, endMin };
+}
+
+function inAtimeMask(tsMs, mask) {
+  const d = new Date(tsMs);
+  const mins = d.getUTCHours() * 60 + d.getUTCMinutes();
+  return mask.startMin < mask.endMin
+    ? mins >= mask.startMin && mins < mask.endMin
+    : mins >= mask.startMin || mins < mask.endMin;
+}
+
+// Applied at report ingest, BEFORE the snapshot replaces tier_node_files, so the stored rows
+// always hold the last plausible read. A suspect atime with no prior row keeps its reported
+// value (better a one-day overestimate than mass-evicting on the first masked report); once
+// stored, that value is what gets carried forward on later suspect reads.
+function maskSuspectAtimes(files, prevFiles, mask) {
+  if (!mask) return files;
+  const prev = new Map(prevFiles.map(f => [f.relPath, f.atime]));
+  return files.map(f => {
+    const t = Number(f.atime);
+    if (!Number.isFinite(t) || t <= 0 || !inAtimeMask(t, mask)) return f;
+    const prior = prev.get(f.relPath);
+    return prior != null ? { ...f, atime: prior } : f;
+  });
+}
+
 function toRelPath(absPath, sourceRoot) {
   const p = String(absPath).replace(/\/+$/, '');
   const root = String(sourceRoot || '').replace(/\/+$/, '');
@@ -350,15 +440,24 @@ function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, m
   return { manifests, warnings, coreIds: [...coreIds] };
 }
 
-// Best-effort per-node history gathering: a missing or unreachable Tautulli yields an empty
-// history for that node (logged via onError), never a failed plan. atime nodes skip Tautulli
-// entirely — their signal is the agent's file report.
-async function gatherNodeHistories(nodes, { fetchHistory, afterDays = 90, onError } = {}) {
+// Best-effort per-node history gathering, routed by demand_source:
+//   tautulli → that node's Tautulli (fetchHistory)
+//   plex     → that node's PMS directly (fetchPlexHistory)
+//   atime    → no history at all; the signal is the agent's file report
+// A missing or unreachable endpoint yields an empty history for that node (logged via
+// onError), never a failed plan.
+async function gatherNodeHistories(nodes, { fetchHistory, fetchPlexHistory: fetchPlex, afterDays = 90, onError } = {}) {
   const histories = {};
   for (const n of nodes.filter(x => x.enabled)) {
     histories[n.name] = [];
-    if (n.demand_source === 'atime' || !n.tautulli_url || !n.tautulli_api_key) continue;
     try {
+      if (n.demand_source === 'atime') continue;
+      if (n.demand_source === 'plex') {
+        if (!n.plex_url || !n.plex_token || !fetchPlex) continue;
+        histories[n.name] = await fetchPlex({ url: n.plex_url, token: n.plex_token }, { afterDays });
+        continue;
+      }
+      if (!n.tautulli_url || !n.tautulli_api_key || !fetchHistory) continue;
       histories[n.name] = await fetchHistory({ url: n.tautulli_url, apiKey: n.tautulli_api_key }, { afterDays });
     } catch (err) {
       if (onError) onError(n, err);
@@ -402,6 +501,10 @@ module.exports = {
   demandScore,
   computeUniversalCore,
   fetchTierInventory,
+  fetchPlexHistory,
+  parseAtimeMask,
+  inAtimeMask,
+  maskSuspectAtimes,
   toRelPath,
   computeNodeValues,
   planNode,

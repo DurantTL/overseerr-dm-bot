@@ -592,11 +592,19 @@ How each node is curated:
 - **Tier 0 (floor, never evicted):** keep list ∪ `NEVER_DELETE_MEDIA_IDS` ∪ the universal core
   (top-K titles by summed plays across every node's Tautulli). Any title with no copy on an
   enabled `full` master is force-kept everywhere — edge pruning can never lose data.
-- **Tier 1 (node demand):** the node's own Tautulli history
-  (`recencyDecay × log1p(plays) × log1p(distinctUsers)`), or for `demand_source = atime` nodes
-  (California) an LRU over file last-read times reported by the agent — atime only moves when
-  *that node's* Plex reads a file, so it is inherently node-local demand. The media filesystem
-  must be mounted `relatime` (not `noatime`) for the signal to exist.
+- **Tier 1 (node demand):** per `demand_source`:
+  - `tautulli` — the node's own Tautulli history
+    (`recencyDecay × log1p(plays) × log1p(distinctUsers)`).
+  - `plex` — the same score from the node's PMS **directly**
+    (`/status/sessions/history/all` with `plex_url`/`plex_token`) — real watch history with no
+    Tautulli install; PMS history is per-server, so it's inherently node-local.
+  - `atime` — an LRU over file last-read times reported by the agent; atime only moves when
+    *that node's* Plex reads a file. The media filesystem must be mounted `relatime` (not
+    `noatime`), and Plex's nightly read-heavy tasks (extensive analysis, preview thumbnails,
+    intro/credit detection) should be disabled on that server or they count as watches. As a
+    backstop, set the node's `atime_mask` (`HH:MM-HH:MM`, UTC, may wrap midnight) to the
+    maintenance window: reads landing in that window are laundered at report ingest — the
+    previously stored atime (the last plausible human read) is carried forward instead.
 - **Tier 2 (member pins, `restricted` nodes only):** requests by the node's member set
   (`/tier-member`) pin for `TIER_REQUEST_GRACE_DAYS` — cold-start before Tautulli has signal.
   `open` nodes never pin (a requester could stream from any node), and on `restricted` nodes
