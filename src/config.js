@@ -168,6 +168,20 @@ const CONFIG = {
   PH_TUNNEL_HEALTH_URL: process.env.PH_TUNNEL_HEALTH_URL || '',
   PH_TUNNEL_CHECK_MINUTES: Number.parseInt(process.env.PH_TUNNEL_CHECK_MINUTES || '5', 10),
   PH_TUNNEL_FAILS_BEFORE_ALERT: Number.parseInt(process.env.PH_TUNNEL_FAILS_BEFORE_ALERT || '3', 10),
+  // ---- Regional tiering ("edge cache"): per-node curation of the replicated library ----
+  // Planner knobs; per-node overrides (warm/fresh days) live in the tier_nodes table.
+  TIER_CORE_TOP_K: Number.parseInt(process.env.TIER_CORE_TOP_K || '25', 10),
+  TIER_HALF_LIFE_DAYS: Number.parseInt(process.env.TIER_HALF_LIFE_DAYS || '30', 10),
+  TIER_WARM_DAYS: Number.parseInt(process.env.TIER_WARM_DAYS || '14', 10),
+  TIER_FRESH_DAYS: Number.parseInt(process.env.TIER_FRESH_DAYS || '30', 10),
+  TIER_REQUEST_GRACE_DAYS: Number.parseInt(process.env.TIER_REQUEST_GRACE_DAYS || '45', 10),
+  TIER_HISTORY_DAYS: Number.parseInt(process.env.TIER_HISTORY_DAYS || '90', 10),
+  // Prefix stripped from remapped arr paths to make manifest paths folder-relative (the
+  // Syncthing folder root as THIS bot sees it). Defaults to the media mount.
+  TIER_SOURCE_ROOT: (process.env.TIER_SOURCE_ROOT || process.env.PATH_REMAP_TO || process.env.RAID_PATH || '/mnt/raid').replace(/\/$/, ''),
+  // Optional JSON array seeding tier_nodes when the table is empty, e.g.
+  // [{"name":"california","usable_bytes":4000000000000,"headroom_pct":25,"demand_source":"atime","sticky":1}]
+  TIER_NODES_SEED: process.env.TIER_NODES_SEED || '',
   DELETION_GRACE_HOURS: Number.parseInt(process.env.DELETION_GRACE_HOURS || '24', 10),
   DELETION_REMINDER_COOLDOWN_HOURS: Number.parseInt(process.env.DELETION_REMINDER_COOLDOWN_HOURS || '12', 10),
   KEEP_LIST_DEFAULT_DAYS: Number.parseInt(process.env.KEEP_LIST_DEFAULT_DAYS || '90', 10),

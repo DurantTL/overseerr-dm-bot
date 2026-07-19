@@ -169,6 +169,46 @@ function runMigrations() {
       last_streamed_at INTEGER
     );
 
+    CREATE TABLE IF NOT EXISTS tier_nodes (
+      name TEXT PRIMARY KEY,
+      usable_bytes INTEGER NOT NULL DEFAULT 0,
+      headroom_pct INTEGER NOT NULL DEFAULT 15,
+      full INTEGER DEFAULT 0,
+      access TEXT DEFAULT 'open',
+      demand_source TEXT DEFAULT 'tautulli',
+      transport TEXT DEFAULT 'syncthing',
+      folder_root TEXT,
+      tautulli_url TEXT,
+      tautulli_api_key TEXT,
+      enabled INTEGER DEFAULT 1,
+      sticky INTEGER DEFAULT 0,
+      warm_days INTEGER,
+      fresh_days INTEGER,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS tier_node_members (
+      node TEXT NOT NULL,
+      discord_id TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (node, discord_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS tier_agent_tokens (
+      node TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS tier_node_files (
+      node TEXT NOT NULL,
+      rel_path TEXT NOT NULL,
+      size_bytes INTEGER DEFAULT 0,
+      atime INTEGER,
+      reported_at INTEGER,
+      PRIMARY KEY (node, rel_path)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
     CREATE INDEX IF NOT EXISTS idx_stage_jobs_status ON stage_jobs(status);
     CREATE INDEX IF NOT EXISTS idx_requests_media ON requests(media_id);
@@ -217,6 +257,21 @@ function runMigrations() {
     ('tv_episode', 30, 1),
     ('tv_season', 90, 1)
   `).run();
+
+  // .env-seeded fallback for the tiering node registry: only fills an EMPTY table, so runtime
+  // edits via /tier-node always win over the seed on later restarts.
+  if (CONFIG.TIER_NODES_SEED) {
+    try {
+      const count = db.prepare('SELECT COUNT(*) AS n FROM tier_nodes').get().n;
+      if (count === 0) {
+        for (const n of JSON.parse(CONFIG.TIER_NODES_SEED)) {
+          if (n && n.name) upsertTierNode(n);
+        }
+      }
+    } catch (err) {
+      audit('tier_seed_failed', { error: err.message });
+    }
+  }
 }
 
 function audit(action, details = {}) {
@@ -557,6 +612,96 @@ function setStagedItemPinned(mediaId, pinned, discordId) {
   db.prepare('UPDATE staged_items SET pinned = ?, pinned_by_discord_id = ? WHERE media_id = ?').run(pinned ? 1 : 0, pinned ? (discordId || null) : null, mediaId);
 }
 
+// ---- Regional tiering ("edge cache") ----
+// tier_nodes is the DB-backed node registry (§ /tier-node); tier_node_members the closed access
+// set of restricted nodes; tier_agent_tokens the per-node bearer secrets for the sync agent's
+// manifest/report routes; tier_node_files the agent-reported local inventory that atime nodes
+// use as their demand signal. Last published plans live in app_settings (tier_plan:/tier_manifest:).
+
+const TIER_NODE_FIELDS = ['usable_bytes', 'headroom_pct', 'full', 'access', 'demand_source', 'transport', 'folder_root', 'tautulli_url', 'tautulli_api_key', 'enabled', 'sticky', 'warm_days', 'fresh_days'];
+
+// Insert-or-partial-update: only the fields present in `fields` change, so /tier-node edit can
+// tweak one column without callers round-tripping the whole row.
+function upsertTierNode(fields) {
+  const name = String(fields.name).toLowerCase();
+  const existing = db.prepare('SELECT * FROM tier_nodes WHERE name = ?').get(name);
+  if (!existing) {
+    db.prepare(`INSERT INTO tier_nodes (name, usable_bytes, headroom_pct, full, access, demand_source, transport, folder_root, tautulli_url, tautulli_api_key, enabled, sticky, warm_days, fresh_days)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(name, fields.usable_bytes ?? 0, fields.headroom_pct ?? 15, fields.full ? 1 : 0,
+        fields.access ?? 'open', fields.demand_source ?? 'tautulli', fields.transport ?? 'syncthing',
+        fields.folder_root ?? null, fields.tautulli_url ?? null, fields.tautulli_api_key ?? null,
+        fields.enabled === undefined ? 1 : (fields.enabled ? 1 : 0), fields.sticky ? 1 : 0,
+        fields.warm_days ?? null, fields.fresh_days ?? null);
+    return { created: true, node: getTierNode(name) };
+  }
+  const sets = [];
+  const args = [];
+  for (const col of TIER_NODE_FIELDS) {
+    if (fields[col] === undefined) continue;
+    sets.push(`${col} = ?`);
+    args.push(typeof fields[col] === 'boolean' ? (fields[col] ? 1 : 0) : fields[col]);
+  }
+  if (sets.length) {
+    db.prepare(`UPDATE tier_nodes SET ${sets.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE name = ?`).run(...args, name);
+  }
+  return { created: false, node: getTierNode(name) };
+}
+
+const getTierNode = name => db.prepare('SELECT * FROM tier_nodes WHERE name = ?').get(String(name).toLowerCase());
+
+const listTierNodes = () => db.prepare('SELECT * FROM tier_nodes ORDER BY name').all();
+
+const setTierNodeEnabled = (name, enabled) => db.prepare('UPDATE tier_nodes SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?').run(enabled ? 1 : 0, String(name).toLowerCase()).changes > 0;
+
+const addTierNodeMember = (node, discordId) => db.prepare('INSERT OR IGNORE INTO tier_node_members (node, discord_id) VALUES (?, ?)').run(String(node).toLowerCase(), discordId).changes > 0;
+
+const removeTierNodeMember = (node, discordId) => db.prepare('DELETE FROM tier_node_members WHERE node = ? AND discord_id = ?').run(String(node).toLowerCase(), discordId).changes > 0;
+
+const listTierNodeMembers = node => db.prepare('SELECT discord_id FROM tier_node_members WHERE node = ? ORDER BY discord_id').all(String(node).toLowerCase()).map(r => r.discord_id);
+
+// (Re)generate the sync agent's bearer token for a node. Only the hash is stored — the raw
+// token is shown once, same policy as download links.
+function setTierAgentToken(node) {
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  db.prepare(`INSERT INTO tier_agent_tokens (node, token_hash) VALUES (?, ?)
+    ON CONFLICT(node) DO UPDATE SET token_hash = excluded.token_hash, created_at = CURRENT_TIMESTAMP`)
+    .run(String(node).toLowerCase(), sha256(rawToken));
+  return rawToken;
+}
+
+const getTierAgentTokenHash = node => db.prepare('SELECT token_hash FROM tier_agent_tokens WHERE node = ?').get(String(node).toLowerCase())?.token_hash || null;
+
+// Full-replace of a node's agent-reported inventory ({relPath, sizeBytes, atime}). The agent
+// only re-sends when its local snapshot changed, so this stays cheap in the steady state.
+const replaceTierNodeFiles = db.transaction((node, files) => {
+  const key = String(node).toLowerCase();
+  db.prepare('DELETE FROM tier_node_files WHERE node = ?').run(key);
+  const ins = db.prepare('INSERT OR REPLACE INTO tier_node_files (node, rel_path, size_bytes, atime, reported_at) VALUES (?, ?, ?, ?, ?)');
+  const now = Date.now();
+  for (const f of files) {
+    if (!f || !f.relPath) continue;
+    ins.run(key, String(f.relPath), Number(f.sizeBytes) || 0, Number.isFinite(Number(f.atime)) ? Number(f.atime) : null, now);
+  }
+});
+
+const listTierNodeFiles = node => db.prepare('SELECT rel_path AS relPath, size_bytes AS sizeBytes, atime FROM tier_node_files WHERE node = ?').all(String(node).toLowerCase());
+
+// Member cold-start signal: recent requests made by any of the given users (restricted-node
+// pinning, §tier). Empty member set → empty result, never a broken IN () clause.
+function listRequestsByRequesters(discordIds, sinceDays) {
+  if (!discordIds.length) return [];
+  const placeholders = discordIds.map(() => '?').join(',');
+  return db.prepare(`SELECT media_id, media_type, title, requested_by_discord_id, created_at FROM requests
+    WHERE requested_by_discord_id IN (${placeholders}) AND created_at >= datetime('now', ?)`)
+    .all(...discordIds, `-${Math.max(1, Math.round(sinceDays))} days`)
+    .map(r => ({ mediaId: r.media_id, mediaType: r.media_type, title: r.title, discordId: r.requested_by_discord_id, requestedAt: Date.parse(`${r.created_at}Z`) || Date.now() }));
+}
+
+const getTierPlan = node => { const raw = getSetting(`tier_plan:${String(node).toLowerCase()}`); if (!raw) return null; try { return JSON.parse(raw); } catch (_e) { return null; } };
+
+const setTierPlan = (node, plan) => setSetting(`tier_plan:${String(node).toLowerCase()}`, JSON.stringify(plan));
+
 function createDownloadToken(filePath, title, discordId, oneTimeUse = CONFIG.DOWNLOAD_ONE_TIME_LINKS_DEFAULT) {
   const rawToken = crypto.randomBytes(32).toString('hex');
   const tokenHash = sha256(rawToken);
@@ -626,4 +771,4 @@ function restashPendingRequest(nonce, payload) {
   setSetting(`pending_request:${nonce}`, JSON.stringify(payload));
 }
 
-module.exports = { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
+module.exports = { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPlan, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
