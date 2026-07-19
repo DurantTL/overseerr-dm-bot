@@ -588,6 +588,13 @@ Multiple nodes each run their own Plex against a local Syncthing replica of the 
 edge node's replica curated to its disk budget: a per-node keep/drop manifest, published by the
 bot and converged by a tiny standalone sync agent on each node (`agent/`).
 
+A node's library can span **several Syncthing folders** (e.g. California's `Movies`, `4k`,
+`TV Shows`, `Family Films`) while remaining **one budget pool with one eviction plan** — the
+manifest splits the drop set per folder (one `.stignore` per folder root) and the agent asserts
+Receive Only, writes ignores, rescans and prunes each folder every run. Manage a node's folders
+with `/tier-node folder add|remove|list`; the agent lists them in `TIER_FOLDERS`. Single-folder
+nodes (one `folder_root`, one `SYNCTHING_FOLDER_ID`) are unchanged.
+
 How each node is curated:
 - **Tier 0 (floor, never evicted):** keep list ∪ `NEVER_DELETE_MEDIA_IDS` ∪ the universal core
   (top-K titles by summed plays across every node's Tautulli). Any title with no copy on an
@@ -595,9 +602,13 @@ How each node is curated:
 - **Tier 1 (node demand):** per `demand_source`:
   - `tautulli` — the node's own Tautulli history
     (`recencyDecay × log1p(plays) × log1p(distinctUsers)`).
-  - `plex` — the same score from the node's PMS **directly**
-    (`/status/sessions/history/all` with `plex_url`/`plex_token`) — real watch history with no
-    Tautulli install; PMS history is per-server, so it's inherently node-local.
+  - `plex` — the node's own PMS watch history **directly**
+    (`/status/sessions/history/all` with `plex_url`/`plex_token`), scored
+    `recencyDecay(lastViewedAt) × log1p(viewCount)`. Real playback is a true watch (no atime
+    pollution), and PMS history is per-server, so it's inherently node-local. Any title Plex has
+    no view record for **falls back to that title's `atime`**; a title with neither is coldest
+    (still protected by the fresh-added grace window). If the local PMS is unreachable the node
+    simply falls back to atime for everything — the plan never fails.
   - `atime` — an LRU over file last-read times reported by the agent; atime only moves when
     *that node's* Plex reads a file. The media filesystem must be mounted `relatime` (not
     `noatime`), and Plex's nightly read-heavy tasks (extensive analysis, preview thumbnails,
@@ -623,7 +634,7 @@ Safety model (§ the agent enforces this order every run):
 4. Only then delete local files that are dropped *and* ignored (ignored ⇒ never re-pulled).
 
 Commands: `/tier preview [node]` (dry-run, shows the delta vs the last applied plan),
-`/tier apply [node]` (publish manifests), `/tier-node add|list|enable|disable|token`,
+`/tier apply [node]` (publish manifests), `/tier-node add|list|enable|disable|token|folder`,
 `/tier-member add|remove|list`. Agents authenticate to `GET /agent/manifest/:node` /
 `POST /agent/report/:node` with the per-node bearer token from `/tier-node token` (hash-stored,
 shown once). Env knobs: `TIER_CORE_TOP_K`, `TIER_HALF_LIFE_DAYS`, `TIER_WARM_DAYS`,

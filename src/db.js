@@ -194,6 +194,17 @@ function runMigrations() {
       PRIMARY KEY (node, discord_id)
     );
 
+    -- One-to-many Syncthing folders per node (R2.1): a node's library can span several
+    -- Receive-Only folders but stays one budget pool / one eviction plan. Legacy single-folder
+    -- nodes keep their tier_nodes.folder_root and are migrated into a single row below.
+    CREATE TABLE IF NOT EXISTS tier_node_folders (
+      node TEXT NOT NULL,
+      syncthing_folder_id TEXT NOT NULL DEFAULT '',
+      folder_root TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (node, syncthing_folder_id)
+    );
+
     CREATE TABLE IF NOT EXISTS tier_agent_tokens (
       node TEXT PRIMARY KEY,
       token_hash TEXT NOT NULL,
@@ -202,11 +213,12 @@ function runMigrations() {
 
     CREATE TABLE IF NOT EXISTS tier_node_files (
       node TEXT NOT NULL,
+      folder_id TEXT NOT NULL DEFAULT '',
       rel_path TEXT NOT NULL,
       size_bytes INTEGER DEFAULT 0,
       atime INTEGER,
       reported_at INTEGER,
-      PRIMARY KEY (node, rel_path)
+      PRIMARY KEY (node, folder_id, rel_path)
     );
 
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
@@ -240,6 +252,35 @@ function runMigrations() {
   ensureColumn('tier_nodes', 'plex_token', 'TEXT');
   ensureColumn('tier_nodes', 'atime_mask', 'TEXT');
 
+  // R2.1 multi-folder: older installs have tier_node_files keyed on (node, rel_path) with no
+  // folder_id. Rebuild it under the new (node, folder_id, rel_path) key so the same relPath can
+  // legitimately exist in two folders (e.g. a title held in both the Movies and 4k folders).
+  const tnfCols = db.prepare('PRAGMA table_info(tier_node_files)').all().map(c => c.name);
+  if (!tnfCols.includes('folder_id')) {
+    db.exec(`
+      ALTER TABLE tier_node_files RENAME TO tier_node_files_legacy;
+      CREATE TABLE tier_node_files (
+        node TEXT NOT NULL,
+        folder_id TEXT NOT NULL DEFAULT '',
+        rel_path TEXT NOT NULL,
+        size_bytes INTEGER DEFAULT 0,
+        atime INTEGER,
+        reported_at INTEGER,
+        PRIMARY KEY (node, folder_id, rel_path)
+      );
+      INSERT INTO tier_node_files (node, folder_id, rel_path, size_bytes, atime, reported_at)
+        SELECT node, '', rel_path, size_bytes, atime, reported_at FROM tier_node_files_legacy;
+      DROP TABLE tier_node_files_legacy;
+    `);
+  }
+  // Backfill tier_node_folders: any node with a legacy folder_root and no folder rows yet gets
+  // one row (empty syncthing_folder_id — the agent's SYNCTHING_FOLDER_ID env still selects the
+  // single folder), so existing single-folder nodes migrate transparently.
+  db.prepare(`INSERT OR IGNORE INTO tier_node_folders (node, syncthing_folder_id, folder_root)
+    SELECT name, '', folder_root FROM tier_nodes
+    WHERE folder_root IS NOT NULL AND folder_root != ''
+      AND name NOT IN (SELECT node FROM tier_node_folders)`).run();
+
   const dlCols = db.prepare('PRAGMA table_info(download_tokens)').all().map(c => c.name);
   if (dlCols.includes('token') && !dlCols.includes('token_hash')) {
     ensureColumn('download_tokens', 'token_hash', 'TEXT');
@@ -271,7 +312,12 @@ function runMigrations() {
       const count = db.prepare('SELECT COUNT(*) AS n FROM tier_nodes').get().n;
       if (count === 0) {
         for (const n of JSON.parse(CONFIG.TIER_NODES_SEED)) {
-          if (n && n.name) upsertTierNode(n);
+          if (!n || !n.name) continue;
+          upsertTierNode(n);
+          // Optional multi-folder seed: [{"name":"california","folders":[{"id":"eeeee-fffff","path":"/mnt/media/Media/Movies"}, ...]}]
+          for (const f of Array.isArray(n.folders) ? n.folders : []) {
+            if (f && (f.path || f.folder_root)) addTierNodeFolder(n.name, f.id || f.folder_id || '', f.path || f.folder_root);
+          }
         }
       }
     } catch (err) {
@@ -659,6 +705,24 @@ const removeTierNodeMember = (node, discordId) => db.prepare('DELETE FROM tier_n
 
 const listTierNodeMembers = node => db.prepare('SELECT discord_id FROM tier_node_members WHERE node = ? ORDER BY discord_id').all(String(node).toLowerCase()).map(r => r.discord_id);
 
+// ---- Multi-folder (R2.1) ----
+// A node's Syncthing folders. Returns the explicit rows, or — for a legacy node that only ever
+// had tier_nodes.folder_root — a single synthesized folder so the planner's single-folder path
+// is unchanged. Shape matches what src/tier.js nodeFolders() consumes ({ folderId, folderRoot }).
+function listTierNodeFolders(node) {
+  const key = String(node).toLowerCase();
+  const rows = db.prepare('SELECT syncthing_folder_id AS folderId, folder_root AS folderRoot FROM tier_node_folders WHERE node = ? ORDER BY folder_root').all(key);
+  if (rows.length) return rows;
+  const legacy = db.prepare('SELECT folder_root FROM tier_nodes WHERE name = ?').get(key);
+  return legacy?.folder_root ? [{ folderId: '', folderRoot: legacy.folder_root }] : [];
+}
+
+const addTierNodeFolder = (node, folderId, folderRoot) => db.prepare(`INSERT INTO tier_node_folders (node, syncthing_folder_id, folder_root) VALUES (?, ?, ?)
+  ON CONFLICT(node, syncthing_folder_id) DO UPDATE SET folder_root = excluded.folder_root`)
+  .run(String(node).toLowerCase(), String(folderId || ''), String(folderRoot || '').replace(/\/+$/, '')).changes > 0;
+
+const removeTierNodeFolder = (node, folderId) => db.prepare('DELETE FROM tier_node_folders WHERE node = ? AND syncthing_folder_id = ?').run(String(node).toLowerCase(), String(folderId || '')).changes > 0;
+
 // (Re)generate the sync agent's bearer token for a node. Only the hash is stored — the raw
 // token is shown once, same policy as download links.
 function setTierAgentToken(node) {
@@ -671,20 +735,21 @@ function setTierAgentToken(node) {
 
 const getTierAgentTokenHash = node => db.prepare('SELECT token_hash FROM tier_agent_tokens WHERE node = ?').get(String(node).toLowerCase())?.token_hash || null;
 
-// Full-replace of a node's agent-reported inventory ({relPath, sizeBytes, atime}). The agent
-// only re-sends when its local snapshot changed, so this stays cheap in the steady state.
+// Full-replace of a node's agent-reported inventory ({folderId, relPath, sizeBytes, atime}). The
+// agent only re-sends when its local snapshot changed, so this stays cheap in the steady state.
+// folderId defaults to '' so single-folder agents (which report no folderId) still work.
 const replaceTierNodeFiles = db.transaction((node, files) => {
   const key = String(node).toLowerCase();
   db.prepare('DELETE FROM tier_node_files WHERE node = ?').run(key);
-  const ins = db.prepare('INSERT OR REPLACE INTO tier_node_files (node, rel_path, size_bytes, atime, reported_at) VALUES (?, ?, ?, ?, ?)');
+  const ins = db.prepare('INSERT OR REPLACE INTO tier_node_files (node, folder_id, rel_path, size_bytes, atime, reported_at) VALUES (?, ?, ?, ?, ?, ?)');
   const now = Date.now();
   for (const f of files) {
     if (!f || !f.relPath) continue;
-    ins.run(key, String(f.relPath), Number(f.sizeBytes) || 0, Number.isFinite(Number(f.atime)) ? Number(f.atime) : null, now);
+    ins.run(key, String(f.folderId ?? f.folder_id ?? ''), String(f.relPath), Number(f.sizeBytes) || 0, Number.isFinite(Number(f.atime)) ? Number(f.atime) : null, now);
   }
 });
 
-const listTierNodeFiles = node => db.prepare('SELECT rel_path AS relPath, size_bytes AS sizeBytes, atime FROM tier_node_files WHERE node = ?').all(String(node).toLowerCase());
+const listTierNodeFiles = node => db.prepare('SELECT folder_id AS folderId, rel_path AS relPath, size_bytes AS sizeBytes, atime FROM tier_node_files WHERE node = ?').all(String(node).toLowerCase());
 
 // Member cold-start signal: recent requests made by any of the given users (restricted-node
 // pinning, §tier). Empty member set → empty result, never a broken IN () clause.
@@ -770,4 +835,4 @@ function restashPendingRequest(nonce, payload) {
   setSetting(`pending_request:${nonce}`, JSON.stringify(payload));
 }
 
-module.exports = { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPlan, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
+module.exports = { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPlan, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
