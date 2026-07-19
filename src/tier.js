@@ -1,0 +1,413 @@
+// Regional tiering planner ("edge cache"): scores every library title per node, keeps each
+// node filled to its budget with an incremental watermark LRU (evict only to admit), and
+// renders transport manifests (.stignore / rclone files-from).
+//
+// Deliberately Discord-free AND database-free: index.js feeds it plain data (node rows, watch
+// histories, agent atime reports, member requests, keep-list ids, previous plans) so the whole
+// planner is testable by direct import, and /tier preview shows exactly what apply would do.
+//
+// Safety invariants enforced here (see tests):
+//   - a title may appear in a drop list ONLY while it exists on ≥1 enabled `full` node;
+//     otherwise it is force-kept everywhere and flagged
+//   - `full` nodes are never pruned — their manifest keeps everything
+//   - Tier-0 floor (keep list ∪ never-delete ∪ universal core ∪ member pins) is never evictable
+//   - every edge manifest is marked receiveOnly so the agent can assert the topology
+const axios = require('axios');
+const crypto = require('crypto');
+
+// Planner defaults; planTier() callers override via `config`, and warm/fresh windows can be
+// set per node row (tier_nodes.warm_days / fresh_days).
+const TIER_DEFAULTS = {
+  halfLifeDays: 30,        // recency half-life for watch/atime decay
+  warmDays: 14,            // titles watched this recently are never evicted
+  freshDays: 30,           // titles added this recently are warm before any watch history exists
+  requestGraceDays: 45,    // restricted-node member requests pin this long (cold-start)
+  coreTopK: 25,            // universal core: top-K titles by summed plays across all nodes
+  // On restricted nodes the universal core is NOT floor — it competes as a score so the
+  // members' own history outranks the global crowd-pleasers when the budget is tight.
+  coreValue: 0.25,
+  stickyWarmFactor: 2,     // sticky nodes (old drives) get a doubled warm window by default
+};
+
+const DAY_MS = 86400000;
+
+// Exponential recency decay in [0, 1]: 1.0 right now, 0.5 at one half-life, → 0.
+function recencyDecay(tsMs, nowMs, halfLifeDays) {
+  if (!tsMs || !Number.isFinite(tsMs) || tsMs > nowMs + DAY_MS) return 0;
+  return Math.pow(0.5, (nowMs - tsMs) / (halfLifeDays * DAY_MS));
+}
+
+// Join key between Tautulli history rows (title strings) and the arr inventory (mediaIds):
+// normalized title + media type. Tautulli knows Plex rating keys, not tmdb/tvdb ids, so a
+// best-effort title match is the honest join.
+function titleKey(title, mediaType) {
+  const norm = String(title || '').toLowerCase()
+    .replace(/\(\d{4}\)/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  return `${mediaType === 'tv' ? 'tv' : 'movie'}:${norm}`;
+}
+
+// §3.2 Tier-1 score for Tautulli-backed nodes.
+function demandScore(row, nowMs, halfLifeDays) {
+  return recencyDecay(row.lastPlayed, nowMs, halfLifeDays)
+    * Math.log1p(row.plays || 0)
+    * Math.log1p(row.distinctUsers || 0);
+}
+
+// Universal core: top-K title keys by summed plays across every node's history. Only enabled
+// nodes' histories should be passed in — a disabled staging node's stale history must not
+// shape what every region keeps.
+function computeUniversalCore(historiesByNode, k) {
+  const plays = new Map();
+  for (const rows of Object.values(historiesByNode)) {
+    for (const r of rows || []) {
+      const key = titleKey(r.title, r.mediaType);
+      plays.set(key, (plays.get(key) || 0) + (r.plays || 0));
+    }
+  }
+  return [...plays.entries()]
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, Math.max(0, k))
+    .map(([key]) => key);
+}
+
+// Full title inventory from the arrs, same sources and fields as /cleanup-suggestions, plus
+// the on-disk FOLDER path made relative to sourceRoot so manifests are folder-relative.
+// remap = arr.remapPath (injected to keep this module free of the db-touching arr module).
+async function fetchTierInventory({ sources, remap, sourceRoot, onError }) {
+  const items = [];
+  const now = Date.now();
+  for (const s of sources) {
+    try {
+      if (s.kind === 'movie') {
+        const movies = await axios.get(`${s.url}/api/v3/movie`, { headers: { 'X-Api-Key': s.key }, timeout: 30000 }).then(r => r.data || []);
+        for (const m of movies) {
+          if (!m.sizeOnDisk || !m.path) continue;
+          items.push({
+            mediaId: `tmdb:${m.tmdbId}`,
+            title: `${m.title}${s.label === 'radarr-4k' ? ' (4K)' : ''}`,
+            mediaType: 'movie',
+            sizeBytes: m.sizeOnDisk,
+            addedAt: Date.parse(m.movieFile?.dateAdded || m.added || '') || now,
+            relPath: toRelPath(remap(m.path), sourceRoot),
+          });
+        }
+      } else {
+        const series = await axios.get(`${s.url}/api/v3/series`, { headers: { 'X-Api-Key': s.key }, timeout: 30000 }).then(r => r.data || []);
+        for (const t of series) {
+          const size = t.statistics?.sizeOnDisk || 0;
+          if (!size || !t.path) continue;
+          items.push({
+            mediaId: `tvdb:${t.tvdbId}`,
+            title: t.title,
+            mediaType: 'tv',
+            sizeBytes: size,
+            addedAt: Date.parse(t.added || '') || now,
+            relPath: toRelPath(remap(t.path), sourceRoot),
+          });
+        }
+      }
+    } catch (err) {
+      if (onError) onError(s, err);
+    }
+  }
+  return items;
+}
+
+function toRelPath(absPath, sourceRoot) {
+  const p = String(absPath).replace(/\/+$/, '');
+  const root = String(sourceRoot || '').replace(/\/+$/, '');
+  if (root && (p === root || p.startsWith(`${root}/`))) return p.slice(root.length).replace(/^\/+/, '');
+  return p.replace(/^\/+/, '');
+}
+
+// Per-node title values (Tier 1). Returns Map mediaId → { value, lastActivity }.
+//   tautulli: history rows joined to inventory by titleKey, scored per §3.2
+//   atime:    agent-reported file atimes rolled up to the owning title folder — an LRU where
+//             "recently read by that node's Plex" is the demand signal (§3.2a). Files with no
+//             reported atime contribute nothing (graceful fallback).
+function computeNodeValues({ node, inventory, history = [], files = [], now, cfg }) {
+  const values = new Map();
+  if (node.demand_source === 'atime') {
+    const byRel = new Map(inventory.map(t => [t.relPath, t]));
+    const latest = new Map(); // mediaId → newest atime among the title's files
+    for (const f of files) {
+      const atimeMs = Number(f.atime);
+      if (!Number.isFinite(atimeMs) || atimeMs <= 0) continue;
+      // Walk up the file's directories to find the owning title folder.
+      let dir = String(f.relPath);
+      while (dir.includes('/')) {
+        dir = dir.slice(0, dir.lastIndexOf('/'));
+        const t = byRel.get(dir);
+        if (t) {
+          if ((latest.get(t.mediaId) || 0) < atimeMs) latest.set(t.mediaId, atimeMs);
+          break;
+        }
+      }
+    }
+    for (const [mediaId, atimeMs] of latest) {
+      values.set(mediaId, { value: recencyDecay(atimeMs, now, cfg.halfLifeDays), lastActivity: atimeMs });
+    }
+    return values;
+  }
+  const byKey = new Map();
+  for (const r of history) {
+    const key = titleKey(r.title, r.mediaType);
+    const prev = byKey.get(key);
+    // Same title key seen under two rating keys (e.g. library rescan) — merge conservatively.
+    if (prev) {
+      prev.plays += r.plays; prev.distinctUsers = Math.max(prev.distinctUsers, r.distinctUsers);
+      prev.lastPlayed = Math.max(prev.lastPlayed, r.lastPlayed);
+    } else byKey.set(key, { ...r });
+  }
+  for (const t of inventory) {
+    const r = byKey.get(titleKey(t.title, t.mediaType));
+    if (!r) continue;
+    values.set(t.mediaId, { value: demandScore(r, now, cfg.halfLifeDays), lastActivity: r.lastPlayed || null });
+  }
+  return values;
+}
+
+// §3.4 incremental watermark LRU for one node. Pure: everything comes in as data.
+//   floorIds — Tier 0 for THIS node (keep list ∪ never-delete ∪ force-kept ∪, per access mode,
+//              universal core and/or member pins) — never evictable
+//   values   — Map mediaId → { value, lastActivity }
+//   prevKeepIds — mediaIds kept by the last applied plan (null = first run: floor + admits)
+function planNode({ node, inventory, values, floorIds, coreIds = new Set(), prevKeepIds = null, now = Date.now(), config = {} }) {
+  const cfg = { ...TIER_DEFAULTS, ...config };
+  const warmDays = node.warm_days ?? (node.sticky ? cfg.warmDays * cfg.stickyWarmFactor : cfg.warmDays);
+  const freshDays = node.fresh_days ?? cfg.freshDays;
+  const budget = Math.floor((node.usable_bytes || 0) * (1 - (node.headroom_pct ?? 15) / 100));
+  const libraryBytes = inventory.reduce((a, t) => a + (t.sizeBytes || 0), 0);
+
+  const entries = inventory.map(t => {
+    const v = values.get(t.mediaId) || { value: 0, lastActivity: null };
+    let value = v.value;
+    // Restricted nodes: the global core competes as a score instead of being floor, so the
+    // member group's own history wins under pressure (§3.2 Tier 0 caveat).
+    if (node.access === 'restricted' && coreIds.has(t.mediaId)) value = Math.max(value, cfg.coreValue);
+    const fresh = t.addedAt && (now - t.addedAt) <= freshDays * DAY_MS;
+    if (fresh) value = Math.max(value, recencyDecay(t.addedAt, now, cfg.halfLifeDays));
+    const warm = v.lastActivity && (now - v.lastActivity) <= warmDays * DAY_MS;
+    return { ...t, value, warm, fresh };
+  });
+
+  if (node.full) {
+    // Never-pruned master: keeps the entire library, drops nothing, regardless of budget.
+    return finishManifest({ node, keep: entries, drop: [], admits: [], evict: [], forceKept: [], budget, libraryBytes, now });
+  }
+
+  const inventoryIds = new Set(entries.map(e => e.mediaId));
+  const floor = new Set([...floorIds].filter(id => inventoryIds.has(id)));
+  const prevKeep = prevKeepIds ? new Set(prevKeepIds) : null;
+
+  const keepSet = new Set(entries.filter(e => floor.has(e.mediaId) || (prevKeep && prevKeep.has(e.mediaId))));
+  let keptBytes = [...keepSet].reduce((a, e) => a + e.sizeBytes, 0);
+  const evicted = new Set();
+  const evictable = e => keepSet.has(e) && !evicted.has(e) && !floor.has(e.mediaId) && !e.warm && !e.fresh;
+  const coldFirst = (a, b) => (a.value - b.value) || (a.sizeBytes - b.sizeBytes);
+
+  // 1) If the carried-over keep-set already busts the budget (shrunk node, grown floor),
+  //    evict coldest-first just enough to fit.
+  if (keptBytes > budget) {
+    for (const v of [...keepSet].filter(evictable).sort(coldFirst)) {
+      if (keptBytes <= budget) break;
+      evicted.add(v);
+      keptBytes -= v.sizeBytes;
+    }
+  }
+
+  // 2) Admissions, hottest first (smaller first on equal value). A title gets in either on
+  //    free budget or by evicting strictly-colder victims — never a warmer one (the gate).
+  const admits = [];
+  const candidates = entries.filter(e => !keepSet.has(e)).sort((a, b) => (b.value - a.value) || (a.sizeBytes - b.sizeBytes));
+  for (const c of candidates) {
+    const free = budget - keptBytes;
+    if (c.sizeBytes <= free) {
+      admits.push(c); keepSet.add(c); keptBytes += c.sizeBytes;
+      continue;
+    }
+    const pool = [...keepSet].filter(e => evictable(e) && e.value < c.value).sort(coldFirst);
+    let freed = 0;
+    const take = [];
+    for (const v of pool) {
+      take.push(v); freed += v.sizeBytes;
+      if (free + freed >= c.sizeBytes) break;
+    }
+    if (free + freed >= c.sizeBytes) {
+      for (const v of take) { evicted.add(v); keptBytes -= v.sizeBytes; }
+      admits.push(c); keepSet.add(c); keptBytes += c.sizeBytes;
+    }
+  }
+
+  const keep = entries.filter(e => keepSet.has(e) && !evicted.has(e));
+  const drop = entries.filter(e => !keepSet.has(e) || evicted.has(e));
+  const forceKept = keep.filter(e => floor.has(e.mediaId) && floorIds.has(e.mediaId) && e.noFullCopy).map(e => e.mediaId);
+  return finishManifest({ node, keep, drop, admits, evict: [...evicted], forceKept, budget, libraryBytes, now });
+}
+
+function finishManifest({ node, keep, drop, admits, evict, forceKept, budget, libraryBytes, now }) {
+  const strip = e => ({ mediaId: e.mediaId, title: e.title, relPath: e.relPath, sizeBytes: e.sizeBytes });
+  const manifest = {
+    node: node.name,
+    access: node.access || 'open',
+    transport: node.transport || 'syncthing',
+    demandSource: node.demand_source || 'tautulli',
+    // Every edge node's folder must be Receive Only; the agent asserts this before touching
+    // anything (§4a). Full masters are the senders.
+    receiveOnly: !node.full,
+    full: !!node.full,
+    generatedAt: new Date(now).toISOString(),
+    keep: keep.map(strip).sort((a, b) => a.relPath.localeCompare(b.relPath)),
+    drop: drop.map(strip).sort((a, b) => a.relPath.localeCompare(b.relPath)),
+    admits: admits.map(e => e.mediaId),
+    evict: evict.map(e => e.mediaId),
+    forceKept,
+    stats: {
+      budgetBytes: budget,
+      libraryBytes,
+      keepBytes: keep.reduce((a, e) => a + e.sizeBytes, 0),
+      dropBytes: drop.reduce((a, e) => a + e.sizeBytes, 0),
+      keepCount: keep.length,
+      dropCount: drop.length,
+    },
+  };
+  manifest.planHash = computePlanHash(manifest);
+  return manifest;
+}
+
+// Stable hash of the plan's OUTCOME (what to keep/drop, by path) — timestamps and stats are
+// excluded so an unchanged plan hashes identically and agents can skip no-op runs.
+function computePlanHash(manifest) {
+  const basis = JSON.stringify({
+    node: manifest.node,
+    keep: manifest.keep.map(e => e.relPath).sort(),
+    drop: manifest.drop.map(e => e.relPath).sort(),
+  });
+  return crypto.createHash('sha256').update(basis).digest('hex').slice(0, 16);
+}
+
+// Whole-fleet planning: builds floors, core, pins and per-node values, then plans each
+// enabled node. Disabled nodes are skipped entirely — no manifest, no pins, and their
+// histories never feed the universal core (historiesByNode should only contain enabled
+// nodes, but this filters again to be safe).
+function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, memberRequests = {}, keepListIds = [], neverDeleteIds = [], prevPlans = {}, now = Date.now(), config = {} }) {
+  const cfg = { ...TIER_DEFAULTS, ...config };
+  const enabled = nodes.filter(n => n.enabled);
+  const warnings = [];
+
+  // §4.1 master coverage: without an enabled full node NOTHING may be dropped anywhere.
+  // Individual titles can also be flagged onFullNode:false by the caller.
+  const fullNodes = enabled.filter(n => n.full);
+  if (!fullNodes.length) warnings.push('No enabled full (never-pruned) master node — every title is force-kept on every node until one exists.');
+  const uncovered = inventory.filter(t => !fullNodes.length || t.onFullNode === false);
+  for (const t of uncovered.slice(0, 20)) {
+    if (fullNodes.length) warnings.push(`"${t.title}" (${t.mediaId}) has no copy on a full master node — force-kept everywhere.`);
+  }
+  const inventoryMarked = inventory.map(t => (uncovered.includes(t) ? { ...t, noFullCopy: true } : t));
+
+  const enabledHistories = {};
+  for (const n of enabled) enabledHistories[n.name] = historiesByNode[n.name] || [];
+  const coreKeys = new Set(computeUniversalCore(enabledHistories, cfg.coreTopK));
+  const coreIds = new Set(inventoryMarked.filter(t => coreKeys.has(titleKey(t.title, t.mediaType))).map(t => t.mediaId));
+
+  const baseFloor = new Set([...keepListIds, ...neverDeleteIds, ...uncovered.map(t => t.mediaId)]);
+
+  const manifests = {};
+  for (const node of enabled) {
+    const values = computeNodeValues({
+      node,
+      inventory: inventoryMarked,
+      history: enabledHistories[node.name],
+      files: atimeReports[node.name] || [],
+      now,
+      cfg,
+    });
+    const floorIds = new Set(baseFloor);
+    if (node.access === 'restricted') {
+      // §3.3 member cold-start: requests by the node's member set pin within the grace
+      // window. Open nodes never pin (the requester could stream anywhere).
+      for (const r of memberRequests[node.name] || []) {
+        if (r.requestedAt && (now - r.requestedAt) <= cfg.requestGraceDays * DAY_MS) floorIds.add(r.mediaId);
+      }
+    } else {
+      // Open nodes: the universal core is Tier 0 floor.
+      for (const id of coreIds) floorIds.add(id);
+    }
+    manifests[node.name] = planNode({
+      node,
+      inventory: inventoryMarked,
+      values,
+      floorIds,
+      coreIds,
+      prevKeepIds: prevPlans[node.name]?.keepMediaIds || null,
+      now,
+      config: cfg,
+    });
+  }
+  return { manifests, warnings, coreIds: [...coreIds] };
+}
+
+// Best-effort per-node history gathering: a missing or unreachable Tautulli yields an empty
+// history for that node (logged via onError), never a failed plan. atime nodes skip Tautulli
+// entirely — their signal is the agent's file report.
+async function gatherNodeHistories(nodes, { fetchHistory, afterDays = 90, onError } = {}) {
+  const histories = {};
+  for (const n of nodes.filter(x => x.enabled)) {
+    histories[n.name] = [];
+    if (n.demand_source === 'atime' || !n.tautulli_url || !n.tautulli_api_key) continue;
+    try {
+      histories[n.name] = await fetchHistory({ url: n.tautulli_url, apiKey: n.tautulli_api_key }, { afterDays });
+    } catch (err) {
+      if (onError) onError(n, err);
+    }
+  }
+  return histories;
+}
+
+// Syncthing ignore-pattern escaping: media folders legitimately contain [], {} etc.
+function escapeStignore(relPath) {
+  return String(relPath).replace(/[\\*?[\]{}]/g, ch => `\\${ch}`);
+}
+
+// The node's .stignore body: ignore everything in `drop`, folder-relative. Deliberately no
+// (?d) — deletion is the agent's explicit, logged, ignore-first prune (§4a), never Syncthing
+// cleanup. The plan hash header lets humans and the agent correlate file ↔ plan.
+function renderSyncthingStignore(manifest) {
+  const lines = [
+    `// Managed by overseerr-dm-bot regional tiering — DO NOT EDIT BY HAND.`,
+    `// node: ${manifest.node}`,
+    `// plan: ${manifest.planHash}`,
+    `// generated: ${manifest.generatedAt}`,
+    `// Drops are pruned by the sync agent AFTER these ignores load; deliberately no`,
+    `// delete-on-ignore prefix — Syncthing cleanup must never do the deleting.`,
+  ];
+  for (const e of manifest.drop) lines.push(`/${escapeStignore(e.relPath)}`);
+  return `${lines.join('\n')}\n`;
+}
+
+// rclone renderer: an --include-from style files-from list of what the node SHOULD hold.
+// v1 transport is Syncthing; this keeps the interface so an rclone-transported node only
+// needs an agent-side runner, not a new planner.
+function renderRclone(manifest) {
+  return `${manifest.keep.map(e => `${e.relPath}/**`).join('\n')}\n`;
+}
+
+module.exports = {
+  TIER_DEFAULTS,
+  recencyDecay,
+  titleKey,
+  demandScore,
+  computeUniversalCore,
+  fetchTierInventory,
+  toRelPath,
+  computeNodeValues,
+  planNode,
+  planTier,
+  gatherNodeHistories,
+  computePlanHash,
+  renderSyncthingStignore,
+  renderRclone,
+};

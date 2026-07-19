@@ -27,12 +27,13 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, ensureColumn, runMigrations, audit, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPlan, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
 const { decideEscalationAction, escalationEligible } = require('./src/escalation');
-const { tautulliConfigured, tautulliApi, describeSession } = require('./src/tautulli');
+const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
+const { planTier, gatherNodeHistories, fetchTierInventory, renderSyncthingStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
@@ -1824,6 +1825,32 @@ const slashCommands = [
   new SlashCommandBuilder().setName('downloads').setDescription('Show your active download links'),
   new SlashCommandBuilder().setName('keep').setDescription('Show your keep list'),
   new SlashCommandBuilder().setName('help').setDescription('How this media server works'),
+  new SlashCommandBuilder().setName('tier').setDescription('Regional tiering: per-node edge-cache plans').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(s => s.setName('preview').setDescription('Dry-run the planner — shows keep/drop per node, writes nothing').addStringOption(o => o.setName('node').setDescription('Only this node')))
+    .addSubcommand(s => s.setName('apply').setDescription('Publish manifests — agents converge on their next run').addStringOption(o => o.setName('node').setDescription('Only this node'))),
+  new SlashCommandBuilder().setName('tier-node').setDescription('Manage the tiering node registry').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(s => s.setName('add').setDescription('Add or update a node')
+      .addStringOption(o => o.setName('name').setDescription('Node name, e.g. california').setRequired(true))
+      .addIntegerOption(o => o.setName('usable_gb').setDescription('Pool usable capacity in GB'))
+      .addIntegerOption(o => o.setName('headroom_pct').setDescription('Free-space floor % (default 15; ~25 for old drives)'))
+      .addStringOption(o => o.setName('access').setDescription('Who may stream from it').addChoices({ name: 'open (all linked users)', value: 'open' }, { name: 'restricted (explicit member set)', value: 'restricted' }))
+      .addStringOption(o => o.setName('demand_source').setDescription('Demand signal').addChoices({ name: 'tautulli (watch history)', value: 'tautulli' }, { name: 'atime (file last-read LRU)', value: 'atime' }))
+      .addStringOption(o => o.setName('transport').setDescription('Sync transport').addChoices({ name: 'syncthing', value: 'syncthing' }, { name: 'rclone', value: 'rclone' }))
+      .addStringOption(o => o.setName('folder_root').setDescription('Syncthing folder root on that node'))
+      .addStringOption(o => o.setName('tautulli_url').setDescription('That node\'s Tautulli URL'))
+      .addStringOption(o => o.setName('tautulli_api_key').setDescription('That node\'s Tautulli API key'))
+      .addBooleanOption(o => o.setName('full').setDescription('Never-pruned master (holds everything)'))
+      .addBooleanOption(o => o.setName('sticky').setDescription('Extra-low churn (old drives): longer warm window'))
+      .addIntegerOption(o => o.setName('warm_days').setDescription('Override: recently-watched protection window'))
+      .addIntegerOption(o => o.setName('fresh_days').setDescription('Override: newly-added grace window')))
+    .addSubcommand(s => s.setName('list').setDescription('List all nodes'))
+    .addSubcommand(s => s.setName('enable').setDescription('Enable a node').addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true)))
+    .addSubcommand(s => s.setName('disable').setDescription('Disable a node (skipped by the planner entirely)').addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true)))
+    .addSubcommand(s => s.setName('token').setDescription('(Re)generate the node\'s sync-agent bearer token — shown once').addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true))),
+  new SlashCommandBuilder().setName('tier-member').setDescription('Manage a restricted node\'s member set').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(s => s.setName('add').setDescription('Add a member').addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('node').setDescription('Restricted node name').setRequired(true)))
+    .addSubcommand(s => s.setName('remove').setDescription('Remove a member').addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('node').setDescription('Restricted node name').setRequired(true)))
+    .addSubcommand(s => s.setName('list').setDescription('List members').addStringOption(o => o.setName('node').setDescription('Restricted node name').setRequired(true))),
   new SlashCommandBuilder().setName('revoke-downloads').setDescription('Revoke download links').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption(o => o.setName('scope').setDescription('all or user').setRequired(true).addChoices({ name: 'all', value: 'all' }, { name: 'user', value: 'user' }))
     .addUserOption(o => o.setName('user').setDescription('User for user scope').setRequired(false)),
@@ -2212,6 +2239,9 @@ async function handleSlashCommand(interaction) {
   if (n === 'downloads') return handleDownloadsCommand(interaction);
   if (n === 'keep') return handleKeepCommand(interaction);
   if (n === 'help') return handleHelpCommand(interaction);
+  if (n === 'tier') return handleTierCommand(interaction);
+  if (n === 'tier-node') return handleTierNodeCommand(interaction);
+  if (n === 'tier-member') return handleTierMemberCommand(interaction);
   if (n === 'revoke-downloads') return handleRevokeDownloadsCommand(interaction);
 }
 
@@ -3922,6 +3952,9 @@ async function handleHelpCommand(interaction) {
       '`/indexers` — Prowlarr indexer + Byparr health',
       '`/debrid` — Premiumize account + transfer status',
       '`/cleanup-suggestions` — Largest/oldest media that could be cleaned up',
+      '`/tier` — Regional tiering: preview/apply per-node edge-cache plans',
+      '`/tier-node` — Manage the tiering node registry (capacity, access mode, demand source)',
+      '`/tier-member` — Manage a restricted node\'s member set',
     ];
     if (grabConfigured()) {
       adminCommands.push('`/avistaz` — Search AvistaZ directly and send a release to the seedbox');
@@ -3938,6 +3971,208 @@ async function handleHelpCommand(interaction) {
   }
   await interaction.reply({ embeds: [embed], ephemeral: true });
 }
+// ---- Regional tiering ("edge cache") ----
+// The planner itself lives in src/tier.js (Discord-free, DB-free); this block feeds it real
+// data (node registry, per-node Tautulli history, agent atime reports, member requests,
+// keep list, previous plans) and turns the result into embeds / published manifests.
+
+function tierKeepListIds() {
+  return db.prepare('SELECT DISTINCT media_id FROM keep_list WHERE expires_at IS NULL OR expires_at > ?').all(Date.now()).map(r => r.media_id);
+}
+
+async function buildTierPlans() {
+  const nodes = listTierNodes();
+  const enabled = nodes.filter(n => n.enabled);
+  if (!enabled.length) return { manifests: {}, warnings: ['No enabled tier nodes — add one with `/tier-node add`.'], nodes };
+  const inventory = await fetchTierInventory({
+    sources: arrSources(),
+    remap: remapPath,
+    sourceRoot: CONFIG.TIER_SOURCE_ROOT,
+    onError: (s, err) => audit('external_api_error', { provider: s.label, error: err.message, action: 'tier_inventory' }),
+  });
+  const historiesByNode = await gatherNodeHistories(enabled, {
+    fetchHistory,
+    afterDays: CONFIG.TIER_HISTORY_DAYS,
+    onError: (n, err) => audit('external_api_error', { provider: `tautulli:${n.name}`, error: err.message, action: 'tier_history' }),
+  });
+  const atimeReports = {};
+  const memberRequests = {};
+  const prevPlans = {};
+  for (const n of enabled) {
+    if (n.demand_source === 'atime') atimeReports[n.name] = listTierNodeFiles(n.name);
+    if (n.access === 'restricted') {
+      memberRequests[n.name] = listRequestsByRequesters(listTierNodeMembers(n.name), CONFIG.TIER_REQUEST_GRACE_DAYS);
+    }
+    const prev = getTierPlan(n.name);
+    if (prev) prevPlans[n.name] = prev;
+  }
+  const result = planTier({
+    nodes,
+    inventory,
+    historiesByNode,
+    atimeReports,
+    memberRequests,
+    keepListIds: tierKeepListIds(),
+    neverDeleteIds: CONFIG.NEVER_DELETE_MEDIA_IDS,
+    prevPlans,
+    config: {
+      coreTopK: CONFIG.TIER_CORE_TOP_K,
+      halfLifeDays: CONFIG.TIER_HALF_LIFE_DAYS,
+      warmDays: CONFIG.TIER_WARM_DAYS,
+      freshDays: CONFIG.TIER_FRESH_DAYS,
+      requestGraceDays: CONFIG.TIER_REQUEST_GRACE_DAYS,
+    },
+  });
+  return { ...result, nodes, prevPlans };
+}
+
+function tierManifestField(node, m, prevPlan) {
+  const free = Math.max(0, (node.usable_bytes || 0) - m.stats.keepBytes);
+  const lines = [
+    `Keep: **${m.stats.keepCount}** titles · ${fmtSpace(m.stats.keepBytes)}`,
+    `Drop: **${m.stats.dropCount}** titles · ${fmtSpace(m.stats.dropBytes)}`,
+    `Budget ${fmtSpace(m.stats.budgetBytes)} → ${fmtSpace(free)} free of ${fmtSpace(node.usable_bytes || 0)}`,
+  ];
+  if (m.full) lines.push('🔒 Full master — never pruned');
+  if (prevPlan) {
+    const prevKeep = new Set(prevPlan.keepMediaIds || []);
+    const nowKeep = m.keep.map(e => e.mediaId);
+    const added = nowKeep.filter(id => !prevKeep.has(id)).length;
+    const removed = [...prevKeep].filter(id => !nowKeep.includes(id)).length;
+    lines.push(prevPlan.planHash === m.planHash
+      ? 'No change vs applied plan'
+      : `Δ vs applied: +${added} / −${removed} titles`);
+  } else lines.push('No plan applied yet');
+  if (m.forceKept.length) lines.push(`⚠️ ${m.forceKept.length} force-kept (no full-node copy)`);
+  return { name: `${m.full ? '🏠' : '📦'} ${m.node} (${m.access}, ${m.demandSource})`, value: lines.join('\n'), inline: false };
+}
+
+async function handleTierCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  const sub = interaction.options.getSubcommand();
+  const only = interaction.options.getString('node')?.toLowerCase() || null;
+  await interaction.deferReply({ ephemeral: true });
+  let plans;
+  try {
+    plans = await buildTierPlans();
+  } catch (err) {
+    return interaction.editReply(`❌ Planning failed: ${err.message}`);
+  }
+  let names = Object.keys(plans.manifests);
+  if (only) names = names.filter(n => n === only);
+  if (!names.length) {
+    return interaction.editReply(only
+      ? `❌ No plan for node \`${only}\` — is it registered and enabled? (\`/tier-node list\`)`
+      : `❌ Nothing to plan.\n${(plans.warnings || []).map(w => `• ${w}`).join('\n')}`);
+  }
+
+  if (sub === 'apply') {
+    for (const name of names) {
+      const m = plans.manifests[name];
+      const stignore = renderSyncthingStignore(m);
+      setSetting(`tier_manifest:${name}`, JSON.stringify({ ...m, stignore, rcloneFilesFrom: m.transport === 'rclone' ? renderRclone(m) : undefined }));
+      setTierPlan(name, { planHash: m.planHash, keepMediaIds: m.keep.map(e => e.mediaId), appliedAt: Date.now() });
+      audit('tier_plan_applied', { actorDiscordId: interaction.user.id, node: name, planHash: m.planHash, keepCount: m.stats.keepCount, dropCount: m.stats.dropCount, dropBytes: m.stats.dropBytes });
+    }
+  }
+
+  const embed = brandedEmbed(sub === 'apply' ? COLORS.SUCCESS : COLORS.INFO)
+    .setTitle(sub === 'apply' ? '🗺️ Tier Plans Published' : '🗺️ Tier Preview (dry run — nothing written)')
+    .setDescription(sub === 'apply'
+      ? 'Manifests are live at `/agent/manifest/:node` — each node\'s sync agent converges on its next run (ignore-first, then prune).'
+      : 'What `/tier apply` would publish. Drops only ever remove edge copies — every title stays on a full master.');
+  for (const name of names.slice(0, 12)) {
+    embed.addFields(tierManifestField(plans.nodes.find(n => n.name === name), plans.manifests[name], plans.prevPlans?.[name]));
+  }
+  if (plans.warnings?.length) embed.addFields({ name: '⚠️ Warnings', value: plans.warnings.slice(0, 8).map(w => `• ${w}`).join('\n').slice(0, 1024), inline: false });
+  return interaction.editReply({ embeds: [embed] });
+}
+
+async function handleTierNodeCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  const sub = interaction.options.getSubcommand();
+
+  if (sub === 'list') {
+    const nodes = listTierNodes();
+    if (!nodes.length) return interaction.reply({ content: 'No tier nodes yet — `/tier-node add name:<node>` creates one.', ephemeral: true });
+    const lines = nodes.map(n => {
+      const members = n.access === 'restricted' ? ` · ${listTierNodeMembers(n.name).length} member(s)` : '';
+      const plan = getTierPlan(n.name);
+      return `${n.enabled ? '🟢' : '⚫'} **${n.name}** — ${fmtSpace(n.usable_bytes || 0)}, headroom ${n.headroom_pct}%${n.full ? ', **full master**' : ''}${n.sticky ? ', sticky' : ''} · ${n.access}/${n.demand_source}/${n.transport}${members}${plan ? ` · plan \`${plan.planHash}\`` : ' · no plan applied'}`;
+    });
+    return interaction.reply({ embeds: [brandedEmbed(COLORS.INFO).setTitle('📦 Tier Nodes').setDescription(lines.join('\n').slice(0, 4000))], ephemeral: true });
+  }
+
+  const name = interaction.options.getString('name', true).toLowerCase();
+
+  if (sub === 'enable' || sub === 'disable') {
+    if (!getTierNode(name)) return interaction.reply({ content: `❌ Unknown node \`${name}\`.`, ephemeral: true });
+    setTierNodeEnabled(name, sub === 'enable');
+    audit('tier_node_toggled', { actorDiscordId: interaction.user.id, node: name, enabled: sub === 'enable' });
+    return interaction.reply({ content: sub === 'enable' ? `✅ Node \`${name}\` enabled — it joins the next plan.` : `✅ Node \`${name}\` disabled — the planner skips it entirely (no manifest, no pins, history excluded from the universal core).`, ephemeral: true });
+  }
+
+  if (sub === 'token') {
+    if (!getTierNode(name)) return interaction.reply({ content: `❌ Unknown node \`${name}\` — add it first.`, ephemeral: true });
+    const raw = setTierAgentToken(name);
+    audit('tier_agent_token_rotated', { actorDiscordId: interaction.user.id, node: name });
+    return interaction.reply({ content: `🔑 Agent token for \`${name}\` (shown once, replaces any previous token):\n\`\`\`\n${raw}\n\`\`\`\nSet it as \`TIER_AGENT_TOKEN\` on that node's sync agent.`, ephemeral: true });
+  }
+
+  // sub === 'add' (also edits an existing node — only supplied options change)
+  const usableGb = interaction.options.getInteger('usable_gb');
+  const fields = { name };
+  if (usableGb != null) fields.usable_bytes = usableGb * 1024 ** 3;
+  for (const [opt, col] of [['headroom_pct', 'headroom_pct'], ['warm_days', 'warm_days'], ['fresh_days', 'fresh_days']]) {
+    const v = interaction.options.getInteger(opt);
+    if (v != null) fields[col] = v;
+  }
+  for (const opt of ['access', 'demand_source', 'transport', 'folder_root', 'tautulli_url', 'tautulli_api_key']) {
+    const v = interaction.options.getString(opt);
+    if (v != null) fields[opt] = v;
+  }
+  for (const opt of ['full', 'sticky']) {
+    const v = interaction.options.getBoolean(opt);
+    if (v != null) fields[opt] = v;
+  }
+  const { created, node } = upsertTierNode(fields);
+  audit('tier_node_upserted', { actorDiscordId: interaction.user.id, node: name, created, fields: Object.keys(fields) });
+  const embed = brandedEmbed(COLORS.SUCCESS)
+    .setTitle(created ? `📦 Node Added: ${name}` : `📦 Node Updated: ${name}`)
+    .setDescription([
+      `Capacity **${fmtSpace(node.usable_bytes || 0)}**, headroom **${node.headroom_pct}%** → budget ${fmtSpace(Math.floor((node.usable_bytes || 0) * (1 - node.headroom_pct / 100)))}`,
+      `Access **${node.access}** · demand **${node.demand_source}** · transport **${node.transport}**${node.full ? ' · **full master**' : ''}${node.sticky ? ' · sticky' : ''}`,
+      node.folder_root ? `Folder root \`${node.folder_root}\`` : '⚠️ No `folder_root` set — the agent needs it.',
+      node.demand_source === 'tautulli' && !node.tautulli_url ? '⚠️ No Tautulli configured — this node contributes no demand signal (floor + pins only).' : null,
+      created ? `Next: \`/tier-node token name:${name}\` for the agent, then \`/tier preview\`.` : null,
+    ].filter(Boolean).join('\n'));
+  return interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+async function handleTierMemberCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  const sub = interaction.options.getSubcommand();
+  const nodeName = interaction.options.getString('node', true).toLowerCase();
+  const node = getTierNode(nodeName);
+  if (!node) return interaction.reply({ content: `❌ Unknown node \`${nodeName}\`.`, ephemeral: true });
+  if (node.access !== 'restricted') {
+    return interaction.reply({ content: `❌ \`${nodeName}\` is an **open** node — membership doesn't apply (any linked user may stream; its own watch history defines its audience). Use \`/tier-node add name:${nodeName} access:restricted\` first if you mean to close it.`, ephemeral: true });
+  }
+  if (sub === 'list') {
+    const members = listTierNodeMembers(nodeName);
+    return interaction.reply({ content: members.length ? `Members of \`${nodeName}\` (${members.length}):\n${members.map(id => `• <@${id}>`).join('\n')}` : `\`${nodeName}\` has no members yet — it curates on demand + core only until you add some.`, ephemeral: true, allowedMentions: { parse: [] } });
+  }
+  const user = interaction.options.getUser('user', true);
+  if (sub === 'add') {
+    const added = addTierNodeMember(nodeName, user.id);
+    audit('tier_member_added', { actorDiscordId: interaction.user.id, targetDiscordId: user.id, node: nodeName });
+    return interaction.reply({ content: added ? `✅ <@${user.id}> added to \`${nodeName}\` — their requests now pin there for ${CONFIG.TIER_REQUEST_GRACE_DAYS} days.` : `<@${user.id}> is already a member of \`${nodeName}\`.`, ephemeral: true, allowedMentions: { parse: [] } });
+  }
+  const removed = removeTierNodeMember(nodeName, user.id);
+  audit('tier_member_removed', { actorDiscordId: interaction.user.id, targetDiscordId: user.id, node: nodeName });
+  return interaction.reply({ content: removed ? `✅ <@${user.id}> removed from \`${nodeName}\`.` : `<@${user.id}> wasn't a member of \`${nodeName}\`.`, ephemeral: true, allowedMentions: { parse: [] } });
+}
+
 async function handleRevokeDownloadsCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
   const scope = interaction.options.getString('scope', true);
@@ -4653,7 +4888,14 @@ function startExpressServer() {
   const app = express();
   app.disable('x-powered-by');
   const upload = multer({ limits: { fileSize: 5 * 1024 * 1024, files: 5 } });
-  app.use((req, res, next) => { if (req.is('multipart/form-data')) return next(); bodyParser.json({ limit: '1mb' })(req, res, next); });
+  // Agent reports can carry a full atime inventory (thousands of file rows), so /agent/ gets a
+  // larger JSON limit than the webhook/dashboard routes.
+  const agentJsonParser = bodyParser.json({ limit: '25mb' });
+  app.use((req, res, next) => {
+    if (req.is('multipart/form-data')) return next();
+    if (req.path.startsWith('/agent/')) return agentJsonParser(req, res, next);
+    bodyParser.json({ limit: '1mb' })(req, res, next);
+  });
 
   app.get('/health', async (_req, res) => res.json(await gatherHealth()));
 
@@ -4771,6 +5013,51 @@ function startExpressServer() {
       });
       fs.createReadStream(filePath).pipe(res);
     }
+  });
+
+  // ---- Regional tiering: per-node sync-agent API ----
+  // Same auth style as download links: only a hash of each node's bearer token is stored;
+  // compare in constant time. A node's token only unlocks that node's manifest/report.
+  const tierAgentAuth = (req, res, next) => {
+    const node = String(req.params.node || '').toLowerCase();
+    const m = /^Bearer\s+(\S+)$/.exec(String(req.headers.authorization || ''));
+    const storedHash = getTierAgentTokenHash(node);
+    if (!m || !storedHash || !safeEqual(sha256(m[1]), storedHash)) {
+      audit('tier_agent_auth_failed', { node, ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown' });
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    next();
+  };
+
+  app.get('/agent/manifest/:node', tierAgentAuth, (req, res) => {
+    const raw = getSetting(`tier_manifest:${String(req.params.node).toLowerCase()}`);
+    if (!raw) return res.status(404).json({ error: 'No manifest published for this node — run /tier apply.' });
+    res.type('json').send(raw);
+  });
+
+  app.post('/agent/report/:node', tierAgentAuth, (req, res) => {
+    const node = String(req.params.node).toLowerCase();
+    const body = req.body || {};
+    const errors = Array.isArray(body.errors) ? body.errors.slice(0, 10).map(e => String(e).slice(0, 300)) : [];
+    // The atime demand signal (§3.2a): full local inventory snapshots replace the stored set.
+    if (Array.isArray(body.inventory) && body.inventory.length) {
+      try {
+        replaceTierNodeFiles(node, body.inventory.slice(0, 200000));
+      } catch (err) {
+        errors.push(`inventory store failed: ${err.message}`);
+      }
+    }
+    audit('tier_agent_report', { node, planHash: body.planHash || null, bytesFreed: body.bytesFreed || 0, droppedCount: (body.dropped || []).length, inventoryCount: Array.isArray(body.inventory) ? body.inventory.length : 0, errors: errors.join('; ').slice(0, 500) || undefined });
+    if ((body.bytesFreed || 0) > 0 || errors.length) {
+      notifyChannel('cleanup', { embeds: [brandedEmbed(errors.length ? COLORS.WARN : COLORS.SUCCESS)
+        .setTitle(`📦 Tier Agent Report — ${node}`)
+        .setDescription([
+          `Plan \`${body.planHash || '?'}\` converged.`,
+          (body.bytesFreed || 0) > 0 ? `Freed **${fmtSpace(body.bytesFreed)}** across ${(body.dropped || []).length} title(s). Master copies untouched.` : null,
+          errors.length ? `⚠️ Errors:\n${errors.map(e => `• ${e}`).join('\n')}` : null,
+        ].filter(Boolean).join('\n').slice(0, 4000))] });
+    }
+    res.json({ ok: true });
   });
 
   if (CONFIG.DASHBOARD_ENABLED) {
