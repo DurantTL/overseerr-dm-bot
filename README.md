@@ -440,6 +440,18 @@ Grab jobs are durable (`grab_jobs` in SQLite): a restart mid-download keeps watc
 mid-transfer re-queues the copy, and rclone skips already-transferred files. Transfer failures
 alert the downloads channel with a **Retry Transfer** button.
 
+### Guided import ("Map to a Series…")
+When Sonarr declines an import (`Unknown Series` — TVDB files the show under another title,
+common for Asian dramas whose sequels are listed as a season of the original; or fansub names
+with no `SxxEyy` to parse), the decline alert carries a **Map to a Series…** button that runs
+Sonarr's Manual Import as a short conversation in the downloads channel: pick the series
+(library fuzzy-matched, recently-added first, with a search-by-name modal), pick the season,
+review the file→episode mapping (episode numbers read from filenames when possible, natural
+order otherwise — mismatches are called out), confirm. The bot then pushes the exact mapping
+through Sonarr's ManualImport API (move mode). `/rtorrent import` in move mode gets the same
+post-scan verification, so silent declines there surface with the wizard too. Wizard state
+lives in SQLite, so a bot restart mid-conversation doesn't strand the message.
+
 ### Adopting existing torrents (`/rtorrent adopt`)
 The pipeline above tracks torrents by the info-hash the bot computes when **it** submits the
 `.torrent` — anything added to rTorrent by hand, by another private tracker's automation, or
