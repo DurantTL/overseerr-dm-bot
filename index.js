@@ -34,7 +34,7 @@ const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, se
 const { decideEscalationAction, escalationEligible } = require('./src/escalation');
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
-const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
+const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, releaseContentClaim, contentClaimsOverlap, describeContentClaim, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
 const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
@@ -163,6 +163,9 @@ const requestCommandLimits = new Map();
 // Deliberately NOT in RATE_LIMIT_MAPS: its window is 24h and the hourly reaper would wipe the
 // counts. It holds at most one small bucket per family member.
 const stageCommandLimits = new Map();
+// Same 24h-window reasoning: play-triggered promotion's own per-watcher daily cap. The /stage
+// command limit lives in handleStageCommand and never sees origin:'play', so this is its cap.
+const edgePromoteLimits = new Map();
 
 // Keyed by client IP / user id, these maps only ever grew. Drop buckets whose newest hit is
 // older than an hour so a scan of unique IPs can't slowly eat memory.
@@ -1747,7 +1750,8 @@ async function runStageJob(job) {
   const minutes = job.started_at ? Math.max(1, Math.round((Date.now() - job.started_at) / 60000)) : null;
   audit('media_staged', { mediaId: job.media_id, title: job.title, sizeBytes: src.sizeBytes, origin: job.origin, minutes });
   // Bulk seeding would fire dozens of DMs at the admin who fed the list — /staged shows the result.
-  if (job.origin !== 'bulk') {
+  // Play-triggered promotions are automatic (the viewer didn't ask), so they stay silent too.
+  if (job.origin !== 'bulk' && job.origin !== 'play') {
     await dmUser(job.requested_by_discord_id, { embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`🔥 Ready on the Travel Server — ${src.title || job.title}`)
       .setDescription(`**${src.title || job.title}** (${fmtSpace(src.sizeBytes)}) is now warm in the local cache — it'll play instantly, no more mystery buffering.`)] });
@@ -5857,9 +5861,12 @@ async function handleOverseerrWebhook(body) {
 
 async function handlePlexWebhook(payload) {
   const { event, Account, Metadata, Server } = payload;
-  if (event !== 'media.scrobble' || !Account || !Metadata) return;
-  // Every scrobble is gated on which server it came from BEFORE anything destructive can
-  // happen: a PH viewer finishing a movie must never reach the delete flow against the master.
+  // Scrobble = finished (eviction/delete flows). play/resume = playback START, used only to
+  // promote a not-yet-cached title on the PH box (§2.2). Anything else is ignored.
+  const isPlayStart = event === 'media.play' || event === 'media.resume';
+  if ((event !== 'media.scrobble' && !isPlayStart) || !Account || !Metadata) return;
+  // Every event is gated on which server it came from BEFORE anything destructive can happen:
+  // a PH viewer finishing a movie must never reach the delete flow against the master.
   const origin = classifyServerIdentity({ serverName: Server?.title, machineId: Server?.uuid });
   if (origin === 'unknown') {
     audit('webhook_server_unmatched', { source: 'plex', serverName: Server?.title || null, machineId: Server?.uuid || null, event });
@@ -5874,6 +5881,12 @@ async function handlePlexWebhook(payload) {
   const guids = Metadata.Guid || [];
   const mediaId = mediaType === 'movie' ? `tmdb:${(guids.find(g => g.id?.startsWith('tmdb://'))?.id || '').replace('tmdb://', '')}` : `tvdb:${(guids.find(g => g.id?.startsWith('tvdb://'))?.id || '').replace('tvdb://', '')}`;
   if (!mediaId || mediaId.endsWith(':')) return;
+  // Play-start only promotes, and only on the PH box (primary plays are already local). The Plex
+  // webhook carries no email, so attribution falls back to the Plex account id for rate limiting.
+  if (isPlayStart) {
+    if (origin === 'ph') await handleEdgePlayPromotion({ mediaId, title, mediaType: mediaType === 'episode' ? 'tv' : 'movie', watcherKey: Account?.id != null ? `plex:${Account.id}` : undefined });
+    return;
+  }
   if (origin === 'ph') {
     return handlePhWatchedEvent({ event: 'watched', mediaId, title, mediaType: mediaType === 'episode' ? 'tv' : 'movie' });
   }
@@ -5912,8 +5925,17 @@ async function handleTautulliWebhook(body) {
   const mediaId = media_type === 'movie' ? `tmdb:${tmdb_id}` : `tvdb:${tvdb_id}`;
   if (!tmdb_id && media_type === 'movie') return;
   if (!tvdb_id && media_type === 'episode') return;
+  const mappedType = media_type === 'episode' ? 'tv' : 'movie';
+  const eventTitle = media_type === 'episode' ? (grandparent_title || title) : title;
+  // Tautulli "Playback Start" (event 'play') on the PH box → promote a not-yet-cached title so
+  // the next play is local (§2.2). The payload carries user_email, so promotion is attributed to
+  // the linked watcher for the daily cap. Only PH; primary plays need no promotion.
+  if (event === 'play') {
+    if (origin === 'ph') await handleEdgePlayPromotion({ mediaId, title: eventTitle, mediaType: mappedType, watcherEmail: user_email });
+    return;
+  }
   if (origin === 'ph') {
-    return handlePhWatchedEvent({ event, mediaId, title: media_type === 'episode' ? (grandparent_title || title) : title, mediaType: media_type === 'episode' ? 'tv' : 'movie', watcherEmail: user_email });
+    return handlePhWatchedEvent({ event, mediaId, title: eventTitle, mediaType: mappedType, watcherEmail: user_email });
   }
   if (event !== 'watched' || !user_email) return;
   const is4k = String(is_4k || '').toLowerCase().includes('4k');
@@ -5934,6 +5956,51 @@ async function handleTautulliWebhook(body) {
   const tautulliAutoLine = CONFIG.ENABLE_DELETION ? `\n\n⏳ Auto-deletes in ${CONFIG.DELETION_GRACE_HOURS} hour(s) unless you choose **Keep**.` : '';
   await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [brandedEmbed(COLORS.WARN).setTitle('📺 Finished Watching').setDescription(`Looks like you finished **${showTitle}**. Keep it, or free up space?${tautulliAutoLine}`)], components: [row] });
   recordPendingDeletion(mediaId, media_type === 'episode' ? 'tv' : 'movie', showTitle, reqRow.requested_by_discord_id);
+}
+
+// Play-START on the PH box for a title that isn't cached yet → stage it so the NEXT play is
+// local (§2.2 PH pilot). Off unless EDGE_PROMOTE_ON_PLAY; EDGE_PROMOTE_AUDIT_ONLY decides and
+// logs without copying (dark rollout). The pure decision lives in staging.planPlayPromotion;
+// this supplies the impure facts (already staged? cooldown? under the watcher's daily cap?).
+async function handleEdgePlayPromotion({ mediaId, title, mediaType, watcherEmail, watcherKey }) {
+  if (!CONFIG.EDGE_PROMOTE_ON_PLAY || !stagingConfigured()) return;
+  // Attribute to the linked Discord user when we can resolve the watcher's email, else a stable
+  // per-watcher fallback (Plex account id) so one PH viewer can't blow past the cap under 'anon'.
+  // Playing a title that's already cached is recent use — bump its LRU clock so eviction sees it
+  // as warm (parity with the old handlePhWatchedEvent touch on any event), then there's nothing
+  // to promote.
+  const staged = getStagedItem(mediaId);
+  if (staged) touchStagedItem(mediaId);
+  const watcher = watcherEmail ? getUserByCanonicalEmail(watcherEmail) : null;
+  const attributedId = [watcher?.discord_id, watcherEmail && `email:${watcherEmail}`, watcherKey, 'edge-anon'].find(Boolean);
+  const DAY_MS = 86400000;
+  // Peek the daily cap WITHOUT consuming — a skipped/audited event must not burn the budget; we
+  // only consume a token when we actually enqueue a copy.
+  const capOk = (edgePromoteLimits.get(attributedId) || []).filter(ts => Date.now() - ts < DAY_MS).length < CONFIG.EDGE_PROMOTE_MAX_PER_USER_PER_DAY;
+  const plan = planPlayPromotion({
+    enabled: CONFIG.EDGE_PROMOTE_ON_PLAY,
+    alreadyStaged: !!staged,
+    lastPromoteAt: Number(getSetting(`promote_last:${mediaId}`) || '0'),
+    now: Date.now(),
+    cooldownMs: CONFIG.EDGE_PROMOTE_COOLDOWN_HOURS * 3600000,
+    rateLimitOk: capOk,
+    auditOnly: CONFIG.EDGE_PROMOTE_AUDIT_ONLY,
+  });
+  if (plan.action === 'skip') {
+    if (plan.reason === 'rate_limited') audit('edge_promote_rate_limited', { mediaId, title, attributedId });
+    return;
+  }
+  if (plan.action === 'audit') {
+    audit('edge_promote_would_stage', { mediaId, title, mediaType, attributedId });
+    return;
+  }
+  // enqueue: consume a daily token, set the per-title cooldown, queue the copy. The stage worker
+  // dedupes an already-active job, and origin:'play' stays silent (no completion DM).
+  takeRateLimit(edgePromoteLimits, attributedId, CONFIG.EDGE_PROMOTE_MAX_PER_USER_PER_DAY, DAY_MS);
+  setSetting(`promote_last:${mediaId}`, String(Date.now()));
+  const stageDiscordId = isSnowflake(attributedId) ? attributedId : CONFIG.ADMIN_USER_ID;
+  const { duplicate } = enqueueStageJob({ mediaId, mediaType, title, discordId: stageDiscordId, origin: 'play' });
+  audit('edge_promote_enqueued', { mediaId, title, mediaType, attributedId, duplicate });
 }
 
 // A playback event from the PH box. Any event bumps the LRU clock for a cached title; a
