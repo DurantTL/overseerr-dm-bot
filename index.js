@@ -5884,7 +5884,7 @@ async function handlePlexWebhook(payload) {
   // Play-start only promotes, and only on the PH box (primary plays are already local). The Plex
   // webhook carries no email, so attribution falls back to the Plex account id for rate limiting.
   if (isPlayStart) {
-    if (origin === 'ph') await handleEdgePlayPromotion({ mediaId, title, mediaType: mediaType === 'episode' ? 'tv' : 'movie', watcherKey: Account?.id != null ? `plex:${Account.id}` : undefined });
+    if (origin === 'ph') await handlePhPlayStart({ mediaId, title, mediaType: mediaType === 'episode' ? 'tv' : 'movie', watcherKey: Account?.id != null ? `plex:${Account.id}` : undefined });
     return;
   }
   if (origin === 'ph') {
@@ -5931,7 +5931,7 @@ async function handleTautulliWebhook(body) {
   // the next play is local (§2.2). The payload carries user_email, so promotion is attributed to
   // the linked watcher for the daily cap. Only PH; primary plays need no promotion.
   if (event === 'play') {
-    if (origin === 'ph') await handleEdgePlayPromotion({ mediaId, title: eventTitle, mediaType: mappedType, watcherEmail: user_email });
+    if (origin === 'ph') await handlePhPlayStart({ mediaId, title: eventTitle, mediaType: mappedType, watcherEmail: user_email });
     return;
   }
   if (origin === 'ph') {
@@ -5958,19 +5958,22 @@ async function handleTautulliWebhook(body) {
   recordPendingDeletion(mediaId, media_type === 'episode' ? 'tv' : 'movie', showTitle, reqRow.requested_by_discord_id);
 }
 
-// Play-START on the PH box for a title that isn't cached yet → stage it so the NEXT play is
-// local (§2.2 PH pilot). Off unless EDGE_PROMOTE_ON_PLAY; EDGE_PROMOTE_AUDIT_ONLY decides and
-// logs without copying (dark rollout). The pure decision lives in staging.planPlayPromotion;
-// this supplies the impure facts (already staged? cooldown? under the watcher's daily cap?).
-async function handleEdgePlayPromotion({ mediaId, title, mediaType, watcherEmail, watcherKey }) {
-  if (!CONFIG.EDGE_PROMOTE_ON_PLAY || !stagingConfigured()) return;
-  // Attribute to the linked Discord user when we can resolve the watcher's email, else a stable
-  // per-watcher fallback (Plex account id) so one PH viewer can't blow past the cap under 'anon'.
-  // Playing a title that's already cached is recent use — bump its LRU clock so eviction sees it
-  // as warm (parity with the old handlePhWatchedEvent touch on any event), then there's nothing
-  // to promote.
+// A play-START on the PH box (Plex media.play/resume, Tautulli 'play'). Two jobs:
+//   1) ALWAYS bump the LRU clock for an already-cached title — playing it is recent use, and a
+//      play that's abandoned or resumed below the watch threshold may never emit a 'watched'
+//      event. This must run regardless of EDGE_PROMOTE_ON_PLAY: it's the parity behaviour the old
+//      handlePhWatchedEvent gave 'play' events, and dropping it would let a just-played title look
+//      cold and get evicted.
+//   2) If promotion is enabled AND the title isn't cached, stage it so the next play is local
+//      (§2.2 PH pilot). EDGE_PROMOTE_AUDIT_ONLY decides + logs without copying. The pure decision
+//      lives in staging.planPlayPromotion; this supplies the impure facts.
+async function handlePhPlayStart({ mediaId, title, mediaType, watcherEmail, watcherKey }) {
+  if (!stagingConfigured()) return;
   const staged = getStagedItem(mediaId);
   if (staged) touchStagedItem(mediaId);
+  if (!CONFIG.EDGE_PROMOTE_ON_PLAY) return;
+  // Attribute to the linked Discord user when we can resolve the watcher's email, else a stable
+  // per-watcher fallback (Plex account id) so one PH viewer can't blow past the cap under 'anon'.
   const watcher = watcherEmail ? getUserByCanonicalEmail(watcherEmail) : null;
   const attributedId = [watcher?.discord_id, watcherEmail && `email:${watcherEmail}`, watcherKey, 'edge-anon'].find(Boolean);
   const DAY_MS = 86400000;
