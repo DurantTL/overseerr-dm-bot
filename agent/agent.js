@@ -52,7 +52,28 @@ function buildCtx(env = process.env) {
   if (!folders.length || folders.some(f => !f.root)) {
     throw new Error('No folder roots configured — set TIER_FOLDER_ROOT (single folder) or TIER_FOLDERS (multi-folder).');
   }
+  // External media-drive guard (opt-in via TIER_MOUNT_ROOT). The UUID/marker assertions refine
+  // that anchor — a drive that never remounts after a reboot leaves the mount path as a plain,
+  // empty directory on the system disk, and without this the agent would report an empty
+  // inventory and let Syncthing re-pull everything onto the wrong disk. See checkMountGuard.
+  const mount = {
+    root: (env.TIER_MOUNT_ROOT || '').replace(/\/+$/, ''),
+    uuid: (env.TIER_EXPECTED_UUID || '').trim(),
+    marker: (env.TIER_MOUNT_MARKER || '').trim().replace(/^\/+/, ''),
+  };
+  if ((mount.uuid || mount.marker) && !mount.root) {
+    throw new Error('TIER_EXPECTED_UUID / TIER_MOUNT_MARKER require TIER_MOUNT_ROOT (the external drive mount point, e.g. /mnt/media) to be set.');
+  }
+  // A bare "is it a mount point?" check is NOT trustworthy inside a container: a Docker bind mount
+  // (`-v /mnt/media:/media`) always looks like a distinct mount from inside, even when the host
+  // drive failed to remount and the host is binding in its empty fallback directory. So the guard
+  // demands a positive proof that survives that case — a matching filesystem UUID or a sentinel
+  // file that lives ON the drive. Require at least one whenever the guard is enabled.
+  if (mount.root && !mount.uuid && !mount.marker) {
+    throw new Error('TIER_MOUNT_ROOT requires TIER_EXPECTED_UUID or TIER_MOUNT_MARKER — a bare mount-point check is unreliable inside containers/bind mounts. Set at least one drive proof.');
+  }
   return {
+    mount,
     botUrl: need('TIER_BOT_URL').replace(/\/$/, ''),
     node: need('TIER_NODE'),
     token: need('TIER_AGENT_TOKEN'),
@@ -254,8 +275,105 @@ function saveState(ctx, state) {
   fs.writeFileSync(path.join(ctx.stateDir, `${ctx.node}.json`), JSON.stringify(state));
 }
 
+// Preflight the external media drive before the agent writes a .stignore, prunes, or collects an
+// inventory. The failure this exists to stop: after a reboot or power loss the drive does not
+// remount, `/mnt/media` reverts to an ordinary empty directory on the internal system disk, and
+// the agent would then (a) POST an EMPTY inventory that wipes the node's known contents in the
+// bot and (b) let Syncthing re-pull the whole library onto that system disk. When the drive is
+// absent the only safe action is to do nothing at all. Opt-in: no TIER_MOUNT_ROOT → no guard,
+// so existing single-machine / master deployments are unaffected.
+function checkMountGuard(ctx) {
+  const g = ctx.mount || {};
+  if (!g.root) return { checked: false, ok: true, reasons: [] };
+  const root = g.root;
+  const reasons = [];
+
+  let rootStat;
+  try { rootStat = fs.statSync(root); }
+  catch (_e) { return { checked: true, ok: false, reasons: [`media mount root ${root} does not exist — the external drive is not mounted`] }; }
+  if (!rootStat.isDirectory()) return { checked: true, ok: false, reasons: [`media mount root ${root} is not a directory`] };
+
+  // At least one positive proof that the *real* drive — not an empty directory left behind after a
+  // failed remount, and not a container bind mount of the host's empty fallback dir — is mounted at
+  // `root`. A bare mount-point check is deliberately NOT used here (it lies inside containers; see
+  // buildCtx). buildCtx guarantees a UUID and/or marker is configured; each one that FAILS is a
+  // hard error, and at least one must pass.
+  let proven = false;
+
+  // Expected filesystem UUID (Linux). /dev/disk/by-uuid/<uuid> is a symlink to the block device;
+  // its st_rdev equals the st_dev of every file on the filesystem that device backs. Comparing the
+  // two ties "the thing mounted at root" to "the specific drive we shipped" — and it reads the host
+  // block device, so a container bind mount of an unmounted host path fails it.
+  if (g.uuid) {
+    try {
+      const blk = fs.statSync(`/dev/disk/by-uuid/${g.uuid}`);
+      if (blk.rdev === rootStat.dev) proven = true;
+      else reasons.push(`the filesystem mounted at ${root} is not UUID ${g.uuid} — wrong or missing drive`);
+    } catch (_e) {
+      reasons.push(`no block device with UUID ${g.uuid} is present — the external drive is not connected`);
+    }
+  }
+
+  // Sentinel file that lives ON the drive itself (create it once with `touch <root>/<marker>`).
+  // If the drive is absent it's gone even when a bind mount / another filesystem sits at root, so it
+  // works from inside containers where the UUID check isn't available.
+  if (g.marker) {
+    if (fs.existsSync(path.join(root, g.marker))) proven = true;
+    else reasons.push(`mount marker ${path.join(root, g.marker)} is missing — the media drive is not the filesystem mounted at ${root}`);
+  }
+
+  if (!proven && !reasons.length) {
+    // Only reachable if the guard was enabled without any proof (buildCtx blocks this) — fail closed.
+    reasons.push(`no drive proof configured for ${root} — set TIER_EXPECTED_UUID or TIER_MOUNT_MARKER`);
+  }
+
+  // No configured folder root may live outside the media mount or on a different filesystem than
+  // it — either would mean the folder quietly fell back onto the system disk.
+  for (const f of ctx.folders) {
+    if (!f.root) continue;
+    if (f.root !== root && !f.root.startsWith(`${root}${path.sep}`)) {
+      reasons.push(`folder root ${f.root} is outside the media mount ${root}`);
+      continue;
+    }
+    try {
+      if (fs.statSync(f.root).dev !== rootStat.dev) reasons.push(`folder root ${f.root} is on a different filesystem than the media drive — it looks like it fell back onto the system disk`);
+    } catch (_e) {
+      reasons.push(`folder root ${f.root} does not exist — the external drive is not mounted`);
+    }
+  }
+
+  return { checked: true, ok: reasons.length === 0, reasons };
+}
+
 async function runOnce(ctx) {
   const state = loadState(ctx);
+  // The drive guard runs first, before any network call, .stignore write, prune, or inventory
+  // walk. On failure the report carries driveMissing and NO inventory field — an absent inventory
+  // preserves the bot's last-known node contents, whereas the empty inventory a blind walk of the
+  // vanished mount would produce wipes them and triggers a full, misdirected re-seed. We persist
+  // the drive-missing flag so the recovery run below can force a report even when nothing else
+  // changed (otherwise the bot would never learn the drive came back).
+  const guard = checkMountGuard(ctx);
+  if (!guard.ok) {
+    ctx.log(`SAFETY ABORT: media drive check failed — ${guard.reasons.join('; ')}`);
+    try {
+      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, {
+        driveMissing: true,
+        mountErrors: guard.reasons,
+        converged: false,
+        bytesFreed: 0,
+        dropped: [],
+        errors: guard.reasons,
+      });
+    } catch (err) { ctx.log(`could not report drive-missing to the bot: ${err.message}`); }
+    if (!ctx.dryRun && !state.driveMissing) { state.driveMissing = true; saveState(ctx, state); }
+    process.exitCode = 1;
+    return { driveMissing: true, mountErrors: guard.reasons };
+  }
+  // Drive is present now. If the previous run aborted on a missing drive, the node has just
+  // recovered — force a report through even on the no-op fast path so the bot can clear its
+  // drive-missing state and alert recovery.
+  const recovered = !!state.driveMissing;
   const manifest = await botApi(ctx, 'GET', `/agent/manifest/${encodeURIComponent(ctx.node)}`);
   const planChanged = manifest.planHash !== state.planHash;
   const folderPlans = resolveFolderPlans(ctx, manifest);
@@ -266,10 +384,11 @@ async function runOnce(ctx) {
   const invHash = inventory ? inventoryHash(inventory) : null;
   const inventoryChanged = inventory && invHash !== state.inventoryHash;
 
-  if (!planChanged && !inventoryChanged) {
+  if (!planChanged && !inventoryChanged && !recovered) {
     ctx.log(`plan ${manifest.planHash} unchanged and inventory unchanged — nothing to do`);
     return { skipped: true, planHash: manifest.planHash };
   }
+  if (recovered) ctx.log(`media drive recovered — reporting to clear the bot's drive-missing state`);
 
   const pruneResult = { dropped: [], bytesFreed: 0, errors: [] };
   let hardError = false; // a thrown safety abort / ignore-confirm failure (not a benign prune skip)
@@ -305,6 +424,7 @@ async function runOnce(ctx) {
   if (inventoryChanged) report.inventory = inventory;
   await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, report);
   if (inventoryChanged && !ctx.dryRun) state.inventoryHash = invHash;
+  if (recovered && !ctx.dryRun) delete state.driveMissing; // report delivered — clear the recovery flag
   if (!ctx.dryRun) saveState(ctx, state);
   ctx.log(`done: plan ${manifest.planHash}${planChanged ? '' : ' (unchanged)'}, freed ${pruneResult.bytesFreed} bytes, ${pruneResult.errors.length} error(s)`);
   if (pruneResult.errors.length) process.exitCode = 1;
@@ -318,4 +438,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildCtx, parseFolders, runOnce, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, escapeStignore, loadState, saveState };
+module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, escapeStignore, loadState, saveState };

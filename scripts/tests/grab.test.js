@@ -8,7 +8,7 @@ const crypto = require('crypto');
 const express = require('express');
 
 (async () => {
-  const { parseReleaseName, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction, grabImportTarget, findAvistazIndexer, searchAvistaz } = require('../../src/grab');
+  const { parseReleaseName, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction, grabImportTarget, findAvistazIndexer, searchAvistaz, releaseContentClaim, contentClaimsOverlap, describeContentClaim } = require('../../src/grab');
   const { serializeXmlRpcCall, parseXmlRpcResponse, computeInfoHash } = require('../../src/rtorrent');
 
   // --- Release-name parsing ---
@@ -151,5 +151,36 @@ const express = require('express');
   assert.strictEqual(seen.searches[0].categories, '5000', 'tv searches use the TV category');
 
   server.close();
+
+  // --- Content-identity dedupe (same episode/pack, different release/encoding) ---
+  const overlap = (a, b) => contentClaimsOverlap(releaseContentClaim(a), releaseContentClaim(b));
+
+  // Same season pack, different encoding/group/size → duplicate.
+  assert.ok(overlap('Blood.vs.Duty.S01.1080p.WEB-DL.H264-GROUP1', 'Blood vs Duty S01 720p HDTV x264-GROUP2'),
+    'same season pack under different encodings is a duplicate');
+  // Same single episode, different release → duplicate.
+  assert.ok(overlap('Some.Show.S02E05.720p.HDTV.x264', 'Some Show - S02E05 - 1080p WEB-DL'),
+    'same episode under different releases is a duplicate');
+  // A season pack overlaps a single episode of that season.
+  assert.ok(overlap('My.Father.is.Strange.S01.1080p.WEB-DL', 'My Father is Strange S01E14 720p'),
+    'season pack overlaps a single episode of that season');
+  // Complete series overlaps anything of that series.
+  assert.ok(overlap('Old.Drama.Complete.Series.1080p.WEBRip', 'Old Drama S03E02 720p'),
+    'complete-series pack overlaps a single episode');
+
+  // NOT duplicates: different episodes, different seasons, different shows.
+  assert.ok(!overlap('Some.Show.S02E05.720p', 'Some.Show.S02E06.720p'), 'different episodes are not duplicates');
+  assert.ok(!overlap('Some.Show.S01.1080p', 'Some.Show.S02.1080p'), 'different season packs are not duplicates');
+  assert.ok(!overlap('Blood.vs.Duty.S01E01', 'Other.Drama.S01E01'), 'same slot on different shows is not a duplicate');
+  // Unparseable / movie-shaped names never claim → never block a different release.
+  assert.strictEqual(releaseContentClaim('Great.Movie.2019.2160p.BluRay.REMUX'), null, 'a movie name yields no TV claim');
+  assert.strictEqual(releaseContentClaim(''), null, 'empty name yields no claim');
+  assert.strictEqual(contentClaimsOverlap(null, releaseContentClaim('Some.Show.S01E01')), false, 'a null claim never overlaps');
+
+  // describeContentClaim renders a readable label for the "already grabbing …" message.
+  assert.strictEqual(describeContentClaim(releaseContentClaim('Some.Show.S02E05.720p')), 'S02E05', 'episode label');
+  assert.strictEqual(describeContentClaim(releaseContentClaim('Some.Show.S01.1080p')), 'S01', 'season label');
+  assert.strictEqual(describeContentClaim(releaseContentClaim('Old.Drama.Complete.Series.1080p')), 'the complete series', 'complete-series label');
+
   console.log('ok - grab');
 })().catch(err => { console.error('FAILED grab:', err.message); process.exit(1); });
