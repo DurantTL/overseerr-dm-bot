@@ -167,6 +167,15 @@ const CONFIG = {
   STAGE_JOB_TIMEOUT_MINUTES: Number.parseInt(process.env.STAGE_JOB_TIMEOUT_MINUTES || '240', 10),
   STAGE_CHECK_MINUTES: Number.parseInt(process.env.STAGE_CHECK_MINUTES || '2', 10),
   STAGE_MAX_PER_USER_PER_DAY: Number.parseInt(process.env.STAGE_MAX_PER_USER_PER_DAY || '6', 10),
+  // Play-triggered promotion (PH pilot; see docs/edge-playback-architecture.md §2.2). When a PH
+  // viewer starts a title that isn't cached yet, stage it so the NEXT play is local. Off by
+  // default. EDGE_PROMOTE_AUDIT_ONLY decides + logs ('edge_promote_would_stage') without copying,
+  // for a safe dark rollout. The cap is enforced here (not inherited from /stage's command-layer
+  // limit) and attributed to the linked watcher; the cooldown stops a nightly binge re-copying.
+  EDGE_PROMOTE_ON_PLAY: parseBool(process.env.EDGE_PROMOTE_ON_PLAY, false),
+  EDGE_PROMOTE_AUDIT_ONLY: parseBool(process.env.EDGE_PROMOTE_AUDIT_ONLY, false),
+  EDGE_PROMOTE_COOLDOWN_HOURS: Number.parseInt(process.env.EDGE_PROMOTE_COOLDOWN_HOURS || '12', 10),
+  EDGE_PROMOTE_MAX_PER_USER_PER_DAY: Number.parseInt(process.env.EDGE_PROMOTE_MAX_PER_USER_PER_DAY || '6', 10),
   // Tunnel watchdog: any HTTP response from this URL (e.g. the PH Plex /identity endpoint via
   // the VPS tunnel) counts as up; connect errors/timeouts count as down.
   PH_TUNNEL_HEALTH_URL: process.env.PH_TUNNEL_HEALTH_URL || '',

@@ -56,6 +56,26 @@ function planCacheSpace({ freeBytes, neededBytes, minFreeBytes, items }) {
   return { ok: false, evict: [], shortfallBytes: required - reclaimed };
 }
 
+// Play-triggered promotion decision (§2.2 of docs/edge-playback-architecture.md), PH pilot.
+// Pure so the branching is testable without Discord/DB/rclone. index.js supplies the impure
+// facts (is it already staged? when did we last promote it? is the watcher under their daily
+// cap?) and acts on the returned action. Order matters: the cheapest/most-decisive skips first.
+//   enabled       — EDGE_PROMOTE_ON_PLAY master switch
+//   alreadyStaged — getStagedItem(mediaId) truthy: the copy already exists, nothing to do
+//   lastPromoteAt — ms epoch of the last promotion for this title (0/undefined = never)
+//   cooldownMs    — EDGE_PROMOTE_COOLDOWN_HOURS as ms; a binge shouldn't re-enqueue nightly
+//   rateLimitOk   — false once the attributed watcher has hit EDGE_PROMOTE_MAX_PER_USER_PER_DAY
+//   auditOnly     — EDGE_PROMOTE_AUDIT_ONLY: decide + log but never actually copy (dark rollout)
+// Returns { action: 'skip'|'audit'|'enqueue', reason }.
+function planPlayPromotion({ enabled, alreadyStaged, lastPromoteAt = 0, now = Date.now(), cooldownMs = 0, rateLimitOk = true, auditOnly = false }) {
+  if (!enabled) return { action: 'skip', reason: 'disabled' };
+  if (alreadyStaged) return { action: 'skip', reason: 'already_local' };
+  if (lastPromoteAt && cooldownMs > 0 && (now - lastPromoteAt) < cooldownMs) return { action: 'skip', reason: 'cooldown' };
+  if (!rateLimitOk) return { action: 'skip', reason: 'rate_limited' };
+  if (auditOnly) return { action: 'audit', reason: 'audit_only' };
+  return { action: 'enqueue', reason: 'promote' };
+}
+
 // Resolve a mediaId to the on-disk folder rclone should copy. Movies copy the movie folder
 // (file + subs + extras), shows copy the whole series folder — a PH viewer bingeing a show
 // wants all of it, and partial-season staging isn't worth the bookkeeping.
@@ -172,4 +192,4 @@ async function getCacheStatus(stagedItems) {
   return { freeBytes: null, totalBytes: null, usedByCache, source: 'none' };
 }
 
-module.exports = { stagingConfigured, classifyServerIdentity, evictionOrder, planCacheSpace, resolveStageSource, runRclone, stageCopy, purgeStagedPath, fetchCacheFreeBytes, getCacheStatus };
+module.exports = { stagingConfigured, classifyServerIdentity, evictionOrder, planCacheSpace, planPlayPromotion, resolveStageSource, runRclone, stageCopy, purgeStagedPath, fetchCacheFreeBytes, getCacheStatus };

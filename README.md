@@ -558,6 +558,16 @@ A second, small Plex server (e.g. a NUC abroad, behind CGNAT and a VPS tunnel) s
   Integrations without code changes.
 - **Auto-stage** — when a PH user's request finishes importing on the master
   (`MEDIA_AVAILABLE`), the bot stages it automatically and DMs when it's ready to play.
+- **Play-triggered promotion** (`EDGE_PROMOTE_ON_PLAY`, off by default) — when a PH viewer
+  *starts* a title that isn't cached yet, the bot stages it so the next play is local. Needs a
+  Tautulli "Playback Start" webhook (event `play`) and/or Plex `media.play`/`media.resume`
+  carrying the PH server identity. `EDGE_PROMOTE_AUDIT_ONLY=true` logs the decision
+  (`edge_promote_would_stage`) without copying — run it that way first. Promotions have their own
+  per-watcher daily cap (`EDGE_PROMOTE_MAX_PER_USER_PER_DAY`, attributed to the linked Tautulli
+  email) and a per-title cooldown (`EDGE_PROMOTE_COOLDOWN_HOURS`) so a binge can't re-copy. This
+  is the bot half of the edge remote-fallback design (`docs/edge-playback-architecture.md`); the
+  mergerfs remote-fallback mount that lets the missing title play *while* it copies is the infra
+  half, done on the box.
 - **Tunnel watchdog** — `PH_TUNNEL_HEALTH_URL` is polled; state transitions alert the system
   channel, and `/status` + `/staged` show tunnel state, cache free space, and active jobs.
 

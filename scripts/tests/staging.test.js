@@ -10,7 +10,7 @@ const { loadSandbox } = require('./extract');
 
 (async () => {
   // --- classifyServerIdentity (pure; cfg injected) ---
-  const sb = loadSandbox(['classifyServerIdentity', 'evictionOrder', 'planCacheSpace'], {});
+  const sb = loadSandbox(['classifyServerIdentity', 'evictionOrder', 'planCacheSpace', 'planPlayPromotion'], {});
   const classify = (ids, cfg) => sb.run(`classifyServerIdentity(${JSON.stringify(ids)}, ${JSON.stringify(cfg)})`);
   const none = { phNames: [], primaryNames: [] };
   const phOnly = { phNames: ['ph-box'], primaryNames: [] };
@@ -61,6 +61,26 @@ const { loadSandbox } = require('./extract');
   assert.strictEqual(p5.ok, false, 'impossible even after evicting everything unpinned → refuse');
   assert.strictEqual(p5.evict.length, 0, 'refusal evicts nothing (no pointless cache trashing)');
   assert.strictEqual(p5.shortfallBytes, 80 * GB, 'shortfall reported after counting all unpinned');
+
+  // --- planPlayPromotion: play-triggered promotion decision (PH pilot) ---
+  const promo = args => sb.run(`planPlayPromotion(${JSON.stringify(args)})`);
+  const HOUR = 3600000;
+  assert.strictEqual(promo({ enabled: false }).action, 'skip', 'disabled → skip');
+  assert.strictEqual(promo({ enabled: false }).reason, 'disabled', 'disabled reason');
+  assert.strictEqual(promo({ enabled: true, alreadyStaged: true }).action, 'skip', 'already local → skip');
+  assert.strictEqual(promo({ enabled: true, alreadyStaged: true }).reason, 'already_local', 'already_local reason');
+  const cool = promo({ enabled: true, alreadyStaged: false, lastPromoteAt: 1000, now: 1000 + HOUR, cooldownMs: 12 * HOUR });
+  assert.strictEqual(cool.action, 'skip', 'within cooldown → skip');
+  assert.strictEqual(cool.reason, 'cooldown', 'cooldown reason');
+  const past = promo({ enabled: true, alreadyStaged: false, lastPromoteAt: 1000, now: 1000 + 13 * HOUR, cooldownMs: 12 * HOUR });
+  assert.strictEqual(past.action, 'enqueue', 'past cooldown → enqueue');
+  assert.strictEqual(promo({ enabled: true, alreadyStaged: false, rateLimitOk: false }).action, 'skip', 'over daily cap → skip');
+  assert.strictEqual(promo({ enabled: true, alreadyStaged: false, rateLimitOk: false }).reason, 'rate_limited', 'rate_limited reason');
+  assert.strictEqual(promo({ enabled: true, alreadyStaged: false, auditOnly: true }).action, 'audit', 'audit-only → audit, no copy');
+  assert.strictEqual(promo({ enabled: true, alreadyStaged: false }).action, 'enqueue', 'clean path → enqueue');
+  // Precedence: already-local beats cooldown beats rate-limit beats audit-only.
+  assert.strictEqual(promo({ enabled: true, alreadyStaged: true, rateLimitOk: false, auditOnly: true }).reason, 'already_local', 'already_local wins over other skips');
+  assert.strictEqual(promo({ enabled: true, alreadyStaged: false, rateLimitOk: false, auditOnly: true }).reason, 'rate_limited', 'rate-limit checked before audit-only');
 
   // --- serversForHomeServer: PH users get the PH box only, primary users everything else ---
   const plexSb = loadSandbox(['serversForHomeServer'], {
