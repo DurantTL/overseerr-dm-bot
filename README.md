@@ -629,12 +629,13 @@ If a node's budget covers the whole library, nothing is ever dropped.
 
 Safety model (§ the agent enforces this order every run):
 0. **Mount guard** — if `TIER_MOUNT_ROOT` is set, verify the external media drive is actually
-   mounted (real mount point / matching `TIER_EXPECTED_UUID` / present `TIER_MOUNT_MARKER`, and
-   every folder root on that same filesystem) **before** anything else. If the drive is absent —
-   the classic "`/mnt/media` reverted to an empty dir on the system disk after a reboot" — the
-   agent aborts, reports `driveMissing` **without** an inventory (so the bot keeps the node's
-   last-known contents instead of wiping them and re-seeding onto the wrong disk), and the bot
-   alerts once on the transition and once on recovery. See `agent/README.md`.
+   mounted **before** anything else: a positive proof (matching `TIER_EXPECTED_UUID` or a present
+   `TIER_MOUNT_MARKER` sentinel — a bare mount-point check is not trusted since a container bind
+   mount fakes it) plus every folder root on that same filesystem. If the drive is absent — the
+   classic "`/mnt/media` reverted to an empty dir on the system disk after a reboot" — the agent
+   aborts, reports `driveMissing` **without** an inventory (so the bot keeps the node's last-known
+   contents instead of wiping them and re-seeding onto the wrong disk), and the bot alerts once on
+   the transition and once on recovery. See `agent/README.md`.
 1. Assert the Syncthing folder is still **Receive Only** — abort + report otherwise.
 2. Write the manifest's `.stignore` (drops, folder-relative; no delete-on-ignore directive).
 3. Rescan and **confirm the ignores loaded**.
