@@ -422,6 +422,16 @@ seasons at import (per-file `SxxEyy` parsing — Sonarr's own automatic search c
 multi-season packs, which is why the direct pipeline handles them). Duplicate info-hashes are
 refused outright ("already grabbed as job #N").
 
+**Content-level dedupe** (`GRAB_CONTENT_DEDUPE`, default on) goes a step further than the info-hash
+check: it blocks a grab **or** an adoption when an active job already covers the same episode(s) —
+even a *different release, encoding, or size* of them, which the info-hash and exact-title checks
+can't see. The release name is reduced to the episode-space it claims (series + seasons/episodes,
+with a season pack or "complete series" covering everything in it) and compared against active
+jobs; an overlap is refused ("already grabbing S01E14 as job #N"). It's deliberately conservative —
+an unparseable name makes no claim and is never blocked, so a genuinely different episode is never
+lost. Movies dedupe by resolved media id. Set `GRAB_CONTENT_DEDUPE=false` to allow multiple
+releases of the same content through.
+
 ### Setup
 1. Add the AvistaZ indexer in **Prowlarr** (the bot finds it by name via `AVISTAZ_INDEXER_NAME`).
 2. Set `RTORRENT_URL` to the seedbox's XML-RPC endpoint incl. credentials — RapidSeedbox

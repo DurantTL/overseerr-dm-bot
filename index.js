@@ -35,7 +35,7 @@ const { decideEscalationAction, escalationEligible } = require('./src/escalation
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
-const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
+const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, releaseContentClaim, contentClaimsOverlap, describeContentClaim, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
 const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
@@ -627,6 +627,34 @@ function grabCandidatesMessage({ heading, candidates, nonce, allowance, footnote
   return { embeds: [embed], components: [new ActionRowBuilder().addComponents(...buttons)] };
 }
 
+// Content-level duplicate: an active grab job that already covers the same episode(s) as this
+// release, even under a different hash/name/encoding. TV is matched by parsed episode-space
+// (series + seasons/episodes); movies by resolved media id when both jobs carry one. Returns the
+// blocking job + a label, or null (also null when the check is disabled or the name is
+// unparseable — fail-open so a genuinely different release is never wrongly blocked).
+function findActiveContentDuplicate({ releaseTitle, mediaType, mediaId, excludeHash }) {
+  if (!CONFIG.GRAB_CONTENT_DEDUPE) return null;
+  const norm = h => String(h || '').toUpperCase();
+  const active = listActiveGrabJobs().filter(j => !excludeHash || norm(j.info_hash) !== norm(excludeHash));
+  if (mediaType === 'tv') {
+    const claim = releaseContentClaim(releaseTitle);
+    if (!claim) return null;
+    for (const j of active) {
+      if (j.media_type !== 'tv') continue;
+      const jc = releaseContentClaim(j.release_title || j.title);
+      if (jc && contentClaimsOverlap(claim, jc)) return { job: j, label: describeContentClaim(claim) };
+    }
+    return null;
+  }
+  if (mediaId) {
+    for (const j of active) {
+      if (j.media_type === 'tv') continue;
+      if (j.media_id && j.media_id === mediaId) return { job: j, label: 'this movie' };
+    }
+  }
+  return null;
+}
+
 // Fetch the .torrent, dedupe, push it to rTorrent with the right label, and record the
 // durable grab job. Never throws — callers branch on { ok, why, dup }.
 async function executeGrab(candidate, meta) {
@@ -638,6 +666,10 @@ async function executeGrab(candidate, meta) {
   // release title; the post-fetch hash check below stays as the final authority.
   const dupEarly = (candidate.infoHash && getGrabJobByHash(candidate.infoHash)) || getGrabJobByRelease(candidate.releaseTitle);
   if (dupEarly) return { ok: false, dup: true, why: `already grabbed as job #${dupEarly.id} (${dupEarly.state})` };
+  // Same content under a different release/encoding (different hash + name + size): block before
+  // spending the metered .torrent fetch so only one copy of an episode/pack ever enters the pipeline.
+  const contentDup = findActiveContentDuplicate({ releaseTitle: candidate.releaseTitle, mediaType: meta.mediaType, mediaId: meta.mediaId, excludeHash: candidate.infoHash });
+  if (contentDup) return { ok: false, dup: true, why: `already grabbing ${contentDup.label} as job #${contentDup.job.id} (${contentDup.job.state}) — skipping this duplicate release` };
 
   let torrent;
   try {
@@ -1182,6 +1214,10 @@ async function executeAdoption(torrent, target, meta, resolver = null) {
   if (!grabImportTarget(verdict.mediaType)) {
     return { ok: false, why: `${target === 'sonarr' ? 'Sonarr' : 'Radarr'} isn't configured — the adopted torrent could never be imported` };
   }
+  // Another active job already covers these episodes (a different release of the same content):
+  // don't adopt the duplicate. Runs before the remote-path search so we skip the wasted rclone work.
+  const contentDup = findActiveContentDuplicate({ releaseTitle: torrent.name, mediaType: verdict.mediaType, excludeHash: torrent.hash });
+  if (contentDup) return { ok: false, dup: true, why: `same content as job #${contentDup.job.id} (${contentDup.job.state}) — already have ${contentDup.label}; not adopting this duplicate` };
   const { sub: remotePath, tried, viaSearch, ambiguous, mismatch } = await findAdoptRemotePath(torrent, resolver || makeRemotePathResolver());
   if (!remotePath) {
     const probed = tried.slice(0, 3).map(p => `\`${p}\``).join(', ') + (tried.length > 3 ? ', …' : '');
@@ -1322,6 +1358,9 @@ async function sweepAdoptCandidates() {
       notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.SUCCESS)
         .setTitle(`🧲 Auto-Adopted — ${t.name}`.slice(0, 256))
         .setDescription(`Found in rTorrent with label \`${t.label}\` and no grab job — adopted as job #${result.job.id} (**${result.state}**, ${fmtSpace(t.sizeBytes)}) → ${target === 'sonarr' ? 'Sonarr' : 'Radarr'}. ${result.state === 'complete' ? 'Transferring home now.' : 'I\'ll transfer + import when it hits 100%.'}`)] });
+    } else if (result.dup) {
+      // A different release of content already in the pipeline — skip quietly (not a failure).
+      audit('rtorrent_adopt_dup_skipped', { infoHash: t.hash, name: t.name, why: result.why });
     } else {
       notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
         .setTitle(`⚠️ Auto-Adoption Failed — ${t.name}`.slice(0, 256))
