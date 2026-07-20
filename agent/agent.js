@@ -23,7 +23,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 // A node's Syncthing folders, as { id, root }. Multi-folder nodes set TIER_FOLDERS (JSON
-// '[{"id":"cfjvc-ykzis","path":"/mnt/media/Media/Family Films"}, ...]' or the compact
+// '[{"id":"aaaaa-bbbbb","path":"/mnt/media/Media/Family Films"}, ...]' or the compact
 // 'id:path;id:path' form). Single-folder nodes keep SYNCTHING_FOLDER_ID + TIER_FOLDER_ROOT.
 function parseFolders(env) {
   const raw = (env.TIER_FOLDERS || '').trim();

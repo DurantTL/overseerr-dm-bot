@@ -30,7 +30,7 @@ boxes and they do not share a playback story.
 * Plex on California therefore sees **only the files physically present on California**. The ~32
   `.stignore` entries stop Syncthing from auto-restoring hundreds of GB.
 * **Persistent manual overlay:** on top of the planner's `.stignore`, California carries a hand-kept
-  overlay (`/etc/tier-agent/extra-ignores/<folderId>.txt`, e.g. `wg9fc-ntkc4.txt`) that is appended
+  overlay (`/etc/tier-agent/extra-ignores/<folderId>.txt`, e.g. `aaaaa-bbbbb.txt`) that is appended
   after every planner run. The committed agent *overwrites* `.stignore` with planner output only, so
   this overlay is applied out-of-band and is **authoritative over the planner** for the titles it
   lists — a fact §2.2 must design around, because a keep/pin cannot un-ignore an overlaid title.
@@ -179,7 +179,7 @@ forever. Per transport:
 > **BLOCKER — the persistent ignore overlay must subtract active pins.** The committed agent writes
 > `.stignore` with `fs.writeFileSync(target, fp.stignore)` — it *overwrites* the file with pure
 > planner output. But California runs a **persistent manual overlay**
-> (`/etc/tier-agent/extra-ignores/<folderId>.txt`, e.g. `wg9fc-ntkc4.txt`) that is appended **after**
+> (`/etc/tier-agent/extra-ignores/<folderId>.txt`, e.g. `aaaaa-bbbbb.txt`) that is appended **after**
 > the planner's `.stignore`. Those rules keep ignoring their titles **even when the planner moves the
 > title into the keep-set** — so a play-promotion pin alone will *never* make an overlaid legacy
 > title (Boku, Lizzie, …) download. This is fatal to promotion for exactly the titles most likely to
@@ -350,21 +350,24 @@ No secrets here; all of the sensitive values (tokens, rclone remotes) already ex
   `stack.env`, `*.db`, `data/`, `backups/`. `.env.example` ships only blank keys and placeholder
   hosts (`files.example.com`, `bot.example.com`). Every secret in code is read from `process.env`.
 * ✅ **No real IPs, Tailscale hostnames, or personal domains** in tracked files.
-* ⚠️ **Real Syncthing folder IDs + library paths are committed** as doc examples
-  (`agent/README.md`, `agent/agent.js`, `src/db.js`, `index.js`): `cfjvc-ykzis`, `ch3dl-xnzem`,
-  `mafyh-4dn5b`, `wg9fc-ntkc4` alongside `/mnt/media/Media/{Family Films,4k,Movies,TV Shows}`.
-  Folder IDs are **not** a Syncthing security boundary (device IDs + mutual sharing are), so risk is
-  **low** — but they are real infrastructure identifiers and the paths leak the library layout.
-  *Recommendation:* replace with obviously-fake sample IDs in the docs. (Scrubbing current files
-  does not remove them from history; a history rewrite would, but that is disruptive — decide
-  before doing it.)
-* ⚠️ **Weak dashboard session-secret fallback.** `index.js` derives the cookie-signing secret from
-  `'durant'` when both `DASHBOARD_ADMIN_PASSWORD` and `DASHBOARD_ADMIN_TOKEN` are unset. Dashboard
-  auth still requires one of those to log in, so this is **low** severity, but set an explicit
-  random `SESSION_SECRET` in production to avoid a predictable signing key.
+* ✅ **Real Syncthing folder IDs scrubbed (fixed).** The node's actual folder IDs were committed as
+  doc examples in `agent/README.md`, `agent/agent.js`, `src/db.js`, and `index.js`; they have been
+  replaced with obvious placeholders (`aaaaa-bbbbb`, …). Folder IDs are **not** a Syncthing security
+  boundary (device IDs + mutual sharing are), so risk was **low**. Note: this only cleans the current
+  tree — the old IDs remain in git **history**; a history rewrite would remove them but is disruptive,
+  so that is left as an explicit call for the maintainer. The example library paths
+  (`/mnt/media/Media/…`) are generic and were kept.
+* ✅ **Dashboard session-secret hardened (fixed).** `sessionSecret()` previously fell back to the
+  predictable constant `sha256('session:durant')` when no `SESSION_SECRET`/password/token was set.
+  Because `dashboardAuth` accepts any validly-signed `dm_session` cookie, that constant let an
+  attacker **forge an admin session and bypass login** whenever the dashboard was enabled (the
+  default) without credentials. It now falls back to a per-process random secret, so a cookie can
+  never be minted from a known constant. Setting an explicit `SESSION_SECRET` in production is still
+  recommended (keeps sessions valid across restarts).
 * ℹ️ Operational naming (`durant-media-server-bot`, `california`, `philippines`, RapidSeedbox
   references, RAID paths) is present. It reveals topology but no credentials — acceptable for an
   open-source self-host bot; only worth changing if you'd rather not advertise the deployment.
 
-**Bottom line:** nothing secret is exposed. The only cleanups worth doing are cosmetic
-(placeholder folder IDs) and hardening (`SESSION_SECRET`).
+**Bottom line:** nothing secret is exposed. The two concrete cleanups (placeholder folder IDs,
+session-secret hardening) are applied; a history rewrite for the old folder IDs is the only
+remaining optional step.

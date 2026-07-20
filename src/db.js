@@ -314,7 +314,7 @@ function runMigrations() {
         for (const n of JSON.parse(CONFIG.TIER_NODES_SEED)) {
           if (!n || !n.name) continue;
           upsertTierNode(n);
-          // Optional multi-folder seed: [{"name":"california","folders":[{"id":"mafyh-4dn5b","path":"/mnt/media/Media/Movies"}, ...]}]
+          // Optional multi-folder seed: [{"name":"california","folders":[{"id":"aaaaa-bbbbb","path":"/mnt/media/Media/Movies"}, ...]}]
           for (const f of Array.isArray(n.folders) ? n.folders : []) {
             if (f && (f.path || f.folder_root)) addTierNodeFolder(n.name, f.id || f.folder_id || '', f.path || f.folder_root);
           }
