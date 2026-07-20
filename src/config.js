@@ -76,6 +76,10 @@ const CONFIG = {
   // top candidate automatically when its confidence ≥ GRAB_AUTO_CONFIDENCE.
   GRAB_MODE: (process.env.GRAB_MODE || 'approve').toLowerCase(),
   GRAB_AUTO_CONFIDENCE: Number.parseInt(process.env.GRAB_AUTO_CONFIDENCE || '92', 10),
+  // Block a grab/adoption when an active job already covers the same episode(s) — even a
+  // different release/encoding/size of them (info-hash and exact-title dedupe can't see that).
+  // On by default; set false to allow multiple releases of the same content into the pipeline.
+  GRAB_CONTENT_DEDUPE: parseBool(process.env.GRAB_CONTENT_DEDUPE, true),
   // rclone remote pointing at the seedbox's rTorrent download folder, e.g. `rapidseedbox:files`.
   GRAB_RCLONE_REMOTE: (process.env.GRAB_RCLONE_REMOTE || '').replace(/\/$/, ''),
   // Extra rclone flags for seedbox copies (SFTP tuning etc.), space-separated.

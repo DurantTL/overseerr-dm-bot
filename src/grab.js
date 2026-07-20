@@ -83,6 +83,64 @@ function parseReleaseName(name) {
   };
 }
 
+// ---- Content-identity dedupe ----
+// "Same content, different encoding/size" can't be caught by info-hash or exact release title:
+// two different releases of the same episode or season pack have different hashes, names, and
+// byte counts. So we reduce a release name to *what episodes it covers* — a normalized series
+// token plus the seasons/episodes it claims — and block a new grab when an active job already
+// covers any of the same episode-space. Deliberately conservative: an unparseable name yields no
+// claim (null) and is never blocked, so a legitimately different episode is never lost.
+
+// The series title is whatever precedes the first season/episode/complete marker, with any year
+// stripped, normalized. TV only — a movie has no such marker and is deduped by resolved media id.
+function seriesToken(name) {
+  const n = String(name || '');
+  const m = n.match(/\b(s\d{1,2}(?:\s*e\d{1,3})?|\d{1,2}x\d{1,3}|seasons?[\s._]*\d{1,2}|complete)\b/i);
+  const head = (m ? n.slice(0, m.index) : n).replace(/\b(?:19|20)\d{2}\b/g, ' ');
+  return normalizeTitle(head);
+}
+
+// A release's claimed episode-space: { series, seasons:Set<int> (whole-season claims),
+// episodes:Set<"s.e">, whole:bool (complete series → every season) }. Null when nothing usable
+// parses. Built on the already-tested parseReleaseName so season/pack/range logic stays in one
+// place; a multi-episode file only contributes its first episode (a safe under-claim).
+function releaseContentClaim(name) {
+  const series = seriesToken(name);
+  if (!series) return null;
+  const p = parseReleaseName(name);
+  const seasons = new Set();
+  const episodes = new Set();
+  let whole = false;
+  if (p.season != null && p.seasonEnd != null) { for (let s = p.season; s <= p.seasonEnd && s - p.season < 100; s++) seasons.add(s); }
+  else if (p.multiSeason && p.season == null) whole = true;   // "Complete Series" with no season marker
+  else if (p.season != null && p.episode != null) episodes.add(`${p.season}.${p.episode}`);
+  else if (p.season != null) seasons.add(p.season);           // a single-season pack
+  if (!whole && !seasons.size && !episodes.size) return null;
+  return { series, seasons, episodes, whole };
+}
+
+// Do two claims cover any of the same episodes? Requires the same (non-empty) series token, then
+// checks the covered spaces: a complete-series or same-season pack overlaps anything in that
+// season; two single episodes overlap only when identical.
+function contentClaimsOverlap(a, b) {
+  if (!a || !b || !a.series || a.series !== b.series) return false;
+  if (a.whole || b.whole) return true;
+  for (const s of a.seasons) if (b.seasons.has(s)) return true;               // pack vs pack
+  for (const e of a.episodes) if (b.seasons.has(Number(e.split('.')[0]))) return true; // a-episode in b-pack
+  for (const e of b.episodes) if (a.seasons.has(Number(e.split('.')[0]))) return true; // b-episode in a-pack
+  for (const e of a.episodes) if (b.episodes.has(e)) return true;            // episode vs episode
+  return false;
+}
+
+// Short human label for a claim, for the "already grabbing …" message.
+function describeContentClaim(c) {
+  if (!c) return 'this title';
+  if (c.whole) return 'the complete series';
+  const seasons = [...c.seasons].sort((x, y) => x - y).map(s => `S${String(s).padStart(2, '0')}`);
+  const eps = [...c.episodes].sort().map(e => { const [s, ep] = e.split('.'); return `S${String(s).padStart(2, '0')}E${String(ep).padStart(2, '0')}`; });
+  return [...seasons, ...eps].join(', ') || 'this title';
+}
+
 // Additive confidence score, 0–100. Budget: title 40, year/season fit 15, quality 15,
 // seeders 15, size sanity 10, freeleech 5. Zero seeders caps the whole thing at 40 — a
 // dead torrent can never look auto-grabbable no matter how perfect the name is.
@@ -196,4 +254,4 @@ function decideGrabJobAction(row, facts, now, cfg) {
   return row.state === 'sent' ? 'mark_downloading' : 'wait';
 }
 
-module.exports = { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, parseReleaseName, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction };
+module.exports = { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, parseReleaseName, seriesToken, releaseContentClaim, contentClaimsOverlap, describeContentClaim, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction };
