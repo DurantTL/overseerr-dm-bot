@@ -457,4 +457,31 @@ const mfTitle = (mediaId, mediaType, absPath, sizeGb = 10) => ({
   assert.strictEqual(dropIds(m), 'tmdb:2', 'coldest atime dropped, plan still produced');
 }
 
+// --- planner health warnings (silent degradations must be surfaced) ---
+{
+  // Keep-set forced over budget: keep-list floor bigger than the node ⇒ warn, don't fail.
+  const inv = [title('tmdb:1', 10, 'movies/M1'), title('tmdb:2', 10, 'movies/M2')];
+  const cali = { name: 'cali', enabled: 1, usable_bytes: 15 * GB, headroom_pct: 0, access: 'open', demand_source: 'tautulli' };
+  const { manifests, warnings } = planTier({
+    nodes: [homeFull, cali], inventory: inv, keepListIds: ['tmdb:1', 'tmdb:2'],
+    historiesByNode: { cali: [] }, now: NOW, config: { coreTopK: 0 },
+  });
+  assert.strictEqual(keepIds(manifests.cali), 'tmdb:1,tmdb:2', 'floor is kept even over budget');
+  assert.ok(warnings.some(w => w.includes('"cali"') && w.includes('exceeds its budget')), 'over-budget keep-set warned');
+  assert.ok(!warnings.some(w => w.includes('"home"') && w.includes('exceeds')), 'full master never warns over-budget');
+}
+{
+  // Dead demand signal (atime node, no report) ⇒ warn; a node WITH signal must not warn.
+  const inv = [title('tmdb:1', 10, 'movies/M1'), title('tmdb:2', 10, 'movies/M2')];
+  const cali = { name: 'cali', enabled: 1, usable_bytes: 10 * GB, headroom_pct: 0, access: 'open', demand_source: 'atime' };
+  const dead = planTier({ nodes: [homeFull, cali], inventory: inv, now: NOW, config: { coreTopK: 0 } });
+  assert.ok(dead.warnings.some(w => w.includes('"cali"') && w.includes('no demand signal')), 'missing atime report warned');
+  const alive = planTier({
+    nodes: [homeFull, cali], inventory: inv,
+    atimeReports: { cali: [{ relPath: 'movies/M1/x.mkv', sizeBytes: 10 * GB, atime: daysAgo(2) }] },
+    now: NOW, config: { coreTopK: 0 },
+  });
+  assert.ok(!alive.warnings.some(w => w.includes('no demand signal')), 'live signal → no warning');
+}
+
 console.log('tier.test.js: all assertions passed');

@@ -541,6 +541,19 @@ function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, m
       config: cfg,
       folders,
     });
+    // Health warnings — both are silent degradations without them:
+    //   - keep-set over budget: floor + warm/fresh don't fit, so the node will hold more than
+    //     its target (and Syncthing will pull it) until titles cool or the floor shrinks;
+    //   - no demand signal: every value is 0, so eviction order collapses to size-only and the
+    //     planner is guessing. Points at the usual causes per demand source.
+    const m = manifests[node.name];
+    if (!node.full && m.stats.keepBytes > m.stats.budgetBytes) {
+      const gb = b => (b / 1024 ** 3).toFixed(1);
+      warnings.push(`"${node.name}" keep-set (${gb(m.stats.keepBytes)} GB) exceeds its budget (${gb(m.stats.budgetBytes)} GB) — floor + warm/fresh titles don't fit; the node will hold the overage until they cool or the keep floor shrinks.`);
+    }
+    if (!node.full && resolvedInventory.length && values.size === 0) {
+      warnings.push(`"${node.name}" has no demand signal (source: ${node.demand_source || 'tautulli'}) — scoring falls back to freshness only and eviction order is otherwise arbitrary. Check ${node.demand_source === 'atime' ? "the agent's inventory report and that the media mount records atime (relatime, not noatime)" : node.demand_source === 'plex' ? "the node's PMS reachability/token and the agent's atime fallback" : 'Tautulli reachability and its API key'}.`);
+    }
   }
   return { manifests, warnings, coreIds: [...coreIds] };
 }
