@@ -57,11 +57,19 @@ function brandedEmbed(color) {
   return e;
 }
 
-// Secret used to sign dashboard session cookies. Falls back to a value derived from the
-// existing admin credentials so sessions stay valid across restarts without extra config.
+// Per-process random secret, generated once at startup. Used only when there's no explicit
+// SESSION_SECRET and no admin credential to derive one from — so a forged session cookie can
+// never be minted from a predictable constant. Sessions rotate on restart in that case, but
+// without a password/token nobody can log in anyway, so that costs nothing.
+const RANDOM_SESSION_SECRET = crypto.randomBytes(32).toString('hex');
+
+// Secret used to sign dashboard session cookies. Prefers an explicit SESSION_SECRET, else
+// derives a stable value from the admin credentials so sessions survive restarts without extra
+// config, else falls back to the per-process random secret above (never a hardcoded constant).
 function sessionSecret() {
   if (CONFIG.SESSION_SECRET) return CONFIG.SESSION_SECRET;
-  return sha256(`session:${CONFIG.DASHBOARD_ADMIN_PASSWORD || CONFIG.DASHBOARD_ADMIN_TOKEN || 'durant'}`);
+  const cred = CONFIG.DASHBOARD_ADMIN_PASSWORD || CONFIG.DASHBOARD_ADMIN_TOKEN;
+  return cred ? sha256(`session:${cred}`) : RANDOM_SESSION_SECRET;
 }
 
 // Signed, stateless session token: base64url(payload).hmac. No external cookie/session deps.
@@ -1852,9 +1860,12 @@ const slashCommands = [
       .addStringOption(o => o.setName('target').setDescription('Which arr to ask (default sonarr)').addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }))),
   new SlashCommandBuilder().setName('cleanup-suggestions').setDescription('Largest/oldest media that could be cleaned up').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('stage').setDescription('Copy a title into the travel-server cache so it plays instantly there').addStringOption(o => o.setName('title').setDescription('Start typing — matches what\'s in the library').setRequired(true).setAutocomplete(true)),
-  new SlashCommandBuilder().setName('staged').setDescription('Show the travel-server cache: what\'s warm, pinned, and copying'),
-  new SlashCommandBuilder().setName('pin').setDescription('Protect a cached title from automatic eviction').addStringOption(o => o.setName('title').setDescription('Cached title — start typing').setRequired(true).setAutocomplete(true)),
-  new SlashCommandBuilder().setName('unpin').setDescription('Remove eviction protection from a cached title').addStringOption(o => o.setName('title').setDescription('Pinned title — start typing').setRequired(true).setAutocomplete(true)),
+  // Cache-management trio is admin-gated by default; /stage stays member-visible (self-serve,
+  // rate-limited). To let e.g. a PH role pin without code changes, grant these per-role in
+  // Server Settings → Integrations — that's why the handlers deliberately don't re-check admin.
+  new SlashCommandBuilder().setName('staged').setDescription('Show the travel-server cache: what\'s warm, pinned, and copying').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('pin').setDescription('Protect a cached title from automatic eviction').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('title').setDescription('Cached title — start typing').setRequired(true).setAutocomplete(true)),
+  new SlashCommandBuilder().setName('unpin').setDescription('Remove eviction protection from a cached title').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('title').setDescription('Pinned title — start typing').setRequired(true).setAutocomplete(true)),
   new SlashCommandBuilder().setName('stage-bulk').setDescription('Seed the travel cache from a list of titles (one per line)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('assign-server').setDescription('Set which Plex server a user belongs to (drives invites + auto-staging)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addUserOption(o => o.setName('user').setDescription('User').setRequired(true))
@@ -1892,7 +1903,7 @@ const slashCommands = [
     .addSubcommandGroup(g => g.setName('folder').setDescription('Manage a node\'s Syncthing folders (multi-folder nodes)')
       .addSubcommand(s => s.setName('add').setDescription('Add or update a Syncthing folder on a node')
         .addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true))
-        .addStringOption(o => o.setName('folder_id').setDescription('Syncthing folder id, e.g. eeeee-fffff').setRequired(true))
+        .addStringOption(o => o.setName('folder_id').setDescription('Syncthing folder id, e.g. aaaaa-bbbbb').setRequired(true))
         .addStringOption(o => o.setName('folder_root').setDescription('Folder root path on that node, e.g. /mnt/media/Media/Movies').setRequired(true)))
       .addSubcommand(s => s.setName('remove').setDescription('Remove a Syncthing folder from a node')
         .addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true))
@@ -3976,9 +3987,7 @@ async function handleHelpCommand(interaction) {
   ];
   if (stagingConfigured()) {
     userCommands.splice(2, 0,
-      '`/stage` — Copy a title to the travel server so it plays instantly there',
-      '`/staged` — See what\'s warm in the travel cache (and what\'s copying)',
-      '`/pin` / `/unpin` — Protect a cached title from automatic eviction');
+      '`/stage` — Copy a title to the travel server so it plays instantly there');
   }
   const embed = brandedEmbed(COLORS.PLEX)
     .setTitle('🎬 Durant Media Server — Help')
@@ -4016,6 +4025,8 @@ async function handleHelpCommand(interaction) {
     }
     if (stagingConfigured()) {
       adminCommands.push(
+        '`/staged` — See what\'s warm in the travel cache (and what\'s copying)',
+        '`/pin` / `/unpin` — Protect a cached title from automatic eviction',
         '`/stage-bulk` — Seed the travel cache from a list of titles',
         '`/assign-server` — Set a user\'s home server (primary / ph)');
     }
