@@ -422,6 +422,16 @@ seasons at import (per-file `SxxEyy` parsing — Sonarr's own automatic search c
 multi-season packs, which is why the direct pipeline handles them). Duplicate info-hashes are
 refused outright ("already grabbed as job #N").
 
+**Content-level dedupe** (`GRAB_CONTENT_DEDUPE`, default on) goes a step further than the info-hash
+check: it blocks a grab **or** an adoption when an active job already covers the same episode(s) —
+even a *different release, encoding, or size* of them, which the info-hash and exact-title checks
+can't see. The release name is reduced to the episode-space it claims (series + seasons/episodes,
+with a season pack or "complete series" covering everything in it) and compared against active
+jobs; an overlap is refused ("already grabbing S01E14 as job #N"). It's deliberately conservative —
+an unparseable name makes no claim and is never blocked, so a genuinely different episode is never
+lost. Movies dedupe by resolved media id. Set `GRAB_CONTENT_DEDUPE=false` to allow multiple
+releases of the same content through.
+
 ### Setup
 1. Add the AvistaZ indexer in **Prowlarr** (the bot finds it by name via `AVISTAZ_INDEXER_NAME`).
 2. Set `RTORRENT_URL` to the seedbox's XML-RPC endpoint incl. credentials — RapidSeedbox
@@ -628,6 +638,14 @@ titles are never evicted, and a new title is admitted only if it outranks the co
 If a node's budget covers the whole library, nothing is ever dropped.
 
 Safety model (§ the agent enforces this order every run):
+0. **Mount guard** — if `TIER_MOUNT_ROOT` is set, verify the external media drive is actually
+   mounted **before** anything else: a positive proof (matching `TIER_EXPECTED_UUID` or a present
+   `TIER_MOUNT_MARKER` sentinel — a bare mount-point check is not trusted since a container bind
+   mount fakes it) plus every folder root on that same filesystem. If the drive is absent — the
+   classic "`/mnt/media` reverted to an empty dir on the system disk after a reboot" — the agent
+   aborts, reports `driveMissing` **without** an inventory (so the bot keeps the node's last-known
+   contents instead of wiping them and re-seeding onto the wrong disk), and the bot alerts once on
+   the transition and once on recovery. See `agent/README.md`.
 1. Assert the Syncthing folder is still **Receive Only** — abort + report otherwise.
 2. Write the manifest's `.stignore` (drops, folder-relative; no delete-on-ignore directive).
 3. Rescan and **confirm the ignores loaded**.
