@@ -116,9 +116,15 @@ would not.
 Run it on an interval with your scheduler of choice (the container executes one run and exits,
 same as the systemd unit).
 
-## atime nodes (California)
+## atime nodes / the atime fallback
 
-The inventory report is the whole demand signal, so the media filesystem must record atime:
-`relatime` is what you want (`findmnt -no FSTYPE,OPTIONS <mount>`), `noatime` means no signal.
-Reading file *metadata* never bumps atime, and the agent collects the inventory before any
-pruning — the signal stays honest.
+**Prefer `demand_source = plex` when the bot can reach the node's PMS** (e.g. over Tailscale):
+it reads real watch history from the node's own Plex server, which is immune to Plex's scheduled
+file scans — the exact reads that pollute atime and force the `atime_mask` laundering. In plex
+mode the agent's inventory report is still the **fallback** (per-title for anything PMS has no
+view record of, whole-node when PMS is unreachable), so keep `TIER_REPORT_INVENTORY` on either way.
+
+For pure-atime nodes (PMS unreachable from the bot), the inventory report is the whole demand
+signal, so the media filesystem must record atime: `relatime` is what you want
+(`findmnt -no FSTYPE,OPTIONS <mount>`), `noatime` means no signal. Reading file *metadata* never
+bumps atime, and the agent collects the inventory before any pruning — the signal stays honest.

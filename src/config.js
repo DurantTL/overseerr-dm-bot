@@ -184,7 +184,11 @@ const CONFIG = {
   // Syncthing folder root as THIS bot sees it). Defaults to the media mount.
   TIER_SOURCE_ROOT: (process.env.TIER_SOURCE_ROOT || process.env.PATH_REMAP_TO || process.env.RAID_PATH || '/mnt/raid').replace(/\/$/, ''),
   // Optional JSON array seeding tier_nodes when the table is empty, e.g.
-  // [{"name":"california","usable_bytes":4000000000000,"headroom_pct":25,"demand_source":"atime","sticky":1}]
+  // [{"name":"california","usable_bytes":4000000000000,"headroom_pct":25,"demand_source":"plex","plex_url":"http://<node-tailscale-ip>:32400","plex_token":"...","sticky":1}]
+  // Prefer demand_source "plex" whenever the bot can reach the node's PMS: real watch history,
+  // immune to Plex's scheduled file scans (which are exactly what pollutes atime), with the
+  // agent's atime report as automatic per-title/whole-node fallback. Use "atime" only when the
+  // node's PMS is unreachable from the bot.
   TIER_NODES_SEED: process.env.TIER_NODES_SEED || '',
   DELETION_GRACE_HOURS: Number.parseInt(process.env.DELETION_GRACE_HOURS || '24', 10),
   DELETION_REMINDER_COOLDOWN_HOURS: Number.parseInt(process.env.DELETION_REMINDER_COOLDOWN_HOURS || '12', 10),

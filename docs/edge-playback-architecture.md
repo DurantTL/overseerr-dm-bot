@@ -26,7 +26,10 @@ boxes and they do not share a playback story.
   files. Nothing is ever pushed back to the master.
 * Demand signal: `demand_source = atime` — the agent reports file `atime`s and the planner treats
   "recently read by California's Plex" as demand (with a maintenance-window mask so Plex's nightly
-  scans don't flatten the LRU).
+  scans don't flatten the LRU). **Recommended switch: `demand_source = plex`** — Plex's scheduled
+  tasks read every file on a regular basis, which is exactly what pollutes atime; the node's own
+  PMS watch history only records real playback and is immune to scans. The atime report stays on
+  as the automatic fallback (`/tier-node add name:california demand_source:plex plex_url:… plex_token:…`).
 * Plex on California therefore sees **only the files physically present on California**. The ~32
   `.stignore` entries stop Syncthing from auto-restoring hundreds of GB.
 * **Persistent manual overlay:** on top of the planner's `.stignore`, California carries a hand-kept
