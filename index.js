@@ -57,11 +57,19 @@ function brandedEmbed(color) {
   return e;
 }
 
-// Secret used to sign dashboard session cookies. Falls back to a value derived from the
-// existing admin credentials so sessions stay valid across restarts without extra config.
+// Per-process random secret, generated once at startup. Used only when there's no explicit
+// SESSION_SECRET and no admin credential to derive one from — so a forged session cookie can
+// never be minted from a predictable constant. Sessions rotate on restart in that case, but
+// without a password/token nobody can log in anyway, so that costs nothing.
+const RANDOM_SESSION_SECRET = crypto.randomBytes(32).toString('hex');
+
+// Secret used to sign dashboard session cookies. Prefers an explicit SESSION_SECRET, else
+// derives a stable value from the admin credentials so sessions survive restarts without extra
+// config, else falls back to the per-process random secret above (never a hardcoded constant).
 function sessionSecret() {
   if (CONFIG.SESSION_SECRET) return CONFIG.SESSION_SECRET;
-  return sha256(`session:${CONFIG.DASHBOARD_ADMIN_PASSWORD || CONFIG.DASHBOARD_ADMIN_TOKEN || 'durant'}`);
+  const cred = CONFIG.DASHBOARD_ADMIN_PASSWORD || CONFIG.DASHBOARD_ADMIN_TOKEN;
+  return cred ? sha256(`session:${cred}`) : RANDOM_SESSION_SECRET;
 }
 
 // Signed, stateless session token: base64url(payload).hmac. No external cookie/session deps.
@@ -1892,7 +1900,7 @@ const slashCommands = [
     .addSubcommandGroup(g => g.setName('folder').setDescription('Manage a node\'s Syncthing folders (multi-folder nodes)')
       .addSubcommand(s => s.setName('add').setDescription('Add or update a Syncthing folder on a node')
         .addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true))
-        .addStringOption(o => o.setName('folder_id').setDescription('Syncthing folder id, e.g. eeeee-fffff').setRequired(true))
+        .addStringOption(o => o.setName('folder_id').setDescription('Syncthing folder id, e.g. aaaaa-bbbbb').setRequired(true))
         .addStringOption(o => o.setName('folder_root').setDescription('Folder root path on that node, e.g. /mnt/media/Media/Movies').setRequired(true)))
       .addSubcommand(s => s.setName('remove').setDescription('Remove a Syncthing folder from a node')
         .addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true))
