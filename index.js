@@ -5112,6 +5112,35 @@ function startExpressServer() {
     const node = String(req.params.node).toLowerCase();
     const body = req.body || {};
     const errors = Array.isArray(body.errors) ? body.errors.slice(0, 10).map(e => String(e).slice(0, 300)) : [];
+    // Mount guard: when the node's external media drive is absent the agent refuses to run and
+    // reports driveMissing WITHOUT an inventory — so the empty-directory walk can never wipe the
+    // node's known contents (which would trigger a full re-seed onto the wrong disk). Handle it
+    // before the inventory block, alert only on the state transition, and never post a "converged"
+    // success for a run that did nothing.
+    const mountKey = `tier_mount_state:${node}`;
+    if (body.driveMissing) {
+      const prev = getSetting(mountKey);
+      setSetting(mountKey, 'missing');
+      const mountErrors = (Array.isArray(body.mountErrors) ? body.mountErrors : []).slice(0, 8).map(e => String(e).slice(0, 300));
+      audit('tier_agent_drive_missing', { node, mountErrors: mountErrors.join('; ').slice(0, 500) || undefined });
+      if (prev !== 'missing') {
+        notifyChannel('system', { embeds: [brandedEmbed(COLORS.DANGER)
+          .setTitle(`🟠 ${node} media drive missing`)
+          .setDescription([
+            'The external media drive is not mounted where the tier agent expects it.',
+            '**Syncthing convergence has been suspended** — the agent will not write, prune, or re-inventory until the drive is back.',
+            mountErrors.length ? `\n${mountErrors.slice(0, 6).map(e => `• ${e}`).join('\n')}` : null,
+          ].filter(Boolean).join('\n').slice(0, 4000))] });
+      }
+      return res.json({ ok: true, acknowledged: 'drive-missing' });
+    }
+    if (getSetting(mountKey) === 'missing') {
+      setSetting(mountKey, 'ok');
+      audit('tier_agent_drive_recovered', { node });
+      notifyChannel('system', { embeds: [brandedEmbed(COLORS.SUCCESS)
+        .setTitle(`🟢 ${node} media drive back online`)
+        .setDescription('The external media drive is mounted again and the tier agent has resumed converging Syncthing.')] });
+    }
     // The atime demand signal (§3.2a): full local inventory snapshots replace the stored set.
     // An EMPTY array is still a snapshot (the node may have pruned its last media file) —
     // only an absent field means "no inventory in this report". When the node has an
