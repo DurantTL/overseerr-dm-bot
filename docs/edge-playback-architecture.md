@@ -29,6 +29,11 @@ boxes and they do not share a playback story.
   scans don't flatten the LRU).
 * Plex on California therefore sees **only the files physically present on California**. The ~32
   `.stignore` entries stop Syncthing from auto-restoring hundreds of GB.
+* **Persistent manual overlay:** on top of the planner's `.stignore`, California carries a hand-kept
+  overlay (`/etc/tier-agent/extra-ignores/<folderId>.txt`, e.g. `ggggg-hhhhh.txt`) that is appended
+  after every planner run. The committed agent *overwrites* `.stignore` with planner output only, so
+  this overlay is applied out-of-band and is **authoritative over the planner** for the titles it
+  lists — a fact §2.2 must design around, because a keep/pin cannot un-ignore an overlaid title.
 
 > This is a **curation system inside a fixed budget**, not an on-demand gateway. A title that was
 > pruned is simply gone from California's Plex until the planner keeps it again.
@@ -126,12 +131,31 @@ Reuse `classifyServerIdentity({serverName, machineId})` unchanged — it already
 #### (b) Decide "is this title already local on that node?"
 
 Promotion should fire **only** when the play is being served by the remote fallback (i.e. the file
-is not local yet). Per transport:
+is not local yet). Crucially, three states must be distinguished — conflating them is a bug:
 
-* **PH (staging):** `getStagedItem(mediaId)` — already exists. Absent ⇒ promote.
-* **California (tier):** the title is "local" iff it is in the node's current keep-set. That is
-  already tracked in `tier_node_files` / the last published manifest (`getTierPlan(node)` →
-  `keep`). Not in keep ⇒ it is playing via fallback ⇒ promote.
+* **desired locally** — the plan says keep it (`getTierPlan(node).keep`).
+* **actually present locally** — the file exists on the edge RAID *now*.
+* **fully synchronized locally** — *all* of it is present (every episode of a series, not a
+  half-pulled folder).
+
+"In the keep-set" only proves **desired**, not present or synchronized. A title can be kept while
+Syncthing is still downloading it, has errored, has pulled only some episodes, or the agent has
+published the plan but not yet converged — in every one of those cases playback is *still* using the
+remote fallback, so suppressing promotion because it's "kept" would strand it on the fallback
+forever. Per transport:
+
+* **PH (staging):** `getStagedItem(mediaId)` records a completed copy — absent ⇒ promote. (Partial
+  copies are already retried by the stage worker, so "present" and "synchronized" coincide here.)
+* **California (tier):** do **not** decide from `getTierPlan(node).keep` alone. Check *presence and
+  completion* against the node's real state:
+  * **presence:** the agent already reports its inventory (`listTierNodeFiles(node)` — every
+    `relPath`/`sizeBytes`); the title's folder being absent or short on files ⇒ not present.
+  * **completion:** for authoritative "fully synced," query Syncthing on the node —
+    `GET /rest/db/completion?folder=<id>&device=<self>` (or per-file `need`) — via the agent (it
+    already talks to the Syncthing REST API). `completion < 100%` for the title's folder ⇒ still
+    pulling ⇒ keep it on the fallback and treat as promotable/needs-nudge, not "done."
+  * Only when the title is **present and complete** should the play handler treat it as local and
+    skip promotion. Otherwise: (re)assert the pin and nudge convergence (see (c)).
 
 #### (c) Promote — by transport
 
@@ -144,13 +168,41 @@ is not local yet). Per transport:
   * add a per-node promotion set that feeds `planTier` as an extra floor source (same shape as the
     restricted-node `memberRequests` grace pins in `planNode`), with its own TTL
     (`TIER_PLAY_PIN_DAYS`, default e.g. 21);
-  * the next `/tier apply` (or scheduled plan) keeps the title, the agent's next converge removes
-    it from `.stignore`, and **Syncthing pulls the real file** into the local branch.
+  * the plan keeps the title, the agent's converge removes it from `.stignore`, and **Syncthing
+    pulls the real file** into the local branch.
   * Until Syncthing finishes pulling, playback continues via the remote fallback — so the user
     experience is identical to PH; only the copy mechanism differs.
 
   This keeps the invariant that California's local files are *only* ever written by Syncthing, and
   reuses the whole existing keep/evict machinery instead of bolting on a second writer.
+
+> **BLOCKER — the persistent ignore overlay must subtract active pins.** The committed agent writes
+> `.stignore` with `fs.writeFileSync(target, fp.stignore)` — it *overwrites* the file with pure
+> planner output. But California runs a **persistent manual overlay**
+> (`/etc/tier-agent/extra-ignores/<folderId>.txt`, e.g. `ggggg-hhhhh.txt`) that is appended **after**
+> the planner's `.stignore`. Those rules keep ignoring their titles **even when the planner moves the
+> title into the keep-set** — so a play-promotion pin alone will *never* make an overlaid legacy
+> title (Boku, Lizzie, …) download. This is fatal to promotion for exactly the titles most likely to
+> need on-demand restoration. The design must make the overlay pin-aware. Concretely:
+> * split the persistent rules into **`legacy-ignores`** and **`promotion-overrides`** files;
+> * compute the **final** ignore set as `planner-drops ∪ legacy-ignores − active-promotion-pins`
+>   (the agent, or whatever applies the overlay, must subtract the pins — the bot exposes the active
+>   pin list in the manifest so the overlay step knows what to remove);
+> * when a promotion pin **expires** and the title becomes eviction-eligible again, restore its
+>   legacy ignore rule so the overlay's intent returns.
+> Without this subtraction step, points (a)–(c) above are inert on any overlaid title.
+
+> **Promotion must converge immediately, not on the next scheduled cycle.** A play-start pin whose
+> effect waits for the next `/tier apply` and the agent's timer (up to ~6 h) is not "press Play and
+> it promotes." On promotion the bot should, in order: (1) record the pin; (2) **recompute and
+> publish** the California plan right away (`planTier` for that node → `setTierPlan` /
+> `tier_manifest:<node>`); (3) **trigger the California agent immediately** rather than waiting for
+> its timer — this needs a push/kick path the agent doesn't have today (e.g. a lightweight
+> `systemctl start tier-agent.service` over the tunnel, or an agent long-poll/pull-now endpoint);
+> (4) once the agent has rewritten ignores, **trigger a Syncthing rescan** of the affected folder
+> (`POST /rest/db/scan?folder=<id>` — the agent already does this in `rescanAndConfirmIgnores`) so
+> the pull starts now. The scheduled tier cycle remains the *fallback/backstop*, not the normal
+> promotion path.
 
 > **Path layout must match the remote tree (PH).** mergerfs only prefers the local copy when it
 > sits at the **same relative path** as the file Plex discovered on the remote branch. Today
@@ -163,6 +215,26 @@ is not local yet). Per transport:
 > `/mnt/plex-library/Movies/<basename>` resolves to the local branch. The California tier path is
 > unaffected: Syncthing already replicates the master's exact folder tree, so promoted files match by
 > construction.
+
+#### (c′) TV promotion granularity
+
+The existing staging resolver (`resolveStageSource`) copies the **entire series folder** for TV.
+That is fine for a small show but catastrophic on a large one: pressing Play on a single episode
+could promote **hundreds of GB**. The design must choose a granularity explicitly rather than
+inherit "whole series":
+
+* **current episode only** — minimal, but a binge re-triggers per episode;
+* **current season** — good balance; one pull covers the likely next few plays;
+* **entire series** — only for small shows or an explicit opt-in.
+
+**Recommended default: current season**, with a configurable whole-series option
+(`TIER_TV_PROMOTE_GRANULARITY = episode|season|series`, default `season`). This has a real cost on
+the tier side: the planner currently reasons in **whole titles** (one series = one keep/drop unit),
+and season/episode promotion requires **sub-folder inventory and ignore rules** (`.stignore`
+entries and keep/atime tracking below the series-folder level). PH's staging path can already target
+a season subfolder with a narrower `resolveStageSource`; California's planner needs season-level
+granularity added before season promotion is meaningful there. Until that exists, document the
+interim behaviour honestly (whole-series) and gate large series behind an admin confirm.
 
 #### (d) Guardrails (shared)
 
@@ -208,14 +280,21 @@ play-triggered promotion (2.2) are the only missing links.
 | Full library visible in Plex | mergerfs: local Syncthing branch + RO remote branch | mergerfs: local cache branch + RO remote branch |
 | Remote fallback transport | RO rclone/sshfs mount of master over Tailscale | RO rclone/sshfs mount of master over Tailscale |
 | Play event source | Plex/Tautulli on the CA box (add its identity to the node) | already have `PH_SERVER_NAMES` + webhook payload |
-| "Is it local?" check | title in node keep-set (`getTierPlan`) | `getStagedItem(mediaId)` |
-| Promotion mechanism | play-promotion pin → planner keeps → Syncthing pulls | `enqueueStageJob(origin:'play')` → `stageCopy` |
+| "Is it local?" check | inventory presence (`listTierNodeFiles`) **+ Syncthing completion**, not keep alone | `getStagedItem(mediaId)` |
+| Promotion mechanism | play-pin → planner keeps → **overlay subtracts pin** → agent converges → Syncthing pulls | `enqueueStageJob(origin:'play')` → `stageCopy` |
+| Persistent ignore overlay | **must subtract active pins** (`extra-ignores/<folderId>.txt`) — else pinned titles never pull | n/a (no Syncthing) |
+| Immediate convergence | republish plan + kick agent + Syncthing scan **now**, not on the 6 h timer | stage worker picks it up on its short interval |
+| TV granularity | needs season-level inventory/ignores (planner is whole-title today) | narrow `resolveStageSource` to season subfolder |
+| Rate limit | own watcher-attributed cap | own watcher-attributed cap (not the command-layer one) |
 | Eviction / budget | existing `planNode` LRU + node budget | existing `planCacheSpace` + `STAGE_CACHE_MAX_GB` |
 | Already-built? | tiering ✅ / fallback ✗ / play-promote ✗ | staging ✅ / fallback ✗ / play-promote ✗ |
 
 The upshot: **the two boxes converge to one behaviour** and reuse the code each already has for
-steps 5–6. Only the front half (fallback mount + play event → promotion) is new, and the promotion
-call is a one-liner difference (`enqueueStageJob` vs. a play-pin) behind a shared handler.
+steps 5–6. Only the front half (fallback mount + play event → promotion) is new. But note the
+promotion mechanisms are **not** symmetric: PH's is close to a one-liner (`enqueueStageJob`), while
+California's must go through the planner **and** make the persistent ignore overlay pin-aware, prove
+presence/completion rather than trusting the keep-set, and converge on demand — those are the
+substantive pieces of work, not the PH path.
 
 ---
 
@@ -226,11 +305,18 @@ call is a one-liner difference (`enqueueStageJob` vs. a play-pin) behind a share
 EDGE_PROMOTE_ON_PLAY=false            # master switch; off = today's behaviour
 EDGE_PROMOTE_COOLDOWN_HOURS=12        # per (node,title) debounce, mirrors evict_prompt cooldown
 TIER_PLAY_PIN_DAYS=21                 # how long a play-promoted title is pinned on a tier node
+TIER_TV_PROMOTE_GRANULARITY=season    # episode | season | series — cap the TV promotion size
+EDGE_PROMOTE_MAX_PER_USER_PER_DAY=6   # own cap for origin:'play' (command-layer cap doesn't apply)
 
 # Recognise each edge Plex as a promotion origin. PH already uses PH_SERVER_NAMES; either
 # generalise to EDGE_SERVER_NAMES=identity:node,... or store plex server_name/machine_id on the
 # tier_nodes row so the webhook can resolve identity -> node.
 ```
+
+The tier node also needs, on the node side: the persistent ignore overlay split into
+`legacy-ignores`/`promotion-overrides` (so pins can be subtracted), and a way for the bot to **kick
+the agent on demand** (a pull-now endpoint or a `systemctl start tier-agent.service` over the
+tunnel) instead of waiting for `tier-agent.timer`.
 
 No secrets here; all of the sensitive values (tokens, rclone remotes) already exist and stay in
 `.env` (git-ignored).
@@ -244,11 +330,15 @@ No secrets here; all of the sensitive values (tokens, rclone remotes) already ex
    missing title plays via fallback. This alone restores "everything is visible and playable."
 2. **Ingest play-start events** (`media.play`/`media.resume`, Tautulli `play`) behind
    `EDGE_PROMOTE_ON_PLAY`, audit-only (log "would promote X on node Y") — no copies yet.
-3. **Wire PH promotion** (`enqueueStageJob(origin:'play')`) with the cooldown guard.
-4. **Wire California promotion** (play-pin → planner floor → agent converge) and add the CA Plex
-   identity to the node.
-5. **Tune** bwlimits and cooldowns; confirm eviction returns titles to "visible via fallback" rather
-   than "gone."
+3. **Wire PH promotion** (`enqueueStageJob(origin:'play')`) with the cooldown guard, the
+   watcher-attributed daily cap, and the path-layout fix so mergerfs prefers the local copy.
+4. **Make the California overlay pin-aware first** (split `legacy-ignores`/`promotion-overrides`,
+   subtract active pins) — nothing below works on an overlaid title until this lands.
+5. **Wire California promotion:** play-pin → recompute/publish plan → **kick the agent now** →
+   Syncthing scan; decide "local" from inventory presence **+ Syncthing completion**, not the
+   keep-set; add the CA Plex identity to the node; pick a TV granularity.
+6. **Tune** bwlimits, cooldowns, and TV granularity; confirm eviction returns titles to "visible via
+   fallback" rather than "gone."
 
 ---
 
