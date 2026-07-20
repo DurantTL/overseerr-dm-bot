@@ -1860,9 +1860,12 @@ const slashCommands = [
       .addStringOption(o => o.setName('target').setDescription('Which arr to ask (default sonarr)').addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }))),
   new SlashCommandBuilder().setName('cleanup-suggestions').setDescription('Largest/oldest media that could be cleaned up').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('stage').setDescription('Copy a title into the travel-server cache so it plays instantly there').addStringOption(o => o.setName('title').setDescription('Start typing — matches what\'s in the library').setRequired(true).setAutocomplete(true)),
-  new SlashCommandBuilder().setName('staged').setDescription('Show the travel-server cache: what\'s warm, pinned, and copying'),
-  new SlashCommandBuilder().setName('pin').setDescription('Protect a cached title from automatic eviction').addStringOption(o => o.setName('title').setDescription('Cached title — start typing').setRequired(true).setAutocomplete(true)),
-  new SlashCommandBuilder().setName('unpin').setDescription('Remove eviction protection from a cached title').addStringOption(o => o.setName('title').setDescription('Pinned title — start typing').setRequired(true).setAutocomplete(true)),
+  // Cache-management trio is admin-gated by default; /stage stays member-visible (self-serve,
+  // rate-limited). To let e.g. a PH role pin without code changes, grant these per-role in
+  // Server Settings → Integrations — that's why the handlers deliberately don't re-check admin.
+  new SlashCommandBuilder().setName('staged').setDescription('Show the travel-server cache: what\'s warm, pinned, and copying').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('pin').setDescription('Protect a cached title from automatic eviction').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('title').setDescription('Cached title — start typing').setRequired(true).setAutocomplete(true)),
+  new SlashCommandBuilder().setName('unpin').setDescription('Remove eviction protection from a cached title').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('title').setDescription('Pinned title — start typing').setRequired(true).setAutocomplete(true)),
   new SlashCommandBuilder().setName('stage-bulk').setDescription('Seed the travel cache from a list of titles (one per line)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('assign-server').setDescription('Set which Plex server a user belongs to (drives invites + auto-staging)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addUserOption(o => o.setName('user').setDescription('User').setRequired(true))
@@ -3984,9 +3987,7 @@ async function handleHelpCommand(interaction) {
   ];
   if (stagingConfigured()) {
     userCommands.splice(2, 0,
-      '`/stage` — Copy a title to the travel server so it plays instantly there',
-      '`/staged` — See what\'s warm in the travel cache (and what\'s copying)',
-      '`/pin` / `/unpin` — Protect a cached title from automatic eviction');
+      '`/stage` — Copy a title to the travel server so it plays instantly there');
   }
   const embed = brandedEmbed(COLORS.PLEX)
     .setTitle('🎬 Durant Media Server — Help')
@@ -4024,6 +4025,8 @@ async function handleHelpCommand(interaction) {
     }
     if (stagingConfigured()) {
       adminCommands.push(
+        '`/staged` — See what\'s warm in the travel cache (and what\'s copying)',
+        '`/pin` / `/unpin` — Protect a cached title from automatic eviction',
         '`/stage-bulk` — Seed the travel cache from a list of titles',
         '`/assign-server` — Set a user\'s home server (primary / ph)');
     }

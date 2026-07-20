@@ -552,8 +552,10 @@ A second, small Plex server (e.g. a NUC abroad, behind CGNAT and a VPS tunnel) s
   back to a `STAGE_CACHE_MAX_GB` budget). If space is short it evicts least-recently-streamed
   unpinned titles (announced in the cleanup channel), or refuses with a clear message when even
   that wouldn't be enough.
-- `/pin` / `/unpin` — exempt weekly-rewatch titles from eviction. `/staged` shows the cache;
-  `/stage-bulk` (admin) seeds it from a pasted list — do this on LAN at gigabit before flying.
+- `/pin` / `/unpin` (admin) — exempt weekly-rewatch titles from eviction. `/staged` (admin) shows
+  the cache; `/stage-bulk` (admin) seeds it from a pasted list — do this on LAN at gigabit before
+  flying. All three can be granted to a specific role (e.g. PH users) in Server Settings →
+  Integrations without code changes.
 - **Auto-stage** — when a PH user's request finishes importing on the master
   (`MEDIA_AVAILABLE`), the bot stages it automatically and DMs when it's ready to play.
 - **Tunnel watchdog** — `PH_TUNNEL_HEALTH_URL` is polled; state transitions alert the system
@@ -662,11 +664,11 @@ shown once). Env knobs: `TIER_CORE_TOP_K`, `TIER_HALF_LIFE_DAYS`, `TIER_WARM_DAY
 See `agent/README.md` for deploying the node agent (systemd timer or Docker).
 
 ## Slash Command List
-Admin:
-- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`, `/avistaz`, `/rtorrent`, `/stage-bulk`, `/assign-server`, `/tier`, `/tier-node`, `/tier-member`
+Admin (hidden from non-admin roles by default; grant per-role via Server Settings → Integrations if e.g. PH users should `/pin`):
+- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`, `/avistaz`, `/rtorrent`, `/staged`, `/pin`, `/unpin`, `/stage-bulk`, `/assign-server`, `/tier`, `/tier-node`, `/tier-member`
 
 User:
-- `/request`, `/request-status`, `/download`, `/queue`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`, `/stage`, `/staged`, `/pin`, `/unpin`
+- `/request`, `/request-status`, `/download`, `/queue`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`, `/stage`
 
 ## Database Tables
 - `users`
