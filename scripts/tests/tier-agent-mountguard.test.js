@@ -91,9 +91,17 @@ const { renderSyncthingStignore, computePlanHash } = require('../../src/tier');
   assert.strictEqual(offGuard.checked, false, 'no mount root → guard not checked');
   assert.strictEqual(offGuard.ok, true, 'no mount root → guard passes (back-compat)');
 
+  // --- config: a mount root with NO proof is rejected (a bare mount-point check lies in
+  // containers, so a UUID or marker is mandatory) ---
+  assert.throws(() => buildCtx({
+    TIER_BOT_URL: 'http://x', TIER_NODE: 'ph', TIER_AGENT_TOKEN: 't',
+    TIER_FOLDER_ROOT: folderRoot, SYNCTHING_FOLDER_ID: 'media',
+    TIER_MOUNT_ROOT: mountRoot,
+  }), /requires TIER_EXPECTED_UUID or TIER_MOUNT_MARKER/, 'mount root without a UUID/marker proof is rejected');
+
   // --- healthy: mount root set and proven present → guard passes, convergence as usual ---
-  // A tmpdir is not a real mount point, so prove the drive with a sentinel marker (exactly the
-  // cross-platform backstop the docs recommend); a real /mnt/media satisfies proof-1 on its own.
+  // The drive proof is a sentinel marker that lives on the drive (works identically on bare metal
+  // and inside container bind mounts, unlike a bare mount-point check).
   fs.writeFileSync(path.join(mountRoot, '.tier-media-ok'), '');
   const okCtx = mkCtx({ TIER_MOUNT_ROOT: mountRoot, TIER_MOUNT_MARKER: '.tier-media-ok' });
   const okGuard = checkMountGuard(okCtx);
@@ -106,13 +114,13 @@ const { renderSyncthingStignore, computePlanHash } = require('../../src/tier');
   assert.deepStrictEqual(stCalls, ['config', 'scan', 'ignores'], 'healthy run drives Syncthing normally');
   process.exitCode = 0;
 
-  // --- drive missing: mount root points at a path that is not a mount point / does not exist ---
+  // --- drive missing: mount root points at a path that does not exist (drive not mounted) ---
   const before = reports.length;
   stCalls.length = 0;
-  const missingCtx = mkCtx({ TIER_MOUNT_ROOT: path.join(tmp, 'not-mounted') });
+  const missingCtx = mkCtx({ TIER_MOUNT_ROOT: path.join(tmp, 'not-mounted'), TIER_MOUNT_MARKER: '.tier-media-ok' });
   const missGuard = checkMountGuard(missingCtx);
   assert.strictEqual(missGuard.ok, false, 'absent mount root fails the guard');
-  assert.ok(missGuard.reasons.some(r => /does not exist|not a mount point/.test(r)), 'reason names the missing drive');
+  assert.ok(missGuard.reasons.some(r => /does not exist|not mounted/.test(r)), 'reason names the missing drive');
   const rMiss = await runOnce(missingCtx);
   assert.strictEqual(rMiss.driveMissing, true, 'runOnce aborts with driveMissing');
   assert.strictEqual(stCalls.length, 0, 'Syncthing never touched when the drive is missing');
@@ -123,10 +131,24 @@ const { renderSyncthingStignore, computePlanHash } = require('../../src/tier');
   assert.ok(Array.isArray(rep.mountErrors) && rep.mountErrors.length, 'report carries the mount errors');
   process.exitCode = 0;
 
-  // --- folder outside the mount root: caught even if the mount root itself looks fine ---
+  // --- recovery on an otherwise-unchanged run still posts a report (P2) ---
+  // State now carries driveMissing (from the abort above) plus the plan/inventory hashes from the
+  // healthy run. A recovered drive with identical content must NOT hit the no-op skip — the bot
+  // needs a report to clear its drive-missing state and fire the recovery alert.
+  const beforeRecovery = reports.length;
+  const recoverCtx = mkCtx({ TIER_MOUNT_ROOT: mountRoot, TIER_MOUNT_MARKER: '.tier-media-ok' });
+  const rRec = await runOnce(recoverCtx);
+  assert.notStrictEqual(rRec.skipped, true, 'recovery run is not skipped despite unchanged plan/inventory');
+  assert.strictEqual(reports.length, beforeRecovery + 1, 'recovery run posts a report so the bot can clear drive-missing');
+  assert.notStrictEqual(reports[reports.length - 1].driveMissing, true, 'recovery report is a normal (not drive-missing) report');
+  // and once recovered, a genuinely unchanged run skips again (the flag was cleared)
+  const rStable = await runOnce(recoverCtx);
+  assert.strictEqual(rStable.skipped, true, 'once recovered, an unchanged run skips again');
+
+  // --- folder outside the mount root: caught even when the mount root itself is proven ---
   const strayRoot = path.join(tmp, 'stray');           // a folder NOT under mountRoot
   fs.mkdirSync(strayRoot, { recursive: true });
-  const strayGuard = checkMountGuard(mkCtx({ TIER_MOUNT_ROOT: mountRoot, TIER_FOLDER_ROOT: strayRoot }));
+  const strayGuard = checkMountGuard(mkCtx({ TIER_MOUNT_ROOT: mountRoot, TIER_MOUNT_MARKER: '.tier-media-ok', TIER_FOLDER_ROOT: strayRoot }));
   assert.strictEqual(strayGuard.ok, false, 'a folder root outside the mount is rejected');
   assert.ok(strayGuard.reasons.some(r => /outside the media mount/.test(r)), 'reason names the stray folder');
 
