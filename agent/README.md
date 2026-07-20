@@ -35,7 +35,37 @@ Requires Node 18+ (uses global `fetch`). No other dependencies.
 | `SYNCTHING_FOLDER_ID` | ✅ (single-folder) | The media folder's Syncthing folder ID (multi-folder nodes carry ids in `TIER_FOLDERS`) |
 | `TIER_STATE_DIR` | | Where plan/inventory state lives (default `/var/lib/tier-agent`) |
 | `TIER_REPORT_INVENTORY` | | `0` disables the inventory report (leave on for atime nodes) |
+| `TIER_MOUNT_ROOT` | | External media-drive mount point, e.g. `/mnt/media`. **Setting this enables the mount guard** (below). All folder roots must live under it. |
+| `TIER_EXPECTED_UUID` | | Filesystem UUID the drive at `TIER_MOUNT_ROOT` must have (`blkid`/`lsblk -o NAME,UUID`). Requires `TIER_MOUNT_ROOT`. Linux only. |
+| `TIER_MOUNT_MARKER` | | Sentinel file that lives on the drive, relative to the mount root (e.g. `.tier-media-ok` — create once with `touch /mnt/media/.tier-media-ok`). Its absence means the real drive isn't there. Requires `TIER_MOUNT_ROOT`. |
 | `TIER_DRY_RUN` | | `1` = log what would happen, write and delete nothing |
+
+## Mount guard (external media drive)
+
+The single most dangerous failure on an edge node is the media drive **not remounting** after a
+reboot or power loss: `/mnt/media` reverts to an ordinary empty directory on the internal system
+disk, Syncthing starts re-pulling the whole library onto that disk, and the agent — walking an
+empty tree — reports an empty inventory that tells the bot the node holds nothing.
+
+When `TIER_MOUNT_ROOT` is set, the agent runs a preflight **before** any network call, `.stignore`
+write, prune, or inventory walk, and aborts the run if the drive is absent:
+
+- the mount root exists and is a **real mount point** (a separate filesystem, not a plain folder);
+- if `TIER_EXPECTED_UUID` is set, the filesystem mounted there is that exact drive;
+- if `TIER_MOUNT_MARKER` is set, the sentinel file is present;
+- every configured folder root lives **under** the mount and on the **same filesystem** (nothing
+  fell back onto the system disk).
+
+On failure the agent reports `driveMissing` to the bot **without** an inventory (so the bot keeps
+the node's last-known contents instead of wiping them), exits non-zero, and touches nothing on
+disk. The bot alerts once on the transition into the drive-missing state and once on recovery.
+Leave `TIER_MOUNT_ROOT` unset on single-machine / master deployments to keep the guard off.
+
+```sh
+TIER_MOUNT_ROOT=/mnt/media
+TIER_EXPECTED_UUID=1a2b3c4d-5e6f-7890-abcd-ef1234567890
+TIER_MOUNT_MARKER=.tier-media-ok
+```
 
 Multi-folder example (California's four folders):
 

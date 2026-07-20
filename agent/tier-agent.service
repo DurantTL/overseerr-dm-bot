@@ -2,6 +2,9 @@
 Description=overseerr-dm-bot tiering sync agent (one run)
 Wants=network-online.target
 After=network-online.target syncthing.service
+# Defence in depth with the agent's own mount guard: make systemd refuse to start this unit
+# until the external media drive is actually mounted. Uncomment and set to your TIER_MOUNT_ROOT.
+#RequiresMountsFor=/mnt/media
 
 [Service]
 Type=oneshot

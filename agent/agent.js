@@ -52,7 +52,20 @@ function buildCtx(env = process.env) {
   if (!folders.length || folders.some(f => !f.root)) {
     throw new Error('No folder roots configured — set TIER_FOLDER_ROOT (single folder) or TIER_FOLDERS (multi-folder).');
   }
+  // External media-drive guard (opt-in via TIER_MOUNT_ROOT). The UUID/marker assertions refine
+  // that anchor — a drive that never remounts after a reboot leaves the mount path as a plain,
+  // empty directory on the system disk, and without this the agent would report an empty
+  // inventory and let Syncthing re-pull everything onto the wrong disk. See checkMountGuard.
+  const mount = {
+    root: (env.TIER_MOUNT_ROOT || '').replace(/\/+$/, ''),
+    uuid: (env.TIER_EXPECTED_UUID || '').trim(),
+    marker: (env.TIER_MOUNT_MARKER || '').trim().replace(/^\/+/, ''),
+  };
+  if ((mount.uuid || mount.marker) && !mount.root) {
+    throw new Error('TIER_EXPECTED_UUID / TIER_MOUNT_MARKER require TIER_MOUNT_ROOT (the external drive mount point, e.g. /mnt/media) to be set.');
+  }
   return {
+    mount,
     botUrl: need('TIER_BOT_URL').replace(/\/$/, ''),
     node: need('TIER_NODE'),
     token: need('TIER_AGENT_TOKEN'),
@@ -254,7 +267,102 @@ function saveState(ctx, state) {
   fs.writeFileSync(path.join(ctx.stateDir, `${ctx.node}.json`), JSON.stringify(state));
 }
 
+// Preflight the external media drive before the agent writes a .stignore, prunes, or collects an
+// inventory. The failure this exists to stop: after a reboot or power loss the drive does not
+// remount, `/mnt/media` reverts to an ordinary empty directory on the internal system disk, and
+// the agent would then (a) POST an EMPTY inventory that wipes the node's known contents in the
+// bot and (b) let Syncthing re-pull the whole library onto that system disk. When the drive is
+// absent the only safe action is to do nothing at all. Opt-in: no TIER_MOUNT_ROOT → no guard,
+// so existing single-machine / master deployments are unaffected.
+function checkMountGuard(ctx) {
+  const g = ctx.mount || {};
+  if (!g.root) return { checked: false, ok: true, reasons: [] };
+  const root = g.root;
+  const reasons = [];
+
+  let rootStat;
+  try { rootStat = fs.statSync(root); }
+  catch (_e) { return { checked: true, ok: false, reasons: [`media mount root ${root} does not exist — the external drive is not mounted`] }; }
+  if (!rootStat.isDirectory()) return { checked: true, ok: false, reasons: [`media mount root ${root} is not a directory`] };
+
+  // The guard needs at least one positive proof that the real drive — not an empty directory left
+  // behind after a failed remount — is what's mounted at `root`. Any of three independent proofs
+  // satisfies it; a configured proof that FAILS is always a hard error on top of that.
+
+  // Proof 1 — distinct mount point. A separately mounted filesystem reports a different device id
+  // from its parent directory; equal ids means `root` is a plain folder on the system disk.
+  let mountpointDistinct = false;
+  try {
+    const parent = path.dirname(root);
+    mountpointDistinct = root !== parent && rootStat.dev !== fs.statSync(parent).dev;
+  } catch (_e) { /* parent unreadable — other proofs / the no-proof check below still gate the run */ }
+
+  // Proof 2 — expected filesystem UUID (Linux). /dev/disk/by-uuid/<uuid> is a symlink to the block
+  // device; its st_rdev equals the st_dev of every file on the filesystem that device backs.
+  // Comparing the two ties "the thing mounted at root" to "the specific drive we shipped".
+  let uuidProven = false;
+  if (g.uuid) {
+    try {
+      const blk = fs.statSync(`/dev/disk/by-uuid/${g.uuid}`);
+      if (blk.rdev === rootStat.dev) uuidProven = true;
+      else reasons.push(`the filesystem mounted at ${root} is not UUID ${g.uuid} — wrong or missing drive`);
+    } catch (_e) {
+      reasons.push(`no block device with UUID ${g.uuid} is present — the external drive is not connected`);
+    }
+  }
+
+  // Proof 3 — sentinel file that lives ON the drive itself (create it once with `touch
+  // <root>/<marker>`). Absent even when some other filesystem is mounted at root ⇒ wrong drive.
+  // The cross-platform backstop for hosts where the UUID check is unavailable.
+  let markerProven = false;
+  if (g.marker) {
+    if (fs.existsSync(path.join(root, g.marker))) markerProven = true;
+    else reasons.push(`mount marker ${path.join(root, g.marker)} is missing — the media drive is not the filesystem mounted at ${root}`);
+  }
+
+  if (!mountpointDistinct && !uuidProven && !markerProven) {
+    reasons.push(`${root} is not a mount point and no drive proof (UUID/marker) is satisfied — the external drive appears absent and this path is on the system disk`);
+  }
+
+  // No configured folder root may live outside the media mount or on a different filesystem than
+  // it — either would mean the folder quietly fell back onto the system disk.
+  for (const f of ctx.folders) {
+    if (!f.root) continue;
+    if (f.root !== root && !f.root.startsWith(`${root}${path.sep}`)) {
+      reasons.push(`folder root ${f.root} is outside the media mount ${root}`);
+      continue;
+    }
+    try {
+      if (fs.statSync(f.root).dev !== rootStat.dev) reasons.push(`folder root ${f.root} is on a different filesystem than the media drive — it looks like it fell back onto the system disk`);
+    } catch (_e) {
+      reasons.push(`folder root ${f.root} does not exist — the external drive is not mounted`);
+    }
+  }
+
+  return { checked: true, ok: reasons.length === 0, reasons };
+}
+
 async function runOnce(ctx) {
+  // The drive guard runs first, before any network call, .stignore write, prune, or inventory
+  // walk. On failure the report carries driveMissing and NO inventory field — an absent inventory
+  // preserves the bot's last-known node contents, whereas the empty inventory a blind walk of the
+  // vanished mount would produce wipes them and triggers a full, misdirected re-seed.
+  const guard = checkMountGuard(ctx);
+  if (!guard.ok) {
+    ctx.log(`SAFETY ABORT: media drive check failed — ${guard.reasons.join('; ')}`);
+    try {
+      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, {
+        driveMissing: true,
+        mountErrors: guard.reasons,
+        converged: false,
+        bytesFreed: 0,
+        dropped: [],
+        errors: guard.reasons,
+      });
+    } catch (err) { ctx.log(`could not report drive-missing to the bot: ${err.message}`); }
+    process.exitCode = 1;
+    return { driveMissing: true, mountErrors: guard.reasons };
+  }
   const state = loadState(ctx);
   const manifest = await botApi(ctx, 'GET', `/agent/manifest/${encodeURIComponent(ctx.node)}`);
   const planChanged = manifest.planHash !== state.planHash;
@@ -318,4 +426,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildCtx, parseFolders, runOnce, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, escapeStignore, loadState, saveState };
+module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, escapeStignore, loadState, saveState };
