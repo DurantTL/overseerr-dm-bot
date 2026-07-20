@@ -152,6 +152,18 @@ is not local yet). Per transport:
   This keeps the invariant that California's local files are *only* ever written by Syncthing, and
   reuses the whole existing keep/evict machinery instead of bolting on a second writer.
 
+> **Path layout must match the remote tree (PH).** mergerfs only prefers the local copy when it
+> sits at the **same relative path** as the file Plex discovered on the remote branch. Today
+> `resolveStageSource` copies to `movies/<basename>` and `tv/<basename>` (`src/staging.js`), but the
+> master library exposes folders like `Movies` / `TV Shows`. Left as-is, the promoted file lands at
+> a *different* path than the one Plex indexed via the fallback, so Plex keeps opening the remote
+> item and the local copy is an orphaned duplicate. **Before relying on mergerfs local-first for PH,
+> change the stage destination layout (or add a remap) so cached paths are identical to the master's
+> relative paths** — e.g. stage into `Movies/<basename>` / `TV Shows/<basename>` so
+> `/mnt/plex-library/Movies/<basename>` resolves to the local branch. The California tier path is
+> unaffected: Syncthing already replicates the master's exact folder tree, so promoted files match by
+> construction.
+
 #### (d) Guardrails (shared)
 
 * **Dedupe/debounce:** one promotion per `(node, mediaId)` per window — a binge shouldn't enqueue
@@ -162,8 +174,17 @@ is not local yet). Per transport:
 * **WAN contention:** a fallback *stream* and a promotion *copy* share the Tailscale link. Keep
   `STAGE_RCLONE_FLAGS`/`GRAB_RCLONE_FLAGS` `--bwlimit` in place, and consider deferring the copy
   slightly so the live stream wins the pipe.
-* **Respect existing budgets:** PH's `STAGE_MAX_PER_USER_PER_DAY` and cache guard; California's node
-  budget + eviction gate. Promotion is an *admission request*, not an override of the budget.
+* **Respect existing budgets — but add the missing rate-limit accounting.** The cache guard
+  (`planCacheSpace`) and California's node budget + eviction gate run inside the copy/plan paths, so
+  promotion inherits them for free. **The per-user daily cap does *not* come for free:**
+  `STAGE_MAX_PER_USER_PER_DAY` is enforced only in `handleStageCommand` via the in-memory
+  `stageCommandLimits` map (`index.js`), *before* `enqueueStageJob` — `enqueueStageJob` and the stage
+  worker only dedupe active jobs and check disk space. A `origin:'play'` path that calls
+  `enqueueStageJob` directly would let one viewer queue unlimited distinct missing titles. So the
+  play-promotion handler **must apply its own rate-limit/attribution** (attribute to the watcher's
+  linked Discord id, then `takeRateLimit(stageCommandLimits, watcherId, STAGE_MAX_PER_USER_PER_DAY,
+  …)` or an equivalent persistent per-day counter) before enqueuing. Promotion is an *admission
+  request*, not an override of the budget.
 
 ### 2.3 Tiering + eviction (already built — steps 5 & 6)
 
