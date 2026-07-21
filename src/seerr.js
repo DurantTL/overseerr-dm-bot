@@ -242,8 +242,22 @@ async function denyOverseerrRequest(requestId) {
 }
 
 async function fetchOverseerrUsers() {
-  const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/user?take=200`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
-  return res.data.results || [];
+  const users = [];
+  const take = 100;
+  // Seerr paginates this endpoint. A fixed take=200 silently hid older accounts from sync/link
+  // once a community grew past that number, creating false orphan and duplicate-user decisions.
+  for (let skip = 0; skip < 100000; skip += take) {
+    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/user`, {
+      params: { take, skip },
+      headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY },
+      timeout: 10000,
+    });
+    const page = res.data?.results || [];
+    users.push(...page);
+    const total = Number(res.data?.pageInfo?.results ?? res.data?.pageInfo?.totalResults);
+    if (page.length < take || (Number.isFinite(total) && users.length >= total)) break;
+  }
+  return users;
 }
 
 module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers };

@@ -35,6 +35,7 @@ const { decideEscalationAction, escalationEligible } = require('./src/escalation
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
+const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, releaseContentClaim, contentClaimsOverlap, describeContentClaim, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
 const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
@@ -1495,9 +1496,16 @@ async function sweepGraceDeletions() {
       markPendingDeletion(row.media_id, 'kept');
       continue;
     }
-    const result = await executeDeletion(row.media_id, row.title, { requestorId: row.requestor_discord_id, reason: 'grace_expired' });
+    const result = await executeDeletion(row.media_id, row.title, { requestorId: row.requestor_discord_id, reason: 'grace_expired', arrSource: row.arr_source || null });
     if (result.outcome === 'error') continue; // transient *arr failure — retry next sweep
     if (result.outcome === 'not_found') { markPendingDeletion(row.media_id, 'cancelled'); continue; }
+    if (['ambiguous', 'scope_required'].includes(result.outcome)) {
+      markPendingDeletion(row.media_id, 'cancelled');
+      notifyChannel('cleanup', { embeds: [brandedEmbed(COLORS.WARN)
+        .setTitle('🛑 Auto-Delete Blocked')
+        .setDescription(`**${row.title}** was not deleted because the stored target is ${result.outcome === 'ambiguous' ? 'ambiguous between library editions' : 'a TV series without an explicit episode/season/series scope'}. Create a new, scoped cleanup action after verifying the exact files.`)] });
+      continue;
+    }
     if (result.outcome === 'dry_run') {
       markPendingDeletion(row.media_id, 'dry_run');
       notifyChannel('cleanup', { embeds: [brandedEmbed(COLORS.WARN)
@@ -1524,8 +1532,8 @@ async function sweepRetentionRules() {
   const candidates = [];
 
   const movieSources = [
-    { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, rule: rules.movie_1080p },
-    { url: CONFIG.RADARR_4K_URL, key: CONFIG.RADARR_4K_API_KEY, rule: rules.movie_4k },
+    { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, label: 'radarr', rule: rules.movie_1080p },
+    { url: CONFIG.RADARR_4K_URL, key: CONFIG.RADARR_4K_API_KEY, label: 'radarr-4k', rule: rules.movie_4k },
   ].filter(s => s.url && s.rule > 0);
   for (const s of movieSources) {
     const movies = await radarrGetFrom(s.url, s.key, '/movie').catch(() => []);
@@ -1533,7 +1541,7 @@ async function sweepRetentionRules() {
       if (!m.hasFile || !m.movieFile?.dateAdded) continue;
       const ageDays = (now - Date.parse(m.movieFile.dateAdded)) / 86400000;
       if (ageDays < s.rule) continue;
-      candidates.push({ kind: 'movie', mediaId: `tmdb:${m.tmdbId}`, title: `${m.title}${m.year ? ` (${m.year})` : ''}`, ageDays, sizeBytes: m.movieFile.size || 0 });
+      candidates.push({ kind: 'movie', mediaId: `tmdb:${m.tmdbId}`, title: `${m.title}${m.year ? ` (${m.year})` : ''}`, ageDays, sizeBytes: m.movieFile.size || 0, arrSource: s.label });
     }
   }
 
@@ -1573,7 +1581,7 @@ async function sweepRetentionRules() {
   const done = [];
   for (const c of eligible) {
     if (c.kind === 'movie') {
-      const result = await executeDeletion(c.mediaId, c.title, { reason: 'retention_rule' });
+      const result = await executeDeletion(c.mediaId, c.title, { reason: 'retention_rule', arrSource: c.arrSource });
       if (result.outcome === 'deleted') { deleted++; done.push(c); }
       continue;
     }
@@ -1621,6 +1629,16 @@ async function janitorSweep() {
     if (Date.now() - last >= CONFIG.RETENTION_CHECK_HOURS * 3600000) {
       setSetting('retention_last_run', String(Date.now()));
       await sweepRetentionRules().catch(err => log.warn(`Retention sweep failed: ${err.message}`));
+    }
+  }
+  if (CONFIG.LOG_RETENTION_DAYS > 0) {
+    const last = Number(getSetting('log_retention_last_run') || '0');
+    if (Date.now() - last >= 24 * 3600000) {
+      const age = `-${CONFIG.LOG_RETENTION_DAYS} days`;
+      const auditDeleted = db.prepare("DELETE FROM audit_log WHERE created_at < datetime('now', ?)").run(age).changes;
+      const accessDeleted = db.prepare("DELETE FROM download_access_log WHERE created_at < datetime('now', ?)").run(age).changes;
+      setSetting('log_retention_last_run', String(Date.now()));
+      if (auditDeleted || accessDeleted) log.info(`Pruned ${auditDeleted} audit and ${accessDeleted} download-access log row(s) older than ${CONFIG.LOG_RETENTION_DAYS} days`);
     }
   }
 }
@@ -1850,14 +1868,15 @@ const slashCommands = [
   new SlashCommandBuilder().setName('unlink').setDescription('Unlink a user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)),
   new SlashCommandBuilder().setName('users').setDescription('List linked users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('status').setDescription('Show status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('doctor').setDescription('Read-only setup and California → Philippines transfer checks').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('seerr-test').setDescription('Self-test Seerr Discord linking with a throwaway user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addBooleanOption(o => o.setName('keep').setDescription('Keep the test user in Seerr so you can inspect its Discord settings')),
   new SlashCommandBuilder().setName('sync').setDescription('Sync users safely').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(true).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
   new SlashCommandBuilder().setName('sync-fix').setDescription('Resolve sync issues found in the preview').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('target').setDescription('Category to fix').setRequired(true).addChoices({ name: 'placeholders', value: 'placeholders' }, { name: 'duplicates', value: 'duplicates' }, { name: 'orphans', value: 'orphans' }, { name: 'mergeemails', value: 'mergeemails' }, { name: 'links', value: 'links' })),
-  new SlashCommandBuilder().setName('cleanup').setDescription('Cleanup deleted Overseerr users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(false).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
+  new SlashCommandBuilder().setName('cleanup').setDescription('Cleanup deleted Seerr users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(false).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
   new SlashCommandBuilder().setName('invite').setDescription('Invite a member: bot DMs them for their Plex email and auto-sets them up').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('Member to invite').setRequired(true)).addStringOption(o => o.setName('email').setDescription('Skip the DM — set them up with this Plex email right away').setAutocomplete(true)),
   new SlashCommandBuilder().setName('invite-post').setDescription('Post a public "Request Plex Access" button in this channel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('reinvite').setDescription('Re-send a Plex invite to a linked user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('Discord user currently in the server')).addStringOption(o => o.setName('email').setDescription('Any linked user — start typing to search the DB').setAutocomplete(true)),
-  new SlashCommandBuilder().setName('requests').setDescription('Show the most recent Overseerr requests').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addIntegerOption(o => o.setName('count').setDescription('How many to show (default 10)').setMinValue(1).setMaxValue(25)),
+  new SlashCommandBuilder().setName('requests').setDescription('Show the most recent Seerr requests').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addIntegerOption(o => o.setName('count').setDescription('How many to show (default 10)').setMinValue(1).setMaxValue(25)),
   new SlashCommandBuilder().setName('audit').setDescription('Audit log queries').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('recent').setDescription('Recent entries').addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100)))
     .addSubcommand(s => s.setName('user').setDescription('Entries by user').addUserOption(o => o.setName('person').setDescription('User').setRequired(true)).addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100)))
@@ -2317,6 +2336,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'unlink') return handleUnlinkCommand(interaction);
   if (n === 'users') return handleUsersCommand(interaction);
   if (n === 'status') return handleStatusCommand(interaction);
+  if (n === 'doctor') return handleDoctorCommand(interaction);
   if (n === 'seerr-test') return handleSeerrTestCommand(interaction);
   if (n === 'sync') return handleSyncCommand(interaction);
   if (n === 'sync-fix') return handleSyncFixCommand(interaction);
@@ -2420,7 +2440,7 @@ async function applyFullChainLink(discordId, email, username) {
   } else {
     try {
       const result = await inviteUserToPlex(email, { homeServer: homeServerFor(discordId) });
-      markUserInvited(discordId);
+      if (result.successCount > 0) markUserInvited(discordId);
       plexStatus = result.successCount > 0 ? `✅ invite sent (${result.successCount}/${result.total})` : '⚠️ invite failed on all servers';
     } catch (err) {
       audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId: discordId });
@@ -2720,6 +2740,39 @@ async function handleStatusCommand(interaction) {
     embed.addFields({ name: 'PH staging', value: lines.join('\n'), inline: false });
   }
   audit('status_checked', { actorDiscordId: interaction.user.id, overall: health.overall });
+  await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleDoctorCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ ephemeral: true });
+  const checks = await runEdgeDiagnostics({ live: true });
+  const active = listActiveStageJobs();
+  const copying = active.filter(j => j.status === 'copying');
+  checks.push({
+    name: 'Transfer queue',
+    status: copying.length > 1 ? 'fail' : 'ok',
+    detail: `${copying.length} copying, ${active.filter(j => j.status === 'queued').length} queued`,
+  });
+  const nodes = listTierNodes();
+  const now = Date.now();
+  for (const node of nodes) {
+    const tierState = getTierPlan(node.name);
+    const heartbeatAge = tierState?.lastHeartbeatAt ? now - Number(tierState.lastHeartbeatAt) : null;
+    checks.push({
+      name: `Tier agent: ${node.name}`,
+      status: heartbeatAge != null && heartbeatAge < 15 * 60000 && !(tierState?.lastErrors || []).length ? 'ok' : 'warn',
+      detail: heartbeatAge == null ? 'no heartbeat reported' : `last heartbeat ${fmtDuration(heartbeatAge)} ago${tierState?.lastErrors?.length ? ` · ${tierState.lastErrors[0]}` : ''}`,
+    });
+  }
+  const icon = s => s === 'ok' ? '✅' : s === 'warn' ? '⚠️' : '❌';
+  const failures = checks.filter(c => c.status === 'fail').length;
+  const warnings = checks.filter(c => c.status === 'warn').length;
+  audit('edge_diagnostics_run', { actorDiscordId: interaction.user.id, failures, warnings });
+  const embed = brandedEmbed(failures ? COLORS.DANGER : warnings ? COLORS.WARN : COLORS.SUCCESS)
+    .setTitle('🩺 California → Philippines Transfer Doctor')
+    .setDescription(checks.map(c => `${icon(c.status)} **${c.name}** — ${String(c.detail).slice(0, 350)}`).join('\n').slice(0, 4000))
+    .setFooter({ text: 'Durant Media Server · Read-only: no files were copied, changed, or deleted.' });
   await interaction.editReply({ embeds: [embed] });
 }
 
@@ -3243,7 +3296,7 @@ async function handleReinviteCommand(interaction) {
   }
   const result = await inviteUserToPlex(email, { homeServer: homeServerFor(discordId) });
   // markUserInvited keys on the discord_id string, so it works for plex_ synthetic rows too.
-  if (discordId) markUserInvited(discordId);
+  if (discordId && result.successCount > 0) markUserInvited(discordId);
   audit('plex_reinvite_sent', { actorDiscordId: interaction.user.id, targetDiscordId: discordId, email, successCount: result.successCount, total: result.total });
   const ok = result.successCount > 0;
   await interaction.editReply(
@@ -3336,24 +3389,38 @@ async function handleRequestStatusCommand(interaction) {
     return interaction.editReply(`❌ None of your tracked requests match **${raw}**. Try picking a suggestion from the list, or \`/myrequests\` to see what's tracked.`);
   }
 
-  const lines = [`${requestStatusBadge(row.status)}${isSnowflake(row.requested_by_discord_id) ? ` — requested by <@${row.requested_by_discord_id}>` : ''}`];
+  const lines = [`**1 · Submitted**  ✅${isSnowflake(row.requested_by_discord_id) ? ` by <@${row.requested_by_discord_id}>` : ''}`];
   if (row.status === 'available') {
-    lines.push('It\'s on Plex — go watch it! 🍿');
+    lines.push('**2 · Approved**  ✅');
+    lines.push('**3 · Downloaded to California**  ✅');
+    const requester = isSnowflake(row.requested_by_discord_id) ? getUserByDiscordId(row.requested_by_discord_id) : null;
+    if (requester?.home_server === 'ph' && stagingConfigured()) {
+      const staged = getStagedItem(row.media_id);
+      const stageJob = listActiveStageJobs().find(j => j.media_id === row.media_id);
+      if (staged) lines.push('**4 · Philippines edge delivery**  ✅ Warm and ready to play 🍿');
+      else if (stageJob?.status === 'copying') lines.push(`**4 · Philippines edge delivery**  📥 Copying now${stageJob.started_at ? ` since ${discordTimestamp(stageJob.started_at)}` : ''}`);
+      else if (stageJob) lines.push('**4 · Philippines edge delivery**  ⏳ Queued for transfer');
+      else lines.push('**4 · Philippines edge delivery**  ⏸️ Available in California but not cached yet — use `/stage` to copy it to your edge server.');
+    } else {
+      lines.push('**4 · Ready on Plex**  ✅ Go watch it! 🍿');
+    }
   } else if (row.status === 'declined') {
-    lines.push('An admin declined this request.');
+    lines.push('**2 · Approval**  ❌ Declined by an admin.');
   } else if (row.status === 'pending') {
-    lines.push('Waiting for an admin to approve it. You\'ll get a DM the moment that happens.');
+    lines.push('**2 · Approval**  ⏳ Waiting for an admin. You\'ll get a DM when it changes.');
+    lines.push('**3 · Download**  ⏸️ Starts after approval');
   } else {
+    lines.push('**2 · Approved**  ✅');
     const items = await fetchArrQueues().catch(() => []);
     const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
     const target = norm(row.title);
     const match = items.find(i => { const n = norm(i.title); return target && n && (n.includes(target) || target.includes(n)); });
     if (match) {
       const pct = queuePercent(match);
-      lines.push(`⬇️ Downloading via ${match.source.label}: ${progressBar(pct)} ${pct}%${match.timeleft ? ` · ETA \`${match.timeleft}\`` : ''}`);
+      lines.push(`**3 · Download**  ⬇️ ${match.source.label}: ${progressBar(pct)} ${pct}%${match.timeleft ? ` · ETA \`${match.timeleft}\`` : ''}`);
       if (queueItemLooksUnhealthy(match)) {
-        lines.push(`⚠️ The download has a problem: ${String(match.messages[0] || match.trackedStatus || match.status).slice(0, 200)}`);
-        lines.push('Often this means no seeders. The stuck-download watchdog will offer admins a one-click "try another release" fix.');
+        lines.push(`⚠️ **Operator detail:** ${String(match.messages[0] || match.trackedStatus || match.status).slice(0, 200)}`);
+        lines.push('You do not need to do anything; an admin gets a one-click retry option.');
       }
     } else {
       // Before blaming the indexers, check whether the title is even out yet — Radarr/Sonarr
@@ -3369,9 +3436,9 @@ async function handleRequestStatusCommand(interaction) {
         tvdbId,
       }));
       if (eta?.waiting) {
-        lines.push(`⏳ It isn't out yet, so there's nothing to download — it'll be grabbed automatically once it releases.\n${eta.line}`);
+        lines.push(`**3 · Download**  ⏳ It isn't out yet; it will be grabbed automatically after release.\n${eta.line}`);
       } else {
-        lines.push('🔎 Approved, but nothing is downloading for it yet — usually no good release has been grabbed so far. The *arrs keep retrying automatically; an admin can force a search from Radarr/Sonarr.');
+        lines.push('**3 · Download**  🔎 Looking for a suitable release. Searches retry automatically; an admin can force another search.');
         if (eta) lines.push(eta.line);
       }
     }
@@ -3821,13 +3888,27 @@ async function handleMeCommand(interaction) {
       .setDescription('You aren\'t linked to a Plex account yet.\nDM me your Plex email to request access!')], ephemeral: true });
   }
   const requestCount = db.prepare('SELECT COUNT(*) AS c FROM requests WHERE requested_by_discord_id = ?').get(interaction.user.id).c;
-  const embed = brandedEmbed(COLORS.PLEX)
-    .setTitle('👤 Your Profile')
+  const homeServer = row.home_server === 'ph' ? 'Philippines edge server' : 'California primary server';
+  const accessReady = !!(row.invited && row.overseerr_created);
+  const checklist = [
+    `1. ${row.invited ? '✅' : '⏳'} Plex invitation ${row.invited ? 'sent — accept it from your Plex email if you have not already' : 'has not been sent yet'}`,
+    `2. ${row.overseerr_created ? '✅' : '⏳'} Request access ${row.overseerr_created ? 'connected' : 'still being set up'}`,
+    `3. ${accessReady ? '✅' : '⏳'} Home server: **${homeServer}**`,
+  ].join('\n');
+  const nextStep = !row.invited
+    ? 'An admin still needs to send your Plex invitation.'
+    : !row.overseerr_created
+      ? 'Your Plex invitation is sent; an admin still needs to finish request access.'
+      : row.home_server === 'ph'
+        ? 'You are ready. Use `/request` for new media and `/stage` to warm something already in the library on your edge server.'
+        : 'You are ready. Use `/request` for new media and `/request-status` to track it.';
+  const embed = brandedEmbed(accessReady ? COLORS.SUCCESS : COLORS.PLEX)
+    .setTitle(accessReady ? '✅ Your Access Is Ready' : '👤 Your Access Checklist')
     .setThumbnail(interaction.user.displayAvatarURL?.() || null)
     .addFields(
       { name: 'Plex email', value: `\`${row.email}\``, inline: false },
-      { name: 'Plex invite', value: row.invited ? '✅ Sent' : '⏳ Pending approval', inline: true },
-      { name: 'Requests (Seerr)', value: row.overseerr_created ? '✅ Enabled' : '❌ Not set up', inline: true },
+      { name: 'Setup', value: checklist, inline: false },
+      { name: 'Next step', value: nextStep, inline: false },
       { name: 'Total requests', value: `${requestCount}`, inline: true },
     );
   await interaction.reply({ embeds: [embed], ephemeral: true });
@@ -4037,18 +4118,21 @@ async function handleHelpCommand(interaction) {
     .setDescription('DM the bot your Plex account email → an admin approves → you get Plex + Seerr (request) access.')
     .addFields({ name: 'Commands', value: userCommands.join('\n'), inline: false });
   if (isAdminInteraction(interaction)) {
-    const adminCommands = [
+    const peopleCommands = [
       '`/invite` — DM a member for their Plex email and auto-set them up',
       '`/invite-post` — Post a public Request Access button in this channel',
       '`/link` — Link a Discord user to a Plex email (invites + sets up Seerr)',
       '`/unlink` — Remove a user from the DB',
       '`/users` — List linked users',
-      '`/status` — Show system health and stats',
       '`/sync` — Preview or apply user sync',
       '`/sync-fix` — Resolve duplicates / placeholders / orphans / suggested links',
       '`/reinvite` — Re-send a Plex invite to a linked user',
-      '`/requests` — Show the most recent Overseerr requests',
-      '`/cleanup` — Remove deleted Overseerr users',
+    ];
+    const operationsCommands = [
+      '`/status` — Show system health and stats',
+      '`/doctor` — Run read-only California → Philippines transfer and configuration checks',
+      '`/requests` — Show the most recent Seerr requests',
+      '`/cleanup` — Remove deleted Seerr users',
       '`/audit` — Query the audit log',
       '`/revoke-downloads` — Revoke active download links',
       '`/seerr-test` — Self-test Seerr Discord linking with a throwaway user',
@@ -4056,24 +4140,30 @@ async function handleHelpCommand(interaction) {
       '`/indexers` — Prowlarr indexer + Byparr health',
       '`/debrid` — Premiumize account + transfer status',
       '`/cleanup-suggestions` — Largest/oldest media that could be cleaned up',
+    ];
+    const infrastructureCommands = [
       '`/tier` — Regional tiering: preview/apply per-node edge-cache plans',
       '`/tier-node` — Manage the tiering node registry (capacity, access mode, demand source, `folder add|remove|list`)',
       '`/tier-member` — Manage a restricted node\'s member set',
     ];
     if (grabConfigured()) {
-      adminCommands.push('`/avistaz` — Search AvistaZ directly and send a release to the seedbox');
+      infrastructureCommands.push('`/avistaz` — Search AvistaZ directly and send a release to the seedbox');
     }
     if (rtorrentConfigured()) {
-      adminCommands.push('`/rtorrent` — Inspect seedbox torrents and adopt existing ones into the pipeline');
+      infrastructureCommands.push('`/rtorrent` — Inspect seedbox torrents and adopt existing ones into the pipeline');
     }
     if (stagingConfigured()) {
-      adminCommands.push(
+      infrastructureCommands.push(
         '`/staged` — See what\'s warm in the travel cache (and what\'s copying)',
         '`/pin` / `/unpin` — Protect a cached title from automatic eviction',
         '`/stage-bulk` — Seed the travel cache from a list of titles',
         '`/assign-server` — Set a user\'s home server (primary / ph)');
     }
-    embed.addFields({ name: 'Admin commands', value: adminCommands.join('\n'), inline: false });
+    embed.addFields(
+      { name: 'Admin · People & access', value: peopleCommands.join('\n'), inline: false },
+      { name: 'Admin · Requests & operations', value: operationsCommands.join('\n'), inline: false },
+      { name: 'Admin · Advanced infrastructure', value: infrastructureCommands.join('\n'), inline: false },
+    );
   }
   await interaction.reply({ embeds: [embed], ephemeral: true });
 }
@@ -4555,7 +4645,7 @@ async function handleButton(interaction) {
     const user = getUserByDiscordId(targetDiscordId);
     if (!user) return interaction.editReply({ content: 'User not found.', components: [] });
     let plexStatus = 'failed'; let overseerrStatus = 'failed'; let plexOk = false;
-    try { const result = await inviteUserToPlex(user.email, { homeServer: homeServerFor(targetDiscordId) }); markUserInvited(targetDiscordId); plexOk = result.successCount > 0; plexStatus = `ok (${result.successCount}/${result.total})`; } catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId }); }
+    try { const result = await inviteUserToPlex(user.email, { homeServer: homeServerFor(targetDiscordId) }); plexOk = result.successCount > 0; if (plexOk) markUserInvited(targetDiscordId); plexStatus = `ok (${result.successCount}/${result.total})`; } catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId }); }
     try { const du = await client.users.fetch(targetDiscordId); const oid = await createOverseerrUser(user.email, targetDiscordId, du.username); markOverseerrCreated(targetDiscordId, oid); overseerrStatus = `ok (${oid})`; } catch (err) { audit('external_api_error', { provider: 'overseerr', error: err.message, targetDiscordId }); }
     audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: 'plex_approve' });
     // The welcome DM promises a confirmation — deliver it.
@@ -4567,7 +4657,7 @@ async function handleButton(interaction) {
       .addFields(
         { name: 'User', value: `<@${targetDiscordId}>`, inline: true },
         { name: 'Plex', value: plexStatus, inline: true },
-        { name: 'Overseerr', value: overseerrStatus, inline: true },
+        { name: 'Seerr', value: overseerrStatus, inline: true },
       )], components: [] });
     return;
   }
@@ -5109,9 +5199,12 @@ async function handleButton(interaction) {
     audit('keep_delete_decision_made', { actorDiscordId: interaction.user.id, requestorId, mediaId, decision: 'delete_now' });
     await interaction.deferUpdate();
 
-    const result = await executeDeletion(mediaId, title, { actorDiscordId: interaction.user.id, requestorId, reason: 'user_button' });
+    const pending = db.prepare('SELECT * FROM pending_deletions WHERE media_id = ?').get(mediaId);
+    const result = await executeDeletion(mediaId, title, { actorDiscordId: interaction.user.id, requestorId, reason: 'user_button', arrSource: pending?.arr_source || null });
     if (result.outcome === 'error') return interaction.editReply({ content: `❌ Delete failed for **${title}**: ${result.error}`, components: [] });
     if (result.outcome === 'not_found') { markPendingDeletion(mediaId, 'cancelled'); return interaction.editReply({ content: `⚠️ Could not find **${title}** in Radarr/Sonarr — nothing to delete.`, components: [] }); }
+    if (result.outcome === 'ambiguous') { markPendingDeletion(mediaId, 'cancelled'); return interaction.editReply({ content: `🛑 **${title}** exists in more than one Radarr library and this older action did not preserve the edition. Nothing was deleted; wait for a new edition-specific prompt.`, components: [] }); }
+    if (result.outcome === 'scope_required') { markPendingDeletion(mediaId, 'cancelled'); return interaction.editReply({ content: `🛑 TV cleanup needs an exact episode, season, or whole-series scope. This playback action only identified the show, so nothing was deleted.`, components: [] }); }
     if (result.outcome === 'dry_run') {
       markPendingDeletion(mediaId, 'dry_run');
       const fileList = result.paths.length ? result.paths.slice(0, 5).map(p => `• \`${p}\``).join('\n') : '• (no files on disk)';
@@ -5208,6 +5301,9 @@ function dashboardAuth(req, res, next) {
 function startExpressServer() {
   const app = express();
   app.disable('x-powered-by');
+  // Trust exactly one reverse-proxy hop only when the operator opts in. Rate-limit identities use
+  // req.ip below; directly trusting arbitrary X-Forwarded-For lets clients rotate spoofed IPs.
+  app.set('trust proxy', CONFIG.TRUST_PROXY ? 1 : false);
   const upload = multer({ limits: { fileSize: 5 * 1024 * 1024, files: 5 } });
   // Agent reports can carry a full atime inventory (thousands of file rows), so /agent/ gets a
   // larger JSON limit than the webhook/dashboard routes.
@@ -5218,7 +5314,22 @@ function startExpressServer() {
     bodyParser.json({ limit: '1mb' })(req, res, next);
   });
 
-  app.get('/health', async (_req, res) => res.json(await gatherHealth()));
+  let publicHealthCache = { at: 0, value: null, pending: null };
+  app.get('/health', async (_req, res) => {
+    try {
+      if (publicHealthCache.value && Date.now() - publicHealthCache.at < 30000) return res.json(publicHealthCache.value);
+      publicHealthCache.pending ||= gatherHealth().then(value => {
+        publicHealthCache = { at: Date.now(), value, pending: null };
+        return value;
+      }).catch(err => {
+        publicHealthCache.pending = null;
+        throw err;
+      });
+      return res.json(await publicHealthCache.pending);
+    } catch (err) {
+      return res.status(503).json({ overall: 'down', error: err.message });
+    }
+  });
 
   app.post('/webhook/overseerr', upload.any(), async (req, res) => {
     if (CONFIG.WEBHOOK_SECRET && !safeEqual(req.headers['x-webhook-secret'], CONFIG.WEBHOOK_SECRET)) return res.status(401).json({ error: 'Unauthorized' });
@@ -5253,7 +5364,7 @@ function startExpressServer() {
   });
 
   app.get('/download/:token', async (req, res) => {
-    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
     if (!takeRateLimit(routeLimits, ip, CONFIG.DOWNLOAD_ROUTE_MAX_PER_MINUTE, 60000)) {
       return res.status(429).send('Too many requests.');
     }
@@ -5344,7 +5455,7 @@ function startExpressServer() {
     const m = /^Bearer\s+(\S+)$/.exec(String(req.headers.authorization || ''));
     const storedHash = getTierAgentTokenHash(node);
     if (!m || !storedHash || !safeEqual(sha256(m[1]), storedHash)) {
-      audit('tier_agent_auth_failed', { node, ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown' });
+      audit('tier_agent_auth_failed', { node, ip: req.ip || req.socket.remoteAddress || 'unknown' });
       return res.status(401).json({ error: 'Unauthorized' });
     }
     next();
@@ -5461,7 +5572,7 @@ function startExpressServer() {
     });
 
     app.post('/admin/login', adminForm, (req, res) => {
-      const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+      const ip = req.ip || req.socket.remoteAddress || 'unknown';
       if (!takeRateLimit(loginLimits, ip, 5, 15 * 60000)) {
         return res.status(429).type('html').send(renderLogin(false, 'Too many attempts. Try again in a few minutes.'));
       }
@@ -5611,7 +5722,7 @@ function startExpressServer() {
       const auditTableRows = auditRows.map(a => ({ when: fmtAgo(sqliteUtcMs(a.created_at)), action: a.action, details: String(a.metadata_json || '').slice(0, 160) }));
 
       const unavailable = which => `<p class="muted">${escapeHtml(which)} unreachable or not configured.</p>`;
-      const nav = [['now', 'Now'], ['jobs', 'Jobs'], ['tier', 'Tiering'], ['disks', 'Disks'], ['users', 'Users'], ['requests', 'Requests'], ['logs', 'Logs']];
+      const nav = [['now', 'Overview'], ['jobs', 'Operations'], ['tier', 'Edge'], ['disks', 'Storage'], ['users', 'People'], ['requests', 'Requests'], ['logs', 'Audit']];
 
       const body = `
         <div class="overall ${health.overall === 'ok' ? 'ok' : 'warn'}">
@@ -5971,7 +6082,8 @@ async function handleOverseerrWebhook(body) {
   if (!notification_type || !media) return;
   const titleMatch = subject?.match(/^.+? - (.+)$/);
   const title = titleMatch ? titleMatch[1] : (subject || 'Unknown Title');
-  const is4k = !!media.is4k;
+  const raw4k = media.is4k;
+  const is4k = raw4k === true || raw4k === 1 || ['1', 'true', 'yes', '4k'].includes(String(raw4k || '').toLowerCase());
   const mediaId = media.media_type === 'tv' ? `tvdb:${media.tvdbId}` : `tmdb:${media.tmdbId}`;
   const requester = resolveRequester(request);
   let requesterDiscordId = requester.discordId;
@@ -6122,10 +6234,16 @@ async function handlePlexWebhook(payload) {
   if (origin === 'ph') {
     return handlePhWatchedEvent({ event: 'watched', mediaId, title, mediaType: mediaType === 'episode' ? 'tv' : 'movie' });
   }
+  // A Plex episode webhook identifies the series by TVDB id, not the exact Sonarr episode file.
+  // Never turn one finished episode into a whole-series delete prompt.
+  if (mediaType === 'episode') {
+    audit('cleanup_prompt_skipped_tv_scope', { source: 'plex', mediaId, title, reason: 'episode_not_resolved' });
+    return;
+  }
   if (mediaType === 'movie' && !is4k) return;
   if (isInKeepList(mediaId) || CONFIG.NEVER_DELETE_MEDIA_IDS.includes(mediaId)) return;
 
-  const reqRow = db.prepare('SELECT * FROM requests WHERE media_id = ? ORDER BY created_at DESC LIMIT 1').get(mediaId);
+  const reqRow = db.prepare('SELECT * FROM requests WHERE media_id = ? AND is_4k = 1 ORDER BY created_at DESC LIMIT 1').get(mediaId);
   if (!isSnowflake(reqRow?.requested_by_discord_id)) return;
   const snoozeUntil = Number(getSetting(`delete_prompt_snooze:${mediaId}:${reqRow.requested_by_discord_id}`) || '0');
   if (snoozeUntil > Date.now()) return;
@@ -6138,9 +6256,9 @@ async function handlePlexWebhook(payload) {
     new ButtonBuilder().setCustomId(`delete_yes:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Delete Now').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(`delete_later:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Remind Me Later').setStyle(ButtonStyle.Primary),
   );
-  const autoLine = CONFIG.ENABLE_DELETION ? `\n\n⏳ Auto-deletes in ${CONFIG.DELETION_GRACE_HOURS} hour(s) unless you choose **Keep**.` : '';
-  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [brandedEmbed(COLORS.WARN).setTitle(`${mediaTypeEmoji(mediaType === 'episode' ? 'tv' : 'movie', is4k)} Finished Watching`).setDescription(`Looks like you finished **${title}**. Should we keep it or free up space?${autoLine}`)], components: [row] });
-  recordPendingDeletion(mediaId, mediaType === 'episode' ? 'tv' : 'movie', title, reqRow.requested_by_discord_id);
+  const autoLine = CONFIG.ENABLE_DELETION ? `\n\n⏳ The **4K Radarr copy only** auto-deletes in ${CONFIG.DELETION_GRACE_HOURS} hour(s) unless you choose **Keep**.` : '';
+  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [brandedEmbed(COLORS.WARN).setTitle('🎥 Finished Watching · 4K Edition').setDescription(`Looks like you finished **${title}**. Should we keep the **4K Radarr copy** or free up space? The standard copy is never part of this action.${autoLine}`)], components: [row] });
+  recordPendingDeletion(mediaId, 'movie', title, reqRow.requested_by_discord_id, { is4k: true, arrSource: 'radarr-4k' });
 }
 
 async function handleTautulliWebhook(body) {
@@ -6170,9 +6288,14 @@ async function handleTautulliWebhook(body) {
     return handlePhWatchedEvent({ event, mediaId, title: eventTitle, mediaType: mappedType, watcherEmail: user_email });
   }
   if (event !== 'watched' || !user_email) return;
-  const is4k = String(is_4k || '').toLowerCase().includes('4k');
+  if (media_type === 'episode') {
+    audit('cleanup_prompt_skipped_tv_scope', { source: 'tautulli', mediaId, title: eventTitle, reason: 'episode_not_resolved' });
+    return;
+  }
+  const resolutionFlag = String(is_4k || '').toLowerCase();
+  const is4k = resolutionFlag.includes('4k') || ['1', 'true', 'yes'].includes(resolutionFlag);
   if (media_type === 'movie' && !is4k) return;
-  const reqRow = db.prepare('SELECT * FROM requests WHERE media_id = ? ORDER BY created_at DESC LIMIT 1').get(mediaId);
+  const reqRow = db.prepare('SELECT * FROM requests WHERE media_id = ? AND is_4k = 1 ORDER BY created_at DESC LIMIT 1').get(mediaId);
   if (!isSnowflake(reqRow?.requested_by_discord_id) || isInKeepList(mediaId)) return;
   const snoozeUntil = Number(getSetting(`delete_prompt_snooze:${mediaId}:${reqRow.requested_by_discord_id}`) || '0');
   if (snoozeUntil > Date.now()) return;
@@ -6185,9 +6308,9 @@ async function handleTautulliWebhook(body) {
     new ButtonBuilder().setCustomId(`delete_yes:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Delete Now').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId(`delete_later:${mediaId}:${encodedTitle}:${reqRow.requested_by_discord_id}`).setLabel('Remind Me Later').setStyle(ButtonStyle.Primary),
   );
-  const tautulliAutoLine = CONFIG.ENABLE_DELETION ? `\n\n⏳ Auto-deletes in ${CONFIG.DELETION_GRACE_HOURS} hour(s) unless you choose **Keep**.` : '';
-  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [brandedEmbed(COLORS.WARN).setTitle('📺 Finished Watching').setDescription(`Looks like you finished **${showTitle}**. Keep it, or free up space?${tautulliAutoLine}`)], components: [row] });
-  recordPendingDeletion(mediaId, media_type === 'episode' ? 'tv' : 'movie', showTitle, reqRow.requested_by_discord_id);
+  const tautulliAutoLine = CONFIG.ENABLE_DELETION ? `\n\n⏳ The **4K Radarr copy only** auto-deletes in ${CONFIG.DELETION_GRACE_HOURS} hour(s) unless you choose **Keep**.` : '';
+  await adminChannel.send({ content: `<@${reqRow.requested_by_discord_id}>`, embeds: [brandedEmbed(COLORS.WARN).setTitle('🎥 Finished Watching · 4K Edition').setDescription(`Looks like you finished **${showTitle}**. Keep the **4K Radarr copy**, or free up space? The standard copy is never part of this action.${tautulliAutoLine}`)], components: [row] });
+  recordPendingDeletion(mediaId, 'movie', showTitle, reqRow.requested_by_discord_id, { is4k: true, arrSource: 'radarr-4k' });
 }
 
 // A play-START on the PH box (Plex media.play/resume, Tautulli 'play'). Two jobs:

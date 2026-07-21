@@ -95,6 +95,8 @@ function runMigrations() {
       prompt_sent_at INTEGER,
       delete_after INTEGER NOT NULL,
       status TEXT DEFAULT 'pending',
+      is_4k INTEGER DEFAULT 0,
+      arr_source TEXT,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -252,6 +254,11 @@ function runMigrations() {
   // box). Watch state never syncs between servers, so invites and auto-staging key off this.
   ensureColumn('users', 'home_server', "TEXT DEFAULT 'primary'");
   ensureColumn('keep_list', 'expires_at', 'INTEGER');
+  // A deletion decision must keep the exact library edition all the way from the webhook prompt
+  // to the grace-period sweep. Without these fields a 4K watch could resolve against the first
+  // (1080p) Radarr instance and delete the wrong copy.
+  ensureColumn('pending_deletions', 'is_4k', 'INTEGER DEFAULT 0');
+  ensureColumn('pending_deletions', 'arr_source', 'TEXT');
   // Where the torrent's data lives under GRAB_RCLONE_REMOTE when it isn't just the torrent
   // name (adopted torrents can sit in per-label subfolders). NULL = use the rTorrent name.
   ensureColumn('grab_jobs', 'remote_path', 'TEXT');
@@ -347,10 +354,19 @@ function audit(action, details = {}) {
 
 // basic helpers
 function storeUserEmail(discordId, email) {
+  const normalized = email.toLowerCase().trim();
+  const current = db.prepare('SELECT email FROM users WHERE discord_id = ?').get(discordId);
+  const changed = current && canonicalizeEmail(current.email) !== canonicalizeEmail(normalized);
   db.prepare(`INSERT INTO users (discord_id, email, requested_at)
     VALUES (?, ?, ?)
-    ON CONFLICT(discord_id) DO UPDATE SET email=excluded.email, requested_at=excluded.requested_at, overseerr_created=0, overseerr_user_id=NULL`)
-    .run(discordId, email.toLowerCase().trim(), new Date().toISOString());
+    ON CONFLICT(discord_id) DO UPDATE SET
+      email=excluded.email,
+      requested_at=excluded.requested_at,
+      invited=CASE WHEN ? THEN 0 ELSE users.invited END,
+      invited_at=CASE WHEN ? THEN NULL ELSE users.invited_at END,
+      overseerr_created=CASE WHEN ? THEN 0 ELSE users.overseerr_created END,
+      overseerr_user_id=CASE WHEN ? THEN NULL ELSE users.overseerr_user_id END`)
+    .run(discordId, normalized, new Date().toISOString(), changed ? 1 : 0, changed ? 1 : 0, changed ? 1 : 0, changed ? 1 : 0);
 }
 
 // Link a Discord ID to an email, absorbing any synthetic plex_ row that holds the same canonical
@@ -417,7 +433,7 @@ function upsertRequest(overseerrRequestId, mediaId, mediaType, is4k, title, disc
   }
   const updated = db.prepare(`UPDATE requests SET status = ?,
       requested_by_discord_id = COALESCE(?, requested_by_discord_id)
-    WHERE media_id = ?`).run(status, discordId || null, mediaId);
+    WHERE media_id = ? AND is_4k = ?`).run(status, discordId || null, mediaId, is4k ? 1 : 0);
   if (!updated.changes) {
     db.prepare(`INSERT INTO requests (overseerr_request_id, media_id, media_type, is_4k, title, requested_by_discord_id, status)
       VALUES (NULL, ?, ?, ?, ?, ?, ?)`)
@@ -437,18 +453,21 @@ function isInKeepList(mediaId) {
 
 // The "Finished Watching" prompt promises auto-deletion after the grace period; these rows are
 // what the janitor sweep actually enforces. Re-prompting the same media resets the clock.
-function recordPendingDeletion(mediaId, mediaType, title, requestorDiscordId) {
+function recordPendingDeletion(mediaId, mediaType, title, requestorDiscordId, { is4k = false, arrSource = null } = {}) {
   const now = Date.now();
-  db.prepare(`INSERT INTO pending_deletions (media_id, media_type, title, requestor_discord_id, prompt_sent_at, delete_after, status, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
+  db.prepare(`INSERT INTO pending_deletions (media_id, media_type, title, requestor_discord_id, prompt_sent_at, delete_after, status, is_4k, arr_source, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(media_id) DO UPDATE SET
       title = excluded.title,
       requestor_discord_id = excluded.requestor_discord_id,
       prompt_sent_at = excluded.prompt_sent_at,
       delete_after = excluded.delete_after,
+      media_type = excluded.media_type,
+      is_4k = excluded.is_4k,
+      arr_source = excluded.arr_source,
       status = 'pending',
       updated_at = CURRENT_TIMESTAMP`)
-    .run(mediaId, mediaType, title, requestorDiscordId || null, now, now + CONFIG.DELETION_GRACE_HOURS * 3600000);
+    .run(mediaId, mediaType, title, requestorDiscordId || null, now, now + CONFIG.DELETION_GRACE_HOURS * 3600000, is4k ? 1 : 0, arrSource);
 }
 
 function markPendingDeletion(mediaId, status) {
