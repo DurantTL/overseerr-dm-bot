@@ -109,10 +109,13 @@ const { renderSyncthingStignore, computePlanHash } = require('../../src/tier');
   assert.strictEqual(reports.length, 2, 'post-prune inventory delta still reported');
   assert.ok(!reports[1].inventory.some(f => f.relPath.startsWith('movies/Old Movie')), 'pruned files gone from the report');
 
-  // --- run 3: nothing changed at all → full no-op ---
+  // --- run 3: nothing changed at all → skip the heavy work, but still heartbeat ---
   const r3 = await runOnce(ctx);
-  assert.strictEqual(r3.skipped, true, 'unchanged plan + unchanged inventory → skip');
-  assert.strictEqual(reports.length, 2, 'no redundant report');
+  assert.strictEqual(r3.skipped, true, 'unchanged plan + unchanged inventory → skip prune/inventory');
+  assert.strictEqual(r3.heartbeat, true, 'a no-op run still checks in');
+  assert.strictEqual(reports.length, 3, 'no-op run posts a lightweight heartbeat (proof of life)');
+  assert.strictEqual(reports[2].heartbeat, true, 'the no-op post is a heartbeat');
+  assert.ok(!reports[2].inventory, 'heartbeat carries no inventory payload');
 
   // --- receive-only violation: abort before touching anything ---
   mkMedia('movies/Another Old (1999)/x.mkv', 1024);
@@ -123,7 +126,7 @@ const { renderSyncthingStignore, computePlanHash } = require('../../src/tier');
   assert.ok(r4.errors.some(e => e.includes('SAFETY ABORT')), 'send-receive folder → hard abort');
   assert.deepStrictEqual(stCalls, ['config'], 'abort happens at the topology check — no rescan, no prune');
   assert.ok(fs.existsSync(path.join(folderRoot, 'movies/Another Old (1999)/x.mkv')), 'nothing deleted on abort');
-  assert.strictEqual(reports.length, 3, 'abort still reported to the bot');
+  assert.strictEqual(reports.length, 4, 'abort still reported to the bot (after run 3\'s heartbeat)');
   process.exitCode = 0;
 
   // --- fixed folder type: the same plan converges on the next run (state not poisoned) ---

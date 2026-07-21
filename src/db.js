@@ -799,10 +799,13 @@ function listRequestsByRequesters(discordIds, sinceDays) {
 //   converged — the agent confirmed it reached exactly this plan with no errors (convergedAt).
 //               The ONLY state trusted for hysteresis (the planner keys prevKeep off a state the
 //               node actually reached) and the only one the UI may call "converged".
-//   report metadata — lastAgentReportAt / lastInventoryAt / lastErrors so status surfaces can tell
-//               "healthy idle" from "stopped / net down / timer broken".
+//   report metadata — lastAgentReportAt / lastInventoryAt / lastHeartbeatAt / lastErrors so status
+//               surfaces can tell "healthy idle" from "stopped / net down / timer broken".
+//               lastHeartbeatAt is bumped on EVERY inbound agent contact (full report,
+//               drive-missing, or a lightweight no-op heartbeat) — it is the liveness signal;
+//               lastAgentReportAt tracks only full (convergence) reports.
 function emptyTierPlan() {
-  return { published: null, converged: null, lastAgentReportAt: null, lastInventoryAt: null, lastErrors: [] };
+  return { published: null, converged: null, lastAgentReportAt: null, lastInventoryAt: null, lastHeartbeatAt: null, lastErrors: [] };
 }
 
 // Read + normalize. Legacy records are migrated on read: an old "applied" plan was assumed-converged
@@ -816,6 +819,7 @@ function normalizeTierPlan(raw) {
       converged: raw.converged || null,
       lastAgentReportAt: raw.lastAgentReportAt ?? null,
       lastInventoryAt: raw.lastInventoryAt ?? null,
+      lastHeartbeatAt: raw.lastHeartbeatAt ?? null,
       lastErrors: Array.isArray(raw.lastErrors) ? raw.lastErrors : [],
     };
   }
@@ -826,6 +830,7 @@ function normalizeTierPlan(raw) {
     converged: { ...legacy, convergedAt: raw.appliedAt ?? null },
     lastAgentReportAt: null,
     lastInventoryAt: null,
+    lastHeartbeatAt: null,
     lastErrors: [],
   };
 }
@@ -859,8 +864,20 @@ function recordTierAgentReport(node, { inventoryStored = false, errors = [] } = 
   const rec = getTierPlan(node) || emptyTierPlan();
   const now = Date.now();
   rec.lastAgentReportAt = now;
+  rec.lastHeartbeatAt = now; // a full report is also proof of life
   if (inventoryStored) rec.lastInventoryAt = now;
   rec.lastErrors = Array.isArray(errors) ? errors.slice(0, 10) : [];
+  writeTierPlan(node, rec);
+  return rec;
+}
+
+// §op Heartbeat: bump the liveness timestamp on ANY inbound agent contact (a lightweight no-op
+// heartbeat, a drive-missing report, or a full report). Intentionally touches nothing else — a
+// no-op run has no inventory, no convergence, and no errors to record; it only proves the agent's
+// timer fired and it could reach the bot. Surfaced as last-heartbeat age on the status surfaces.
+function recordTierAgentHeartbeat(node) {
+  const rec = getTierPlan(node) || emptyTierPlan();
+  rec.lastHeartbeatAt = Date.now();
   writeTierPlan(node, rec);
   return rec;
 }
@@ -934,4 +951,4 @@ function restashPendingRequest(nonce, payload) {
   setSetting(`pending_request:${nonce}`, JSON.stringify(payload));
 }
 
-module.exports = { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
+module.exports = { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };

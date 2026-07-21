@@ -43,8 +43,20 @@ Already done (in the codebase / PR #42):
   `computeNodeValues` joins history to inventory by GUID first (`indexHistory` / `lookupHistory`)
   and only falls back to normalized title, warning when a Plex node leaned on the fallback.
 
-Not yet done — Phase 4; the mergerfs mount / Plex-test-library operational steps of Phases 2–3;
-operational items (agent heartbeat, async deletion).
+- **Operational — agent heartbeat:** the sync agent now POSTs a lightweight `{heartbeat:true}` on
+  every no-op run (plan + inventory unchanged), and the bot bumps a `lastHeartbeatAt` on any inbound
+  agent contact (`recordTierAgentHeartbeat`, `src/db.js`; fast-path in `/agent/report/:node`,
+  `index.js`). Last-check-in age is surfaced in `/tier preview`, `/tier-node list`, and the dashboard
+  tier card, so "healthy idle" is distinguishable from "stopped / net down / timer broken".
+- **Operational — async / bounded deletion:** `pruneDrops` (`agent/agent.js`) now deletes with
+  `fs.promises.rm` one title at a time (yields to the event loop instead of a blocking `rmSync`), and
+  estimates freed bytes from the planner's inventory `sizeBytes` instead of a synchronous recursive
+  stat — only falling back to an async walk when a drop entry carries no size.
+
+The mergerfs mount / Plex-test-library operational steps of Phases 2–3 are captured as a runbook in
+[`mergerfs-plex-operational.md`](mergerfs-plex-operational.md) (infra stand-up, not bot code).
+
+Not yet done — Phase 4 (season-level TV).
 
 ---
 
@@ -166,10 +178,11 @@ Fix first:
   SQLite (`edge_promote_log`; `countRecentPromotions` / `recordPromotion`, `src/db.js`), so a
   restart no longer re-arms everyone's budget mid-day. A token is consumed only on an actual enqueue.
 
-Then (operational, not code — out of scope here): read-only remote mount → local-first mergerfs view → temporary Plex test
+Then (operational, not code): read-only remote mount → local-first mergerfs view → temporary Plex test
 library on the merged view → verify local + remote playback → test remote-master
 outage → enable promotion audit-only → reconcile DB vs disk → enable real
-promotion.
+promotion. **Step-by-step runbook, with verification + rollback at each step:
+[`mergerfs-plex-operational.md`](mergerfs-plex-operational.md).**
 
 ---
 
@@ -205,14 +218,17 @@ series require admin confirmation.
 
 ## Operational improvements (do alongside any phase)
 
-- **Agent heartbeat:** the agent exits without reporting when neither plan nor
-  inventory changed, so "healthy idle" is indistinguishable from "stopped / net
-  down / timer broken". Post a lightweight heartbeat every run, including no-ops;
-  surface last-heartbeat age in `/tier-node list` / status.
-- **Async / bounded deletion:** the agent measures directory sizes and deletes
-  folders with synchronous fs calls, which can block Node for a long time on a
-  big TV folder. It already has inventory sizes — estimate removal size from
-  inventory and delete asynchronously or in bounded batches (`agent/agent.js`).
+- **Agent heartbeat — ✅ DONE:** the agent POSTs a lightweight `{heartbeat:true}`
+  even on no-op runs (`agent/agent.js`); the bot bumps `lastHeartbeatAt` on any
+  inbound agent contact (`recordTierAgentHeartbeat`, `src/db.js`; fast-path in
+  `/agent/report/:node`) and surfaces last-check-in age in `/tier preview`,
+  `/tier-node list`, and the dashboard tier card, so "healthy idle" is
+  distinguishable from "stopped / net down / timer broken".
+- **Async / bounded deletion — ✅ DONE:** `pruneDrops` (`agent/agent.js`) deletes
+  with `fs.promises.rm` one title at a time (yields to the event loop instead of
+  a blocking `rmSync`) and estimates freed bytes from the planner's inventory
+  `sizeBytes` rather than a synchronous recursive stat — falling back to an async
+  walk only when a drop entry carries no size.
 
 ## Documentation status to reflect
 

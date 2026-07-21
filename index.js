@@ -27,7 +27,7 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
@@ -4199,7 +4199,12 @@ function tierManifestField(node, m, rec, impact = null, actions = null) {
     lines.push(`📤 Published \`${pub.planHash}\` ${fmtAgo(pub.publishedAt)} — agent has not confirmed convergence yet`);
     if (conv) lines.push(`   last converged: \`${conv.planHash}\` ${fmtAgo(conv.convergedAt)}`);
   }
-  if (rec?.lastAgentReportAt) lines.push(`Agent last reported ${fmtAgo(rec.lastAgentReportAt)}${rec.lastErrors?.length ? ` · ⚠️ ${rec.lastErrors.length} error(s)` : ''}`);
+  // Liveness: lastHeartbeatAt is bumped on every agent check-in (report OR no-op heartbeat), so it's
+  // the "is the agent alive?" signal; lastAgentReportAt is only bumped by full convergence reports.
+  const beat = rec?.lastHeartbeatAt;
+  const lastRep = rec?.lastAgentReportAt;
+  if (beat) lines.push(`Agent checked in ${fmtAgo(beat)}${lastRep && lastRep < beat ? ` · last full report ${fmtAgo(lastRep)}` : ''}${rec.lastErrors?.length ? ` · ⚠️ ${rec.lastErrors.length} error(s)` : ''}`);
+  else if (lastRep) lines.push(`Agent last reported ${fmtAgo(lastRep)}${rec.lastErrors?.length ? ` · ⚠️ ${rec.lastErrors.length} error(s)` : ''}`);
   // §1.3 effective settings the plan ran with (the node-update path stored warm/fresh but never showed them).
   const warmDays = node.warm_days ?? (node.sticky ? CONFIG.TIER_WARM_DAYS * 2 : CONFIG.TIER_WARM_DAYS);
   const freshDays = node.fresh_days ?? CONFIG.TIER_FRESH_DAYS;
@@ -4371,7 +4376,11 @@ async function handleTierNodeCommand(interaction) {
       const planNote = plan?.converged
         ? ` · plan \`${plan.converged.planHash}\`${plan.published && plan.published.planHash !== plan.converged.planHash ? ` (published \`${plan.published.planHash}\` pending)` : ''}`
         : plan?.published ? ` · published \`${plan.published.planHash}\` (pending)` : ' · no plan applied';
-      return `${n.enabled ? '🟢' : '⚫'} **${n.name}** — ${fmtSpace(n.usable_bytes || 0)}, headroom ${n.headroom_pct}%${n.full ? ', **full master**' : ''}${n.sticky ? ', sticky' : ''} · ${n.access}/${n.demand_source}/${n.transport}${folderNote}${members}${planNote}`;
+      // Agent liveness (heartbeat, bumped on every check-in incl. no-op runs) so a healthy idle
+      // node reads differently from a stopped/unreachable one.
+      const beatAt = plan?.lastHeartbeatAt || plan?.lastAgentReportAt || null;
+      const beatNote = beatAt ? ` · agent ${fmtAgo(beatAt)}${plan?.lastErrors?.length ? ' ⚠️' : ''}` : ' · agent never reported';
+      return `${n.enabled ? '🟢' : '⚫'} **${n.name}** — ${fmtSpace(n.usable_bytes || 0)}, headroom ${n.headroom_pct}%${n.full ? ', **full master**' : ''}${n.sticky ? ', sticky' : ''} · ${n.access}/${n.demand_source}/${n.transport}${folderNote}${members}${planNote}${beatNote}`;
     });
     return interaction.reply({ embeds: [brandedEmbed(COLORS.INFO).setTitle('📦 Tier Nodes').setDescription(lines.join('\n').slice(0, 4000))], ephemeral: true });
   }
@@ -5350,6 +5359,16 @@ function startExpressServer() {
   app.post('/agent/report/:node', tierAgentAuth, (req, res) => {
     const node = String(req.params.node).toLowerCase();
     const body = req.body || {};
+    // Every inbound agent POST — full report, drive-missing, or a lightweight no-op heartbeat — is
+    // proof of life. Bump the heartbeat first so "healthy idle" (agent ran, nothing to do) is always
+    // distinguishable from "stopped / net down / timer broken" on the status surfaces.
+    recordTierAgentHeartbeat(node);
+    // Heartbeat fast-path: the agent posts { heartbeat:true } on a no-op run (plan + inventory
+    // unchanged). There is nothing to store, converge, or notify — the bump above is the whole job.
+    if (body.heartbeat && !body.driveMissing) {
+      audit('tier_agent_heartbeat', { node, planHash: body.planHash || null });
+      return res.json({ ok: true, heartbeat: true });
+    }
     const errors = Array.isArray(body.errors) ? body.errors.slice(0, 10).map(e => String(e).slice(0, 300)) : [];
     // Mount guard: when the node's external media drive is absent the agent refuses to run and
     // reports driveMissing WITHOUT an inventory — so the empty-directory walk can never wipe the
@@ -5552,11 +5571,16 @@ function startExpressServer() {
       const tierItems = tierNodes.map(n => {
         const plan = getTierPlan(n.name);
         const rep = lastReportByNode[n.name];
-        const repBits = rep
-          ? `agent ${fmtAgo(sqliteUtcMs(rep.at))}${rep.bytesFreed ? ` · freed ${fmtSpace(rep.bytesFreed)}` : ''}${rep.errors ? ' · ⚠️ errors' : ''}`
+        // Liveness from the heartbeat (bumped on every check-in incl. no-op runs) — a long-idle,
+        // fully-converged node has no recent tier_agent_report audit row but still heartbeats, so
+        // keying "agent last seen" off the report alone would falsely read as stale/stopped.
+        const beatAt = plan?.lastHeartbeatAt || (rep ? sqliteUtcMs(rep.at) : null);
+        const hasErr = !!(rep && rep.errors) || !!plan?.lastErrors?.length;
+        const repBits = beatAt
+          ? `agent ${fmtAgo(beatAt)}${rep && rep.bytesFreed ? ` · freed ${fmtSpace(rep.bytesFreed)}` : ''}${hasErr ? ' · ⚠️ errors' : ''}`
           : 'no agent report yet';
         return {
-          state: !n.enabled ? 'skip' : (rep && rep.errors ? 'warn' : 'ok'),
+          state: !n.enabled ? 'skip' : (hasErr ? 'warn' : 'ok'),
           title: `${n.name}${n.full ? ' · full master' : ''}${n.sticky ? ' · sticky' : ''}`,
           sub: `${n.access} · ${n.demand_source}${n.demand_source === 'atime' && n.atime_mask ? ` (mask ${n.atime_mask})` : ''} · ${n.transport} · ${fmtSpace(n.usable_bytes || 0)} @ ${n.headroom_pct}% headroom`,
           right: `${plan?.converged ? `converged ${plan.converged.planHash} ${fmtAgo(plan.converged.convergedAt)}` : plan?.published ? `published ${plan.published.planHash} (pending) ${fmtAgo(plan.published.publishedAt)}` : 'no plan applied'} · ${repBits}`,

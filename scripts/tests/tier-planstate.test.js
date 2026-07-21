@@ -28,5 +28,12 @@ assert.strictEqual(rec.published.planHash, 'p1', 'published preserved');
 assert.strictEqual(rec.converged, null, 'unconverged stays null (never assume disk state)');
 assert.deepStrictEqual(rec.lastErrors, [], 'lastErrors defaults to []');
 assert.strictEqual(rec.lastAgentReportAt, null, 'lastAgentReportAt defaults to null');
+assert.strictEqual(rec.lastHeartbeatAt, null, 'lastHeartbeatAt defaults to null');
+
+// A record that only ever heartbeated (no published/converged plan) still normalizes and carries
+// its heartbeat timestamp through — that's the liveness signal for an idle, never-planned node.
+const beatOnly = norm({ published: null, converged: null, lastHeartbeatAt: 4242 });
+assert.strictEqual(beatOnly.lastHeartbeatAt, 4242, 'heartbeat-only record preserves lastHeartbeatAt');
+assert.strictEqual(beatOnly.published, null, 'heartbeat-only record has no published plan');
 
 console.log('tier-planstate.test.js: all assertions passed');

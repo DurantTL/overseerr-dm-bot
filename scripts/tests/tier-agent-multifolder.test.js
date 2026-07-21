@@ -132,7 +132,9 @@ const { planTier, renderFolderStignore } = require('../../src/tier');
   assert.ok(!fs.existsSync(path.join(roots.fourk, 'Cold 4k (2010)')), 'cold title pruned from the 4k root');
   assert.ok(fs.existsSync(path.join(roots.mov, 'Keep Movie (2024)/keep.mkv')), 'kept movie untouched');
   assert.ok(fs.existsSync(path.join(roots.tv, 'Kept Show/S01/e1.mkv')), 'kept show untouched');
-  assert.strictEqual(r1.bytesFreed, 4096 + 8192, 'bytes freed summed across folders');
+  // Freed bytes are estimated from the planner's inventory size (each dropped title is 10 GB here),
+  // not a synchronous walk of the on-disk stub files — the two cold titles sum to 20 GB.
+  assert.strictEqual(r1.bytesFreed, 2 * 10 * GB, 'bytes freed summed across folders from inventory sizes');
   assert.strictEqual(r1.errors.length, 0, 'clean converge');
   assert.ok(r1.dropped.every(d => d.folderId), 'each drop attributed to its folder');
   // Inventory report is aggregated across all folders and tagged with folder ids.
@@ -149,10 +151,12 @@ const { planTier, renderFolderStignore } = require('../../src/tier');
   assert.deepStrictEqual(scanned, [], 'unchanged plan → Syncthing untouched');
   assert.strictEqual(reports.length, 2, 'post-prune inventory delta reported');
 
-  // --- run 3: nothing changed at all → full no-op skip ---
+  // --- run 3: nothing changed at all → skip the heavy work, but still heartbeat ---
   const r3noop = await runOnce(ctx);
   assert.strictEqual(r3noop.skipped, true, 'no-op skip on unchanged plan + inventory');
-  assert.strictEqual(reports.length, 2, 'no redundant report on the true no-op');
+  assert.strictEqual(r3noop.heartbeat, true, 'a no-op run still checks in');
+  assert.strictEqual(reports.length, 3, 'no-op run posts a lightweight heartbeat');
+  assert.strictEqual(reports[2].heartbeat, true, 'the no-op post is a heartbeat, not a full report');
 
   // --- receive-only violation on ONE folder aborts that folder, still processes the safe ones ---
   folderType.fourk = 'sendreceive';
