@@ -21,7 +21,8 @@ else process.exitCode = 2;
   Object.assign(process.env, {
     STAGING_ENABLED: 'true',
     PH_SERVER_NAMES: 'philippines-edge',
-    PRIMARY_SERVER_NAMES: 'california-primary',
+    CA_EDGE_SERVER_NAMES: 'california-edge',
+    PRIMARY_SERVER_NAMES: 'durant-main-1,durant-main-2,durant-main-3',
     STAGE_RCLONE_REMOTE: 'phbox:/cache',
     STAGE_RCLONE_BINARY: fakeRclone,
     TIER_SOURCE_ROOT: source,

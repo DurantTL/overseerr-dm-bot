@@ -24,6 +24,7 @@ operator screens retain `Overseerr` where that compatibility context is useful.
 - Secure download links (hashed tokens, expiry, optional one-time-use, access logs, rate limits).
 - Audit logging for admin/user/system actions.
 - Admin dashboard (`/admin`) with health, pending items, and safe action endpoints.
+- Production topology and rollout gate: [`docs/production-readiness.md`](docs/production-readiness.md).
 - Safe sync (`/sync mode:preview|apply`) and cleanup preview/apply.
 - Full-chain linking: `/link` (and the one-click `/sync-fix links` buttons) merges any matching `plex_` synthetic row, sends a Plex invite if the person doesn't already have access, and links or creates the Seerr user including its Discord notification ID. The `email` fields on `/link`, `/reinvite`, and `/invite` autocomplete against every linked user — searchable by Discord name, Plex username, or email (the native user picker only suggests members your client has cached).
 - Admin-initiated onboarding: `/invite @member` DMs them for their Plex email and **auto-approves** when they reply (no Approve button — the admin already vouched); `/invite @member email:x@y.com` skips the DM and sets them up immediately. `/invite-post` drops a persistent public **Request Plex Access** button in the current channel (email collected via modal, normal Approve/Deny review) — pin it and forget it.
@@ -56,7 +57,7 @@ operator screens retain `Overseerr` where that compatibility context is useful.
   PR and gates the image build.
 - User self-service commands (`/request`, `/request-status`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`).
 - Health endpoints (`/health` and authenticated `/admin/health`) plus `/doctor` and
-  `npm run doctor:edge` for read-only Main → Philippines transfer checks.
+  `npm run doctor:edge` for read-only Main → edge transfer checks.
 
 ## Architecture
 Discord events + slash commands are handled in the bot process, which also runs an Express server for webhooks, download streaming, health, and dashboard routes. State is stored in SQLite at `/app/data/plex_invites.db`.
@@ -601,8 +602,11 @@ Plex/Tautulli events now carry a server identity and every handler is gated on i
 
 - Events matching `PH_SERVER_NAMES` route to the **eviction** flow: the familiar finished-watching
   prompt, but "Free Up Space" only purges the *cache* copy — the master file is untouched.
-- Events matching the primary route to the existing keep/delete flow.
-- Once `PH_SERVER_NAMES` is set, events with **no** recognizable identity are skipped (fail-safe):
+- Events matching `CA_EDGE_SERVER_NAMES` are recorded as California edge playback and never enter
+  either the Philippines staging flow or the full-Main deletion flow. Its tier agent owns storage.
+- Events matching `PRIMARY_SERVER_NAMES` route to the existing keep/delete flow. Put only the
+  three full Main storage servers here, not California.
+- Once either edge list is set, events with **no** recognizable identity are skipped (fail-safe):
   a PH viewer finishing a movie must never reach a `delete_yes` that deletes the master.
 
 Setup:
@@ -610,7 +614,9 @@ Setup:
    and include the server identity in the JSON payload:
    `"server_name": "{server_name}", "machine_id": "{machine_id}"` (add the same two fields to the
    master's Tautulli payload too, or set `PRIMARY_SERVER_NAMES` and keep them matching).
-2. Set `PH_SERVER_NAMES` to the PH box's server name and/or machine id (lowercase).
+2. Set `PH_SERVER_NAMES` to the PH box's server name and/or machine id, set
+   `CA_EDGE_SERVER_NAMES` to California's identity, and set `PRIMARY_SERVER_NAMES` to only the
+   full Main storage servers (all lowercase; no overlaps).
 3. Configure an rclone remote that reaches the PH cache (e.g. SFTP through the VPS tunnel), mount
    the config into the container, and set `STAGE_RCLONE_REMOTE` (e.g. `phbox:/cache`) plus
    `STAGE_RCLONE_FLAGS=--config /app/data/rclone.conf`.
@@ -643,6 +649,12 @@ manifest splits the drop set per folder (one `.stignore` per folder root) and th
 Receive Only, writes ignores, rescans and prunes each folder every run. Manage a node's folders
 with `/tier-node folder add|remove|list`; the agent lists them in `TIER_FOLDERS`. Single-folder
 nodes (one `folder_root`, one `SYNCTHING_FOLDER_ID`) are unchanged.
+
+For this deployment, California is an edge node even though its viewers belong to **Main**. Its
+3 TB budget should be the tier node's usable media capacity. Philippines should count only the
+5 TB external media drive as usable capacity; the 1 TB system SSD is not part of the media pool.
+Both nodes must use the mount guard below so a missing external/real media mount cannot redirect
+sync writes onto a system disk or an empty fallback directory.
 
 How each node is curated:
 - **Tier 0 (floor, never evicted):** keep list ∪ `NEVER_DELETE_MEDIA_IDS` ∪ the universal core

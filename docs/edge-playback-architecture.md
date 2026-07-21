@@ -138,14 +138,12 @@ playback:
 * Tautulli webhook: the `play` event (configure a Tautulli "Playback Start" notification with the
   same JSON payload that already carries `server_name` / `machine_id`).
 
-Reuse `classifyServerIdentity({serverName, machineId})` unchanged — it already fails safe
-(`'unknown'` events are dropped). The only new requirement is that the classifier can recognise a
-**tier node** (California) as an edge origin, not just PH. Two options:
-
-* extend `PH_SERVER_NAMES` semantics into a general `EDGE_SERVER_NAMES` map of
-  `serverIdentity → nodeName`, or
-* keep `PH_SERVER_NAMES` for PH and add each tier node's Plex `server_name`/`machine_id` to its
-  `tier_nodes` row so the webhook can resolve identity → node.
+`classifyServerIdentity({serverName, machineId})` now fails safe (`'unknown'` events are dropped)
+and recognizes California through `CA_EDGE_SERVER_NAMES` separately from `PH_SERVER_NAMES` and
+the full-storage `PRIMARY_SERVER_NAMES`. California playback is currently observed and stopped
+before deletion/staging; the remaining promotion work is resolving that origin to a tier plan.
+A future general `EDGE_SERVER_NAMES=identity:node` map can replace the dedicated California key
+if more tier Plex nodes are added.
 
 #### (b) Decide "is this title already local on that node?"
 
@@ -327,9 +325,11 @@ TIER_PLAY_PIN_DAYS=21                 # how long a play-promoted title is pinned
 TIER_TV_PROMOTE_GRANULARITY=season    # episode | season | series — cap the TV promotion size
 EDGE_PROMOTE_MAX_PER_USER_PER_DAY=6   # own cap for origin:'play' (command-layer cap doesn't apply)
 
-# Recognise each edge Plex as a promotion origin. PH already uses PH_SERVER_NAMES; either
-# generalise to EDGE_SERVER_NAMES=identity:node,... or store plex server_name/machine_id on the
-# tier_nodes row so the webhook can resolve identity -> node.
+# Identity routing exists today; California remains in the Main viewing group.
+PH_SERVER_NAMES=philippines-plex
+CA_EDGE_SERVER_NAMES=california-plex
+PRIMARY_SERVER_NAMES=full-main-1,full-main-2,full-main-3
+# A future identity:node map is still needed if more tier Plex origins are added.
 ```
 
 The tier node also needs, on the node side: the persistent ignore overlay split into

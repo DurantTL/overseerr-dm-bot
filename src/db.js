@@ -4,6 +4,7 @@ const Database = require('better-sqlite3');
 const crypto = require('crypto');
 const { CONFIG } = require('./config');
 const { sha256, canonicalizeEmail, isSnowflake } = require('./util');
+const { upsertTrackedRequest, collapseStalePendingRequests, reconcileTrackedRequestStatuses } = require('./request-tracking');
 
 const db = new Database('/app/data/plex_invites.db');
 db.pragma('journal_mode = WAL');
@@ -316,6 +317,16 @@ function runMigrations() {
   // column and overwrote each other. NULL is allowed to repeat.
   db.prepare("UPDATE requests SET overseerr_request_id = NULL WHERE overseerr_request_id = ''").run();
 
+  // Older approval flows inserted a Seerr-backed row beside the provisional Discord pending
+  // row. Repair only rows whose authoritative sibling has advanced beyond pending.
+  const repairedRequests = collapseStalePendingRequests(db);
+  if (repairedRequests.length) {
+    audit('stale_pending_requests_repaired', {
+      count: repairedRequests.length,
+      rows: repairedRequests.slice(0, 50),
+    });
+  }
+
   db.prepare(`INSERT OR IGNORE INTO media_retention_rules (media_class, retention_days, enabled)
     VALUES
     ('movie_4k', 30, 1),
@@ -420,25 +431,18 @@ function upsertRequest(overseerrRequestId, mediaId, mediaType, is4k, title, disc
   // INSERT OR REPLACE used to wipe the original requester (breaking keep/delete attribution),
   // and '' request ids from those events all collided on the UNIQUE column. COALESCE keeps
   // the first known requester; missing request ids fall back to updating the media row.
-  const reqId = overseerrRequestId ? String(overseerrRequestId) : null;
-  if (reqId) {
-    db.prepare(`INSERT INTO requests (overseerr_request_id, media_id, media_type, is_4k, title, requested_by_discord_id, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(overseerr_request_id) DO UPDATE SET
-        status = excluded.status,
-        title = excluded.title,
-        requested_by_discord_id = COALESCE(excluded.requested_by_discord_id, requests.requested_by_discord_id)`)
-      .run(reqId, mediaId, mediaType, is4k ? 1 : 0, title, discordId || null, status);
-    return;
+  return upsertTrackedRequest(db, overseerrRequestId, mediaId, mediaType, is4k, title, discordId, status);
+}
+
+function reconcileRequestStatuses(remoteRequests) {
+  const result = reconcileTrackedRequestStatuses(db, remoteRequests);
+  if (result.changed.length || result.repaired.length) {
+    audit('request_statuses_reconciled', {
+      changed: result.changed.slice(0, 100),
+      repaired: result.repaired.slice(0, 100),
+    });
   }
-  const updated = db.prepare(`UPDATE requests SET status = ?,
-      requested_by_discord_id = COALESCE(?, requested_by_discord_id)
-    WHERE media_id = ? AND is_4k = ?`).run(status, discordId || null, mediaId, is4k ? 1 : 0);
-  if (!updated.changes) {
-    db.prepare(`INSERT INTO requests (overseerr_request_id, media_id, media_type, is_4k, title, requested_by_discord_id, status)
-      VALUES (NULL, ?, ?, ?, ?, ?, ?)`)
-      .run(mediaId, mediaType, is4k ? 1 : 0, title, discordId || null, status);
-  }
+  return result;
 }
 
 function addToKeepList(mediaId, mediaType, title, discordId, keepDays = CONFIG.KEEP_LIST_DEFAULT_DAYS) {
@@ -974,3 +978,4 @@ function restashPendingRequest(nonce, payload) {
 }
 
 module.exports = { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
+module.exports.reconcileRequestStatuses = reconcileRequestStatuses;

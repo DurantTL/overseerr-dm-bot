@@ -1,4 +1,4 @@
-// Read-only Main → Philippines edge-path diagnostics. No command in this module copies,
+// Read-only Main → edge-path diagnostics. No command in this module copies,
 // purges, syncs, or edits remote state; it is safe to run during an incident or before rollout.
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -27,9 +27,21 @@ async function runEdgeDiagnostics({ live = true } = {}) {
   const checks = [];
   checks.push(check('Staging switch', CONFIG.STAGING_ENABLED ? 'ok' : 'warn', CONFIG.STAGING_ENABLED ? 'enabled' : 'disabled'));
   checks.push(check('Philippines identity', CONFIG.PH_SERVER_NAMES.length ? 'ok' : 'fail', CONFIG.PH_SERVER_NAMES.length ? `${CONFIG.PH_SERVER_NAMES.length} server identity value(s)` : 'PH_SERVER_NAMES is empty'));
-  checks.push(check('Main identity', CONFIG.PRIMARY_SERVER_NAMES.length ? 'ok' : 'warn', CONFIG.PRIMARY_SERVER_NAMES.length ? `${CONFIG.PRIMARY_SERVER_NAMES.length} server identity value(s)` : 'PRIMARY_SERVER_NAMES is empty; any named non-PH server is treated as Main'));
-  const overlap = CONFIG.PH_SERVER_NAMES.filter(id => CONFIG.PRIMARY_SERVER_NAMES.includes(id));
-  checks.push(check('Identity separation', overlap.length ? 'fail' : 'ok', overlap.length ? `${overlap.length} value(s) appear in both Philippines and Main lists` : 'Philippines and Main identity lists do not overlap'));
+  checks.push(check('California edge identity', CONFIG.CA_EDGE_SERVER_NAMES.length ? 'ok' : 'warn', CONFIG.CA_EDGE_SERVER_NAMES.length ? `${CONFIG.CA_EDGE_SERVER_NAMES.length} server identity value(s)` : 'CA_EDGE_SERVER_NAMES is empty; California playback cannot be isolated from full Main storage'));
+  checks.push(check('Full Main identity', CONFIG.PRIMARY_SERVER_NAMES.length ? 'ok' : 'warn', CONFIG.PRIMARY_SERVER_NAMES.length ? `${CONFIG.PRIMARY_SERVER_NAMES.length} server identity value(s)` : 'PRIMARY_SERVER_NAMES is empty; any named non-edge server is treated as full Main storage'));
+  const all = [
+    ['Philippines', CONFIG.PH_SERVER_NAMES],
+    ['California edge', CONFIG.CA_EDGE_SERVER_NAMES],
+    ['full Main', CONFIG.PRIMARY_SERVER_NAMES],
+  ];
+  const overlap = [];
+  for (let i = 0; i < all.length; i++) {
+    for (let j = i + 1; j < all.length; j++) {
+      const shared = all[i][1].filter(id => all[j][1].includes(id));
+      if (shared.length) overlap.push(`${all[i][0]} / ${all[j][0]}: ${shared.join(', ')}`);
+    }
+  }
+  checks.push(check('Identity separation', overlap.length ? 'fail' : 'ok', overlap.length ? overlap.join('; ') : 'Philippines, California edge, and full Main identity lists do not overlap'));
   checks.push(check('Cache layout', CONFIG.STAGE_MOVIES_SUBDIR && CONFIG.STAGE_TV_SUBDIR ? 'ok' : 'fail', `movies=${CONFIG.STAGE_MOVIES_SUBDIR || '(empty)'}, tv=${CONFIG.STAGE_TV_SUBDIR || '(empty)'}`));
 
   const sourceRoot = CONFIG.TIER_SOURCE_ROOT || CONFIG.PATH_REMAP_TO || CONFIG.RAID_PATH;
@@ -41,10 +53,10 @@ async function runEdgeDiagnostics({ live = true } = {}) {
   }
 
   if (!CONFIG.STAGE_RCLONE_REMOTE) {
-    checks.push(check('Transfer destination', 'fail', 'STAGE_RCLONE_REMOTE is empty'));
+    checks.push(check('Philippines transfer destination', 'fail', 'STAGE_RCLONE_REMOTE is empty'));
   } else {
     const remoteName = (CONFIG.STAGE_RCLONE_REMOTE.match(/^([^:]+):/) || [])[1];
-    checks.push(check('Transfer destination', remoteName ? 'ok' : 'warn', remoteName ? `rclone remote '${remoteName}' configured` : 'destination is not an rclone remote'));
+    checks.push(check('Philippines transfer destination', remoteName ? 'ok' : 'warn', remoteName ? `rclone remote '${remoteName}' configured` : 'destination is not an rclone remote'));
   }
 
   if (!live) return checks;

@@ -9,22 +9,26 @@ const path = require('path');
 
 const stagingConfigured = () => !!(CONFIG.STAGING_ENABLED && CONFIG.STAGE_RCLONE_REMOTE);
 
-// Which Plex server did a webhook event come from? 'ph' events must NEVER reach the deletion
-// flow — they get the eviction flow instead. Fail-safe rules:
-//   - PH_SERVER_NAMES unset            → 'primary' (legacy single-server behavior, nothing gated)
+// Which Plex server did a webhook event come from? Edge events must NEVER reach the deletion
+// flow. PH gets its staging/eviction flow; California is observed but managed by the tier agent.
+// Fail-safe rules:
+//   - both edge identity lists unset   → 'primary' (legacy single-server behavior)
 //   - identity matches PH_SERVER_NAMES → 'ph'
+//   - identity matches CA_EDGE_SERVER_NAMES → 'ca-edge'
 //   - payload carries no identity      → 'unknown' (skipped by callers; better no prompt than a
 //                                        delete prompt fired for a PH viewer)
 //   - PRIMARY_SERVER_NAMES set         → must match to count as 'primary', else 'unknown'
-//   - PRIMARY_SERVER_NAMES unset       → any named non-PH server counts as 'primary'
+//   - PRIMARY_SERVER_NAMES unset       → any named non-edge server counts as 'primary'
 // cfg is injectable for tests; callers use the CONFIG-backed default.
 function classifyServerIdentity({ serverName, machineId } = {}, cfg = undefined) {
   const phNames = cfg ? cfg.phNames : CONFIG.PH_SERVER_NAMES;
+  const caEdgeNames = cfg ? (cfg.caEdgeNames || []) : CONFIG.CA_EDGE_SERVER_NAMES;
   const primaryNames = cfg ? cfg.primaryNames : CONFIG.PRIMARY_SERVER_NAMES;
-  if (!phNames.length) return 'primary';
+  if (!phNames.length && !caEdgeNames.length) return 'primary';
   const ids = [serverName, machineId].map(v => String(v || '').trim().toLowerCase()).filter(Boolean);
   if (!ids.length) return 'unknown';
   if (ids.some(id => phNames.includes(id))) return 'ph';
+  if (ids.some(id => caEdgeNames.includes(id))) return 'ca-edge';
   if (!primaryNames.length) return 'primary';
   return ids.some(id => primaryNames.includes(id)) ? 'primary' : 'unknown';
 }

@@ -260,4 +260,23 @@ async function fetchOverseerrUsers() {
   return users;
 }
 
-module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers };
+// Full request inventory for repairing local status drift after missed webhooks. This endpoint is
+// read-only and paginated; the caller maps Seerr's request/media enums into the bot's local states.
+async function fetchSeerrRequests() {
+  const requests = [];
+  const take = 100;
+  for (let skip = 0; skip < 100000; skip += take) {
+    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/request`, {
+      params: { take, skip, sort: 'added' },
+      headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY },
+      timeout: 15000,
+    });
+    const page = res.data?.results || [];
+    requests.push(...page);
+    const total = Number(res.data?.pageInfo?.results ?? res.data?.pageInfo?.totalResults);
+    if (page.length < take || (Number.isFinite(total) && requests.length >= total)) break;
+  }
+  return requests;
+}
+
+module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers, fetchSeerrRequests };
