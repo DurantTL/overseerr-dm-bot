@@ -189,6 +189,17 @@ const CONFIG = {
   TIER_FRESH_DAYS: Number.parseInt(process.env.TIER_FRESH_DAYS || '30', 10),
   TIER_REQUEST_GRACE_DAYS: Number.parseInt(process.env.TIER_REQUEST_GRACE_DAYS || '45', 10),
   TIER_HISTORY_DAYS: Number.parseInt(process.env.TIER_HISTORY_DAYS || '90', 10),
+  // §1.4 anti-churn: a candidate must clear a meaningful net gain before it displaces kept titles.
+  TIER_CHURN_MIN_ABSOLUTE: Number.parseFloat(process.env.TIER_CHURN_MIN_ABSOLUTE || '0.05'),
+  TIER_CHURN_MIN_RELATIVE: Number.parseFloat(process.env.TIER_CHURN_MIN_RELATIVE || '0.2'),
+  TIER_CHURN_PENALTY_PER_TB: Number.parseFloat(process.env.TIER_CHURN_PENALTY_PER_TB || '0.05'),
+  // §1.5 apply guardrails: a rebalance beyond ANY of these caps needs an echoed confirmation code
+  // tied to the exact plan hash (`/tier apply node:<n> confirm:XXXX`). Caps are on the plan's real
+  // effect vs the node's last physical inventory: bytes actually deleted, titles deleted, bytes to
+  // download. 0 disables a cap.
+  TIER_APPLY_MAX_REMOVAL_GB: Number.parseInt(process.env.TIER_APPLY_MAX_REMOVAL_GB || '100', 10),
+  TIER_APPLY_MAX_REMOVED_TITLES: Number.parseInt(process.env.TIER_APPLY_MAX_REMOVED_TITLES || '10', 10),
+  TIER_APPLY_MAX_DOWNLOAD_GB: Number.parseInt(process.env.TIER_APPLY_MAX_DOWNLOAD_GB || '150', 10),
   // Prefix stripped from remapped arr paths to make manifest paths folder-relative (the
   // Syncthing folder root as THIS bot sees it). Defaults to the media mount.
   TIER_SOURCE_ROOT: (process.env.TIER_SOURCE_ROOT || process.env.PATH_REMAP_TO || process.env.RAID_PATH || '/mnt/raid').replace(/\/$/, ''),

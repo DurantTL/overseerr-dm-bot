@@ -8,6 +8,7 @@ const {
   recencyDecay, titleKey, computeUniversalCore, computeNodeValues, planNode, planTier,
   computePlanHash, renderSyncthingStignore, renderFolderStignore, renderRclone, toRelPath,
   parseAtimeMask, inAtimeMask, maskSuspectAtimes, nodeFolders, resolveTitleFolder,
+  physicalTitleIds, assessApplyImpact, tierApplyConfirmCode,
 } = require('../../src/tier');
 
 const GB = 1024 ** 3;
@@ -559,6 +560,126 @@ async function testInventoryAddedAt() {
   } finally {
     axios.get = realGet;
   }
+}
+
+// --- §1.4 anti-churn: a marginal candidate can't displace kept titles ---
+{
+  // Two cold-but-nonzero kept titles (0.20 each), budget full. A candidate barely hotter than one
+  // of them (0.22) must NOT displace: it fails the 20% relative margin (0.22 < 0.20*1.2 = 0.24).
+  const inv = [title('K1', 10, 'm/K1'), title('N', 10, 'm/N')];
+  const marginal = planNode({
+    node: node({ usable_bytes: 10 * GB }), inventory: inv,
+    values: val([['K1', 0.20, daysAgo(60)], ['N', 0.22, daysAgo(55)]]),
+    floorIds: new Set(), prevKeepIds: ['K1'], now: NOW,
+  });
+  assert.strictEqual(keepIds(marginal), 'K1', 'marginal candidate does not churn the cache');
+  assert.strictEqual(marginal.evict.length, 0, 'no eviction for a sub-threshold improvement');
+  // A decisively hotter candidate (0.9) clears both the absolute and relative bars → it displaces.
+  const decisive = planNode({
+    node: node({ usable_bytes: 10 * GB }), inventory: inv,
+    values: val([['K1', 0.20, daysAgo(60)], ['N', 0.90, daysAgo(1)]]),
+    floorIds: new Set(), prevKeepIds: ['K1'], now: NOW,
+  });
+  assert.strictEqual(keepIds(decisive), 'N', 'a decisively hotter candidate still gets in');
+}
+
+// --- §1.4 anti-churn: don't shred several titles for one that only beats them in aggregate ---
+{
+  // Three cold kept titles (0.10 each, 5 GB) fill a 15 GB budget. A 15 GB candidate at 0.25 would,
+  // under the old gate, evict all three (each 0.10 < 0.25). But 0.25 < the SUM evicted (0.30), so
+  // it's a net loss — the absolute-margin rule rejects it.
+  const inv = [title('a', 5, 'm/a'), title('b', 5, 'm/b'), title('c', 5, 'm/c'), title('BIG', 15, 'm/BIG')];
+  const m = planNode({
+    node: node({ usable_bytes: 15 * GB }), inventory: inv,
+    values: val([['a', 0.10, daysAgo(60)], ['b', 0.10, daysAgo(60)], ['c', 0.10, daysAgo(60)], ['BIG', 0.25, daysAgo(50)]]),
+    floorIds: new Set(), prevKeepIds: ['a', 'b', 'c'], now: NOW,
+  });
+  assert.strictEqual(keepIds(m), 'a,b,c', 'aggregate-only winner does not evict the group it loses to in sum');
+}
+
+// --- §1.4 anti-churn: fall back to a lower-churn victim set instead of rejecting outright ---
+{
+  // Reviewer case: five 1 GB kept titles at 0.03 plus one 5 GB kept title at 0.10 fill a 10 GB
+  // budget. A 5 GB candidate at 0.18 needs 5 GB freed. Coldest-first bundles the five 0.03 titles
+  // (loses 0.15 → rejected), but evicting the single 5 GB / 0.10 title loses only 0.10 and clears
+  // the gate — a smaller-churn, higher-net-win swap. The planner must take it, not reject.
+  const inv = [
+    title('s1', 1, 'm/s1'), title('s2', 1, 'm/s2'), title('s3', 1, 'm/s3'),
+    title('s4', 1, 'm/s4'), title('s5', 1, 'm/s5'), title('M', 5, 'm/M'), title('C', 5, 'm/C'),
+  ];
+  const m = planNode({
+    node: node({ usable_bytes: 10 * GB }), inventory: inv,
+    values: val([
+      ['s1', 0.03, daysAgo(60)], ['s2', 0.03, daysAgo(60)], ['s3', 0.03, daysAgo(60)],
+      ['s4', 0.03, daysAgo(60)], ['s5', 0.03, daysAgo(60)], ['M', 0.10, daysAgo(60)], ['C', 0.18, daysAgo(50)],
+    ]),
+    floorIds: new Set(), prevKeepIds: ['s1', 's2', 's3', 's4', 's5', 'M'], now: NOW,
+  });
+  assert.strictEqual(keepIds(m), 'C,s1,s2,s3,s4,s5', 'the one-title swap is taken, the five small colds survive');
+  assert.deepStrictEqual(m.evict, ['M'], 'exactly the single larger colder victim churned');
+}
+
+// --- §1.4 anti-churn: the size-scaled transfer penalty blocks a huge marginal download ---
+{
+  // Candidate at 0.10 vs a zero-value victim: the absolute rule alone would pass (0.10 ≥ 0.05),
+  // but a 2 TB transfer penalty (0.05/TB × 2 = 0.10) drags the net gain to 0.00, below 0.05.
+  const TB = 1024 ** 4;
+  const inv = [title('COLD', 2048, 'm/COLD'), { mediaId: 'HUGE', title: 'HUGE', mediaType: 'movie', sizeBytes: 2 * TB, relPath: 'm/HUGE' }];
+  const m = planNode({
+    node: node({ usable_bytes: 2048 * GB }), inventory: inv,
+    values: val([['COLD', 0, daysAgo(200)], ['HUGE', 0.10, daysAgo(50)]]),
+    floorIds: new Set(), prevKeepIds: ['COLD'], now: NOW,
+  });
+  assert.strictEqual(keepIds(m), 'COLD', 'a huge marginal-value download is not worth the transfer');
+}
+
+// --- §1.5 physicalTitleIds: presence from the agent file report (folder dir-walk) ---
+{
+  const inv = [title('tmdb:1', 10, 'movies/M1'), title('tmdb:2', 10, 'movies/M2'), title('tmdb:3', 10, 'movies/M3')]
+    .map(t => ({ ...t, folderId: '' }));
+  const files = [
+    { folderId: '', relPath: 'movies/M1/m1.mkv', sizeBytes: 10 * GB },
+    { folderId: '', relPath: 'movies/M2/Season 1/e1.mkv', sizeBytes: 5 * GB },
+  ];
+  const present = physicalTitleIds({ inventory: inv, files });
+  assert.ok(present.has('tmdb:1') && present.has('tmdb:2'), 'reported files mark their title present');
+  assert.ok(!present.has('tmdb:3'), 'a title with no reported file is absent');
+}
+
+// --- §1.5 assessApplyImpact: real removals, new downloads, and cap flags ---
+{
+  const mk = (mediaId, sizeGb, rel) => ({ mediaId, title: mediaId, sizeBytes: sizeGb * GB, folderId: '', relPath: rel });
+  const manifest = {
+    keep: [mk('present:keep', 10, 'm/PK'), mk('new:download', 40, 'm/ND')],
+    drop: [mk('present:drop', 30, 'm/PD'), mk('absent:drop', 50, 'm/AD')],
+  };
+  const files = [
+    { folderId: '', relPath: 'm/PK/a.mkv', sizeBytes: 10 * GB },
+    { folderId: '', relPath: 'm/PD/b.mkv', sizeBytes: 30 * GB },
+  ];
+  const imp = assessApplyImpact({ manifest, files, caps: { maxRealRemovalBytes: 20 * GB, maxRemovedTitles: 5, maxNewDownloadBytes: 100 * GB } });
+  assert.strictEqual(imp.realRemovalBytes, 30 * GB, 'only the physically-present drop counts as a real removal');
+  assert.strictEqual(imp.removedTitles, 1, 'exactly one local title is actually deleted');
+  assert.strictEqual(imp.newDownloadBytes, 40 * GB, 'only the not-present keep is a new download');
+  assert.strictEqual(imp.newDownloadTitles, 1, 'one title to fetch');
+  assert.strictEqual(imp.hasReport, true, 'a non-empty file report is recorded as such');
+  assert.ok(imp.exceeds.realRemovalBytes && imp.requiresConfirm, '30 GB removal over the 20 GB cap requires confirm');
+  assert.ok(!imp.exceeds.newDownloadBytes, '40 GB download under the 100 GB cap does not');
+
+  // No agent report ⇒ nothing known present ⇒ every keep is a download, no removals.
+  const cold = assessApplyImpact({ manifest, files: [], caps: {} });
+  assert.strictEqual(cold.newDownloadBytes, 50 * GB, 'no report → both keeps counted as downloads');
+  assert.strictEqual(cold.realRemovalBytes, 0, 'no report → nothing counted as a real deletion');
+  assert.strictEqual(cold.hasReport, false, 'empty report flagged');
+  assert.strictEqual(cold.requiresConfirm, false, 'no caps supplied → never requires confirm');
+}
+
+// --- §1.5 tierApplyConfirmCode: deterministic per (node, planHash), moves when the plan moves ---
+{
+  const a = tierApplyConfirmCode('california', 'abcd1234abcd1234');
+  assert.strictEqual(a, tierApplyConfirmCode('California', 'abcd1234abcd1234'), 'code is case-insensitive on node name');
+  assert.notStrictEqual(a, tierApplyConfirmCode('california', 'ffff0000ffff0000'), 'a different plan hash yields a different code');
+  assert.ok(/^[0-9A-F]{4}$/.test(a), 'code is a 4-char uppercase hex string');
 }
 
 testInventoryAddedAt().then(() => {

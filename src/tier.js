@@ -27,6 +27,12 @@ const TIER_DEFAULTS = {
   // members' own history outranks the global crowd-pleasers when the budget is tight.
   coreValue: 0.25,
   stickyWarmFactor: 2,     // sticky nodes (old drives) get a doubled warm window by default
+  // Anti-churn (§1.4): a candidate may only displace kept titles when it clears a MEANINGFUL bar,
+  // not merely any improvement — otherwise a 0.001-value title evicts 0.000 ones every cycle and
+  // the cache thrashes. See the displacement gate in planNode for how these combine.
+  churnMinAbsolute: 0.05,  // candidate value must beat the SUM of evicted value by ≥ this
+  churnMinRelative: 0.2,   // …and beat the WARMEST evicted title by ≥ this fraction (20%)
+  churnPenaltyPerTb: 0.05, // …and overcome a transfer penalty scaled by candidate size (per TB)
 };
 
 const DAY_MS = 86400000;
@@ -402,14 +408,39 @@ function planNode({ node, inventory, values, floorIds, coreIds = new Set(), prev
       admits.push(c); keepSet.add(c); keptBytes += c.sizeBytes;
       continue;
     }
-    const pool = [...keepSet].filter(e => evictable(e) && e.value < c.value).sort(coldLargerFirst);
-    let freed = 0;
-    const take = [];
-    for (const v of pool) {
-      take.push(v); freed += v.sizeBytes;
-      if (free + freed >= c.sizeBytes) break;
+    // Anti-churn gate (§1.4). Displacing kept titles isn't free — the candidate has to be
+    // downloaded and the victims deleted, and every swap churns the cache — so require a
+    // MEANINGFUL net gain, not just `victim.value < candidate.value`. Three conditions, all
+    // required: (a) the candidate's demand beats the SUM of the demand it evicts by an absolute
+    // margin (blocks shredding several warm-ish titles for one slightly-hotter one); (b) it beats
+    // the WARMEST victim by a relative margin (a 20%-hotter title isn't worth a swap); (c) it
+    // clears a transfer penalty that scales with its own size (bigger downloads need a stronger
+    // signal). Free-budget admits above never reach here — nothing is displaced there.
+    const need = c.sizeBytes - free;
+    const transferPenalty = cfg.churnPenaltyPerTb * (c.sizeBytes / (1024 ** 4));
+    const pool = [...keepSet].filter(e => evictable(e) && e.value < c.value);
+    // Greedy prefix of an ordered pool that frees `need` bytes (null if the whole pool can't).
+    const buildTake = ordered => {
+      let f = 0; const t = [];
+      for (const v of ordered) { t.push(v); f += v.sizeBytes; if (f >= need) break; }
+      return f >= need ? t : null;
+    };
+    const meaningful = t => t && (c.value - t.reduce((a, v) => a + v.value, 0) - transferPenalty) >= cfg.churnMinAbsolute
+      && c.value >= t.reduce((a, v) => Math.max(a, v.value), 0) * (1 + cfg.churnMinRelative);
+    // Primary victim set: coldest-first (value asc, size desc) — minimizes per-title value and, on
+    // ties, churns the fewest titles. When that prefix passes the gate we keep it, so existing
+    // behavior is unchanged. But coldest-first can BUNDLE several small cold titles whose summed
+    // value trips the absolute margin and rejects the admission — even though evicting one larger
+    // (still colder-than-candidate) title would lose less total demand and clear the gate. So if
+    // the primary set is rejected, fall back to the fewest-victims set (largest colder title first)
+    // and admit on that when it passes: a lower-churn, higher-net-win swap the guardrail intends to
+    // allow. Both sets only ever contain titles strictly colder than the candidate.
+    let take = buildTake(pool.slice().sort(coldLargerFirst));
+    if (take && !meaningful(take)) {
+      const alt = buildTake(pool.slice().sort((a, b) => (b.sizeBytes - a.sizeBytes) || (a.value - b.value)));
+      if (meaningful(alt)) take = alt;
     }
-    if (free + freed >= c.sizeBytes) {
+    if (meaningful(take)) {
       for (const v of take) { evicted.add(v); keptBytes -= v.sizeBytes; }
       admits.push(c); keepSet.add(c); keptBytes += c.sizeBytes;
     }
@@ -644,6 +675,64 @@ function renderRclone(manifest) {
   return `${manifest.keep.map(e => `${e.relPath}/**`).join('\n')}\n`;
 }
 
+// Which inventory titles are physically present on a node, from its agent file report. A title is
+// present when the node reports ≥1 file under the title's folder (same folderKey dir-walk as
+// computeAtimeValues), regardless of atime — presence is "the file exists on disk", a separate
+// question from the atime LRU. `inventory` here is the manifest's resolved keep∪drop entries.
+function physicalTitleIds({ inventory, files = [] }) {
+  const byRel = new Map(inventory.map(t => [folderKey(t), t]));
+  const present = new Set();
+  for (const f of files) {
+    const fid = f.folderId ?? f.folder_id ?? '';
+    let dir = String(f.relPath);
+    while (dir.includes('/')) {
+      dir = dir.slice(0, dir.lastIndexOf('/'));
+      const t = byRel.get(folderKey({ folderId: fid, relPath: dir }));
+      if (t) { present.add(t.mediaId); break; }
+    }
+  }
+  return present;
+}
+
+// §1.5 apply-impact assessment: what publishing this plan will ACTUALLY do to disk, computed from
+// the node's last physical inventory (`files`) rather than the previous plan — so a manual deletion
+// doesn't count as a "removal" and a title already on disk isn't counted as a "download".
+//   realRemovalBytes / removedTitles — drop-set titles currently present locally (agent will delete)
+//   newDownloadBytes / newDownloadTitles — keep-set titles NOT present locally (must be fetched)
+// A node with no agent report yet reports everything as "to download" (nothing known present) —
+// the honest conservative reading, which is exactly when a large first fill deserves confirmation.
+// `caps` (any subset) flags an over-limit rebalance; requiresConfirm is the OR of the flags set.
+function assessApplyImpact({ manifest, files = [], caps = {} }) {
+  const all = [...(manifest.keep || []), ...(manifest.drop || [])];
+  const present = physicalTitleIds({ inventory: all, files });
+  let realRemovalBytes = 0, removedTitles = 0, newDownloadBytes = 0, newDownloadTitles = 0;
+  for (const e of manifest.drop || []) {
+    if (present.has(e.mediaId)) { realRemovalBytes += e.sizeBytes || 0; removedTitles++; }
+  }
+  for (const e of manifest.keep || []) {
+    if (!present.has(e.mediaId)) { newDownloadBytes += e.sizeBytes || 0; newDownloadTitles++; }
+  }
+  const exceeds = {
+    realRemovalBytes: caps.maxRealRemovalBytes != null && realRemovalBytes > caps.maxRealRemovalBytes,
+    removedTitles: caps.maxRemovedTitles != null && removedTitles > caps.maxRemovedTitles,
+    newDownloadBytes: caps.maxNewDownloadBytes != null && newDownloadBytes > caps.maxNewDownloadBytes,
+  };
+  return {
+    realRemovalBytes, removedTitles, newDownloadBytes, newDownloadTitles,
+    hasReport: files.length > 0,
+    exceeds,
+    requiresConfirm: Object.values(exceeds).some(Boolean),
+  };
+}
+
+// A short confirmation code bound to the EXACT plan a large apply would publish. Deterministic in
+// (node, planHash), so `/tier preview` and `/tier apply` show the same code — but the moment the
+// plan changes (inventory shifted), the hash changes and any echoed stale code no longer matches,
+// which is the point: you confirm the plan you were shown, not whatever the planner produces next.
+function tierApplyConfirmCode(node, planHash) {
+  return crypto.createHash('sha256').update(`${String(node).toLowerCase()}:${planHash}`).digest('hex').slice(0, 4).toUpperCase();
+}
+
 module.exports = {
   TIER_DEFAULTS,
   recencyDecay,
@@ -664,6 +753,9 @@ module.exports = {
   planTier,
   gatherNodeHistories,
   computePlanHash,
+  physicalTitleIds,
+  assessApplyImpact,
+  tierApplyConfirmCode,
   renderSyncthingStignore,
   renderFolderStignore,
   renderRclone,
