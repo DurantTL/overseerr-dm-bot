@@ -167,6 +167,17 @@ const CONFIG = {
   STAGE_JOB_TIMEOUT_MINUTES: Number.parseInt(process.env.STAGE_JOB_TIMEOUT_MINUTES || '240', 10),
   STAGE_CHECK_MINUTES: Number.parseInt(process.env.STAGE_CHECK_MINUTES || '2', 10),
   STAGE_MAX_PER_USER_PER_DAY: Number.parseInt(process.env.STAGE_MAX_PER_USER_PER_DAY || '6', 10),
+  // §Phase2 cache-tree layout. The staged copy's path RELATIVE to the cache root must match the
+  // master library tree exactly for a local-first mergerfs view to substitute it — otherwise the
+  // local copy is an unused duplicate. The master uses `Movies/<folder>` and `TV Shows/<folder>`,
+  // so those are the defaults (the old lowercase `movies`/`tv` never matched). Override only if the
+  // master tree uses different top-level names. Trailing/leading slashes are trimmed.
+  STAGE_MOVIES_SUBDIR: (process.env.STAGE_MOVIES_SUBDIR || 'Movies').replace(/^\/+|\/+$/g, ''),
+  STAGE_TV_SUBDIR: (process.env.STAGE_TV_SUBDIR || 'TV Shows').replace(/^\/+|\/+$/g, ''),
+  // §Phase2: how often to reconcile staged_items against what's actually on the cache drive
+  // (drops rows whose file vanished and re-queues them). 0 disables the periodic sweep; the
+  // startup sweep still runs once.
+  STAGE_RECONCILE_MINUTES: Number.parseInt(process.env.STAGE_RECONCILE_MINUTES || '30', 10),
   // Play-triggered promotion (PH pilot; see docs/edge-playback-architecture.md §2.2). When a PH
   // viewer starts a title that isn't cached yet, stage it so the NEXT play is local. Off by
   // default. EDGE_PROMOTE_AUDIT_ONLY decides + logs ('edge_promote_would_stage') without copying,

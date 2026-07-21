@@ -1,6 +1,20 @@
 # Edge Playback Architecture — Remote Fallback + Play-Triggered Promotion
 
-**Status:** design / not yet implemented
+**Status (component-level):**
+
+```
+PH play-triggered promotion:        implemented, off by default
+PH merged fallback mount:           not implemented (infra, outside this repo)
+California tiering:                 implemented
+California play promotion:          not implemented
+California merged fallback mount:   not implemented
+Season-level TV planning:           not implemented
+```
+
+The merged-library *mount* work (mergerfs, Plex test library) is infra outside this repo and is
+the remaining Phase 2/3 work; the bot-side promotion, planner correctness (Phase 1), and PH staging
+fixes (path layout, DB reconciliation, durable promotion cap) are in place.
+
 **Applies to:** the California edge node *and* the Philippines (PH) cache box
 **Author's intent:** "Press Play in an edge Plex → the title plays immediately → the bot
 promotes it to that edge's local storage → future plays are local → the tier system later evicts

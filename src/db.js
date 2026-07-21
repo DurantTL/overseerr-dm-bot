@@ -169,6 +169,18 @@ function runMigrations() {
       last_streamed_at INTEGER
     );
 
+    -- §Phase2: durable per-watcher daily promotion counter. The old in-memory Map reset the daily
+    -- count on every restart (the per-title cooldown was durable, this wasn't), so a restart re-armed
+    -- everyone's budget and a flapping process could stage far past the cap. One row per promotion;
+    -- the cap is a COUNT over a rolling window, matching the old takeRateLimit semantics.
+    CREATE TABLE IF NOT EXISTS edge_promote_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      attributed_id TEXT NOT NULL,
+      media_id TEXT,
+      promoted_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_edge_promote_attr ON edge_promote_log(attributed_id, promoted_at);
+
     CREATE TABLE IF NOT EXISTS tier_nodes (
       name TEXT PRIMARY KEY,
       usable_bytes INTEGER NOT NULL DEFAULT 0,
@@ -664,6 +676,21 @@ function setStagedItemPinned(mediaId, pinned, discordId) {
   db.prepare('UPDATE staged_items SET pinned = ?, pinned_by_discord_id = ? WHERE media_id = ?').run(pinned ? 1 : 0, pinned ? (discordId || null) : null, mediaId);
 }
 
+// §Phase2 durable play-promotion daily cap. countRecentPromotions is the peek the guard uses to
+// decide rateLimitOk; recordPromotion is called only when a copy is actually enqueued (so a
+// skipped/audited play never burns budget). Old rows are pruned opportunistically on write.
+function countRecentPromotions(attributedId, windowMs) {
+  return db.prepare('SELECT COUNT(*) AS n FROM edge_promote_log WHERE attributed_id = ? AND promoted_at >= ?')
+    .get(String(attributedId), Date.now() - windowMs).n;
+}
+
+function recordPromotion(attributedId, mediaId, windowMs = 86400000) {
+  db.prepare('INSERT INTO edge_promote_log (attributed_id, media_id, promoted_at) VALUES (?, ?, ?)')
+    .run(String(attributedId), mediaId || null, Date.now());
+  // Keep the table from growing without bound — anything older than the counting window is dead.
+  db.prepare('DELETE FROM edge_promote_log WHERE promoted_at < ?').run(Date.now() - Math.max(windowMs, 86400000));
+}
+
 // ---- Regional tiering ("edge cache") ----
 // tier_nodes is the DB-backed node registry (§ /tier-node); tier_node_members the closed access
 // set of restricted nodes; tier_agent_tokens the per-node bearer secrets for the sync agent's
@@ -762,9 +789,81 @@ function listRequestsByRequesters(discordIds, sinceDays) {
     .map(r => ({ mediaId: r.media_id, mediaType: r.media_type, title: r.title, discordId: r.requested_by_discord_id, requestedAt: Date.parse(`${r.created_at}Z`) || Date.now() }));
 }
 
-const getTierPlan = node => { const raw = getSetting(`tier_plan:${String(node).toLowerCase()}`); if (!raw) return null; try { return JSON.parse(raw); } catch (_e) { return null; } };
+// §1.1 A node's plan lifecycle record. The old code stored a single {planHash, keepMediaIds,
+// appliedAt} and marked it "applied" the instant the manifest was published — before the agent
+// (possibly offline, drive-missing, or hours from its next run) had done anything. That conflated
+// two very different states, so hysteresis and the dashboard both assumed a disk state the node
+// might never have reached. We now track three:
+//   published — the manifest handed to the agent (hash + keepMediaIds + publishedAt). NOT proof of
+//               disk; it's just "what we told the node to become".
+//   converged — the agent confirmed it reached exactly this plan with no errors (convergedAt).
+//               The ONLY state trusted for hysteresis (the planner keys prevKeep off a state the
+//               node actually reached) and the only one the UI may call "converged".
+//   report metadata — lastAgentReportAt / lastInventoryAt / lastErrors so status surfaces can tell
+//               "healthy idle" from "stopped / net down / timer broken".
+function emptyTierPlan() {
+  return { published: null, converged: null, lastAgentReportAt: null, lastInventoryAt: null, lastErrors: [] };
+}
 
-const setTierPlan = (node, plan) => setSetting(`tier_plan:${String(node).toLowerCase()}`, JSON.stringify(plan));
+// Read + normalize. Legacy records are migrated on read: an old "applied" plan was assumed-converged
+// under the old immediate-apply semantics, so it seeds BOTH published and converged (preserving
+// hysteresis across the upgrade rather than forcing a spurious first-run rebalance everywhere).
+function normalizeTierPlan(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  if (raw.published !== undefined || raw.converged !== undefined) {
+    return {
+      published: raw.published || null,
+      converged: raw.converged || null,
+      lastAgentReportAt: raw.lastAgentReportAt ?? null,
+      lastInventoryAt: raw.lastInventoryAt ?? null,
+      lastErrors: Array.isArray(raw.lastErrors) ? raw.lastErrors : [],
+    };
+  }
+  if (!raw.planHash) return null;
+  const legacy = { planHash: raw.planHash, keepMediaIds: raw.keepMediaIds || [] };
+  return {
+    published: { ...legacy, publishedAt: raw.appliedAt ?? null },
+    converged: { ...legacy, convergedAt: raw.appliedAt ?? null },
+    lastAgentReportAt: null,
+    lastInventoryAt: null,
+    lastErrors: [],
+  };
+}
+
+const getTierPlan = node => { const raw = getSetting(`tier_plan:${String(node).toLowerCase()}`); if (!raw) return null; try { return normalizeTierPlan(JSON.parse(raw)); } catch (_e) { return null; } };
+
+const writeTierPlan = (node, rec) => setSetting(`tier_plan:${String(node).toLowerCase()}`, JSON.stringify(rec));
+
+// §1.1 /tier apply publishes a manifest: record what was handed to the agent, WITHOUT touching
+// converged — that only advances when the agent confirms it.
+function setTierPublishedPlan(node, { planHash, keepMediaIds = [] }) {
+  const rec = getTierPlan(node) || emptyTierPlan();
+  rec.published = { planHash, keepMediaIds, publishedAt: Date.now() };
+  writeTierPlan(node, rec);
+  return rec;
+}
+
+// §1.1 The agent reached exactly this published plan cleanly — the sole writer of converged. The
+// report endpoint calls this only after checking body.converged && no errors && hash === published.
+function markTierPlanConverged(node, { planHash, keepMediaIds }) {
+  const rec = getTierPlan(node) || emptyTierPlan();
+  rec.converged = { planHash, keepMediaIds: keepMediaIds || rec.published?.keepMediaIds || [], convergedAt: Date.now() };
+  writeTierPlan(node, rec);
+  return rec;
+}
+
+// §1.1 Record that the agent reported at all (any run — converged, still-working, or erroring), so
+// "no report in N hours" is distinguishable from "healthy idle". inventoryStored bumps
+// lastInventoryAt; errors are kept verbatim (capped) for the status surfaces.
+function recordTierAgentReport(node, { inventoryStored = false, errors = [] } = {}) {
+  const rec = getTierPlan(node) || emptyTierPlan();
+  const now = Date.now();
+  rec.lastAgentReportAt = now;
+  if (inventoryStored) rec.lastInventoryAt = now;
+  rec.lastErrors = Array.isArray(errors) ? errors.slice(0, 10) : [];
+  writeTierPlan(node, rec);
+  return rec;
+}
 
 function createDownloadToken(filePath, title, discordId, oneTimeUse = CONFIG.DOWNLOAD_ONE_TIME_LINKS_DEFAULT) {
   const rawToken = crypto.randomBytes(32).toString('hex');
@@ -835,4 +934,4 @@ function restashPendingRequest(nonce, payload) {
   setSetting(`pending_request:${nonce}`, JSON.stringify(payload));
 }
 
-module.exports = { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPlan, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
+module.exports = { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };

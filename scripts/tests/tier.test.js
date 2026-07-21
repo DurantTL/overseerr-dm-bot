@@ -8,7 +8,8 @@ const {
   recencyDecay, titleKey, computeUniversalCore, computeNodeValues, planNode, planTier,
   computePlanHash, renderSyncthingStignore, renderFolderStignore, renderRclone, toRelPath,
   parseAtimeMask, inAtimeMask, maskSuspectAtimes, nodeFolders, resolveTitleFolder,
-  physicalTitleIds, assessApplyImpact, tierApplyConfirmCode,
+  physicalTitleIds, physicalTitleBytes, computeTierActionPreview, assessApplyImpact, tierApplyConfirmCode,
+  mediaIdFromGuid, indexHistory,
 } = require('../../src/tier');
 
 const GB = 1024 ** 3;
@@ -680,6 +681,94 @@ async function testInventoryAddedAt() {
   assert.strictEqual(a, tierApplyConfirmCode('California', 'abcd1234abcd1234'), 'code is case-insensitive on node name');
   assert.notStrictEqual(a, tierApplyConfirmCode('california', 'ffff0000ffff0000'), 'a different plan hash yields a different code');
   assert.ok(/^[0-9A-F]{4}$/.test(a), 'code is a 4-char uppercase hex string');
+}
+
+// --- §1.6 mediaIdFromGuid: modern + legacy Plex guid forms, type-gated ---
+{
+  assert.strictEqual(mediaIdFromGuid('tmdb://603', 'tmdb'), 'tmdb:603', 'modern tmdb guid');
+  assert.strictEqual(mediaIdFromGuid('tvdb://75978', 'tvdb'), 'tvdb:75978', 'modern tvdb guid');
+  assert.strictEqual(mediaIdFromGuid('com.plexapp.agents.themoviedb://603?lang=en', 'tmdb'), 'tmdb:603', 'legacy themoviedb agent guid');
+  assert.strictEqual(mediaIdFromGuid('com.plexapp.agents.thetvdb://75978/1/2?lang=en', 'tvdb'), 'tvdb:75978', 'legacy thetvdb agent guid');
+  assert.strictEqual(mediaIdFromGuid('tvdb://75978', 'tmdb'), null, 'wrong source rejected (no cross-crediting)');
+  assert.strictEqual(mediaIdFromGuid('imdb://tt0133093', 'tmdb'), null, 'unrelated source → null');
+  assert.strictEqual(mediaIdFromGuid('', 'tmdb'), null, 'empty guid → null');
+}
+
+// --- §1.6 indexHistory: id-keyed and title-keyed lookups, conservative roll-up ---
+{
+  const hist = [
+    { mediaId: 'tmdb:603', title: 'The Matrix', mediaType: 'movie', plays: 2, lastPlayed: daysAgo(3), distinctUsers: 1 },
+    { mediaId: 'tmdb:603', title: 'The Matrix (1999)', mediaType: 'movie', plays: 1, lastPlayed: daysAgo(1), distinctUsers: 2 },
+    { mediaId: null, title: 'No Guid Movie', mediaType: 'movie', plays: 5, lastPlayed: daysAgo(2), distinctUsers: 3 },
+  ];
+  const idx = indexHistory(hist);
+  const byId = idx.byId.get('tmdb:603');
+  assert.strictEqual(byId.plays, 3, 'same-id rows merge plays');
+  assert.strictEqual(byId.distinctUsers, 2, 'distinctUsers takes the max on merge');
+  assert.strictEqual(byId.lastPlayed, daysAgo(1), 'lastPlayed takes the newest');
+  assert.ok(!idx.byId.has(null) && idx.byId.size === 1, 'null-id rows never enter byId');
+  assert.ok(idx.byTitle.get(titleKey('No Guid Movie', 'movie')), 'unresolved row indexed by title');
+  assert.ok(!idx.byTitle.has(titleKey('The Matrix', 'movie')), 'GUID-resolved rows stay out of byTitle (no namesake leak)');
+}
+
+// --- §1.6 computeNodeValues joins by GUID first, title only as fallback ---
+{
+  // A remake collision: inventory has two different movies whose normalized titles match, but they
+  // have distinct tmdb ids. History carries the id, so demand is credited to the RIGHT one.
+  const inv = [
+    title('tmdb:1', 5, 'm/matrix-1999', { title: 'The Matrix', mediaType: 'movie' }),
+    title('tmdb:2', 5, 'm/matrix-remake', { title: 'The Matrix', mediaType: 'movie' }),
+  ];
+  const history = [{ mediaId: 'tmdb:2', title: 'The Matrix', mediaType: 'movie', plays: 4, lastPlayed: daysAgo(1), distinctUsers: 2 }];
+  const values = computeNodeValues({ node: node({ demand_source: 'plex' }), inventory: inv, history, files: [], now: NOW, cfg: { halfLifeDays: 30 } });
+  assert.ok(values.has('tmdb:2') && !values.has('tmdb:1'), 'GUID join credits demand to the exact remake, not its namesake');
+
+  // No GUID on the row → falls back to title match, and the diag records it.
+  const diag = {};
+  const histNoId = [{ mediaId: null, title: 'The Matrix', mediaType: 'movie', plays: 4, lastPlayed: daysAgo(1), distinctUsers: 2 }];
+  const v2 = computeNodeValues({ node: node({ demand_source: 'plex' }), inventory: inv, history: histNoId, files: [], now: NOW, cfg: { halfLifeDays: 30 }, diag });
+  assert.ok(v2.has('tmdb:1') && v2.has('tmdb:2'), 'title-only fallback matches both namesakes (the collision the warning is about)');
+  assert.strictEqual(diag.titleOnlyMatches, 2, 'diag counts title-only fallbacks');
+  assert.ok(!diag.idMatches, 'no id matches when the row has no GUID');
+}
+
+// --- §1.3 physicalTitleBytes + computeTierActionPreview ---
+{
+  const manifest = {
+    keep: [
+      { mediaId: 'tmdb:1', title: 'Present Full', folderId: '', relPath: 'Movies/full', sizeBytes: 10 * GB },
+      { mediaId: 'tmdb:2', title: 'Half Downloaded', folderId: '', relPath: 'Movies/half', sizeBytes: 10 * GB },
+      { mediaId: 'tmdb:3', title: 'Not Yet', folderId: '', relPath: 'Movies/missing', sizeBytes: 4 * GB },
+    ],
+    drop: [
+      { mediaId: 'tmdb:4', title: 'On Disk To Remove', folderId: '', relPath: 'Movies/remove', sizeBytes: 7 * GB },
+      { mediaId: 'tmdb:5', title: 'Already Gone', folderId: '', relPath: 'Movies/gone', sizeBytes: 3 * GB },
+    ],
+  };
+  const files = [
+    { folderId: '', relPath: 'Movies/full/movie.mkv', sizeBytes: 10 * GB },
+    { folderId: '', relPath: 'Movies/half/movie.mkv', sizeBytes: 4 * GB },   // < 10GB expected → still syncing
+    { folderId: '', relPath: 'Movies/remove/movie.mkv', sizeBytes: 7 * GB },
+  ];
+  const bytes = physicalTitleBytes({ inventory: [...manifest.keep, ...manifest.drop], files });
+  assert.strictEqual(bytes.get('tmdb:1'), 10 * GB, 'present-full bytes summed to the owning title');
+  assert.ok(!bytes.has('tmdb:3'), 'a title with no files on disk is absent from the byte map');
+
+  const p = computeTierActionPreview({ manifest, files });
+  assert.deepStrictEqual(p.downloadLocally.map(e => e.mediaId), ['tmdb:3'], 'keep ∧ absent → download');
+  assert.deepStrictEqual(p.keptSynced.map(e => e.mediaId), ['tmdb:1'], 'keep ∧ complete → synced');
+  assert.deepStrictEqual(p.keptDownloading.map(e => e.mediaId), ['tmdb:2'], 'keep ∧ partial → still downloading');
+  assert.deepStrictEqual(p.removeLocal.map(e => e.mediaId), ['tmdb:4'], 'drop ∧ present → remove');
+  assert.deepStrictEqual(p.alreadyAbsent.map(e => e.mediaId), ['tmdb:5'], 'drop ∧ absent → already gone');
+  assert.strictEqual(p.totals.downloadLocally.bytes, 4 * GB, 'download bytes total');
+  assert.strictEqual(p.totals.removeLocal.bytes, 7 * GB, 'remove bytes total');
+  assert.strictEqual(p.hasReport, true, 'report present flagged');
+
+  const empty = computeTierActionPreview({ manifest, files: [] });
+  assert.strictEqual(empty.downloadLocally.length, 3, 'no report → every keep is a download');
+  assert.strictEqual(empty.removeLocal.length, 0, 'no report → nothing counted as a local removal');
+  assert.strictEqual(empty.alreadyAbsent.length, 2, 'no report → every drop is already absent');
+  assert.strictEqual(empty.hasReport, false, 'empty report flagged');
 }
 
 testInventoryAddedAt().then(() => {

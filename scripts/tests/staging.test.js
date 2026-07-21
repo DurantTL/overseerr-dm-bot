@@ -114,13 +114,15 @@ const { loadSandbox } = require('./extract');
     RADARR_URL: base, RADARR_API_KEY: 'rk', RADARR_4K_URL: '', RADARR_4K_API_KEY: '',
     SONARR_URL: base, SONARR_API_KEY: 'sk',
     PATH_REMAP_FROM: '/data', PATH_REMAP_TO: '/mnt/raid',
+    // §Phase2: dest subpaths must match the master tree so a mergerfs local-first view substitutes them.
+    STAGE_MOVIES_SUBDIR: 'Movies', STAGE_TV_SUBDIR: 'TV Shows',
   };
   const stageSb = loadSandbox(['resolveStageSource', 'radarrGetFrom', 'sonarrGet', 'remapPath'], { axios, CONFIG, path });
 
   const m = await stageSb.run("resolveStageSource('tmdb:603')");
   assert.strictEqual(m.found, true, 'movie with file found');
   assert.strictEqual(m.srcPath, '/mnt/raid/movies/The Matrix (1999)', 'source path is remapped');
-  assert.strictEqual(m.destSubPath, 'movies/The Matrix (1999)', 'dest keeps the folder name under movies/');
+  assert.strictEqual(m.destSubPath, 'Movies/The Matrix (1999)', 'dest matches the master tree (Movies/<folder>)');
   assert.strictEqual(m.sizeBytes, 8 * GB, 'size from sizeOnDisk');
 
   const m2 = await stageSb.run("resolveStageSource('tmdb:604')");
@@ -129,7 +131,7 @@ const { loadSandbox } = require('./extract');
   const t = await stageSb.run("resolveStageSource('tvdb:121361')");
   assert.strictEqual(t.found, true, 'series with episodes found');
   assert.strictEqual(t.srcPath, '/mnt/raid/tv/Bluey', 'series path remapped');
-  assert.strictEqual(t.destSubPath, 'tv/Bluey', 'series dest under tv/');
+  assert.strictEqual(t.destSubPath, 'TV Shows/Bluey', 'series dest matches the master tree (TV Shows/<folder>)');
   assert.strictEqual(t.sizeBytes, 30 * GB, 'series size from statistics');
 
   const t2 = await stageSb.run("resolveStageSource('tvdb:999')");
@@ -137,6 +139,34 @@ const { loadSandbox } = require('./extract');
 
   const u = await stageSb.run("resolveStageSource('imdb:tt0133093')");
   assert.strictEqual(u.found, false, 'unknown media id scheme rejected');
+
+  // --- §Phase2 reconcileStagedItems + sumBytesByDest (pure) ---
+  const recSb = loadSandbox(['reconcileStagedItems', 'sumBytesByDest'], { Map });
+  const entries = [
+    { Path: 'Movies/Kept Full', IsDir: true },
+    { Path: 'Movies/Kept Full/movie.mkv', Size: 10 * GB, IsDir: false },
+    { Path: 'Movies/Half/movie.mkv', Size: 4 * GB, IsDir: false },
+    { Path: 'TV Shows/Gone', IsDir: true },
+  ];
+  const dests = ['Movies/Kept Full', 'Movies/Half', 'Movies/Missing'];
+  recSb.run(`var entries = ${JSON.stringify(entries)}; var dests = ${JSON.stringify(dests)}; var bytes = sumBytesByDest(entries, dests);`);
+  assert.strictEqual(recSb.run('bytes.get("Movies/Kept Full")'), 10 * GB, 'files summed under their dest, dirs ignored');
+  assert.strictEqual(recSb.run('bytes.get("Movies/Half")'), 4 * GB, 'partial dest sums only its files');
+  assert.strictEqual(recSb.run('bytes.get("Movies/Missing")'), 0, 'a dest with nothing on disk reads 0, not absent');
+
+  const stagedRows = [
+    { media_id: 'tmdb:1', title: 'Kept Full', dest_path: 'Movies/Kept Full', size_bytes: 10 * GB },
+    { media_id: 'tmdb:2', title: 'Half', dest_path: 'Movies/Half', size_bytes: 10 * GB },
+    { media_id: 'tmdb:3', title: 'Missing', dest_path: 'Movies/Missing', size_bytes: 5 * GB },
+    { media_id: 'tmdb:4', title: 'Copying Now', dest_path: 'Movies/Copying', size_bytes: 8 * GB },
+  ];
+  recSb.run(`var rows = ${JSON.stringify(stagedRows)}; var res = reconcileStagedItems({ rows, presentBytes: bytes, activeMediaIds: new Set(["tmdb:4"]) });`);
+  assert.strictEqual(recSb.run('res.local.map(r => r.media_id).join()'), 'tmdb:1', 'complete file → local');
+  assert.strictEqual(recSb.run('res.transferring.map(r => r.media_id).sort().join()'), 'tmdb:2,tmdb:4', 'partial file + active job → transferring (never restaged)');
+  assert.strictEqual(recSb.run('res.restage.map(r => r.media_id).join()'), 'tmdb:3', 'missing file → restage');
+
+  assert.strictEqual(recSb.run('reconcileStagedItems({ rows, presentBytes: null }).unknown'), true, 'null listing → unknown state');
+  assert.strictEqual(recSb.run('reconcileStagedItems({ rows, presentBytes: null }).restage.length'), 0, 'a blind (failed) listing never restages — no mass re-copy on a transient rclone error');
 
   server.close();
   console.log('staging.test.js: all assertions passed');

@@ -27,14 +27,14 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPlan, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
 const { decideEscalationAction, escalationEligible } = require('./src/escalation');
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
-const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
-const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
+const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
+const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, releaseContentClaim, contentClaimsOverlap, describeContentClaim, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
 const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
@@ -163,9 +163,6 @@ const requestCommandLimits = new Map();
 // Deliberately NOT in RATE_LIMIT_MAPS: its window is 24h and the hourly reaper would wipe the
 // counts. It holds at most one small bucket per family member.
 const stageCommandLimits = new Map();
-// Same 24h-window reasoning: play-triggered promotion's own per-watcher daily cap. The /stage
-// command limit lives in handleStageCommand and never sees origin:'play', so this is its cap.
-const edgePromoteLimits = new Map();
 
 // Keyed by client IP / user id, these maps only ever grew. Drop buckets whose newest hit is
 // older than an hour so a scan of unique IPs can't slowly eat memory.
@@ -1751,11 +1748,42 @@ async function runStageJob(job) {
   audit('media_staged', { mediaId: job.media_id, title: job.title, sizeBytes: src.sizeBytes, origin: job.origin, minutes });
   // Bulk seeding would fire dozens of DMs at the admin who fed the list — /staged shows the result.
   // Play-triggered promotions are automatic (the viewer didn't ask), so they stay silent too.
-  if (job.origin !== 'bulk' && job.origin !== 'play') {
+  if (job.origin !== 'bulk' && job.origin !== 'play' && job.origin !== 'reconcile') {
     await dmUser(job.requested_by_discord_id, { embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`🔥 Ready on the Travel Server — ${src.title || job.title}`)
       .setDescription(`**${src.title || job.title}** (${fmtSpace(src.sizeBytes)}) is now warm in the local cache — it'll play instantly, no more mystery buffering.`)] });
   }
+}
+
+// §Phase2 stale-staging reconciliation sweep. The PH box had treated a staged_items row as proof a
+// title is local without ever checking the file is present and complete. This verifies each row
+// against what's actually on the cache drive (rclone listing) and repairs drift: a row whose file
+// vanished — restart, manual cache wipe, or an interrupted copy — is dropped and re-queued; an
+// in-flight or partially-copied title is left alone. Runs once on startup and on an interval so the
+// disk-pressure guard's accounting and promotion's 'already_local' skip track reality, not the DB.
+async function sweepStagedReconciliation() {
+  if (!stagingConfigured()) return;
+  const rows = listStagedItems();
+  if (!rows.length) return;
+  const presentBytes = await fetchStagedPresence(rows.map(r => r.dest_path));
+  const activeMediaIds = new Set(listActiveStageJobs().map(j => j.media_id));
+  const result = reconcileStagedItems({ rows, presentBytes, activeMediaIds });
+  // A failed/blind cache listing returns unknown — never delete rows on that (it would restage the
+  // whole cache on a transient rclone error). Skip and try again next sweep.
+  if (result.unknown) { audit('stage_reconcile_skipped', { reason: 'cache listing unavailable', rows: rows.length }); return; }
+  if (!result.restage.length) {
+    audit('stage_reconcile_ok', { local: result.local.length, transferring: result.transferring.length });
+    return;
+  }
+  for (const r of result.restage) {
+    removeStagedItem(r.media_id);
+    enqueueStageJob({ mediaId: r.media_id, mediaType: r.media_type, title: r.title, discordId: r.staged_by_discord_id || CONFIG.ADMIN_USER_ID, origin: 'reconcile' });
+    audit('stage_reconcile_restage', { mediaId: r.media_id, title: r.title });
+  }
+  notifyChannel('cleanup', { embeds: [brandedEmbed(COLORS.WARN)
+    .setTitle('🔁 PH Cache Reconciled')
+    .setDescription(`${result.restage.length} staged title(s) were missing or incomplete on the cache drive (restart, manual cleanup, or an interrupted copy) and have been re-queued:\n${result.restage.map(r => `• **${r.title}**`).join('\n').slice(0, 3500)}\n\n${result.local.length} verified present · ${result.transferring.length} still transferring.`)] });
+  pumpStageQueue().catch(err => log.warn(`Stage queue pump (post-reconcile) failed: ${err.message}`));
 }
 
 // ---- PH tunnel watchdog ----
@@ -1880,9 +1908,12 @@ const slashCommands = [
   new SlashCommandBuilder().setName('keep').setDescription('Show your keep list'),
   new SlashCommandBuilder().setName('help').setDescription('How this media server works'),
   new SlashCommandBuilder().setName('tier').setDescription('Regional tiering: per-node edge-cache plans').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addSubcommand(s => s.setName('preview').setDescription('Dry-run the planner — shows keep/drop per node, writes nothing').addStringOption(o => o.setName('node').setDescription('Only this node')))
+    .addSubcommand(s => s.setName('preview').setDescription('Dry-run the planner — shows keep/drop per node, writes nothing')
+      .addStringOption(o => o.setName('node').setDescription('Only this node'))
+      .addBooleanOption(o => o.setName('details').setDescription('Per-title change list for a single node (folder, size, state)')))
     .addSubcommand(s => s.setName('apply').setDescription('Publish manifests — agents converge on their next run')
       .addStringOption(o => o.setName('node').setDescription('Only this node'))
+      .addBooleanOption(o => o.setName('details').setDescription('Per-title change list for a single node'))
       .addStringOption(o => o.setName('confirm').setDescription('Confirmation code for a large rebalance (shown when apply is held)'))),
   new SlashCommandBuilder().setName('tier-node').setDescription('Manage the tiering node registry').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('add').setDescription('Add or update a node')
@@ -2003,6 +2034,12 @@ client.once('ready', async () => {
       setInterval(() => pumpStageQueue().catch(err => log.warn(`Stage queue pump failed: ${err.message}`)), CONFIG.STAGE_CHECK_MINUTES * 60000).unref();
     }
     pumpStageQueue().catch(err => log.warn(`Stage queue pump failed: ${err.message}`));
+    // §Phase2: reconcile the staged_items DB against the cache drive once at startup (the DB may have
+    // drifted while the process was down) and then periodically.
+    sweepStagedReconciliation().catch(err => log.warn(`Stage reconciliation failed: ${err.message}`));
+    if (CONFIG.STAGE_RECONCILE_MINUTES > 0) {
+      setInterval(() => sweepStagedReconciliation().catch(err => log.warn(`Stage reconciliation failed: ${err.message}`)), CONFIG.STAGE_RECONCILE_MINUTES * 60000).unref();
+    }
     log.ok(`Plex Home staging enabled → ${CONFIG.STAGE_RCLONE_REMOTE} (queue check every ${CONFIG.STAGE_CHECK_MINUTES} min, min free ${CONFIG.STAGE_MIN_FREE_GB} GB)`);
   }
   if (CONFIG.PH_TUNNEL_HEALTH_URL && CONFIG.PH_TUNNEL_CHECK_MINUTES > 0) {
@@ -4070,7 +4107,8 @@ async function buildTierPlans() {
   });
   const atimeReports = {};
   const memberRequests = {};
-  const prevPlans = {};
+  const planRecords = {};   // full lifecycle records (published/converged/report meta) for display
+  const hysteresis = {};    // { name: { keepMediaIds } } — §1.1 keyed off the last CONVERGED state only
   for (const n of enabled) {
     // Every non-full edge node needs its reported file inventory so the planner can score by
     // local atime. For `atime` nodes it's the whole signal; for `plex` nodes it's the per-title
@@ -4081,8 +4119,15 @@ async function buildTierPlans() {
     if (n.access === 'restricted') {
       memberRequests[n.name] = listRequestsByRequesters(listTierNodeMembers(n.name), CONFIG.TIER_REQUEST_GRACE_DAYS);
     }
-    const prev = getTierPlan(n.name);
-    if (prev) prevPlans[n.name] = prev;
+    const rec = getTierPlan(n.name);
+    if (rec) {
+      planRecords[n.name] = rec;
+      // §1.1 hysteresis must key off a state the node ACTUALLY reached, not one it was merely told
+      // to reach — so only a converged keep set carries over. A published-but-unconverged plan
+      // leaves prevKeep null (planner re-derives from floor + admits), which is correct: the node
+      // never confirmed it got there.
+      if (rec.converged?.keepMediaIds?.length) hysteresis[n.name] = { keepMediaIds: rec.converged.keepMediaIds };
+    }
   }
   const result = planTier({
     nodes,
@@ -4092,7 +4137,7 @@ async function buildTierPlans() {
     memberRequests,
     keepListIds: tierKeepListIds(),
     neverDeleteIds: CONFIG.NEVER_DELETE_MEDIA_IDS,
-    prevPlans,
+    prevPlans: hysteresis,
     config: {
       coreTopK: CONFIG.TIER_CORE_TOP_K,
       halfLifeDays: CONFIG.TIER_HALF_LIFE_DAYS,
@@ -4104,7 +4149,7 @@ async function buildTierPlans() {
       churnPenaltyPerTb: CONFIG.TIER_CHURN_PENALTY_PER_TB,
     },
   });
-  return { ...result, nodes, prevPlans };
+  return { ...result, nodes, planRecords };
 }
 
 // Global apply-guardrail caps (§1.5) in bytes; a 0/negative CONFIG value disables that cap (null).
@@ -4117,7 +4162,10 @@ function tierApplyCaps() {
   };
 }
 
-function tierManifestField(node, m, prevPlan, impact = null) {
+// §1.1/1.2/1.3 render one node's field. `rec` is the plan lifecycle record (published/converged/
+// report meta), `impact` the §1.5 guardrail assessment, `actions` the §1.3 physical-action preview
+// (all from the node's last physical inventory, not the previous plan — manual deletions show up).
+function tierManifestField(node, m, rec, impact = null, actions = null) {
   const free = Math.max(0, (node.usable_bytes || 0) - m.stats.keepBytes);
   const lines = [
     `Keep: **${m.stats.keepCount}** titles · ${fmtSpace(m.stats.keepBytes)}`,
@@ -4125,23 +4173,37 @@ function tierManifestField(node, m, prevPlan, impact = null) {
     `Budget ${fmtSpace(m.stats.budgetBytes)} → ${fmtSpace(free)} free of ${fmtSpace(node.usable_bytes || 0)}`,
   ];
   if (m.full) lines.push('🔒 Full master — never pruned');
-  // §1.5 real disk impact vs the node's last physical inventory (not the previous plan).
-  if (impact) {
+  // §1.3 physical-action preview: what the agent will actually do next, from {plan} × {what's on
+  // disk}. Only the action buckets are shown (fully-synced kept titles are the quiet default).
+  if (actions) {
+    const t = actions.totals;
     const bits = [];
-    if (impact.removedTitles) bits.push(`🗑️ remove ${impact.removedTitles} local · ${fmtSpace(impact.realRemovalBytes)}`);
-    if (impact.newDownloadTitles) bits.push(`⬇️ fetch ${impact.newDownloadTitles} · ${fmtSpace(impact.newDownloadBytes)}`);
-    if (bits.length) lines.push(bits.join(' · ') + (impact.hasReport ? '' : ' _(no agent report yet — assumes nothing local)_'));
-    if (impact.requiresConfirm) lines.push(`⚠️ Large rebalance — apply needs \`confirm:${impact.confirmCode}\``);
+    if (t.downloadLocally.count) bits.push(`⬇️ download ${t.downloadLocally.count} · ${fmtSpace(t.downloadLocally.bytes)}`);
+    if (t.removeLocal.count) bits.push(`🗑️ remove ${t.removeLocal.count} · ${fmtSpace(t.removeLocal.bytes)}`);
+    if (t.keptDownloading.count) bits.push(`⏳ still syncing ${t.keptDownloading.count} · ${fmtSpace(t.keptDownloading.bytes)}`);
+    if (t.alreadyAbsent.count) bits.push(`∅ already gone ${t.alreadyAbsent.count}`);
+    lines.push(bits.length ? bits.join(' · ') : '✓ fully in sync — no disk actions');
+    if (!actions.hasReport) lines.push('_(no agent report yet — assumes nothing local)_');
   }
-  if (prevPlan) {
-    const prevKeep = new Set(prevPlan.keepMediaIds || []);
-    const nowKeep = m.keep.map(e => e.mediaId);
-    const added = nowKeep.filter(id => !prevKeep.has(id)).length;
-    const removed = [...prevKeep].filter(id => !nowKeep.includes(id)).length;
-    lines.push(prevPlan.planHash === m.planHash
-      ? 'No change vs applied plan'
-      : `Δ vs applied: +${added} / −${removed} titles`);
-  } else lines.push('No plan applied yet');
+  // §1.5 large-rebalance confirmation, computed on the same physical impact numbers.
+  if (impact?.requiresConfirm) lines.push(`⚠️ Large rebalance — apply needs \`confirm:${impact.confirmCode}\``);
+  // §1.1 published vs converged: never claim a plan is on disk before the agent confirms it.
+  const pub = rec?.published;
+  const conv = rec?.converged;
+  if (!pub) lines.push('No plan published yet');
+  else if (conv && conv.planHash === pub.planHash) {
+    lines.push(pub.planHash === m.planHash
+      ? `✅ Converged ${fmtAgo(conv.convergedAt)} — matches this plan`
+      : `Converged plan \`${conv.planHash}\` ${fmtAgo(conv.convergedAt)}; this preview differs`);
+  } else {
+    lines.push(`📤 Published \`${pub.planHash}\` ${fmtAgo(pub.publishedAt)} — agent has not confirmed convergence yet`);
+    if (conv) lines.push(`   last converged: \`${conv.planHash}\` ${fmtAgo(conv.convergedAt)}`);
+  }
+  if (rec?.lastAgentReportAt) lines.push(`Agent last reported ${fmtAgo(rec.lastAgentReportAt)}${rec.lastErrors?.length ? ` · ⚠️ ${rec.lastErrors.length} error(s)` : ''}`);
+  // §1.3 effective settings the plan ran with (the node-update path stored warm/fresh but never showed them).
+  const warmDays = node.warm_days ?? (node.sticky ? CONFIG.TIER_WARM_DAYS * 2 : CONFIG.TIER_WARM_DAYS);
+  const freshDays = node.fresh_days ?? CONFIG.TIER_FRESH_DAYS;
+  lines.push(`Settings: demand ${node.demand_source || 'tautulli'} · warm ${warmDays}d · fresh ${freshDays}d${node.sticky ? ' · sticky' : ''} · headroom ${node.headroom_pct ?? 15}%`);
   if (m.forceKept.length) lines.push(`⚠️ ${m.forceKept.length} force-kept (no full-node copy)`);
   // Per-folder drop breakdown under the node total (R2.1) — only when the node spans >1 folder.
   const multi = (m.folders || []).filter(f => f.folder_id || (m.folders || []).length > 1);
@@ -4178,12 +4240,17 @@ async function handleTierCommand(interaction) {
   // the dry run. Full masters never prune and aren't edge caches, so they skip the guardrail.
   const caps = tierApplyCaps();
   const impacts = {};
+  const actions = {};   // §1.3 physical-action preview per node (from last physical inventory)
+  const filesByNode = {};
   for (const name of names) {
     const node = plans.nodes.find(n => n.name === name);
     if (node?.full) continue;
-    const imp = assessApplyImpact({ manifest: plans.manifests[name], files: listTierNodeFiles(name), caps });
+    const files = listTierNodeFiles(name);
+    filesByNode[name] = files;
+    const imp = assessApplyImpact({ manifest: plans.manifests[name], files, caps });
     imp.confirmCode = tierApplyConfirmCode(name, plans.manifests[name].planHash);
     impacts[name] = imp;
+    actions[name] = computeTierActionPreview({ manifest: plans.manifests[name], files });
   }
 
   const blocked = [];
@@ -4205,8 +4272,10 @@ async function handleTierCommand(interaction) {
       // folder root; the aggregate `stignore` stays for single-folder agents.
       const folders = (m.folders || []).map(f => ({ ...f, stignore: renderFolderStignore(f, m) }));
       setSetting(`tier_manifest:${name}`, JSON.stringify({ ...m, folders, stignore, rcloneFilesFrom: m.transport === 'rclone' ? renderRclone(m) : undefined }));
-      setTierPlan(name, { planHash: m.planHash, keepMediaIds: m.keep.map(e => e.mediaId), appliedAt: Date.now() });
-      audit('tier_plan_applied', { actorDiscordId: interaction.user.id, node: name, planHash: m.planHash, keepCount: m.stats.keepCount, dropCount: m.stats.dropCount, dropBytes: m.stats.dropBytes, confirmed: !!imp?.requiresConfirm });
+      // §1.1 publish only — the plan is NOT marked converged here. The agent's report endpoint
+      // advances converged once it confirms the node actually reached this exact plan.
+      plans.planRecords[name] = setTierPublishedPlan(name, { planHash: m.planHash, keepMediaIds: m.keep.map(e => e.mediaId) });
+      audit('tier_plan_published', { actorDiscordId: interaction.user.id, node: name, planHash: m.planHash, keepCount: m.stats.keepCount, dropCount: m.stats.dropCount, dropBytes: m.stats.dropBytes, confirmed: !!imp?.requiresConfirm });
     }
   }
 
@@ -4221,7 +4290,7 @@ async function handleTierCommand(interaction) {
         : 'No manifest written — every targeted node exceeds an apply guardrail. Re-run with the confirm code shown below.')
       : 'What `/tier apply` would publish. Drops only ever remove edge copies — every title stays on a full master.');
   for (const name of names.slice(0, 12)) {
-    embed.addFields(tierManifestField(plans.nodes.find(n => n.name === name), plans.manifests[name], plans.prevPlans?.[name], impacts[name] || null));
+    embed.addFields(tierManifestField(plans.nodes.find(n => n.name === name), plans.manifests[name], plans.planRecords?.[name], impacts[name] || null, actions[name] || null));
   }
   if (blocked.length) {
     embed.addFields({
@@ -4231,7 +4300,54 @@ async function handleTierCommand(interaction) {
     });
   }
   if (plans.warnings?.length) embed.addFields({ name: '⚠️ Warnings', value: plans.warnings.slice(0, 8).map(w => `• ${w}`).join('\n').slice(0, 1024), inline: false });
+  // §1.3 details:true — a per-title change list for a single node (folder, size, score, state,
+  // reason). Only makes sense scoped to one node; ask for `node:` when several are in scope.
+  if (interaction.options.getBoolean('details')) {
+    if (names.length !== 1) {
+      embed.addFields({ name: '🔎 Details', value: 'Add `node:<name>` to see the per-title change list for one node.', inline: false });
+    } else {
+      const name = names[0];
+      const detail = renderTierDetailBlock(plans.manifests[name], actions[name], filesByNode[name] || []);
+      if (detail) embed.addFields({ name: `🔎 ${name} — per-title changes`, value: detail.slice(0, 1024), inline: false });
+    }
+  }
   return interaction.editReply({ embeds: [embed] });
+}
+
+// §1.3 per-title change list for `/tier preview node:<n> details:true`. Groups the plan's titles by
+// physical action (download / remove / still-syncing / already-gone) and lists each with its folder,
+// size, demand score, and current on-disk state. Fully-synced kept titles are summarized, not listed
+// (they're the quiet majority). Capped to fit a Discord field; overflow is counted.
+function renderTierDetailBlock(manifest, actions, files) {
+  if (!actions) return null;
+  const scoreOf = e => (typeof e.value === 'number' ? e.value : null);
+  const line = (e, tag) => {
+    const bits = [`${tag} **${(e.title || e.mediaId || '').slice(0, 48)}**`, fmtSpace(e.sizeBytes || 0)];
+    if (e.folderId) bits.push(`\`${e.folderId}\``);
+    const s = scoreOf(e);
+    if (s != null) bits.push(`score ${s.toFixed(3)}`);
+    return bits.join(' · ');
+  };
+  const sections = [
+    ['⬇️ download', actions.downloadLocally],
+    ['🗑️ remove', actions.removeLocal],
+    ['⏳ syncing', actions.keptDownloading],
+    ['∅ already gone', actions.alreadyAbsent],
+  ];
+  const out = [];
+  let shown = 0;
+  const LIMIT = 18;
+  for (const [tag, list] of sections) {
+    for (const e of list) {
+      if (shown >= LIMIT) { out.push(`…and ${sections.reduce((a, [, l]) => a + l.length, 0) - shown} more`); break; }
+      out.push(line(e, tag));
+      shown++;
+    }
+    if (shown >= LIMIT) break;
+  }
+  const synced = actions.totals.keptSynced;
+  if (synced.count) out.push(`✓ ${synced.count} kept title(s) already fully synced (${fmtSpace(synced.bytes)})`);
+  return out.length ? out.join('\n') : null;
 }
 
 async function handleTierNodeCommand(interaction) {
@@ -4250,7 +4366,12 @@ async function handleTierNodeCommand(interaction) {
       const plan = getTierPlan(n.name);
       const folders = listTierNodeFolders(n.name);
       const folderNote = folders.length > 1 ? ` · ${folders.length} folders` : '';
-      return `${n.enabled ? '🟢' : '⚫'} **${n.name}** — ${fmtSpace(n.usable_bytes || 0)}, headroom ${n.headroom_pct}%${n.full ? ', **full master**' : ''}${n.sticky ? ', sticky' : ''} · ${n.access}/${n.demand_source}/${n.transport}${folderNote}${members}${plan ? ` · plan \`${plan.planHash}\`` : ' · no plan applied'}`;
+      // §1.1 show the CONVERGED hash when the node has confirmed one; otherwise mark it as published-
+      // but-pending so "on disk" and "handed to the agent" are never conflated in the list.
+      const planNote = plan?.converged
+        ? ` · plan \`${plan.converged.planHash}\`${plan.published && plan.published.planHash !== plan.converged.planHash ? ` (published \`${plan.published.planHash}\` pending)` : ''}`
+        : plan?.published ? ` · published \`${plan.published.planHash}\` (pending)` : ' · no plan applied';
+      return `${n.enabled ? '🟢' : '⚫'} **${n.name}** — ${fmtSpace(n.usable_bytes || 0)}, headroom ${n.headroom_pct}%${n.full ? ', **full master**' : ''}${n.sticky ? ', sticky' : ''} · ${n.access}/${n.demand_source}/${n.transport}${folderNote}${members}${planNote}`;
     });
     return interaction.reply({ embeds: [brandedEmbed(COLORS.INFO).setTitle('📦 Tier Nodes').setDescription(lines.join('\n').slice(0, 4000))], ephemeral: true });
   }
@@ -5264,27 +5385,45 @@ function startExpressServer() {
     // only an absent field means "no inventory in this report". When the node has an
     // atime_mask, suspect (maintenance-window) atimes are laundered against the previously
     // stored rows BEFORE the replace, so the DB always holds the last plausible human read.
+    let inventoryStored = false;
     if (Array.isArray(body.inventory)) {
       try {
         let files = body.inventory.slice(0, 200000);
         const mask = parseAtimeMask(getTierNode(node)?.atime_mask);
         if (mask) files = maskSuspectAtimes(files, listTierNodeFiles(node), mask);
         replaceTierNodeFiles(node, files);
+        inventoryStored = true;
       } catch (err) {
         errors.push(`inventory store failed: ${err.message}`);
       }
     }
-    audit('tier_agent_report', { node, planHash: body.planHash || null, bytesFreed: body.bytesFreed || 0, droppedCount: (body.dropped || []).length, inventoryCount: Array.isArray(body.inventory) ? body.inventory.length : 0, errors: errors.join('; ').slice(0, 500) || undefined });
+    // §1.1 The agent has reported — record it (any run, converged or not) so status surfaces can
+    // tell "healthy idle" from "stopped / net down". Then advance `converged` ONLY when the agent
+    // says it converged, reported no errors, AND the hash matches what we actually published — a
+    // report for a stale/mismatched plan, or one carrying errors, must never mark convergence.
+    recordTierAgentReport(node, { inventoryStored, errors });
+    const publishedHash = getTierPlan(node)?.published?.planHash || null;
+    const converged = body.converged === true && errors.length === 0 && !!body.planHash && body.planHash === publishedHash;
+    if (converged) markTierPlanConverged(node, { planHash: body.planHash });
+    audit('tier_agent_report', { node, planHash: body.planHash || null, publishedHash, converged, bytesFreed: body.bytesFreed || 0, droppedCount: (body.dropped || []).length, inventoryCount: Array.isArray(body.inventory) ? body.inventory.length : 0, errors: errors.join('; ').slice(0, 500) || undefined });
     if ((body.bytesFreed || 0) > 0 || errors.length) {
-      notifyChannel('cleanup', { embeds: [brandedEmbed(errors.length ? COLORS.WARN : COLORS.SUCCESS)
+      // Report the honest state: "converged" only when the checks above passed; otherwise say the
+      // agent has published-but-pending or hit errors, so a mismatched/failed run can't masquerade
+      // as a clean convergence.
+      const statusLine = errors.length
+        ? `⚠️ Plan \`${body.planHash || '?'}\` reported with errors — not marked converged.`
+        : converged
+          ? `✅ Plan \`${body.planHash}\` converged.`
+          : `📤 Plan \`${body.planHash || '?'}\` reported${publishedHash && body.planHash !== publishedHash ? ` but does not match published \`${publishedHash}\`` : ''} — convergence not confirmed.`;
+      notifyChannel('cleanup', { embeds: [brandedEmbed(errors.length ? COLORS.WARN : (converged ? COLORS.SUCCESS : COLORS.INFO))
         .setTitle(`📦 Tier Agent Report — ${node}`)
         .setDescription([
-          `Plan \`${body.planHash || '?'}\` converged.`,
+          statusLine,
           (body.bytesFreed || 0) > 0 ? `Freed **${fmtSpace(body.bytesFreed)}** across ${(body.dropped || []).length} title(s). Master copies untouched.` : null,
           errors.length ? `⚠️ Errors:\n${errors.map(e => `• ${e}`).join('\n')}` : null,
         ].filter(Boolean).join('\n').slice(0, 4000))] });
     }
-    res.json({ ok: true });
+    res.json({ ok: true, converged });
   });
 
   if (CONFIG.DASHBOARD_ENABLED) {
@@ -5420,7 +5559,7 @@ function startExpressServer() {
           state: !n.enabled ? 'skip' : (rep && rep.errors ? 'warn' : 'ok'),
           title: `${n.name}${n.full ? ' · full master' : ''}${n.sticky ? ' · sticky' : ''}`,
           sub: `${n.access} · ${n.demand_source}${n.demand_source === 'atime' && n.atime_mask ? ` (mask ${n.atime_mask})` : ''} · ${n.transport} · ${fmtSpace(n.usable_bytes || 0)} @ ${n.headroom_pct}% headroom`,
-          right: `${plan ? `plan ${plan.planHash} · applied ${fmtAgo(plan.appliedAt)}` : 'no plan applied'} · ${repBits}`,
+          right: `${plan?.converged ? `converged ${plan.converged.planHash} ${fmtAgo(plan.converged.convergedAt)}` : plan?.published ? `published ${plan.published.planHash} (pending) ${fmtAgo(plan.published.publishedAt)}` : 'no plan applied'} · ${repBits}`,
         };
       });
 
@@ -6042,8 +6181,9 @@ async function handlePhPlayStart({ mediaId, title, mediaType, watcherEmail, watc
   const attributedId = [watcher?.discord_id, watcherEmail && `email:${watcherEmail}`, watcherKey, 'edge-anon'].find(Boolean);
   const DAY_MS = 86400000;
   // Peek the daily cap WITHOUT consuming — a skipped/audited event must not burn the budget; we
-  // only consume a token when we actually enqueue a copy.
-  const capOk = (edgePromoteLimits.get(attributedId) || []).filter(ts => Date.now() - ts < DAY_MS).length < CONFIG.EDGE_PROMOTE_MAX_PER_USER_PER_DAY;
+  // only consume a token when we actually enqueue a copy. §Phase2: the counter is now durable in
+  // SQLite (edge_promote_log), so a restart no longer re-arms everyone's budget mid-day.
+  const capOk = countRecentPromotions(attributedId, DAY_MS) < CONFIG.EDGE_PROMOTE_MAX_PER_USER_PER_DAY;
   const plan = planPlayPromotion({
     enabled: CONFIG.EDGE_PROMOTE_ON_PLAY,
     alreadyStaged: !!staged,
@@ -6061,9 +6201,9 @@ async function handlePhPlayStart({ mediaId, title, mediaType, watcherEmail, watc
     audit('edge_promote_would_stage', { mediaId, title, mediaType, attributedId });
     return;
   }
-  // enqueue: consume a daily token, set the per-title cooldown, queue the copy. The stage worker
-  // dedupes an already-active job, and origin:'play' stays silent (no completion DM).
-  takeRateLimit(edgePromoteLimits, attributedId, CONFIG.EDGE_PROMOTE_MAX_PER_USER_PER_DAY, DAY_MS);
+  // enqueue: consume a daily token (durable), set the per-title cooldown, queue the copy. The stage
+  // worker dedupes an already-active job, and origin:'play' stays silent (no completion DM).
+  recordPromotion(attributedId, mediaId, DAY_MS);
   setSetting(`promote_last:${mediaId}`, String(Date.now()));
   const stageDiscordId = isSnowflake(attributedId) ? attributedId : CONFIG.ADMIN_USER_ID;
   const { duplicate } = enqueueStageJob({ mediaId, mediaType, title, discordId: stageDiscordId, origin: 'play' });

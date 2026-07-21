@@ -27,7 +27,24 @@ Already done (in the codebase / PR #42):
   a plan-hash-bound confirm code (`assessApplyImpact` / `tierApplyConfirmCode` in `src/tier.js`;
   gate in `handleTierCommand`, `index.js`; caps `TIER_APPLY_MAX_*` in `src/config.js`).
 
-Not yet done — the rest of this file (Phase 1: 1.1, 1.2, 1.3, 1.6; Phases 2–4; operational items).
+- **Phase 1.1 — published vs converged plan state:** `tier_plan:<node>` now stores a lifecycle
+  record (`published` / `converged` / `lastAgentReportAt` / `lastInventoryAt` / `lastErrors`).
+  `/tier apply` writes `published` only; the report endpoint advances `converged` **only** when
+  `body.converged && no errors && body.planHash === publishedHash`. Hysteresis keys off the last
+  **converged** keep set (`buildTierPlans`, `index.js`). Legacy records migrate as assumed-converged.
+- **Phase 1.2/1.3 — previews from physical inventory + physical-action preview + `details:true`:**
+  the preview now reads the agent's file report (`tier_node_files`) instead of the previous plan, so
+  manual deletions show up. `computeTierActionPreview` (`src/tier.js`) buckets titles into
+  download / remove / still-syncing / already-gone; `tierManifestField` renders them plus the
+  effective settings (demand source, warm/fresh, sticky, headroom). `/tier preview node:<n>
+  details:true` attaches a per-title change list.
+- **Phase 1.6 — stable-ID title matching:** `fetchPlexHistory` resolves each rating key to a
+  tmdb:/tvdb: GUID (`fetchPlexGuid`, one bounded-concurrency metadata lookup per distinct key);
+  `computeNodeValues` joins history to inventory by GUID first (`indexHistory` / `lookupHistory`)
+  and only falls back to normalized title, warning when a Plex node leaned on the fallback.
+
+Not yet done — Phase 4; the mergerfs mount / Plex-test-library operational steps of Phases 2–3;
+operational items (agent heartbeat, async deletion).
 
 ---
 
@@ -36,7 +53,7 @@ Not yet done — the rest of this file (Phase 1: 1.1, 1.2, 1.3, 1.6; Phases 2–
 These are the Phase-1 items PR #42 deliberately left out. Do these before
 deploying merged Plex fallback anywhere.
 
-### 1.1 Separate "published" from "converged" plan state
+### 1.1 Separate "published" from "converged" plan state — ✅ DONE
 
 Today `/tier apply` calls `setTierPlan(...)` immediately after publishing the
 manifest (`index.js:4161`), so a plan is marked "applied" before the agent has
@@ -60,7 +77,7 @@ Do:
   keep set, not the most recently published one — otherwise the planner assumes
   a state the node never reached.
 
-### 1.2 Previews from physical inventory, not last plan
+### 1.2 Previews from physical inventory, not last plan — ✅ DONE
 
 `Δ vs applied` compares the new plan against the previous plan's `keepMediaIds`
 (`tierManifestField`, `index.js:4108`), so manual deletions never show up and the
@@ -72,7 +89,7 @@ Distinguish four states in the preview: **planned to cache**, **published to
 agent**, **actually present locally** (from `tier_node_files`), **fully
 synchronized**.
 
-### 1.3 Physical-action preview + `details:true`
+### 1.3 Physical-action preview + `details:true` — ✅ DONE
 
 Replace the Keep/Drop summary with real next actions computed from
 {proposed keep/drop} × {published plan} × {physical inventory} × {Radarr/Sonarr
@@ -114,7 +131,7 @@ plan-bound code (`tierApplyConfirmCode`) the admin must echo
 plan moves. Enforced in `handleTierCommand` (`index.js`); previews show the same
 impact numbers and code. Full masters skip the guardrail (they never prune).
 
-### 1.6 Stable-ID title matching
+### 1.6 Stable-ID title matching — ✅ DONE
 
 Watch history joins to inventory by normalized title text (`titleKey`,
 `rollHistoryByTitle` in `src/tier.js`), which drops years/punctuation — remakes
@@ -133,19 +150,23 @@ becomes the local branch.
 
 Fix first:
 
-- **Path mismatch:** PH staging writes `movies/<folder>`, `tv/<folder>` but the
-  master tree uses `Movies/<folder>`, `TV Shows/<folder>`. For mergerfs to
-  substitute the local copy the relative paths must match exactly, else the
-  local copy is an unused duplicate. Reconcile in `src/staging.js`.
-- **Stale staging DB:** PH treats a title as local when a `staged_items` row
-  exists, without checking the file is present/complete. Add a reconciliation
-  sweep: row+file+size → local; row+missing → drop row & restage; file+no row →
-  reconcile/import; copy active → transferring.
-- **In-memory daily promotion cap:** per-user daily cap resets on restart (the
-  per-title cooldown is durable, the daily counter is not). Move the counter to
-  SQLite.
+- **Path mismatch — ✅ DONE:** staged copies now land under `Movies/<folder>` /
+  `TV Shows/<folder>` (config `STAGE_MOVIES_SUBDIR` / `STAGE_TV_SUBDIR`, defaults matching the
+  master tree) so a mergerfs local-first view substitutes them instead of duplicating
+  (`resolveStageSource`, `src/staging.js`). Existing lowercase `movies/`/`tv/` copies from before
+  this change are orphaned and will be re-cached under the new paths.
+- **Stale staging DB — ✅ DONE:** `reconcileStagedItems` (`src/staging.js`) verifies each
+  `staged_items` row against the cache drive (`rclone lsjson`, summed per dest) — present+complete →
+  local; present-but-partial or actively copying → transferring; missing → drop row & restage. Runs
+  at startup and every `STAGE_RECONCILE_MINUTES` (`sweepStagedReconciliation`, `index.js`). A failed
+  listing is treated as "unknown" and reconciles nothing (no mass re-copy on a transient error).
+  Orphan-file import (file on disk, no row) is deliberately left manual — safe import needs media
+  resolution the sweep doesn't attempt.
+- **In-memory daily promotion cap — ✅ DONE:** the per-watcher daily counter is now durable in
+  SQLite (`edge_promote_log`; `countRecentPromotions` / `recordPromotion`, `src/db.js`), so a
+  restart no longer re-arms everyone's budget mid-day. A token is consumed only on an actual enqueue.
 
-Then: read-only remote mount → local-first mergerfs view → temporary Plex test
+Then (operational, not code — out of scope here): read-only remote mount → local-first mergerfs view → temporary Plex test
 library on the merged view → verify local + remote playback → test remote-master
 outage → enable promotion audit-only → reconcile DB vs disk → enable real
 promotion.
