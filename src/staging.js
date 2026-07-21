@@ -95,7 +95,9 @@ async function resolveStageSource(mediaId) {
           kind: 'movie',
           title: `${movie.title}${movie.year ? ` (${movie.year})` : ''}`,
           srcPath: remapPath(movie.path),
-          destSubPath: `movies/${path.basename(movie.path)}`,
+          // §Phase2: match the master tree's relative path (e.g. `Movies/<folder>`) so a local-first
+          // mergerfs view substitutes this copy instead of treating it as a duplicate.
+          destSubPath: `${CONFIG.STAGE_MOVIES_SUBDIR}/${path.basename(movie.path)}`,
           sizeBytes: movie.sizeOnDisk || movie.movieFile?.size || 0,
         };
       }
@@ -112,7 +114,8 @@ async function resolveStageSource(mediaId) {
       kind: 'tv',
       title: series.title,
       srcPath: remapPath(series.path),
-      destSubPath: `tv/${path.basename(series.path)}`,
+      // §Phase2: match the master tree's relative path (e.g. `TV Shows/<folder>`).
+      destSubPath: `${CONFIG.STAGE_TV_SUBDIR}/${path.basename(series.path)}`,
       sizeBytes: series.statistics?.sizeOnDisk || 0,
     };
   }
@@ -192,4 +195,58 @@ async function getCacheStatus(stagedItems) {
   return { freeBytes: null, totalBytes: null, usedByCache, source: 'none' };
 }
 
-module.exports = { stagingConfigured, classifyServerIdentity, evictionOrder, planCacheSpace, planPlayPromotion, resolveStageSource, runRclone, stageCopy, purgeStagedPath, fetchCacheFreeBytes, getCacheStatus };
+// §Phase2 stale-staging reconciliation (pure). The PH box has treated a title as "local" purely
+// because a staged_items row exists — never verifying the file is actually present and complete. So
+// after a restart, a manual cache wipe, or an interrupted copy, the DB and disk drift: the guard
+// counts space that isn't used, and play-promotion skips titles as 'already_local' that vanished.
+// This classifies each row from three observed facts and returns disjoint action lists:
+//   local        — row present with bytes ≥ size×completeFrac: healthy, nothing to do
+//   transferring — row with an in-flight copy job, OR present-but-incomplete: leave it alone
+//   restage      — row but the file is missing/empty: drop the stale row and re-queue a copy
+// presentBytes is a Map(destPath → on-disk bytes); pass null when the cache couldn't be listed, in
+// which case nothing is reconciled (never delete a row on a failed listing — that would restage the
+// whole cache on a transient rclone error). Orphan files (on disk, no row) are handled by the
+// caller since importing one safely needs media resolution this pure step doesn't have.
+function reconcileStagedItems({ rows, presentBytes, activeMediaIds = new Set(), completeFrac = 0.98 }) {
+  if (!presentBytes) return { unknown: true, local: [], transferring: [], restage: [] };
+  const local = [], transferring = [], restage = [];
+  for (const r of rows || []) {
+    if (activeMediaIds.has(r.media_id)) { transferring.push(r); continue; }
+    const bytes = presentBytes.get(r.dest_path) || 0;
+    if (bytes <= 0) { restage.push(r); continue; }
+    if ((r.size_bytes || 0) > 0 && bytes < r.size_bytes * completeFrac) { transferring.push(r); continue; }
+    local.push(r);
+  }
+  return { unknown: false, local, transferring, restage };
+}
+
+// Sum on-disk bytes per staged dest subpath from an `rclone lsjson -R` listing (entries carry a
+// remote-root-relative `Path`, a `Size`, and `IsDir`). A file belongs to dest D when its Path is D
+// or nested under `D/`. Every requested dest appears in the result (0 when nothing on disk matches).
+function sumBytesByDest(entries, destPaths) {
+  const bytes = new Map(destPaths.map(d => [d, 0]));
+  for (const e of entries || []) {
+    if (e.IsDir) continue;
+    const p = String(e.Path || '');
+    for (const d of destPaths) {
+      if (p === d || p.startsWith(`${d}/`)) { bytes.set(d, (bytes.get(d) || 0) + (Number(e.Size) || 0)); break; }
+    }
+  }
+  return bytes;
+}
+
+// Impure: list the cache remote and return on-disk bytes for the given dest subpaths, or null when
+// the listing fails (so the caller can skip reconciliation rather than act on a blind read).
+async function fetchStagedPresence(destPaths) {
+  if (!destPaths.length) return new Map();
+  try {
+    const res = await runRclone(['lsjson', '--recursive', '--no-modtime', CONFIG.STAGE_RCLONE_REMOTE], { timeoutMs: 5 * 60000, maxStdoutBytes: 64 * 1024 * 1024 });
+    if (res.code !== 0) return null;
+    const entries = JSON.parse(res.stdout || '[]');
+    return sumBytesByDest(entries, destPaths);
+  } catch (_e) {
+    return null;
+  }
+}
+
+module.exports = { stagingConfigured, classifyServerIdentity, evictionOrder, planCacheSpace, planPlayPromotion, resolveStageSource, runRclone, stageCopy, purgeStagedPath, fetchCacheFreeBytes, getCacheStatus, reconcileStagedItems, sumBytesByDest, fetchStagedPresence };

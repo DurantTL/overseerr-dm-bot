@@ -129,12 +129,64 @@ async function fetchTierInventory({ sources, remap, sourceRoot, onError }) {
   return items;
 }
 
+// Bounded-concurrency map: run `fn` over `items` with at most `limit` in flight. Used to resolve
+// Plex rating keys → GUIDs without firing hundreds of metadata requests at a PMS at once.
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let i = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (i < items.length) { const idx = i++; out[idx] = await fn(items[idx], idx); }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+// Pull a stable arr media id out of a Plex GUID string. Handles both the modern structured GUIDs
+// (`tmdb://603`, `tvdb://75978`) and the legacy agent form (`com.plexapp.agents.themoviedb://603`,
+// `thetvdb://75978`). Returns `tmdb:<n>` / `tvdb:<n>` in the same shape the arr inventory uses, or
+// null when the wanted source isn't present.
+function mediaIdFromGuid(guid, want) {
+  const m = /(themoviedb|thetvdb|tmdb|tvdb):\/\/(\d+)/i.exec(String(guid || ''));
+  if (!m) return null;
+  const src = /movie|tmdb/i.test(m[1]) ? 'tmdb' : 'tvdb';
+  return src === want ? `${want}:${m[2]}` : null;
+}
+
+// §1.6 Resolve a Plex rating key to a stable arr media id (tmdb:<n> for movies, tvdb:<n> for the
+// series a watched episode belongs to) via the item's metadata Guid list. Best-effort: any failure
+// (unreachable PMS, deleted item, no matching guid) returns null and the caller falls back to
+// title matching. mediaType decides which source we accept so a movie remake can't borrow a show's
+// tvdb id and vice-versa.
+async function fetchPlexGuid({ url, token }, ratingKey, mediaType) {
+  try {
+    const res = await axios.get(`${String(url).replace(/\/$/, '')}/library/metadata/${encodeURIComponent(ratingKey)}`, {
+      headers: { 'X-Plex-Token': token, Accept: 'application/json' },
+      timeout: 10000,
+    });
+    const meta = res.data?.MediaContainer?.Metadata?.[0];
+    if (!meta) return null;
+    const want = mediaType === 'tv' ? 'tvdb' : 'tmdb';
+    const guids = [meta.guid, ...(Array.isArray(meta.Guid) ? meta.Guid.map(g => g && g.id) : [])];
+    for (const g of guids) {
+      const id = mediaIdFromGuid(g, want);
+      if (id) return id;
+    }
+  } catch (_e) { /* fall back to title matching */ }
+  return null;
+}
+
 // Watch history straight from a node's Plex Media Server (no Tautulli needed):
 // GET /status/sessions/history/all with the server token, normalized to the same per-title
 // rows fetchHistory produces. PMS history is per-server (watch state never syncs between
 // servers), so this is inherently node-local demand — the accurate replacement for the atime
 // LRU wherever the bot can reach the node's PMS.
-async function fetchPlexHistory({ url, token }, { afterDays = 90, length = 5000 } = {}) {
+//
+// §1.6: each aggregated title is then resolved to a stable tmdb:/tvdb: mediaId via one metadata
+// lookup per distinct rating key (bounded concurrency), so history joins to inventory by GUID —
+// remakes, editions, and `(4K)` labels no longer collide on normalized title text. Resolution is
+// best-effort; a title Plex can't resolve keeps mediaId null and joins by title as before. Pass
+// resolveGuids:false to skip the lookups entirely (e.g. a PMS whose metadata route is unavailable).
+async function fetchPlexHistory({ url, token }, { afterDays = 90, length = 5000, resolveGuids = true } = {}) {
   const afterSec = Math.floor((Date.now() - afterDays * 86400000) / 1000);
   const pageSize = 1000;
   const rows = [];
@@ -174,7 +226,15 @@ async function fetchPlexHistory({ url, token }, { afterDays = 90, length = 5000 
     entry.users.add(String(r.accountID ?? 'unknown'));
     byTitle.set(key, entry);
   }
-  return [...byTitle.values()].map(({ users, ...e }) => ({ ...e, distinctUsers: users.size }));
+  const out = [...byTitle.values()].map(({ users, ...e }) => ({ ...e, distinctUsers: users.size, mediaId: null }));
+  if (resolveGuids && out.length) {
+    // Resolve only real numeric rating keys — a `title:<x>` fallback key (Plex sent no ratingKey)
+    // can't be looked up and stays on the title-match path.
+    await mapLimit(out, 8, async e => {
+      if (/^\d+$/.test(String(e.ratingKey))) e.mediaId = await fetchPlexGuid({ url, token }, e.ratingKey, e.mediaType);
+    });
+  }
+  return out;
 }
 
 // ---- atime maintenance-window mask ----
@@ -275,6 +335,39 @@ function rollHistoryByTitle(history) {
   return byKey;
 }
 
+// §1.6 Index a node's history for lookup by stable id (tmdb:/tvdb:) with normalized title as a
+// fallback. A row Plex resolved to a GUID goes ONLY into byId — it must match its exact title and
+// never leak demand to a namesake (remake, edition) via title text. A row Plex could NOT resolve
+// goes into byTitle, the honest best-effort join. Rows are rolled up within each map so the same
+// title seen twice merges conservatively (plays summed, users maxed, newest lastPlayed).
+function indexHistory(history) {
+  const merge = (map, key, r) => {
+    const prev = map.get(key);
+    if (prev) {
+      prev.plays += r.plays; prev.distinctUsers = Math.max(prev.distinctUsers, r.distinctUsers);
+      prev.lastPlayed = Math.max(prev.lastPlayed, r.lastPlayed);
+    } else map.set(key, { ...r });
+  };
+  const byId = new Map();
+  const byTitle = new Map();
+  for (const r of history) {
+    if (r.mediaId) merge(byId, r.mediaId, r);
+    else merge(byTitle, titleKey(r.title, r.mediaType), r);
+  }
+  return { byId, byTitle };
+}
+
+// Look one inventory title up in the history index: stable id first (§1.6), normalized title as a
+// fallback. `diag` (optional) tallies which path matched so the planner can warn when a Plex node
+// leans on title matching — remakes/editions/`(4K)` labels collide there and can miscredit demand.
+function lookupHistory(index, t, diag) {
+  const byId = index.byId.get(t.mediaId);
+  if (byId) { if (diag) diag.idMatches = (diag.idMatches || 0) + 1; return byId; }
+  const byTitle = index.byTitle.get(titleKey(t.title, t.mediaType));
+  if (byTitle) { if (diag) diag.titleOnlyMatches = (diag.titleOnlyMatches || 0) + 1; return byTitle; }
+  return null;
+}
+
 // atime LRU value per title (§3.2a): agent-reported file atimes rolled up to the owning title
 // folder — "recently read by that node's Plex" is the demand signal. Files with no reported
 // atime contribute nothing (graceful fallback). Multi-folder aware: a file only matches a title
@@ -310,15 +403,15 @@ function computeAtimeValues({ inventory, files = [], now, cfg }) {
 //             for. If the PMS was unreachable the history is empty ⇒ the whole node falls back to
 //             atime, no plan failure.
 //   atime:    the atime LRU only (§3.2a).
-function computeNodeValues({ node, inventory, history = [], files = [], now, cfg }) {
+function computeNodeValues({ node, inventory, history = [], files = [], now, cfg, diag = null }) {
   if (node.demand_source === 'atime') return computeAtimeValues({ inventory, files, now, cfg });
 
+  const index = indexHistory(history);
   if (node.demand_source === 'plex') {
     const atimeValues = computeAtimeValues({ inventory, files, now, cfg });
-    const byKey = rollHistoryByTitle(history);
     const values = new Map();
     for (const t of inventory) {
-      const r = byKey.get(titleKey(t.title, t.mediaType));
+      const r = lookupHistory(index, t, diag);
       if (r) {
         values.set(t.mediaId, { value: recencyDecay(r.lastPlayed, now, cfg.halfLifeDays) * Math.log1p(r.plays || 0), lastActivity: r.lastPlayed || null });
       } else if (atimeValues.has(t.mediaId)) {
@@ -328,10 +421,9 @@ function computeNodeValues({ node, inventory, history = [], files = [], now, cfg
     return values;
   }
 
-  const byKey = rollHistoryByTitle(history);
   const values = new Map();
   for (const t of inventory) {
-    const r = byKey.get(titleKey(t.title, t.mediaType));
+    const r = lookupHistory(index, t, diag);
     if (!r) continue;
     values.set(t.mediaId, { value: demandScore(r, now, cfg.halfLifeDays), lastActivity: r.lastPlayed || null });
   }
@@ -555,6 +647,7 @@ function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, m
       const { folderId, relPath } = resolveTitleFolder(t, folders);
       return { ...t, folderId, relPath };
     });
+    const diag = {};
     const values = computeNodeValues({
       node,
       inventory: resolvedInventory,
@@ -562,6 +655,7 @@ function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, m
       files: atimeReports[node.name] || [],
       now,
       cfg,
+      diag,
     });
     const floorIds = new Set(baseFloor);
     if (node.access === 'restricted') {
@@ -597,6 +691,13 @@ function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, m
     }
     if (!node.full && resolvedInventory.length && values.size === 0) {
       warnings.push(`"${node.name}" has no demand signal (source: ${node.demand_source || 'tautulli'}) — scoring falls back to freshness only and eviction order is otherwise arbitrary. Check ${node.demand_source === 'atime' ? "the agent's inventory report and that the media mount records atime (relatime, not noatime)" : node.demand_source === 'plex' ? "the node's PMS reachability/token and the agent's atime fallback" : 'Tautulli reachability and its API key'}.`);
+    }
+    // §1.6: a Plex node that leaned on title matching for some titles (no stable GUID resolved) may
+    // miscredit demand across remakes/editions. Only meaningful when GUID resolution partly worked
+    // (some id matches) — otherwise the PMS metadata route is simply unavailable, already implied by
+    // the demand-signal checks. Tautulli/atime never resolve GUIDs here, so this stays plex-only.
+    if (!node.full && node.demand_source === 'plex' && diag.titleOnlyMatches > 0 && diag.idMatches > 0) {
+      warnings.push(`"${node.name}" matched ${diag.titleOnlyMatches} title(s) by name only (Plex returned no stable GUID) while ${diag.idMatches} matched by tmdb/tvdb id — remakes, editions, or "(4K)" labels may be miscredited for the name-only ones.`);
     }
   }
   return { manifests, warnings, coreIds: [...coreIds] };
@@ -679,19 +780,55 @@ function renderRclone(manifest) {
 // present when the node reports ≥1 file under the title's folder (same folderKey dir-walk as
 // computeAtimeValues), regardless of atime — presence is "the file exists on disk", a separate
 // question from the atime LRU. `inventory` here is the manifest's resolved keep∪drop entries.
-function physicalTitleIds({ inventory, files = [] }) {
+function physicalTitleBytes({ inventory, files = [] }) {
   const byRel = new Map(inventory.map(t => [folderKey(t), t]));
-  const present = new Set();
+  const bytes = new Map();
   for (const f of files) {
     const fid = f.folderId ?? f.folder_id ?? '';
     let dir = String(f.relPath);
     while (dir.includes('/')) {
       dir = dir.slice(0, dir.lastIndexOf('/'));
       const t = byRel.get(folderKey({ folderId: fid, relPath: dir }));
-      if (t) { present.add(t.mediaId); break; }
+      if (t) { bytes.set(t.mediaId, (bytes.get(t.mediaId) || 0) + (Number(f.sizeBytes) || 0)); break; }
     }
   }
-  return present;
+  return bytes;
+}
+
+function physicalTitleIds({ inventory, files = [] }) {
+  return new Set(physicalTitleBytes({ inventory, files }).keys());
+}
+
+// §1.3 Physical-action preview: what the agent will ACTUALLY do next, computed from
+// {plan keep/drop} × {physical inventory}. Every keep/drop title lands in exactly one bucket:
+//   downloadLocally  — keep ∧ not on disk (agent must fetch it)
+//   removeLocal      — drop ∧ on disk (agent will delete the local copy; master untouched)
+//   alreadyAbsent    — drop ∧ not on disk (nothing to do — e.g. deleted by hand or never fetched)
+//   keptDownloading  — keep ∧ present but reported bytes < expected×completeFrac (mid-transfer)
+//   keptSynced       — keep ∧ present and reported bytes ≥ expected×completeFrac (fully in place)
+// Presence + byte totals come from the agent's own file report (tier_node_files), so a manual
+// deletion shows as alreadyAbsent (not a spurious removal) and a title already on disk isn't
+// counted as a download — the honest answer to "if I apply this, what moves?". A node with no
+// report yet reports every keep as downloadLocally (nothing known present), which is the correct
+// conservative reading for a first fill. completeFrac tolerates size drift between the arr's
+// recorded size and the summed on-disk bytes (default 98%).
+function computeTierActionPreview({ manifest, files = [], completeFrac = 0.98 }) {
+  const all = [...(manifest.keep || []), ...(manifest.drop || [])];
+  const bytesPresent = physicalTitleBytes({ inventory: all, files });
+  const buckets = { downloadLocally: [], removeLocal: [], alreadyAbsent: [], keptDownloading: [], keptSynced: [] };
+  for (const e of manifest.keep || []) {
+    if (!bytesPresent.has(e.mediaId)) buckets.downloadLocally.push(e);
+    else if ((bytesPresent.get(e.mediaId) || 0) < (e.sizeBytes || 0) * completeFrac) buckets.keptDownloading.push(e);
+    else buckets.keptSynced.push(e);
+  }
+  for (const e of manifest.drop || []) {
+    if (bytesPresent.has(e.mediaId)) buckets.removeLocal.push(e);
+    else buckets.alreadyAbsent.push(e);
+  }
+  const sum = arr => arr.reduce((a, e) => a + (e.sizeBytes || 0), 0);
+  const totals = {};
+  for (const [k, v] of Object.entries(buckets)) totals[k] = { count: v.length, bytes: sum(v) };
+  return { ...buckets, totals, hasReport: files.length > 0 };
 }
 
 // §1.5 apply-impact assessment: what publishing this plan will ACTUALLY do to disk, computed from
@@ -741,6 +878,9 @@ module.exports = {
   computeUniversalCore,
   fetchTierInventory,
   fetchPlexHistory,
+  fetchPlexGuid,
+  mediaIdFromGuid,
+  indexHistory,
   parseAtimeMask,
   inAtimeMask,
   maskSuspectAtimes,
@@ -754,6 +894,8 @@ module.exports = {
   gatherNodeHistories,
   computePlanHash,
   physicalTitleIds,
+  physicalTitleBytes,
+  computeTierActionPreview,
   assessApplyImpact,
   tierApplyConfirmCode,
   renderSyncthingStignore,
