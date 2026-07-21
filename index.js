@@ -5359,13 +5359,13 @@ function startExpressServer() {
   app.post('/agent/report/:node', tierAgentAuth, (req, res) => {
     const node = String(req.params.node).toLowerCase();
     const body = req.body || {};
-    // Every inbound agent POST — full report, drive-missing, or a lightweight no-op heartbeat — is
-    // proof of life. Bump the heartbeat first so "healthy idle" (agent ran, nothing to do) is always
-    // distinguishable from "stopped / net down / timer broken" on the status surfaces.
-    recordTierAgentHeartbeat(node);
-    // Heartbeat fast-path: the agent posts { heartbeat:true } on a no-op run (plan + inventory
-    // unchanged). There is nothing to store, converge, or notify — the bump above is the whole job.
+    // Heartbeat fast-path: the agent posts { heartbeat:true } on a clean no-op run (plan + inventory
+    // unchanged). It's proof of life with nothing to store or converge — bump the timestamp and
+    // clear any stale errors (a clean no-op only happens AFTER a healthy convergence, so lingering
+    // errors would be misleading). Full reports go through recordTierAgentReport below, which also
+    // bumps the heartbeat; the drive-missing branch bumps it too but with its mount errors.
     if (body.heartbeat && !body.driveMissing) {
+      recordTierAgentHeartbeat(node, { errors: [] });
       audit('tier_agent_heartbeat', { node, planHash: body.planHash || null });
       return res.json({ ok: true, heartbeat: true });
     }
@@ -5380,6 +5380,11 @@ function startExpressServer() {
       const prev = getSetting(mountKey);
       setSetting(mountKey, 'missing');
       const mountErrors = (Array.isArray(body.mountErrors) ? body.mountErrors : []).slice(0, 8).map(e => String(e).slice(0, 300));
+      // Proof of life (the agent ran and reached us) but a DEGRADED run — persist the mount errors
+      // as the plan's error state so the status surfaces read warn/⚠️, not a healthy "checked in
+      // recently / ok". Without this the heartbeat bump alone would mask a repeatedly drive-missing
+      // node as healthy. Cleared on recovery, when the agent's next full report reports no errors.
+      recordTierAgentHeartbeat(node, { errors: mountErrors.length ? mountErrors : ['media drive missing'] });
       audit('tier_agent_drive_missing', { node, mountErrors: mountErrors.join('; ').slice(0, 500) || undefined });
       if (prev !== 'missing') {
         notifyChannel('system', { embeds: [brandedEmbed(COLORS.DANGER)

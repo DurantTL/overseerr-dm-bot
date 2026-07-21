@@ -404,11 +404,18 @@ async function runOnce(ctx) {
   if (!planChanged && !inventoryChanged && !recovered) {
     ctx.log(`plan ${manifest.planHash} unchanged and inventory unchanged — nothing to do`);
     // Heartbeat: a no-op run still checks in so the bot can tell "healthy idle" from "stopped / net
-    // down / timer broken". Cheap by design — no inventory, no prune, just proof of life.
+    // down / timer broken". Cheap by design — no inventory, no prune, just proof of life. But the
+    // delivery IS the whole point: if it can't reach the bot, do NOT let the scheduler (systemd
+    // timer) see a clean exit, or an unreachable bot stays masked behind a stale UI until someone
+    // notices. Signal failure with a non-zero exit code, matching the failed-report path.
     try {
       await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, planHash: manifest.planHash });
-    } catch (err) { ctx.log(`heartbeat report failed: ${err.message}`); }
-    return { skipped: true, heartbeat: true, planHash: manifest.planHash };
+      return { skipped: true, heartbeat: true, planHash: manifest.planHash };
+    } catch (err) {
+      ctx.log(`heartbeat report failed: ${err.message}`);
+      process.exitCode = 1;
+      return { skipped: true, heartbeat: false, error: err.message, planHash: manifest.planHash };
+    }
   }
   if (recovered) ctx.log(`media drive recovered — reporting to clear the bot's drive-missing state`);
 

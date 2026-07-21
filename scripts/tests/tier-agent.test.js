@@ -33,8 +33,13 @@ const { renderSyncthingStignore, computePlanHash } = require('../../src/tier');
     if (req.headers.authorization !== 'Bearer test-token') return res.status(401).json({ error: 'Unauthorized' });
     next();
   };
+  let failReports = false; // toggle to simulate an unreachable/erroring bot on the report endpoint
   bot.get('/agent/manifest/:node', requireToken, (_req, res) => res.json(manifest));
-  bot.post('/agent/report/:node', requireToken, (req, res) => { reports.push(req.body); res.json({ ok: true }); });
+  bot.post('/agent/report/:node', requireToken, (req, res) => {
+    if (failReports) return res.status(503).json({ error: 'bot down' });
+    reports.push(req.body);
+    res.json({ ok: true });
+  });
   const botSrv = await new Promise(r => { const s = bot.listen(0, () => r(s)); });
 
   // --- mock Syncthing ---
@@ -135,6 +140,20 @@ const { renderSyncthingStignore, computePlanHash } = require('../../src/tier');
   const r5 = await runOnce(ctx);
   assert.strictEqual(r5.converged, true, 'retry after abort converges');
   assert.ok(!fs.existsSync(path.join(folderRoot, 'movies/Another Old (1999)')), 'pruned on the healthy retry');
+
+  // --- heartbeat delivery failure must not read as a clean run ---
+  // r5 pruned a file, so r6 reports the post-prune inventory delta (a full report), and r7 is then a
+  // true no-op that only heartbeats. Make the report endpoint fail on r7: the undeliverable
+  // heartbeat must set a non-zero exit code, not a masked "clean skip" the systemd timer trusts.
+  await runOnce(ctx);                       // r6: settle the post-prune inventory
+  process.exitCode = 0;
+  failReports = true;
+  const r7 = await runOnce(ctx);
+  assert.strictEqual(r7.skipped, true, 'r7 is still a no-op run');
+  assert.strictEqual(r7.heartbeat, false, 'an undeliverable heartbeat is not reported as healthy');
+  assert.strictEqual(process.exitCode, 1, 'undeliverable heartbeat sets a non-zero exit code');
+  process.exitCode = 0;
+  failReports = false;
 
   botSrv.close();
   stSrv.close();

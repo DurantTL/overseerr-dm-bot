@@ -871,13 +871,16 @@ function recordTierAgentReport(node, { inventoryStored = false, errors = [] } = 
   return rec;
 }
 
-// §op Heartbeat: bump the liveness timestamp on ANY inbound agent contact (a lightweight no-op
-// heartbeat, a drive-missing report, or a full report). Intentionally touches nothing else — a
-// no-op run has no inventory, no convergence, and no errors to record; it only proves the agent's
-// timer fired and it could reach the bot. Surfaced as last-heartbeat age on the status surfaces.
-function recordTierAgentHeartbeat(node) {
+// §op Heartbeat: bump the liveness timestamp on a lightweight agent contact (a clean no-op
+// heartbeat or a drive-missing report). Proves the agent's timer fired and it reached the bot.
+// `errors` sets the surfaced error state so a heartbeat can carry a degraded status (e.g. a
+// drive-missing run is proof of life but NOT healthy — its mount errors must show as warn/⚠️, not
+// a clean "recently checked in"). Pass `[]` on a clean no-op to clear any stale errors; omit it to
+// leave the last recorded errors untouched. Inventory/convergence are never touched here.
+function recordTierAgentHeartbeat(node, { errors } = {}) {
   const rec = getTierPlan(node) || emptyTierPlan();
   rec.lastHeartbeatAt = Date.now();
+  if (errors !== undefined) rec.lastErrors = Array.isArray(errors) ? errors.slice(0, 10) : [];
   writeTierPlan(node, rec);
   return rec;
 }
