@@ -56,7 +56,7 @@ operator screens retain `Overseerr` where that compatibility context is useful.
   PR and gates the image build.
 - User self-service commands (`/request`, `/request-status`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`).
 - Health endpoints (`/health` and authenticated `/admin/health`) plus `/doctor` and
-  `npm run doctor:edge` for read-only California → Philippines transfer checks.
+  `npm run doctor:edge` for read-only Main → Philippines transfer checks.
 
 ## Architecture
 Discord events + slash commands are handled in the bot process, which also runs an Express server for webhooks, download streaming, health, and dashboard routes. State is stored in SQLite at `/app/data/plex_invites.db`.
@@ -616,7 +616,7 @@ Setup:
    `STAGE_RCLONE_FLAGS=--config /app/data/rclone.conf`.
 4. `STAGING_ENABLED=true`, and set `STAGE_CACHE_MAX_GB` if the remote can't answer `rclone about`.
 5. Run `npm run doctor:edge` on the bot host (or `/doctor` in Discord). Do not enable automatic
-   promotion until California source, Philippines cache read, tunnel, and free-space checks pass.
+   promotion until the Main source, Philippines cache read, tunnel, and free-space checks pass.
 
 ### One server per person
 Plex does **not** sync watch state between servers — separate Continue Watching, separate watched

@@ -1720,7 +1720,7 @@ async function runStageJob(job) {
     if (evicted.length) {
       notifyChannel('cleanup', { embeds: [brandedEmbed(COLORS.WARN)
         .setTitle('📤 Evicted From PH Cache')
-        .setDescription(`Freed ${fmtSpace(evicted.reduce((a, i) => a + (i.size_bytes || 0), 0))} to make room for **${job.title}**:\n${evicted.map(i => `• **${i.title}**`).join('\n').slice(0, 3500)}\n\nThe master copies in California are untouched — anything evicted can be re-staged with \`/stage\`.`)] });
+        .setDescription(`Freed ${fmtSpace(evicted.reduce((a, i) => a + (i.size_bytes || 0), 0))} to make room for **${job.title}**:\n${evicted.map(i => `• **${i.title}**`).join('\n').slice(0, 3500)}\n\nThe Main copies are untouched — anything evicted can be re-staged with \`/stage\`.`)] });
     }
     // A failed purge means the space it was supposed to free doesn't exist. Re-check before
     // copying; anything short of a clean pass fails the job instead of filling the drive.
@@ -1868,7 +1868,7 @@ const slashCommands = [
   new SlashCommandBuilder().setName('unlink').setDescription('Unlink a user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)),
   new SlashCommandBuilder().setName('users').setDescription('List linked users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('status').setDescription('Show status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-  new SlashCommandBuilder().setName('doctor').setDescription('Read-only setup and California → Philippines transfer checks').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('doctor').setDescription('Read-only setup and Main → Philippines transfer checks').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('seerr-test').setDescription('Self-test Seerr Discord linking with a throwaway user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addBooleanOption(o => o.setName('keep').setDescription('Keep the test user in Seerr so you can inspect its Discord settings')),
   new SlashCommandBuilder().setName('sync').setDescription('Sync users safely').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(true).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
   new SlashCommandBuilder().setName('sync-fix').setDescription('Resolve sync issues found in the preview').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('target').setDescription('Category to fix').setRequired(true).addChoices({ name: 'placeholders', value: 'placeholders' }, { name: 'duplicates', value: 'duplicates' }, { name: 'orphans', value: 'orphans' }, { name: 'mergeemails', value: 'mergeemails' }, { name: 'links', value: 'links' })),
@@ -1920,7 +1920,7 @@ const slashCommands = [
   new SlashCommandBuilder().setName('stage-bulk').setDescription('Seed the travel cache from a list of titles (one per line)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('assign-server').setDescription('Set which Plex server a user belongs to (drives invites + auto-staging)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addUserOption(o => o.setName('user').setDescription('User').setRequired(true))
-    .addStringOption(o => o.setName('server').setDescription('Home server').setRequired(true).addChoices({ name: 'primary (master library)', value: 'primary' }, { name: 'ph (travel cache box)', value: 'ph' })),
+    .addStringOption(o => o.setName('server').setDescription('Home server').setRequired(true).addChoices({ name: 'Main', value: 'primary' }, { name: 'Philippines', value: 'ph' })),
   new SlashCommandBuilder().setName('me').setDescription('Show your linked profile'),
   new SlashCommandBuilder().setName('myrequests').setDescription('Show your recent requests'),
   new SlashCommandBuilder().setName('downloads').setDescription('Show your active download links'),
@@ -2770,7 +2770,7 @@ async function handleDoctorCommand(interaction) {
   const warnings = checks.filter(c => c.status === 'warn').length;
   audit('edge_diagnostics_run', { actorDiscordId: interaction.user.id, failures, warnings });
   const embed = brandedEmbed(failures ? COLORS.DANGER : warnings ? COLORS.WARN : COLORS.SUCCESS)
-    .setTitle('🩺 California → Philippines Transfer Doctor')
+    .setTitle('🩺 Main → Philippines Transfer Doctor')
     .setDescription(checks.map(c => `${icon(c.status)} **${c.name}** — ${String(c.detail).slice(0, 350)}`).join('\n').slice(0, 4000))
     .setFooter({ text: 'Durant Media Server · Read-only: no files were copied, changed, or deleted.' });
   await interaction.editReply({ embeds: [embed] });
@@ -3392,7 +3392,7 @@ async function handleRequestStatusCommand(interaction) {
   const lines = [`**1 · Submitted**  ✅${isSnowflake(row.requested_by_discord_id) ? ` by <@${row.requested_by_discord_id}>` : ''}`];
   if (row.status === 'available') {
     lines.push('**2 · Approved**  ✅');
-    lines.push('**3 · Downloaded to California**  ✅');
+    lines.push('**3 · Downloaded to Main**  ✅');
     const requester = isSnowflake(row.requested_by_discord_id) ? getUserByDiscordId(row.requested_by_discord_id) : null;
     if (requester?.home_server === 'ph' && stagingConfigured()) {
       const staged = getStagedItem(row.media_id);
@@ -3400,7 +3400,7 @@ async function handleRequestStatusCommand(interaction) {
       if (staged) lines.push('**4 · Philippines edge delivery**  ✅ Warm and ready to play 🍿');
       else if (stageJob?.status === 'copying') lines.push(`**4 · Philippines edge delivery**  📥 Copying now${stageJob.started_at ? ` since ${discordTimestamp(stageJob.started_at)}` : ''}`);
       else if (stageJob) lines.push('**4 · Philippines edge delivery**  ⏳ Queued for transfer');
-      else lines.push('**4 · Philippines edge delivery**  ⏸️ Available in California but not cached yet — use `/stage` to copy it to your edge server.');
+      else lines.push('**4 · Philippines edge delivery**  ⏸️ Available on Main but not cached yet — use `/stage` to copy it to your edge server.');
     } else {
       lines.push('**4 · Ready on Plex**  ✅ Go watch it! 🍿');
     }
@@ -3888,7 +3888,7 @@ async function handleMeCommand(interaction) {
       .setDescription('You aren\'t linked to a Plex account yet.\nDM me your Plex email to request access!')], ephemeral: true });
   }
   const requestCount = db.prepare('SELECT COUNT(*) AS c FROM requests WHERE requested_by_discord_id = ?').get(interaction.user.id).c;
-  const homeServer = row.home_server === 'ph' ? 'Philippines edge server' : 'California primary server';
+  const homeServer = row.home_server === 'ph' ? 'Philippines' : 'Main';
   const accessReady = !!(row.invited && row.overseerr_created);
   const checklist = [
     `1. ${row.invited ? '✅' : '⏳'} Plex invitation ${row.invited ? 'sent — accept it from your Plex email if you have not already' : 'has not been sent yet'}`,
@@ -4083,16 +4083,17 @@ async function handleAssignServerCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
   const target = interaction.options.getUser('user');
   const server = interaction.options.getString('server', true);
+  const serverLabel = server === 'ph' ? 'Philippines' : 'Main';
   const row = getUserByDiscordId(target.id);
   if (!row) return interaction.reply({ content: `⚠️ ${target.tag} isn't in the DB — \`/link\` them first.`, ephemeral: true });
-  if ((row.home_server || 'primary') === server) return interaction.reply({ content: `ℹ️ ${target.tag} is already on **${server}**.`, ephemeral: true });
+  if ((row.home_server || 'primary') === server) return interaction.reply({ content: `ℹ️ ${target.tag} is already assigned to **${serverLabel}**.`, ephemeral: true });
   setUserHomeServer(target.id, server);
   audit('user_home_server_changed', { actorDiscordId: interaction.user.id, targetDiscordId: target.id, from: row.home_server || 'primary', to: server });
   const notes = [
-    `✅ ${target.tag} is now a **${server}** user${server === 'ph' ? ' — their finished-request titles will auto-stage to the travel cache' : ''}.`,
+    `✅ ${target.tag} is now assigned to **${serverLabel}**${server === 'ph' ? ' — their finished-request titles will auto-stage to the travel cache' : ''}.`,
   ];
   if (row.invited) {
-    notes.push(`⚠️ They were already invited under the old assignment. Send a fresh invite to the ${server === 'ph' ? 'PH box' : 'primary'} with \`/reinvite\`, and remove their share on the old server from plex.tv if they shouldn't keep it (watch state doesn't sync between servers).`);
+    notes.push(`⚠️ They were already invited under the old assignment. Send a fresh invite to the ${server === 'ph' ? 'Philippines server' : 'Main servers'} with \`/reinvite\`, and remove their share on the old server from plex.tv if they shouldn't keep it (watch state doesn't sync between servers).`);
   }
   return interaction.reply({ content: notes.join('\n'), ephemeral: true });
 }
@@ -4130,7 +4131,7 @@ async function handleHelpCommand(interaction) {
     ];
     const operationsCommands = [
       '`/status` — Show system health and stats',
-      '`/doctor` — Run read-only California → Philippines transfer and configuration checks',
+      '`/doctor` — Run read-only Main → Philippines transfer and configuration checks',
       '`/requests` — Show the most recent Seerr requests',
       '`/cleanup` — Remove deleted Seerr users',
       '`/audit` — Query the audit log',
@@ -5176,7 +5177,7 @@ async function handleButton(interaction) {
     await interaction.deferUpdate();
     const ok = await evictStagedItemNow(staged, { actorDiscordId: interaction.user.id, reason: 'evict_button' });
     if (!ok) return interaction.followUp({ content: '❌ Eviction failed (rclone error) — the buttons still work, try again.', ephemeral: true });
-    return interaction.editReply({ content: `📤 Evicted **${staged.title}** — freed ${fmtSpace(staged.size_bytes)} on the travel server. The California master is untouched; \`/stage\` brings it back anytime.`, components: [] });
+    return interaction.editReply({ content: `📤 Evicted **${staged.title}** — freed ${fmtSpace(staged.size_bytes)} on the travel server. The Main copies are untouched; \`/stage\` brings it back anytime.`, components: [] });
   }
 
   // Retry button on stage-failure alerts (system channel — admin only).
@@ -6183,7 +6184,7 @@ async function handleOverseerrWebhook(body) {
   }
 
   if (notification_type === 'MEDIA_AVAILABLE' && requesterDiscordId) {
-    // Close the loop for PH users: the import just finished in California, so kick the cache
+    // Close the loop for PH users: the import just finished on Main, so kick the cache
     // copy now instead of making them /stage a title Overseerr already calls "Available".
     let autoStaged = false;
     if (stagingConfigured() && homeServerFor(requesterDiscordId) === 'ph' && !getStagedItem(mediaId)) {
@@ -6364,7 +6365,7 @@ async function handlePhPlayStart({ mediaId, title, mediaType, watcherEmail, watc
 
 // A playback event from the PH box. Any event bumps the LRU clock for a cached title; a
 // finished watch re-uses the familiar 90% prompt UX, but pointed at the CACHE: "Yes" frees
-// local cache space and the master file in California is untouched either way.
+// local cache space and the Main copies are untouched either way.
 async function handlePhWatchedEvent({ event, mediaId, title, mediaType, watcherEmail }) {
   const staged = getStagedItem(mediaId);
   if (!staged) return; // not cache-managed (e.g. pre-seeded by hand) — nothing to track or evict
@@ -6392,7 +6393,7 @@ async function handlePhWatchedEvent({ event, mediaId, title, mediaType, watcherE
   );
   await channel.send({ content: `<@${targetId}>`, embeds: [brandedEmbed(COLORS.WARN)
     .setTitle(`${mediaTypeEmoji(mediaType, false)} Finished Watching (Travel Server)`)
-    .setDescription(`Looks like you finished **${staged.title || title}**. Free up ${fmtSpace(staged.size_bytes)} of cache space?\n\nEither way the master copy in California is untouched — \`/stage\` brings it back anytime.`)], components: [row] });
+    .setDescription(`Looks like you finished **${staged.title || title}**. Free up ${fmtSpace(staged.size_bytes)} of cache space?\n\nEither way the Main copies are untouched — \`/stage\` brings it back anytime.`)], components: [row] });
   audit('evict_prompt_sent', { mediaId, title: staged.title || title, targetDiscordId: targetId });
 }
 
