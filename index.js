@@ -4070,7 +4070,12 @@ async function buildTierPlans() {
   const memberRequests = {};
   const prevPlans = {};
   for (const n of enabled) {
-    if (n.demand_source === 'atime') atimeReports[n.name] = listTierNodeFiles(n.name);
+    // Every non-full edge node needs its reported file inventory so the planner can score by
+    // local atime. For `atime` nodes it's the whole signal; for `plex` nodes it's the per-title
+    // fallback the scorer uses whenever the node's PMS has no view record for a title (§R2.2).
+    // Passing it only to `atime` nodes silently starved plex-mode of its documented fallback, so
+    // every unwatched-in-90d title scored 0 and eviction collapsed to size-only ordering.
+    if (!n.full) atimeReports[n.name] = listTierNodeFiles(n.name);
     if (n.access === 'restricted') {
       memberRequests[n.name] = listRequestsByRequesters(listTierNodeMembers(n.name), CONFIG.TIER_REQUEST_GRACE_DAYS);
     }

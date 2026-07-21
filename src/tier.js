@@ -78,7 +78,6 @@ function computeUniversalCore(historiesByNode, k) {
 // remap = arr.remapPath (injected to keep this module free of the db-touching arr module).
 async function fetchTierInventory({ sources, remap, sourceRoot, onError }) {
   const items = [];
-  const now = Date.now();
   for (const s of sources) {
     try {
       if (s.kind === 'movie') {
@@ -90,7 +89,10 @@ async function fetchTierInventory({ sources, remap, sourceRoot, onError }) {
             title: `${m.title}${s.label === 'radarr-4k' ? ' (4K)' : ''}`,
             mediaType: 'movie',
             sizeBytes: m.sizeOnDisk,
-            addedAt: Date.parse(m.movieFile?.dateAdded || m.added || '') || now,
+            // A missing/invalid added date is UNKNOWN, not "added now" — falling back to `now`
+            // makes genuinely old content look brand-new and win the fresh-grace force-keep,
+            // displacing real demand. `null` simply means "no freshness signal" (see planNode).
+            addedAt: Date.parse(m.movieFile?.dateAdded || m.added || '') || null,
             // path = full remapped on-disk path (for multi-folder resolution against each node's
             // folder roots); relPath = source-root-relative (legacy single-folder manifests).
             path: remap(m.path),
@@ -107,7 +109,8 @@ async function fetchTierInventory({ sources, remap, sourceRoot, onError }) {
             title: t.title,
             mediaType: 'tv',
             sizeBytes: size,
-            addedAt: Date.parse(t.added || '') || now,
+            // Missing/invalid added date → null ("unknown"), not `now` (see the movie branch).
+            addedAt: Date.parse(t.added || '') || null,
             path: remap(t.path),
             relPath: toRelPath(remap(t.path), sourceRoot),
           });
@@ -367,7 +370,12 @@ function planNode({ node, inventory, values, floorIds, coreIds = new Set(), prev
   let keptBytes = [...keepSet].reduce((a, e) => a + e.sizeBytes, 0);
   const evicted = new Set();
   const evictable = e => keepSet.has(e) && !evicted.has(e) && !floor.has(e.mediaId) && !e.warm && !e.fresh;
-  const coldFirst = (a, b) => (a.value - b.value) || (a.sizeBytes - b.sizeBytes);
+  // Eviction order: coldest first, then LARGER first when demand is tied. When many titles carry
+  // the same score (the common case once a 90-day history window empties out), freeing the space
+  // with a few big victims beats shredding dozens of small ones — fewer titles churn per apply and
+  // the same bytes are recovered. (Admission below still prefers SMALLER on a value tie, to pack
+  // more useful titles into the cache — the two goals want opposite size orderings.)
+  const coldFirst = (a, b) => (a.value - b.value) || (b.sizeBytes - a.sizeBytes);
 
   // 1) If the carried-over keep-set already busts the budget (shrunk node, grown floor),
   //    evict coldest-first just enough to fit.
