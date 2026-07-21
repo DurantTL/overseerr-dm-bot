@@ -12,9 +12,9 @@ const { loadSandbox } = require('./extract');
   // --- classifyServerIdentity (pure; cfg injected) ---
   const sb = loadSandbox(['classifyServerIdentity', 'evictionOrder', 'planCacheSpace', 'planPlayPromotion'], {});
   const classify = (ids, cfg) => sb.run(`classifyServerIdentity(${JSON.stringify(ids)}, ${JSON.stringify(cfg)})`);
-  const none = { phNames: [], primaryNames: [] };
-  const phOnly = { phNames: ['ph-box'], primaryNames: [] };
-  const both = { phNames: ['ph-box'], primaryNames: ['durant-master'] };
+  const none = { phNames: [], caEdgeNames: [], primaryNames: [] };
+  const phOnly = { phNames: ['ph-box'], caEdgeNames: [], primaryNames: [] };
+  const both = { phNames: ['ph-box'], caEdgeNames: ['california-cache'], primaryNames: ['durant-master'] };
 
   assert.strictEqual(classify({}, none), 'primary', 'feature off → legacy primary');
   assert.strictEqual(classify({ serverName: 'anything' }, none), 'primary', 'feature off ignores names');
@@ -24,6 +24,8 @@ const { loadSandbox } = require('./extract');
   assert.strictEqual(classify({ serverName: '' }, phOnly), 'unknown', 'blank identity → unknown');
   assert.strictEqual(classify({ serverName: 'durant-master' }, phOnly), 'primary', 'named non-PH server → primary when primary list unset');
   assert.strictEqual(classify({ serverName: 'durant-master' }, both), 'primary', 'strict primary match');
+  assert.strictEqual(classify({ serverName: 'California-Cache' }, both), 'ca-edge', 'California edge is distinct from full Main storage');
+  assert.strictEqual(classify({ machineId: 'california-cache' }, both), 'ca-edge', 'California machine id matches too');
   assert.strictEqual(classify({ serverName: 'neighbors-server' }, both), 'unknown', 'strict mode: unrecognized name → unknown');
   assert.strictEqual(classify({ serverName: 'ph-box', machineId: 'zzz' }, both), 'ph', 'PH wins when either id matches');
 

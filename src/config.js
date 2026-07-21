@@ -16,6 +16,7 @@ const CONFIG = {
   ADMIN_USER_ID: process.env.ADMIN_USER_ID,
   OVERSEERR_URL: (process.env.OVERSEERR_URL || '').replace(/\/$/, ''),
   OVERSEERR_API_KEY: process.env.OVERSEERR_API_KEY,
+  REQUEST_RECONCILE_MINUTES: Number.parseInt(process.env.REQUEST_RECONCILE_MINUTES || '15', 10),
   WEBHOOK_SECRET: process.env.WEBHOOK_SECRET || '',
   PLEX_TOKEN: process.env.PLEX_TOKEN || '',
   PLEX_USERNAME: process.env.PLEX_USERNAME || '',
@@ -152,9 +153,11 @@ const CONFIG = {
   // PH playback event trigger anything destructive against the master library.
   STAGING_ENABLED: parseBool(process.env.STAGING_ENABLED, false),
   // Server identities as they appear in Tautulli ({server_name}/{machine_id}) and Plex webhook
-  // payloads (Server.title/uuid), lowercased. PH_SERVER_NAMES marks the remote cache box;
-  // PRIMARY_SERVER_NAMES (optional) strictly pins the master. See README "Plex Home staging".
+  // payloads (Server.title/uuid), lowercased. PH_SERVER_NAMES marks the Philippines cache box,
+  // CA_EDGE_SERVER_NAMES marks the California cache/fallback node, and PRIMARY_SERVER_NAMES
+  // strictly identifies only full Main storage servers. Viewing groups remain Main/Philippines.
   PH_SERVER_NAMES: (process.env.PH_SERVER_NAMES || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+  CA_EDGE_SERVER_NAMES: (process.env.CA_EDGE_SERVER_NAMES || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
   PRIMARY_SERVER_NAMES: (process.env.PRIMARY_SERVER_NAMES || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
   // rclone destination root for the cache, e.g. `phbox:/cache` or `phbox:cache`.
   STAGE_RCLONE_REMOTE: (process.env.STAGE_RCLONE_REMOTE || '').replace(/\/$/, ''),
@@ -248,8 +251,13 @@ function validateConfig() {
   if (CONFIG.ENABLE_DELETION && !CONFIG.DELETION_DRY_RUN && (!CONFIG.WEBHOOK_SECRET || !CONFIG.TAUTULLI_WEBHOOK_SECRET)) {
     throw new Error('Live deletion requires both WEBHOOK_SECRET and TAUTULLI_WEBHOOK_SECRET; unauthenticated playback webhooks must never arm destructive actions');
   }
-  if (CONFIG.ENABLE_DELETION && !CONFIG.DELETION_DRY_RUN && CONFIG.PH_SERVER_NAMES.length && !CONFIG.PRIMARY_SERVER_NAMES.length) {
-    throw new Error('Live deletion with a Philippines edge requires PRIMARY_SERVER_NAMES so only explicitly identified Main servers can arm deletion');
+  if (CONFIG.ENABLE_DELETION && !CONFIG.DELETION_DRY_RUN && (CONFIG.PH_SERVER_NAMES.length || CONFIG.CA_EDGE_SERVER_NAMES.length) && !CONFIG.PRIMARY_SERVER_NAMES.length) {
+    throw new Error('Live deletion with edge servers requires PRIMARY_SERVER_NAMES so only explicitly identified full Main servers can arm deletion');
+  }
+  if (CONFIG.ENABLE_DELETION && !CONFIG.DELETION_DRY_RUN) {
+    const identities = [...CONFIG.PH_SERVER_NAMES, ...CONFIG.CA_EDGE_SERVER_NAMES, ...CONFIG.PRIMARY_SERVER_NAMES];
+    const duplicate = identities.find((id, index) => identities.indexOf(id) !== index);
+    if (duplicate) throw new Error(`Live deletion refuses overlapping server identity '${duplicate}'; PH_SERVER_NAMES, CA_EDGE_SERVER_NAMES, and PRIMARY_SERVER_NAMES must be disjoint`);
   }
 }
 
@@ -297,12 +305,23 @@ function configWarnings() {
   if (CONFIG.STAGING_ENABLED && !CONFIG.PH_SERVER_NAMES.length) {
     warnings.push('`STAGING_ENABLED=true` but `PH_SERVER_NAMES` is unset — webhook events from the cache box are indistinguishable from the master, so a PH viewer finishing a movie could trigger a **delete prompt against the master library**. Set it before the box goes live.');
   }
-  if (CONFIG.PH_SERVER_NAMES.length) {
-    warnings.push('`PH_SERVER_NAMES` is set: Tautulli/Plex webhook payloads that carry **no** server identity are now skipped as a fail-safe. Make sure every Tautulli notification payload includes `server_name`/`machine_id` (see README "Plex Home staging") or the finished-watching prompts stop firing.');
+  if (CONFIG.PH_SERVER_NAMES.length || CONFIG.CA_EDGE_SERVER_NAMES.length) {
+    warnings.push('An edge identity list is set: Tautulli/Plex webhook payloads that carry **no** server identity are now skipped as a fail-safe. Make sure every Tautulli notification payload includes `server_name`/`machine_id` or the finished-watching prompts stop firing.');
   }
-  const overlappingServers = CONFIG.PH_SERVER_NAMES.filter(id => CONFIG.PRIMARY_SERVER_NAMES.includes(id));
-  if (overlappingServers.length) {
-    warnings.push(`Server identities appear in both \`PH_SERVER_NAMES\` and \`PRIMARY_SERVER_NAMES\`: ${overlappingServers.join(', ')}. Remove the overlap before trusting webhook routing.`);
+  const lists = [
+    ['PH_SERVER_NAMES', CONFIG.PH_SERVER_NAMES],
+    ['CA_EDGE_SERVER_NAMES', CONFIG.CA_EDGE_SERVER_NAMES],
+    ['PRIMARY_SERVER_NAMES', CONFIG.PRIMARY_SERVER_NAMES],
+  ];
+  const overlaps = [];
+  for (let i = 0; i < lists.length; i++) {
+    for (let j = i + 1; j < lists.length; j++) {
+      const shared = lists[i][1].filter(id => lists[j][1].includes(id));
+      if (shared.length) overlaps.push(`${lists[i][0]} / ${lists[j][0]}: ${shared.join(', ')}`);
+    }
+  }
+  if (overlaps.length) {
+    warnings.push(`Server identities overlap between routing lists: ${overlaps.join('; ')}. Remove every overlap before trusting webhook routing.`);
   }
   return warnings;
 }

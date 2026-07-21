@@ -28,8 +28,10 @@ const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
 const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { reconcileRequestStatuses } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
+const { fetchSeerrRequests } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
 const { decideEscalationAction, escalationEligible } = require('./src/escalation');
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
@@ -1981,6 +1983,15 @@ async function registerSlashCommands() {
   log.ok(`Registered ${slashCommands.length} slash command(s)`);
 }
 
+async function sweepRequestStatuses() {
+  const remoteRequests = await fetchSeerrRequests();
+  const result = reconcileRequestStatuses(remoteRequests);
+  if (result.changed.length || result.repaired.length) {
+    log.info(`Reconciled request tracking: ${result.changed.length} status update(s), ${result.repaired.length} stale pending row(s) removed`);
+  }
+  return result;
+}
+
 client.once('ready', async () => {
   log.ok(`Discord bot online as ${client.user.tag}`);
   const warnings = configWarnings();
@@ -1998,6 +2009,11 @@ client.once('ready', async () => {
   rehydratePendingEmails();
   await registerSlashCommands();
   startExpressServer();
+  if (CONFIG.REQUEST_RECONCILE_MINUTES > 0) {
+    sweepRequestStatuses().catch(err => log.warn(`Request reconciliation failed: ${err.message}`));
+    setInterval(() => sweepRequestStatuses().catch(err => log.warn(`Request reconciliation failed: ${err.message}`)), CONFIG.REQUEST_RECONCILE_MINUTES * 60000).unref();
+    log.ok(`Seerr request reconciliation running every ${CONFIG.REQUEST_RECONCILE_MINUTES} min`);
+  }
   if (CONFIG.STUCK_CHECK_MINUTES > 0 && arrSources().length) {
     setInterval(() => sweepStuckDownloads().catch(err => log.warn(`Stuck-download sweep failed: ${err.message}`)), CONFIG.STUCK_CHECK_MINUTES * 60000).unref();
     log.ok(`Stuck-download watchdog running every ${CONFIG.STUCK_CHECK_MINUTES} min (threshold ${CONFIG.STUCK_AFTER_MINUTES} min)`);
@@ -2770,7 +2786,7 @@ async function handleDoctorCommand(interaction) {
   const warnings = checks.filter(c => c.status === 'warn').length;
   audit('edge_diagnostics_run', { actorDiscordId: interaction.user.id, failures, warnings });
   const embed = brandedEmbed(failures ? COLORS.DANGER : warnings ? COLORS.WARN : COLORS.SUCCESS)
-    .setTitle('🩺 Main → Philippines Transfer Doctor')
+    .setTitle('🩺 Main → Edge Transfer Doctor')
     .setDescription(checks.map(c => `${icon(c.status)} **${c.name}** — ${String(c.detail).slice(0, 350)}`).join('\n').slice(0, 4000))
     .setFooter({ text: 'Durant Media Server · Read-only: no files were copied, changed, or deleted.' });
   await interaction.editReply({ embeds: [embed] });
@@ -5239,9 +5255,9 @@ async function handleButton(interaction) {
 }
 
 async function gatherHealth() {
-  const checks = { overall: 'ok', timestamp: new Date().toISOString() };
+  const checks = { overall: 'ok', timestamp: new Date().toISOString(), errors: {} };
   checks.discord = client.isReady() ? 'ok' : 'down';
-  try { db.prepare('SELECT 1').get(); checks.sqlite = 'ok'; } catch (_e) { checks.sqlite = 'down'; }
+  try { db.prepare('SELECT 1').get(); checks.sqlite = 'ok'; } catch (e) { checks.sqlite = 'down'; checks.errors.sqlite = e.message; }
   checks.raidPath = fs.existsSync(CONFIG.RAID_PATH) ? 'ok' : 'down';
   checks.tunnelDomain = CONFIG.TUNNEL_DOMAIN ? 'configured' : 'missing';
 
@@ -5251,6 +5267,7 @@ async function gatherHealth() {
       checks[name] = out === 'skipped' ? 'skipped' : 'ok';
     } catch (e) {
       checks[name] = 'down';
+      checks.errors[name] = String(e.response?.data?.message || e.code || e.message || 'unknown error').slice(0, 240);
       audit('external_api_error', { provider: name, error: e.message });
     }
   }
@@ -5264,7 +5281,7 @@ async function gatherHealth() {
     apiCheck('byparr', async () => { if (!CONFIG.BYPARR_URL) return 'skipped'; await axios.get(`${CONFIG.BYPARR_URL}/health`, { timeout: 5000 }); }),
   ]);
 
-  const failed = Object.entries(checks).filter(([k, v]) => !['overall', 'timestamp', 'tunnelDomain'].includes(k) && !['ok','configured','skipped'].includes(v));
+  const failed = Object.entries(checks).filter(([k, v]) => !['overall', 'timestamp', 'tunnelDomain', 'errors'].includes(k) && !['ok','configured','skipped'].includes(v));
   checks.overall = failed.length ? 'degraded' : 'ok';
   return checks;
 }
@@ -5320,8 +5337,12 @@ function startExpressServer() {
     try {
       if (publicHealthCache.value && Date.now() - publicHealthCache.at < 30000) return res.json(publicHealthCache.value);
       publicHealthCache.pending ||= gatherHealth().then(value => {
-        publicHealthCache = { at: Date.now(), value, pending: null };
-        return value;
+        // Public health drives container checks; keep internal integration error text behind the
+        // authenticated dashboard so hostnames and network details are not exposed.
+        const publicValue = { ...value };
+        delete publicValue.errors;
+        publicHealthCache = { at: Date.now(), value: publicValue, pending: null };
+        return publicValue;
       }).catch(err => {
         publicHealthCache.pending = null;
         throw err;
@@ -5600,11 +5621,12 @@ function startExpressServer() {
       const now = Date.now();
       // Live activity: every external read is failure-tolerant so one dead integration never
       // takes the dashboard down — null means "couldn't reach it", rendered as such.
-      const [health, sessions, queue, disks] = await Promise.all([
+      const [health, sessions, queue, disks, edgeChecks] = await Promise.all([
         gatherHealth(),
         tautulliConfigured() ? tautulliApi('get_activity').then(d => d?.sessions || []).catch(() => null) : Promise.resolve(null),
         arrSources().length ? fetchArrQueues().catch(() => null) : Promise.resolve(null),
         arrSources().length ? fetchDiskSpace().catch(() => null) : Promise.resolve(null),
+        runEdgeDiagnostics({ live: false }).catch(() => []),
       ]);
       const grabJobs = listActiveGrabJobs();
       const stageJobs = listActiveStageJobs();
@@ -5621,8 +5643,9 @@ function startExpressServer() {
       }
 
       const pendingPlex = db.prepare('SELECT * FROM users WHERE invited = 0 ORDER BY requested_at DESC LIMIT 25').all();
-      const pendingRequests = db.prepare('SELECT * FROM requests WHERE status = ? ORDER BY id DESC LIMIT 25').all('pending');
-      const linkedUsers = db.prepare('SELECT discord_id, email, invited, requested_at FROM users ORDER BY requested_at DESC LIMIT 100').all();
+      const pendingRequestCount = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get().c;
+      const recentRequests = db.prepare('SELECT * FROM requests ORDER BY id DESC LIMIT 50').all();
+      const linkedUsers = db.prepare('SELECT discord_id, email, invited, requested_at, home_server FROM users ORDER BY requested_at DESC LIMIT 100').all();
       const recentDownloads = db.prepare('SELECT * FROM download_access_log ORDER BY id DESC LIMIT 25').all();
       const auditRows = db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 50').all();
       const linkedTotal = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
@@ -5634,7 +5657,7 @@ function startExpressServer() {
         renderStat('Active jobs', grabJobs.length + stageJobs.length),
         renderStat('Watching', escalations.length),
         renderStat('Tier nodes', `${tierNodes.filter(n => n.enabled).length}/${tierNodes.length}`),
-        renderStat('Pending requests', pendingRequests.length),
+        renderStat('Pending requests', pendingRequestCount),
         renderStat('Linked users', linkedTotal),
         renderStat('Download links', activeLinks),
       ].join('');
@@ -5717,8 +5740,8 @@ function startExpressServer() {
       });
 
       const plexUserRows = pendingPlex.map(u => ({ email: u.email, discord: u.discord_id, requested: fmtAgo(u.requested_at) }));
-      const requestRows = pendingRequests.map(r => ({ title: r.title, type: mediaTypeLabel(r.media_type, r.is_4k), requester: r.requested_by_discord_id || '—', when: fmtAgo(sqliteUtcMs(r.created_at)) }));
-      const linkedRows = linkedUsers.map(u => ({ email: u.email, discord: u.discord_id, invited: u.invited ? '✅' : '⏳', since: fmtAgo(u.requested_at) }));
+      const requestRows = recentRequests.map(r => ({ title: r.title, status: r.status, type: mediaTypeLabel(r.media_type, r.is_4k), seerr: r.overseerr_request_id || 'provisional', requester: r.requested_by_discord_id || '—', when: fmtAgo(sqliteUtcMs(r.created_at)) }));
+      const linkedRows = linkedUsers.map(u => ({ email: u.email, discord: u.discord_id, group: u.home_server === 'ph' ? 'Philippines' : 'Main', invited: u.invited ? '✅' : '⏳', since: fmtAgo(u.requested_at) }));
       const downloadRows = recentDownloads.map(d => ({ when: fmtAgo(sqliteUtcMs(d.created_at)), file: (d.file_path || '').split('/').pop() || '—', status: d.status, sent: d.bytes_sent ? fmtSpace(d.bytes_sent) : '', ip: d.ip || '' }));
       const auditTableRows = auditRows.map(a => ({ when: fmtAgo(sqliteUtcMs(a.created_at)), action: a.action, details: String(a.metadata_json || '').slice(0, 160) }));
 
@@ -5734,6 +5757,7 @@ function startExpressServer() {
         <div class="card">
           <h2>Integrations</h2>
           <div class="badges">${renderHealthBadges(health)}</div>
+          ${Object.keys(health.errors || {}).length ? renderItemList(Object.entries(health.errors).map(([name, error]) => ({ state: 'down', title: name, sub: error })), '') : ''}
         </div>
         <div class="card" id="now">
           <h2>▶️ Now Streaming</h2>
@@ -5755,6 +5779,10 @@ function startExpressServer() {
           <h2>📦 Tier Nodes</h2>
           ${renderItemList(tierItems, 'No tier nodes registered — /tier-node add creates one.')}
         </div>
+        <div class="card">
+          <h2>🩺 Edge Readiness</h2>
+          ${renderItemList(edgeChecks.map(c => ({ state: c.status === 'fail' ? 'down' : c.status, title: c.name, sub: c.detail })), 'No edge checks available.')}
+        </div>
         <div class="card" id="disks">
           <h2>💾 Disk Space</h2>
           ${disks === null ? unavailable('*arr diskspace') : renderItemList(diskItems, 'No disks reported.')}
@@ -5763,6 +5791,7 @@ function startExpressServer() {
           <h2>Manual Actions</h2>
           <div class="actions">
             <a class="btn" href="/admin/health">Health JSON</a>
+            <a class="btn" href="/admin/doctor">Edge Doctor JSON</a>
             <a class="btn" href="/admin/action/sync-preview">Sync Preview</a>
             <a class="btn" href="/admin/action/cleanup-preview">Cleanup Preview</a>
             <button class="btn danger" type="button" onclick="revokeAll()">Revoke All Download Links</button>
@@ -5777,7 +5806,7 @@ function startExpressServer() {
           ${renderTable(linkedRows)}
         </div>
         <div class="card" id="requests">
-          <h2>Pending Media Requests</h2>
+          <h2>Recent Media Requests</h2>
           ${renderTable(requestRows)}
         </div>
         <div class="card">
@@ -5800,6 +5829,7 @@ function startExpressServer() {
     });
 
     app.get('/admin/health', dashboardAuth, async (_req, res) => res.json(await gatherHealth()));
+    app.get('/admin/doctor', dashboardAuth, async (_req, res) => res.json({ checks: await runEdgeDiagnostics({ live: true }), tierNodes: listTierNodes().map(n => ({ name: n.name, enabled: !!n.enabled, full: !!n.full, usableBytes: n.usable_bytes })) }));
     app.get('/admin/action/sync-preview', dashboardAuth, async (_req, res) => res.json(await buildSyncPreview()));
     app.get('/admin/action/cleanup-preview', dashboardAuth, async (_req, res) => {
       const users = await fetchOverseerrUsers().catch(() => []);
@@ -6217,6 +6247,13 @@ async function handlePlexWebhook(payload) {
     audit('webhook_server_unmatched', { source: 'plex', serverName: Server?.title || null, machineId: Server?.uuid || null, event });
     return;
   }
+  if (origin === 'ca-edge') {
+    // California is in the Main viewing group, but it is a constrained cache/fallback node.
+    // Its storage is managed by the tier agent; playback must never arm full-Main deletion or
+    // accidentally enter the Philippines staging queue.
+    audit('edge_playback_observed', { edge: 'california', source: 'plex', serverName: Server?.title || null, machineId: Server?.uuid || null, event });
+    return;
+  }
   const mediaType = Metadata.type;
   const title = mediaType === 'episode' ? (Metadata.grandparentTitle || Metadata.title) : Metadata.title;
   const videoStream = Metadata.Media?.[0]?.Part?.[0]?.Stream?.find(s => s.streamType === 1);
@@ -6271,6 +6308,10 @@ async function handleTautulliWebhook(body) {
   const origin = classifyServerIdentity({ serverName: server_name, machineId: machine_id });
   if (origin === 'unknown') {
     audit('webhook_server_unmatched', { source: 'tautulli', serverName: server_name || null, machineId: machine_id || null, event });
+    return;
+  }
+  if (origin === 'ca-edge') {
+    audit('edge_playback_observed', { edge: 'california', source: 'tautulli', serverName: server_name || null, machineId: machine_id || null, event });
     return;
   }
   const mediaId = media_type === 'movie' ? `tmdb:${tmdb_id}` : `tvdb:${tvdb_id}`;
