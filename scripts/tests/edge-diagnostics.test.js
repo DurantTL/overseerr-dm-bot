@@ -30,7 +30,7 @@ else process.exitCode = 2;
   const { runEdgeDiagnostics } = require('../../src/edge-diagnostics');
   const checks = await runEdgeDiagnostics({ live: true });
   assert.strictEqual(checks.some(c => c.status === 'fail'), false, JSON.stringify(checks));
-  assert.ok(checks.some(c => c.name === 'California source' && c.status === 'ok'));
+  assert.ok(checks.some(c => c.name === 'Main source' && c.status === 'ok'));
   assert.ok(checks.some(c => c.name === 'Philippines free space' && /100\.0 GB free/.test(c.detail)));
   assert.ok(checks.some(c => c.name === 'Philippines cache read' && c.status === 'ok'));
   fs.rmSync(tmp, { recursive: true, force: true });

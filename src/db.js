@@ -250,8 +250,8 @@ function runMigrations() {
 
   ensureColumn('users', 'overseerr_user_id', 'INTEGER');
   ensureColumn('users', 'plex_username', 'TEXT');
-  // Which Plex server a person belongs to: 'primary' (California master) or 'ph' (remote cache
-  // box). Watch state never syncs between servers, so invites and auto-staging key off this.
+  // Which Plex group a person belongs to: 'primary' (Main servers) or 'ph' (Philippines cache
+  // server). Watch state never syncs between servers, so invites and auto-staging key off this.
   ensureColumn('users', 'home_server', "TEXT DEFAULT 'primary'");
   ensureColumn('keep_list', 'expires_at', 'INTEGER');
   // A deletion decision must keep the exact library edition all the way from the webhook prompt

@@ -46,7 +46,7 @@ async function inviteUserToPlex(email, { homeServer = 'primary' } = {}) {
   // invite must still reach it even when it's on that list.
   let servers = serversForHomeServer(await getPlexServers(token, { includeExcluded: true }), homeServer);
   if (homeServer !== 'ph') servers = servers.filter(s => !CONFIG.PLEX_EXCLUDE_SERVERS.includes((s.name || '').toLowerCase()));
-  if (!servers.length) log.warn(`Plex invite for ${email}: no servers match home_server='${homeServer}' — is the ${homeServer === 'ph' ? 'PH box' : 'primary server'} in this Plex account?`);
+  if (!servers.length) log.warn(`Plex invite for ${email}: no servers match home_server='${homeServer}' — are the ${homeServer === 'ph' ? 'Philippines server' : 'Main servers'} in this Plex account?`);
   let successCount = 0;
   for (const server of servers) {
     try {

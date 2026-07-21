@@ -147,7 +147,7 @@ const CONFIG = {
   DOWNLOAD_ROUTE_MAX_PER_MINUTE: Number.parseInt(process.env.DOWNLOAD_ROUTE_MAX_PER_MINUTE || '60', 10),
   DOWNLOAD_LARGE_FILE_GB: Number.parseInt(process.env.DOWNLOAD_LARGE_FILE_GB || '8', 10),
   // ---- Plex Home staging (remote cache box behind a tunnel) ----
-  // The PH box serves a small local cache of the California library. The bot copies titles into
+  // The PH box serves a small local cache of the Main library. The bot copies titles into
   // that cache over rclone ("staging"), evicts them when space runs short, and must never let a
   // PH playback event trigger anything destructive against the master library.
   STAGING_ENABLED: parseBool(process.env.STAGING_ENABLED, false),
@@ -249,7 +249,7 @@ function validateConfig() {
     throw new Error('Live deletion requires both WEBHOOK_SECRET and TAUTULLI_WEBHOOK_SECRET; unauthenticated playback webhooks must never arm destructive actions');
   }
   if (CONFIG.ENABLE_DELETION && !CONFIG.DELETION_DRY_RUN && CONFIG.PH_SERVER_NAMES.length && !CONFIG.PRIMARY_SERVER_NAMES.length) {
-    throw new Error('Live deletion with a Philippines edge requires PRIMARY_SERVER_NAMES so only an explicitly identified California server can arm deletion');
+    throw new Error('Live deletion with a Philippines edge requires PRIMARY_SERVER_NAMES so only explicitly identified Main servers can arm deletion');
   }
 }
 
