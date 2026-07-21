@@ -33,7 +33,7 @@ const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, 
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
 const { decideEscalationAction, escalationEligible } = require('./src/escalation');
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
-const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
+const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone } = require('./src/staging');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, releaseContentClaim, contentClaimsOverlap, describeContentClaim, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
@@ -1881,7 +1881,9 @@ const slashCommands = [
   new SlashCommandBuilder().setName('help').setDescription('How this media server works'),
   new SlashCommandBuilder().setName('tier').setDescription('Regional tiering: per-node edge-cache plans').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('preview').setDescription('Dry-run the planner — shows keep/drop per node, writes nothing').addStringOption(o => o.setName('node').setDescription('Only this node')))
-    .addSubcommand(s => s.setName('apply').setDescription('Publish manifests — agents converge on their next run').addStringOption(o => o.setName('node').setDescription('Only this node'))),
+    .addSubcommand(s => s.setName('apply').setDescription('Publish manifests — agents converge on their next run')
+      .addStringOption(o => o.setName('node').setDescription('Only this node'))
+      .addStringOption(o => o.setName('confirm').setDescription('Confirmation code for a large rebalance (shown when apply is held)'))),
   new SlashCommandBuilder().setName('tier-node').setDescription('Manage the tiering node registry').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('add').setDescription('Add or update a node')
       .addStringOption(o => o.setName('name').setDescription('Node name, e.g. california').setRequired(true))
@@ -4097,12 +4099,25 @@ async function buildTierPlans() {
       warmDays: CONFIG.TIER_WARM_DAYS,
       freshDays: CONFIG.TIER_FRESH_DAYS,
       requestGraceDays: CONFIG.TIER_REQUEST_GRACE_DAYS,
+      churnMinAbsolute: CONFIG.TIER_CHURN_MIN_ABSOLUTE,
+      churnMinRelative: CONFIG.TIER_CHURN_MIN_RELATIVE,
+      churnPenaltyPerTb: CONFIG.TIER_CHURN_PENALTY_PER_TB,
     },
   });
   return { ...result, nodes, prevPlans };
 }
 
-function tierManifestField(node, m, prevPlan) {
+// Global apply-guardrail caps (§1.5) in bytes; a 0/negative CONFIG value disables that cap (null).
+function tierApplyCaps() {
+  const gb = n => (n > 0 ? n * 1024 ** 3 : null);
+  return {
+    maxRealRemovalBytes: gb(CONFIG.TIER_APPLY_MAX_REMOVAL_GB),
+    maxRemovedTitles: CONFIG.TIER_APPLY_MAX_REMOVED_TITLES > 0 ? CONFIG.TIER_APPLY_MAX_REMOVED_TITLES : null,
+    maxNewDownloadBytes: gb(CONFIG.TIER_APPLY_MAX_DOWNLOAD_GB),
+  };
+}
+
+function tierManifestField(node, m, prevPlan, impact = null) {
   const free = Math.max(0, (node.usable_bytes || 0) - m.stats.keepBytes);
   const lines = [
     `Keep: **${m.stats.keepCount}** titles · ${fmtSpace(m.stats.keepBytes)}`,
@@ -4110,6 +4125,14 @@ function tierManifestField(node, m, prevPlan) {
     `Budget ${fmtSpace(m.stats.budgetBytes)} → ${fmtSpace(free)} free of ${fmtSpace(node.usable_bytes || 0)}`,
   ];
   if (m.full) lines.push('🔒 Full master — never pruned');
+  // §1.5 real disk impact vs the node's last physical inventory (not the previous plan).
+  if (impact) {
+    const bits = [];
+    if (impact.removedTitles) bits.push(`🗑️ remove ${impact.removedTitles} local · ${fmtSpace(impact.realRemovalBytes)}`);
+    if (impact.newDownloadTitles) bits.push(`⬇️ fetch ${impact.newDownloadTitles} · ${fmtSpace(impact.newDownloadBytes)}`);
+    if (bits.length) lines.push(bits.join(' · ') + (impact.hasReport ? '' : ' _(no agent report yet — assumes nothing local)_'));
+    if (impact.requiresConfirm) lines.push(`⚠️ Large rebalance — apply needs \`confirm:${impact.confirmCode}\``);
+  }
   if (prevPlan) {
     const prevKeep = new Set(prevPlan.keepMediaIds || []);
     const nowKeep = m.keep.map(e => e.mediaId);
@@ -4150,26 +4173,62 @@ async function handleTierCommand(interaction) {
       : `❌ Nothing to plan.\n${(plans.warnings || []).map(w => `• ${w}`).join('\n')}`);
   }
 
+  // §1.5 apply-impact per node (real removals / new downloads vs the node's last physical
+  // inventory) — computed for both preview and apply so the same numbers and confirm code show in
+  // the dry run. Full masters never prune and aren't edge caches, so they skip the guardrail.
+  const caps = tierApplyCaps();
+  const impacts = {};
+  for (const name of names) {
+    const node = plans.nodes.find(n => n.name === name);
+    if (node?.full) continue;
+    const imp = assessApplyImpact({ manifest: plans.manifests[name], files: listTierNodeFiles(name), caps });
+    imp.confirmCode = tierApplyConfirmCode(name, plans.manifests[name].planHash);
+    impacts[name] = imp;
+  }
+
+  const blocked = [];
   if (sub === 'apply') {
+    // A confirm code is echoed for exactly one plan; nodes over a cap without the matching code are
+    // held back (the rest still apply). The code binds to the plan hash, so a stale code silently
+    // stops matching once the plan moves.
+    const confirm = interaction.options.getString('confirm')?.trim().toUpperCase() || null;
     for (const name of names) {
       const m = plans.manifests[name];
+      const imp = impacts[name];
+      if (imp?.requiresConfirm && confirm !== imp.confirmCode) {
+        blocked.push(name);
+        audit('tier_apply_blocked', { actorDiscordId: interaction.user.id, node: name, planHash: m.planHash, realRemovalBytes: imp.realRemovalBytes, removedTitles: imp.removedTitles, newDownloadBytes: imp.newDownloadBytes });
+        continue;
+      }
       const stignore = renderSyncthingStignore(m);
       // Render each folder's own .stignore into the served manifest so the agent writes one per
       // folder root; the aggregate `stignore` stays for single-folder agents.
       const folders = (m.folders || []).map(f => ({ ...f, stignore: renderFolderStignore(f, m) }));
       setSetting(`tier_manifest:${name}`, JSON.stringify({ ...m, folders, stignore, rcloneFilesFrom: m.transport === 'rclone' ? renderRclone(m) : undefined }));
       setTierPlan(name, { planHash: m.planHash, keepMediaIds: m.keep.map(e => e.mediaId), appliedAt: Date.now() });
-      audit('tier_plan_applied', { actorDiscordId: interaction.user.id, node: name, planHash: m.planHash, keepCount: m.stats.keepCount, dropCount: m.stats.dropCount, dropBytes: m.stats.dropBytes });
+      audit('tier_plan_applied', { actorDiscordId: interaction.user.id, node: name, planHash: m.planHash, keepCount: m.stats.keepCount, dropCount: m.stats.dropCount, dropBytes: m.stats.dropBytes, confirmed: !!imp?.requiresConfirm });
     }
   }
 
-  const embed = brandedEmbed(sub === 'apply' ? COLORS.SUCCESS : COLORS.INFO)
-    .setTitle(sub === 'apply' ? '🗺️ Tier Plans Published' : '🗺️ Tier Preview (dry run — nothing written)')
+  const appliedCount = sub === 'apply' ? names.length - blocked.length : 0;
+  const embed = brandedEmbed(sub === 'apply' ? (blocked.length ? COLORS.WARN : COLORS.SUCCESS) : COLORS.INFO)
+    .setTitle(sub === 'apply'
+      ? (appliedCount ? '🗺️ Tier Plans Published' : '🛑 Tier Apply Held — Confirmation Required')
+      : '🗺️ Tier Preview (dry run — nothing written)')
     .setDescription(sub === 'apply'
-      ? 'Manifests are live at `/agent/manifest/:node` — each node\'s sync agent converges on its next run (ignore-first, then prune).'
+      ? (appliedCount
+        ? 'Manifests are live at `/agent/manifest/:node` — each node\'s sync agent converges on its next run (ignore-first, then prune).'
+        : 'No manifest written — every targeted node exceeds an apply guardrail. Re-run with the confirm code shown below.')
       : 'What `/tier apply` would publish. Drops only ever remove edge copies — every title stays on a full master.');
   for (const name of names.slice(0, 12)) {
-    embed.addFields(tierManifestField(plans.nodes.find(n => n.name === name), plans.manifests[name], plans.prevPlans?.[name]));
+    embed.addFields(tierManifestField(plans.nodes.find(n => n.name === name), plans.manifests[name], plans.prevPlans?.[name], impacts[name] || null));
+  }
+  if (blocked.length) {
+    embed.addFields({
+      name: '🛑 Held for confirmation',
+      value: blocked.map(name => `\`${name}\` → re-run \`/tier apply node:${name} confirm:${impacts[name].confirmCode}\``).join('\n').slice(0, 1024),
+      inline: false,
+    });
   }
   if (plans.warnings?.length) embed.addFields({ name: '⚠️ Warnings', value: plans.warnings.slice(0, 8).map(w => `• ${w}`).join('\n').slice(0, 1024), inline: false });
   return interaction.editReply({ embeds: [embed] });

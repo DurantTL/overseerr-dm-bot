@@ -19,8 +19,15 @@ Already done (in the codebase / PR #42):
   smaller-first (`planNode`, `src/tier.js:337`); missing Radarr/Sonarr added
   dates load as `null` not `now` (`fetchTierInventory`, `src/tier.js:79`).
 - PH play-triggered promotion: implemented, off by default (`src/staging.js`).
+- **Phase 1.4 — anti-churn admission threshold:** displacement now requires a meaningful net gain
+  (absolute margin + relative margin + size-scaled transfer penalty), not any improvement
+  (`planNode`, `src/tier.js`; knobs `TIER_CHURN_*` in `src/config.js`).
+- **Phase 1.5 — apply limits + confirmation:** large rebalances (real removal bytes / removed
+  titles / new-download bytes, measured against the node's last physical inventory) are held behind
+  a plan-hash-bound confirm code (`assessApplyImpact` / `tierApplyConfirmCode` in `src/tier.js`;
+  gate in `handleTierCommand`, `index.js`; caps `TIER_APPLY_MAX_*` in `src/config.js`).
 
-Not yet done — the rest of this file.
+Not yet done — the rest of this file (Phase 1: 1.1, 1.2, 1.3, 1.6; Phases 2–4; operational items).
 
 ---
 
@@ -84,21 +91,28 @@ reason) and the effective settings (demand source, history days, warm/fresh
 days, sticky, headroom). The node-update response stores warm/fresh but does not
 display them — surface them too.
 
-### 1.4 Meaningful-improvement threshold (anti-churn)
+### 1.4 Meaningful-improvement threshold (anti-churn) — ✅ DONE
 
-Admission currently displaces any victim with `victim.value < candidate.value`
-(`planNode`, `src/tier.js` step 2), so a `0.001` title can evict `0.000` ones.
-Require a minimum absolute (e.g. `0.05`) and/or relative (e.g. 20%) improvement,
-or a net-benefit model `candidateDemand − lostVictimDemand − transferCost −
-churnPenalty`, with larger transfers demanding a stronger signal.
+Admission previously displaced any victim with `victim.value < candidate.value`
+(`planNode`, `src/tier.js` step 2), so a `0.001` title could evict `0.000` ones.
+The displacement gate now requires all three of: the candidate's demand beats the
+**sum** of the demand it evicts by `TIER_CHURN_MIN_ABSOLUTE` (default 0.05); it
+beats the **warmest** victim by `TIER_CHURN_MIN_RELATIVE` (default 20%); and it
+overcomes a transfer penalty scaled by candidate size
+(`TIER_CHURN_PENALTY_PER_TB`, default 0.05/TB) so larger downloads demand a
+stronger signal. Free-budget admits are unaffected — only displacement is gated.
 
-### 1.5 Apply limits + confirmation for large rebalances
+### 1.5 Apply limits + confirmation for large rebalances — ✅ DONE
 
-Gate large applies behind a confirmation code tied to the exact plan hash.
-Starting caps for California: max real removal 100 GB, max newly-removed titles
-10, max new downloads 150 GB; anything larger prints a code the admin must echo
-(`/tier apply node:california confirm:XXXX`). Enforce in `handleTierCommand`
-(`index.js:4148`).
+Large applies are gated behind a confirmation code tied to the exact plan hash.
+Caps (`TIER_APPLY_MAX_REMOVAL_GB` 100, `TIER_APPLY_MAX_REMOVED_TITLES` 10,
+`TIER_APPLY_MAX_DOWNLOAD_GB` 150; 0 disables a cap) are measured against the
+node's **last physical inventory** — real removal bytes / removed titles / new
+download bytes (`assessApplyImpact`, `src/tier.js`). Anything over a cap prints a
+plan-bound code (`tierApplyConfirmCode`) the admin must echo
+(`/tier apply node:california confirm:XXXX`); the code stops matching once the
+plan moves. Enforced in `handleTierCommand` (`index.js`); previews show the same
+impact numbers and code. Full masters skip the guardrail (they never prune).
 
 ### 1.6 Stable-ID title matching
 
