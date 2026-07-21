@@ -98,6 +98,53 @@ assert.deepStrictEqual(core, [titleKey('Hit', 'movie'), titleKey('Local Fav', 'm
   assert.deepStrictEqual(m.evict, ['A'], 'ONLY the coldest victim evicted — old-but-not-coldest survives');
 }
 
+// --- equal-value eviction: larger victim first, so fewer titles churn per apply ---
+{
+  // Two cold, equally-cold (value 0) kept titles; a hot newcomer needs ~8 GB freed. Freeing the
+  // one BIG victim suffices, so only it is evicted — the SMALL one survives. (Smaller-first would
+  // have shredded BOTH to reach the same bytes.)
+  const inv = [title('BIG', 10, 'm/BIG'), title('SMALL', 4, 'm/SMALL'), title('N', 8, 'm/N')];
+  const m = planNode({
+    node: node({ usable_bytes: 14 * GB }), inventory: inv,
+    values: val([['BIG', 0, daysAgo(200)], ['SMALL', 0, daysAgo(200)], ['N', 0.9, daysAgo(1)]]),
+    floorIds: new Set(), prevKeepIds: ['BIG', 'SMALL'], now: NOW,
+  });
+  assert.strictEqual(keepIds(m), 'N,SMALL', 'tied-value eviction takes the LARGER victim → the small title stays');
+  assert.deepStrictEqual(m.evict, ['BIG'], 'exactly one title churned, not two');
+}
+
+// --- over-budget trim sheds the MINIMUM (smaller victim first), doesn't underfill ---
+{
+  // Carried-over keep-set busts a shrunk budget by 4 GB; two tied-cold victims (10 GB + 4 GB).
+  // The trim must drop the 4 GB title (exactly enough) and keep the 10 GB one — dropping the big
+  // title instead would leave the 10 GB budget holding only 4 GB, and evicted entries can't be
+  // re-admitted. (Displacement uses the opposite, larger-first order — see the test above.)
+  const inv = [title('BIG', 10, 'm/BIG'), title('SMALL', 4, 'm/SMALL')];
+  const m = planNode({
+    node: node({ usable_bytes: 10 * GB }), inventory: inv,
+    values: val([['BIG', 0, daysAgo(200)], ['SMALL', 0, daysAgo(200)]]),
+    floorIds: new Set(), prevKeepIds: ['BIG', 'SMALL'], now: NOW,
+  });
+  assert.strictEqual(keepIds(m), 'BIG', 'trim keeps the large title, cache stays full');
+  assert.deepStrictEqual(m.evict, ['SMALL'], 'only the minimal victim shed to reach budget');
+  assert.ok(m.stats.keepBytes <= m.stats.budgetBytes && m.stats.keepBytes === 10 * GB, 'budget filled, not underfilled');
+}
+
+// --- a missing added date is "unknown", never fresh (no bogus force-keep) ---
+{
+  // OLD has no addedAt at all. It must NOT get the fresh-grace protection — a hotter newcomer
+  // displaces it. (The bug: the inventory loader fell back to `now`, making every date-less title
+  // look brand-new and immovable.)
+  const inv = [title('OLD', 10, 'm/OLD', { addedAt: null }), title('N', 10, 'm/N', { addedAt: daysAgo(400) })];
+  const m = planNode({
+    node: node({ usable_bytes: 10 * GB }), inventory: inv,
+    values: val([['OLD', 0, daysAgo(300)], ['N', 0.99, daysAgo(1)]]),
+    floorIds: new Set(), prevKeepIds: ['OLD'], now: NOW,
+  });
+  assert.strictEqual(keepIds(m), 'N', 'date-less title is not fresh-protected — hot newcomer wins');
+  assert.strictEqual(dropIds(m), 'OLD', 'the unknown-date title is evictable');
+}
+
 // --- warm titles are never evicted ---
 {
   const inv = [title('WARM', 10, 'm/W'), title('COLD', 10, 'm/C'), title('N', 10, 'm/N')];
@@ -484,4 +531,39 @@ const mfTitle = (mediaId, mediaType, absPath, sizeGb = 10) => ({
   assert.ok(!alive.warnings.some(w => w.includes('no demand signal')), 'live signal → no warning');
 }
 
-console.log('tier.test.js: all assertions passed');
+// --- fetchTierInventory: a date-less Radarr/Sonarr item loads addedAt=null, not "now" ---
+async function testInventoryAddedAt() {
+  const axios = require('axios');
+  const realGet = axios.get;
+  axios.get = async (url) => {
+    if (url.includes('/movie')) return { data: [
+      { tmdbId: 1, title: 'Dated', sizeOnDisk: 10 * GB, path: '/mnt/raid/movies/Dated', movieFile: { dateAdded: '2020-01-02T00:00:00Z' } },
+      { tmdbId: 2, title: 'Undated', sizeOnDisk: 10 * GB, path: '/mnt/raid/movies/Undated' }, // no dateAdded/added
+    ] };
+    return { data: [
+      { tvdbId: 3, title: 'DatedSeries', statistics: { sizeOnDisk: 10 * GB }, path: '/mnt/raid/tv/DatedSeries', added: '2019-05-05T00:00:00Z' },
+      { tvdbId: 4, title: 'UndatedSeries', statistics: { sizeOnDisk: 10 * GB }, path: '/mnt/raid/tv/UndatedSeries', added: 'not-a-date' },
+    ] };
+  };
+  try {
+    const { fetchTierInventory } = require('../../src/tier');
+    const items = await fetchTierInventory({
+      sources: [{ kind: 'movie', url: 'http://radarr', key: 'x', label: 'radarr' }, { kind: 'tv', url: 'http://sonarr', key: 'y', label: 'sonarr' }],
+      remap: p => p, sourceRoot: '/mnt/raid',
+    });
+    const byId = Object.fromEntries(items.map(i => [i.mediaId, i]));
+    assert.strictEqual(byId['tmdb:1'].addedAt, Date.parse('2020-01-02T00:00:00Z'), 'valid dateAdded parsed');
+    assert.strictEqual(byId['tmdb:2'].addedAt, null, 'movie with no added date → null, not now');
+    assert.strictEqual(byId['tvdb:3'].addedAt, Date.parse('2019-05-05T00:00:00Z'), 'valid series added parsed');
+    assert.strictEqual(byId['tvdb:4'].addedAt, null, 'series with an invalid added date → null, not now');
+  } finally {
+    axios.get = realGet;
+  }
+}
+
+testInventoryAddedAt().then(() => {
+  console.log('tier.test.js: all assertions passed');
+}).catch(err => {
+  console.error(err);
+  process.exit(1);
+});

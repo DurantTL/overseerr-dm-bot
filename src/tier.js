@@ -78,7 +78,6 @@ function computeUniversalCore(historiesByNode, k) {
 // remap = arr.remapPath (injected to keep this module free of the db-touching arr module).
 async function fetchTierInventory({ sources, remap, sourceRoot, onError }) {
   const items = [];
-  const now = Date.now();
   for (const s of sources) {
     try {
       if (s.kind === 'movie') {
@@ -90,7 +89,10 @@ async function fetchTierInventory({ sources, remap, sourceRoot, onError }) {
             title: `${m.title}${s.label === 'radarr-4k' ? ' (4K)' : ''}`,
             mediaType: 'movie',
             sizeBytes: m.sizeOnDisk,
-            addedAt: Date.parse(m.movieFile?.dateAdded || m.added || '') || now,
+            // A missing/invalid added date is UNKNOWN, not "added now" — falling back to `now`
+            // makes genuinely old content look brand-new and win the fresh-grace force-keep,
+            // displacing real demand. `null` simply means "no freshness signal" (see planNode).
+            addedAt: Date.parse(m.movieFile?.dateAdded || m.added || '') || null,
             // path = full remapped on-disk path (for multi-folder resolution against each node's
             // folder roots); relPath = source-root-relative (legacy single-folder manifests).
             path: remap(m.path),
@@ -107,7 +109,8 @@ async function fetchTierInventory({ sources, remap, sourceRoot, onError }) {
             title: t.title,
             mediaType: 'tv',
             sizeBytes: size,
-            addedAt: Date.parse(t.added || '') || now,
+            // Missing/invalid added date → null ("unknown"), not `now` (see the movie branch).
+            addedAt: Date.parse(t.added || '') || null,
             path: remap(t.path),
             relPath: toRelPath(remap(t.path), sourceRoot),
           });
@@ -367,12 +370,22 @@ function planNode({ node, inventory, values, floorIds, coreIds = new Set(), prev
   let keptBytes = [...keepSet].reduce((a, e) => a + e.sizeBytes, 0);
   const evicted = new Set();
   const evictable = e => keepSet.has(e) && !evicted.has(e) && !floor.has(e.mediaId) && !e.warm && !e.fresh;
-  const coldFirst = (a, b) => (a.value - b.value) || (a.sizeBytes - b.sizeBytes);
+  // Both passes evict coldest-first, but they break value ties on size in OPPOSITE directions,
+  // because they optimize for different things:
+  //   - displacement (step 2): to admit ONE hot title, prefer the LARGER tied victim so the space
+  //     is freed by a few big titles instead of shredding dozens of small ones (fewer titles churn
+  //     per apply — this is the fix for the "+3 / −46" preview);
+  //   - over-budget trim (step 1): nothing is being admitted, so shed the MINIMUM to get under
+  //     budget — prefer the SMALLER tied victim. Larger-first here would drop a 10 GB title to fit
+  //     a set only 4 GB over budget, underfilling the cache; and since evicted entries stay in
+  //     keepSet, the admission pass can't add that big title back.
+  const coldLargerFirst = (a, b) => (a.value - b.value) || (b.sizeBytes - a.sizeBytes);
+  const coldSmallerFirst = (a, b) => (a.value - b.value) || (a.sizeBytes - b.sizeBytes);
 
   // 1) If the carried-over keep-set already busts the budget (shrunk node, grown floor),
-  //    evict coldest-first just enough to fit.
+  //    evict coldest-first (smaller-first on ties) just enough to fit — no more.
   if (keptBytes > budget) {
-    for (const v of [...keepSet].filter(evictable).sort(coldFirst)) {
+    for (const v of [...keepSet].filter(evictable).sort(coldSmallerFirst)) {
       if (keptBytes <= budget) break;
       evicted.add(v);
       keptBytes -= v.sizeBytes;
@@ -389,7 +402,7 @@ function planNode({ node, inventory, values, floorIds, coreIds = new Set(), prev
       admits.push(c); keepSet.add(c); keptBytes += c.sizeBytes;
       continue;
     }
-    const pool = [...keepSet].filter(e => evictable(e) && e.value < c.value).sort(coldFirst);
+    const pool = [...keepSet].filter(e => evictable(e) && e.value < c.value).sort(coldLargerFirst);
     let freed = 0;
     const take = [];
     for (const v of pool) {
