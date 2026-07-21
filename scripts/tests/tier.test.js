@@ -113,6 +113,23 @@ assert.deepStrictEqual(core, [titleKey('Hit', 'movie'), titleKey('Local Fav', 'm
   assert.deepStrictEqual(m.evict, ['BIG'], 'exactly one title churned, not two');
 }
 
+// --- over-budget trim sheds the MINIMUM (smaller victim first), doesn't underfill ---
+{
+  // Carried-over keep-set busts a shrunk budget by 4 GB; two tied-cold victims (10 GB + 4 GB).
+  // The trim must drop the 4 GB title (exactly enough) and keep the 10 GB one — dropping the big
+  // title instead would leave the 10 GB budget holding only 4 GB, and evicted entries can't be
+  // re-admitted. (Displacement uses the opposite, larger-first order — see the test above.)
+  const inv = [title('BIG', 10, 'm/BIG'), title('SMALL', 4, 'm/SMALL')];
+  const m = planNode({
+    node: node({ usable_bytes: 10 * GB }), inventory: inv,
+    values: val([['BIG', 0, daysAgo(200)], ['SMALL', 0, daysAgo(200)]]),
+    floorIds: new Set(), prevKeepIds: ['BIG', 'SMALL'], now: NOW,
+  });
+  assert.strictEqual(keepIds(m), 'BIG', 'trim keeps the large title, cache stays full');
+  assert.deepStrictEqual(m.evict, ['SMALL'], 'only the minimal victim shed to reach budget');
+  assert.ok(m.stats.keepBytes <= m.stats.budgetBytes && m.stats.keepBytes === 10 * GB, 'budget filled, not underfilled');
+}
+
 // --- a missing added date is "unknown", never fresh (no bogus force-keep) ---
 {
   // OLD has no addedAt at all. It must NOT get the fresh-grace protection — a hotter newcomer
