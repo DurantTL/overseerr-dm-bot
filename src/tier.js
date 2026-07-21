@@ -408,13 +408,6 @@ function planNode({ node, inventory, values, floorIds, coreIds = new Set(), prev
       admits.push(c); keepSet.add(c); keptBytes += c.sizeBytes;
       continue;
     }
-    const pool = [...keepSet].filter(e => evictable(e) && e.value < c.value).sort(coldLargerFirst);
-    let freed = 0;
-    const take = [];
-    for (const v of pool) {
-      take.push(v); freed += v.sizeBytes;
-      if (free + freed >= c.sizeBytes) break;
-    }
     // Anti-churn gate (§1.4). Displacing kept titles isn't free — the candidate has to be
     // downloaded and the victims deleted, and every swap churns the cache — so require a
     // MEANINGFUL net gain, not just `victim.value < candidate.value`. Three conditions, all
@@ -423,12 +416,31 @@ function planNode({ node, inventory, values, floorIds, coreIds = new Set(), prev
     // the WARMEST victim by a relative margin (a 20%-hotter title isn't worth a swap); (c) it
     // clears a transfer penalty that scales with its own size (bigger downloads need a stronger
     // signal). Free-budget admits above never reach here — nothing is displaced there.
-    const lostValue = take.reduce((a, v) => a + v.value, 0);
-    const warmestVictim = take.reduce((a, v) => Math.max(a, v.value), 0);
+    const need = c.sizeBytes - free;
     const transferPenalty = cfg.churnPenaltyPerTb * (c.sizeBytes / (1024 ** 4));
-    const meaningful = (c.value - lostValue - transferPenalty) >= cfg.churnMinAbsolute
-      && c.value >= warmestVictim * (1 + cfg.churnMinRelative);
-    if (free + freed >= c.sizeBytes && meaningful) {
+    const pool = [...keepSet].filter(e => evictable(e) && e.value < c.value);
+    // Greedy prefix of an ordered pool that frees `need` bytes (null if the whole pool can't).
+    const buildTake = ordered => {
+      let f = 0; const t = [];
+      for (const v of ordered) { t.push(v); f += v.sizeBytes; if (f >= need) break; }
+      return f >= need ? t : null;
+    };
+    const meaningful = t => t && (c.value - t.reduce((a, v) => a + v.value, 0) - transferPenalty) >= cfg.churnMinAbsolute
+      && c.value >= t.reduce((a, v) => Math.max(a, v.value), 0) * (1 + cfg.churnMinRelative);
+    // Primary victim set: coldest-first (value asc, size desc) — minimizes per-title value and, on
+    // ties, churns the fewest titles. When that prefix passes the gate we keep it, so existing
+    // behavior is unchanged. But coldest-first can BUNDLE several small cold titles whose summed
+    // value trips the absolute margin and rejects the admission — even though evicting one larger
+    // (still colder-than-candidate) title would lose less total demand and clear the gate. So if
+    // the primary set is rejected, fall back to the fewest-victims set (largest colder title first)
+    // and admit on that when it passes: a lower-churn, higher-net-win swap the guardrail intends to
+    // allow. Both sets only ever contain titles strictly colder than the candidate.
+    let take = buildTake(pool.slice().sort(coldLargerFirst));
+    if (take && !meaningful(take)) {
+      const alt = buildTake(pool.slice().sort((a, b) => (b.sizeBytes - a.sizeBytes) || (a.value - b.value)));
+      if (meaningful(alt)) take = alt;
+    }
+    if (meaningful(take)) {
       for (const v of take) { evicted.add(v); keptBytes -= v.sizeBytes; }
       admits.push(c); keepSet.add(c); keptBytes += c.sizeBytes;
     }

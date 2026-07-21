@@ -597,6 +597,28 @@ async function testInventoryAddedAt() {
   assert.strictEqual(keepIds(m), 'a,b,c', 'aggregate-only winner does not evict the group it loses to in sum');
 }
 
+// --- §1.4 anti-churn: fall back to a lower-churn victim set instead of rejecting outright ---
+{
+  // Reviewer case: five 1 GB kept titles at 0.03 plus one 5 GB kept title at 0.10 fill a 10 GB
+  // budget. A 5 GB candidate at 0.18 needs 5 GB freed. Coldest-first bundles the five 0.03 titles
+  // (loses 0.15 → rejected), but evicting the single 5 GB / 0.10 title loses only 0.10 and clears
+  // the gate — a smaller-churn, higher-net-win swap. The planner must take it, not reject.
+  const inv = [
+    title('s1', 1, 'm/s1'), title('s2', 1, 'm/s2'), title('s3', 1, 'm/s3'),
+    title('s4', 1, 'm/s4'), title('s5', 1, 'm/s5'), title('M', 5, 'm/M'), title('C', 5, 'm/C'),
+  ];
+  const m = planNode({
+    node: node({ usable_bytes: 10 * GB }), inventory: inv,
+    values: val([
+      ['s1', 0.03, daysAgo(60)], ['s2', 0.03, daysAgo(60)], ['s3', 0.03, daysAgo(60)],
+      ['s4', 0.03, daysAgo(60)], ['s5', 0.03, daysAgo(60)], ['M', 0.10, daysAgo(60)], ['C', 0.18, daysAgo(50)],
+    ]),
+    floorIds: new Set(), prevKeepIds: ['s1', 's2', 's3', 's4', 's5', 'M'], now: NOW,
+  });
+  assert.strictEqual(keepIds(m), 'C,s1,s2,s3,s4,s5', 'the one-title swap is taken, the five small colds survive');
+  assert.deepStrictEqual(m.evict, ['M'], 'exactly the single larger colder victim churned');
+}
+
 // --- §1.4 anti-churn: the size-scaled transfer penalty blocks a huge marginal download ---
 {
   // Candidate at 0.10 vs a zero-value victim: the absolute rule alone would pass (0.10 ≥ 0.05),
