@@ -125,25 +125,34 @@ async function getEpisodeFiles(seriesId) {
 
 // Resolve a stored mediaId (tmdb:/tvdb:) to the concrete Radarr movie or Sonarr episode files
 // behind it, so deletion can report exact paths in dry-run and issue the right API call when live.
-async function resolveDeletableMedia(mediaId) {
+async function resolveDeletableMedia(mediaId, { sourceLabel = null } = {}) {
   if (mediaId.startsWith('tmdb:')) {
     const tmdbId = Number(mediaId.slice('tmdb:'.length));
-    const sources = [
+    let sources = [
       { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, label: 'radarr' },
       { url: CONFIG.RADARR_4K_URL, key: CONFIG.RADARR_4K_API_KEY, label: 'radarr-4k' },
     ].filter(s => s.url);
+    if (sourceLabel) sources = sources.filter(s => s.label === sourceLabel);
+    const matches = [];
     for (const s of sources) {
       const all = await radarrGetFrom(s.url, s.key, '/movie').catch(() => []);
       const movie = all.find(m => m.tmdbId === tmdbId);
-      if (movie) {
-        return {
-          found: true, kind: 'movie', source: s, movie,
-          paths: movie.movieFile?.path ? [movie.movieFile.path] : [],
-          apiCall: `DELETE ${s.url}/api/v3/movie/${movie.id}?deleteFiles=true (${s.label})`,
-        };
-      }
+      if (movie) matches.push({ s, movie });
     }
-    return { found: false, kind: 'movie' };
+    // Never guess when the same title exists in both Radarr instances. Legacy pending rows that
+    // predate arr_source must be reviewed/re-prompted instead of risking the wrong edition.
+    if (matches.length > 1) {
+      return { found: false, kind: 'movie', reason: 'ambiguous_source', sources: matches.map(m => m.s.label) };
+    }
+    if (matches.length === 1) {
+      const { s, movie } = matches[0];
+      return {
+        found: true, kind: 'movie', source: s, movie,
+        paths: movie.movieFile?.path ? [movie.movieFile.path] : [],
+        apiCall: `DELETE ${s.url}/api/v3/movie/${movie.id}?deleteFiles=true (${s.label})`,
+      };
+    }
+    return { found: false, kind: 'movie', reason: sourceLabel ? 'not_found_in_source' : 'not_found' };
   }
   if (mediaId.startsWith('tvdb:')) {
     if (!CONFIG.SONARR_URL) return { found: false, kind: 'tv' };
@@ -167,14 +176,21 @@ async function resolveDeletableMedia(mediaId) {
 async function executeDeletion(mediaId, title, ctx = {}) {
   let resolved;
   try {
-    resolved = await resolveDeletableMedia(mediaId);
+    resolved = await resolveDeletableMedia(mediaId, { sourceLabel: ctx.arrSource || null });
   } catch (err) {
     audit('external_api_error', { provider: 'arr', error: err.message, mediaId, action: 'delete_resolve', ...ctx });
     return { outcome: 'error', error: err.message };
   }
   if (!resolved.found) {
-    audit('deletion_dry_run', { mediaId, title, result: 'not_found', ...ctx });
-    return { outcome: 'not_found' };
+    const outcome = resolved.reason === 'ambiguous_source' ? 'ambiguous' : 'not_found';
+    audit('deletion_blocked', { mediaId, title, result: resolved.reason || outcome, sources: resolved.sources, ...ctx });
+    return { outcome, reason: resolved.reason, sources: resolved.sources || [] };
+  }
+  // Generic tvdb IDs identify a series, not an episode. Deleting every episode file is only
+  // allowed when a caller explicitly requests series scope; playback webhooks never do that.
+  if (resolved.kind === 'tv' && ctx.scope !== 'series') {
+    audit('deletion_blocked', { mediaId, title, result: 'tv_scope_required', fileCount: resolved.files.length, ...ctx });
+    return { outcome: 'scope_required', kind: 'tv', paths: resolved.paths };
   }
   if (CONFIG.DELETION_DRY_RUN) {
     audit('deletion_dry_run', { mediaId, title, kind: resolved.kind, paths: resolved.paths, apiCall: resolved.apiCall, ...ctx });

@@ -31,7 +31,7 @@ function resolveSafeMediaPath(root, requestedPath) {
 
   const inFile = path.join(raid, 'movie.mkv');
   fs.writeFileSync(inFile, 'ok');
-  assert.strictEqual(resolveSafeMediaPath(raid, inFile), inFile, 'Valid in-root path should pass');
+  assert.strictEqual(resolveSafeMediaPath(raid, inFile), fs.realpathSync(inFile), 'Valid in-root path should pass');
 
   const outsideFile = path.join(outside, 'escape.mkv');
   fs.writeFileSync(outsideFile, 'no');

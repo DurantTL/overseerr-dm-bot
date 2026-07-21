@@ -153,10 +153,11 @@ docker exec durant-media-server-bot \
 # Copy a backup off the host if desired
 docker cp durant-media-server-bot:/app/data/backups ./backups
 
-# Restore (stop the bot first so SQLite isn't mid-write)
+# Restore (stop the bot first; the verified restore removes stale WAL/SHM sidecars)
 docker stop durant-media-server-bot
-docker run --rm -v durant_bot_data:/app/data -v "$PWD/backups:/restore" \
-  node:20-slim bash -c "cp /restore/plex_invites-YYYYMMDD-HHMMSS.db /app/data/plex_invites.db"
+docker run --rm -v durant_bot_data:/app/data -v "$PWD/backups:/restore:ro" \
+  ghcr.io/duranttl/overseerr-dm-bot:${BOT_IMAGE_TAG:-latest} \
+  node scripts/restore-db.js /restore/plex_invites-YYYYMMDD-HHMMSS.db /app/data/plex_invites.db --force
 docker start durant-media-server-bot
 ```
 

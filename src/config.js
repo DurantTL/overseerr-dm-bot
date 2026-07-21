@@ -131,6 +131,7 @@ const CONFIG = {
   AUDIT_CHANNEL_ID: process.env.AUDIT_CHANNEL_ID || '',
   DEPLOY_CHANNEL_ID: process.env.DEPLOY_CHANNEL_ID || '',
   PORT: Number.parseInt(process.env.PORT || '3000', 10),
+  TRUST_PROXY: parseBool(process.env.TRUST_PROXY, false),
   DASHBOARD_ENABLED: parseBool(process.env.DASHBOARD_ENABLED, true),
   DASHBOARD_ADMIN_PASSWORD: process.env.DASHBOARD_ADMIN_PASSWORD || '',
   DASHBOARD_ADMIN_TOKEN: process.env.DASHBOARD_ADMIN_TOKEN || '',
@@ -224,6 +225,7 @@ const CONFIG = {
   DELETION_GRACE_HOURS: Number.parseInt(process.env.DELETION_GRACE_HOURS || '24', 10),
   DELETION_REMINDER_COOLDOWN_HOURS: Number.parseInt(process.env.DELETION_REMINDER_COOLDOWN_HOURS || '12', 10),
   KEEP_LIST_DEFAULT_DAYS: Number.parseInt(process.env.KEEP_LIST_DEFAULT_DAYS || '90', 10),
+  LOG_RETENTION_DAYS: Number.parseInt(process.env.LOG_RETENTION_DAYS || '90', 10),
   NEVER_DELETE_MEDIA_IDS: process.env.NEVER_DELETE_MEDIA_IDS ? process.env.NEVER_DELETE_MEDIA_IDS.split(',').map(s => s.trim()) : [],
 };
 
@@ -243,6 +245,12 @@ function validateConfig() {
   if (CONFIG.DASHBOARD_ENABLED && !CONFIG.DASHBOARD_ADMIN_PASSWORD && !CONFIG.DASHBOARD_ADMIN_TOKEN) {
     throw new Error('DASHBOARD_ENABLED=true requires DASHBOARD_ADMIN_PASSWORD or DASHBOARD_ADMIN_TOKEN');
   }
+  if (CONFIG.ENABLE_DELETION && !CONFIG.DELETION_DRY_RUN && (!CONFIG.WEBHOOK_SECRET || !CONFIG.TAUTULLI_WEBHOOK_SECRET)) {
+    throw new Error('Live deletion requires both WEBHOOK_SECRET and TAUTULLI_WEBHOOK_SECRET; unauthenticated playback webhooks must never arm destructive actions');
+  }
+  if (CONFIG.ENABLE_DELETION && !CONFIG.DELETION_DRY_RUN && CONFIG.PH_SERVER_NAMES.length && !CONFIG.PRIMARY_SERVER_NAMES.length) {
+    throw new Error('Live deletion with a Philippines edge requires PRIMARY_SERVER_NAMES so only an explicitly identified California server can arm deletion');
+  }
 }
 
 // Non-fatal sanity checks for risky-but-valid configurations. Logged at startup and posted once
@@ -254,6 +262,9 @@ function configWarnings() {
   }
   if (CONFIG.ENABLE_DELETION && !CONFIG.DELETION_DRY_RUN) {
     warnings.push('Deletion is **live** (`ENABLE_DELETION=true`, `DELETION_DRY_RUN=false`) — the janitor and retention rules will delete real files.');
+  }
+  if (!CONFIG.TAUTULLI_WEBHOOK_SECRET) {
+    warnings.push('`TAUTULLI_WEBHOOK_SECRET` is blank — the Tautulli webhook endpoint is unauthenticated. Live deletion will refuse to start until it is set.');
   }
   const dashSecret = CONFIG.DASHBOARD_ADMIN_PASSWORD || CONFIG.DASHBOARD_ADMIN_TOKEN;
   if (CONFIG.DASHBOARD_ENABLED && dashSecret && dashSecret.length < 12) {
@@ -288,6 +299,10 @@ function configWarnings() {
   }
   if (CONFIG.PH_SERVER_NAMES.length) {
     warnings.push('`PH_SERVER_NAMES` is set: Tautulli/Plex webhook payloads that carry **no** server identity are now skipped as a fail-safe. Make sure every Tautulli notification payload includes `server_name`/`machine_id` (see README "Plex Home staging") or the finished-watching prompts stop firing.');
+  }
+  const overlappingServers = CONFIG.PH_SERVER_NAMES.filter(id => CONFIG.PRIMARY_SERVER_NAMES.includes(id));
+  if (overlappingServers.length) {
+    warnings.push(`Server identities appear in both \`PH_SERVER_NAMES\` and \`PRIMARY_SERVER_NAMES\`: ${overlappingServers.join(', ')}. Remove the overlap before trusting webhook routing.`);
   }
   return warnings;
 }

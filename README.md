@@ -1,7 +1,21 @@
 # Durant Media Server Bot
 
-## Overview
-Durant Media Server Bot is a Discord + Plex + Seerr/Overseerr automation bot for private media communities. It handles onboarding, request review, media availability notifications, secure download links, retention prompts, sync/cleanup tooling, and admin observability.
+## What this is
+
+**A Discord-first concierge for private Plex communities: onboard members, approve Seerr requests,
+keep requesters informed, and safely manage media access.**
+
+The normal member journey is intentionally short: request access once, use `/request`, follow the
+four-step `/request-status` timeline, and watch on the assigned Plex server. The larger operational
+toolkit is layered around that core instead of being required to understand it:
+
+1. **Core concierge** — onboarding, Plex invites, Seerr requests, DMs, `/me`, and request tracking.
+2. **Media operations** — queue health, secure downloads, cleanup previews, retention, and backups.
+3. **Advanced infrastructure** — seedbox/AvistaZ transfer, Philippines staging, and multi-node tiering.
+
+The repository keeps its historical `overseerr-dm-bot` name, while new user-facing copy calls the
+product **Durant Media Server** and the request service **Seerr**. API names and migration-oriented
+operator screens retain `Overseerr` where that compatibility context is useful.
 
 ## Features
 - Discord onboarding workflow with admin approval buttons.
@@ -28,7 +42,8 @@ Durant Media Server Bot is a Discord + Plex + Seerr/Overseerr automation bot for
 - Optional per-topic notification channels (`REQUESTS_`/`SYSTEM_ALERTS_`/`DOWNLOADS_`/`CLEANUP_`/
   `AUDIT_`/`DEPLOY_CHANNEL_ID`), each falling back to `ADMIN_CHANNEL_ID` when unset — see
   `.env.example` for the routing map.
-- Pipeline visibility: `/request-status` explains why a request isn't ready (pending approval,
+- Pipeline visibility: `/request-status` presents a submitted → approved → downloaded → delivered
+  timeline and explains why a request isn't ready (pending approval,
   downloading with progress/ETA, stalled with the *arr's reported reason, or waiting for a
   release — including the expected digital release / air date pulled from Radarr/Sonarr when the
   title simply isn't out yet; approval DMs and AvistaZ escalation alerts show the same release
@@ -40,7 +55,8 @@ Durant Media Server Bot is a Discord + Plex + Seerr/Overseerr automation bot for
 - Test suite (`npm test`) runs the shipped code against mock Seerr servers; CI runs it on every
   PR and gates the image build.
 - User self-service commands (`/request`, `/request-status`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`).
-- Health endpoints (`/health` and authenticated `/admin/health`).
+- Health endpoints (`/health` and authenticated `/admin/health`) plus `/doctor` and
+  `npm run doctor:edge` for read-only California → Philippines transfer checks.
 
 ## Architecture
 Discord events + slash commands are handled in the bot process, which also runs an Express server for webhooks, download streaming, health, and dashboard routes. State is stored in SQLite at `/app/data/plex_invites.db`.
@@ -80,8 +96,8 @@ See `.env.example` for full values.
 - `RAID_PATH`
 
 ### Optional (code)
-- `WEBHOOK_SECRET`
-- `TAUTULLI_WEBHOOK_SECRET`
+- `WEBHOOK_SECRET`, `TAUTULLI_WEBHOOK_SECRET` — optional only while deletion is disabled/dry-run;
+  **both are mandatory when live deletion is enabled**, and startup fails closed if either is blank.
 - `RADARR_URL`, `RADARR_API_KEY`
 - `RADARR_4K_URL`, `RADARR_4K_API_KEY`
 - `SONARR_URL`, `SONARR_API_KEY`
@@ -94,7 +110,10 @@ See `.env.example` for full values.
 - `RTORRENT_URL`, `RTORRENT_LABEL_MOVIE`/`RTORRENT_LABEL_TV` (defaults `radarr`/`sonarr`), `AVISTAZ_INDEXER_NAME` (default `avistaz`), `AVISTAZ_DAILY_GRAB_LIMIT` (default `4`, `0` = unlimited), `GRAB_MODE` (`approve` default / `auto`), `GRAB_AUTO_CONFIDENCE` (default `92`), `GRAB_RCLONE_REMOTE`, `GRAB_RCLONE_FLAGS`, `GRAB_STAGING_PATH`, `GRAB_IMPORT_PATH`, `GRAB_CHECK_MINUTES` (default `5`), `GRAB_COPY_TIMEOUT_MINUTES` (default `240`), `GRAB_MISSING_AFTER_MINUTES` (default `10`), `GRAB_DOWNLOAD_TIMEOUT_HOURS` (default `72`) — the AvistaZ **direct grab** pipeline (`/avistaz`, and the smarter escalation path); see the dedicated section below.
 - `RTORRENT_ADOPT_ENABLED` (default `false`), `RTORRENT_ADOPT_CHECK_MINUTES` (default `5`), `RTORRENT_ADOPT_LABELS` (default `sonarr,radarr`), `RTORRENT_ADOPT_AUTO` (default `false`), `RTORRENT_REMOTE_ROOT` (unset) — **adoption** of torrents that already exist in the seedbox rTorrent (`/rtorrent`); see "Adopting existing torrents" below. Manual `/rtorrent adopt` works whenever the direct-grab transfer pieces are configured; `RTORRENT_ADOPT_ENABLED` gates only the discovery sweep.
 - `JANITOR_CHECK_MINUTES` (default `60`) — janitor sweep interval; `0` disables. The janitor:
-  1. **Grace deletes** — enforces the "Finished Watching" prompt's auto-delete promise: if nobody clicks Keep/Delete within `DELETION_GRACE_HOURS`, the media is deleted (requires `ENABLE_DELETION=true`; honors `DELETION_DRY_RUN`, keep list, and never-delete list). Requester gets a DM; admin channel gets a report. "Remind Me Later" restarts the grace window after the reminder.
+  1. **Grace deletes** — enforces the "Finished Watching" prompt's auto-delete promise for an
+     exact movie edition. 4K prompts retain `radarr-4k` identity through execution; ambiguous legacy
+     rows fail closed. Episode playback never creates a series-wide delete action. Requires
+     `ENABLE_DELETION=true`; honors dry-run, keep list, and never-delete list.
   2. **Disk-space alerts** — warns the admin channel (24h cooldown) when any *arr-visible volume drops below `DISK_SPACE_WARN_GB` (default `100`, `0` disables). `/status` also shows a Storage section. Set `DISK_SPACE_PATHS` (comma-separated) to an allowlist of mounts/folders to report — this hides the container's own `/` and `/config` disks and relabels a mount with the more specific media folder (e.g. shows `/share/media` for the `/share` mount). Unset reports every *arr mount.
   3. **Retention rules** — with `RETENTION_ENFORCEMENT=true`, enforces the `media_retention_rules` table (`movie_4k`/`movie_1080p` → matching Radarr, `tv_episode` → Sonarr) every `RETENTION_CHECK_HOURS` (default `24`), deleting oldest-first, at most `RETENTION_MAX_DELETES_PER_RUN` (default `10`) per run. Dry-run posts a "would delete" digest instead.
 - `PATH_REMAP_FROM`, `PATH_REMAP_TO`
@@ -277,6 +296,10 @@ Examples:
 ./scripts/restore-db.sh ./backups/plex_invites-YYYYMMDD-HHMMSS.db /app/data/plex_invites.db --force
 ```
 
+Backups use SQLite's online backup API, so committed WAL data is included even while the bot is
+running. Stop the bot before restoring. Restore verifies integrity, replaces the database
+atomically, and removes stale `-wal`/`-shm` sidecars from the old database.
+
 Recommended cron (host):
 ```cron
 0 */6 * * * cd /opt/durant-media-server-bot && ./scripts/backup-db.sh /app/data/plex_invites.db ./backups
@@ -286,7 +309,7 @@ Recommended cron (host):
 - Public JSON: `GET /health`
 - Authenticated JSON: `GET /admin/health`
 
-Checks include Discord, SQLite, Plex, Seerr/Overseerr, Radarr, Radarr-4K, Sonarr, RAID path, and tunnel domain configuration.
+Checks include Discord, SQLite, Plex, Seerr/Overseerr, Radarr, Radarr-4K, Sonarr, RAID path, and tunnel domain configuration. `/doctor` additionally performs read-only source, rclone remote, cache listing/free-space, tunnel, transfer queue, and tier-agent checks.
 
 ## Admin Dashboard
 - Route: `GET /admin` (themed, dark UI).
@@ -302,6 +325,8 @@ Checks include Discord, SQLite, Plex, Seerr/Overseerr, Radarr, Radarr-4K, Sonarr
 - Download streaming validates path containment under `RAID_PATH`.
 - Admin endpoints are authenticated.
 - Secrets are not intentionally logged.
+- Client-IP rate limits trust `X-Forwarded-For` only when `TRUST_PROXY=true` (one known proxy hop).
+- Audit and download-access logs are pruned after `LOG_RETENTION_DAYS` (default 90; `0` disables).
 
 ## Testing Webhooks / Helpers
 - Seerr test webhook: send sample payload to `/webhook/overseerr`.
@@ -590,6 +615,8 @@ Setup:
    the config into the container, and set `STAGE_RCLONE_REMOTE` (e.g. `phbox:/cache`) plus
    `STAGE_RCLONE_FLAGS=--config /app/data/rclone.conf`.
 4. `STAGING_ENABLED=true`, and set `STAGE_CACHE_MAX_GB` if the remote can't answer `rclone about`.
+5. Run `npm run doctor:edge` on the bot host (or `/doctor` in Discord). Do not enable automatic
+   promotion until California source, Philippines cache read, tunnel, and free-space checks pass.
 
 ### One server per person
 Plex does **not** sync watch state between servers — separate Continue Watching, separate watched
@@ -675,7 +702,7 @@ See `agent/README.md` for deploying the node agent (systemd timer or Docker).
 
 ## Slash Command List
 Admin (hidden from non-admin roles by default; grant per-role via Server Settings → Integrations if e.g. PH users should `/pin`):
-- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`, `/avistaz`, `/rtorrent`, `/staged`, `/pin`, `/unpin`, `/stage-bulk`, `/assign-server`, `/tier`, `/tier-node`, `/tier-member`
+- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/doctor`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`, `/avistaz`, `/rtorrent`, `/staged`, `/pin`, `/unpin`, `/stage-bulk`, `/assign-server`, `/tier`, `/tier-node`, `/tier-member`
 
 User:
 - `/request`, `/request-status`, `/download`, `/queue`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`, `/stage`
