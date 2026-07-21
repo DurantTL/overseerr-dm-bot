@@ -16,6 +16,10 @@
 //   6. POST a report back (bytes freed, errors, and — for atime nodes — the local file
 //      inventory {folderId, relPath, sizeBytes, atime} that is the planner's demand signal).
 //
+// On a no-op run (plan and inventory both unchanged) the agent still POSTs a lightweight
+// {heartbeat:true} so the bot can tell "healthy idle" from "stopped / net down / timer broken" —
+// otherwise a silent, successful agent is indistinguishable from a dead one on the status surfaces.
+//
 // Standalone on purpose: Node 18+ stdlib only (global fetch), no discord.js, no *arr deps.
 // Idempotent and safe on a schedule.
 const fs = require('fs');
@@ -189,18 +193,27 @@ async function rescanAndConfirmIgnores(ctx, fp) {
   return lines;
 }
 
-function dirSizeBytes(target) {
-  let total = 0;
-  const st = fs.lstatSync(target);
+// Async, non-blocking directory size. Only used as a fallback when a manifest drop entry carries
+// no `sizeBytes` — the planner normally ships the inventory size so we never have to walk the tree
+// at all. Yields between entries (await) so measuring a big TV folder can't stall the event loop.
+async function measureDirBytes(target) {
+  let st;
+  try { st = await fs.promises.lstat(target); } catch (_e) { return 0; }
   if (!st.isDirectory()) return st.size;
-  for (const entry of fs.readdirSync(target)) total += dirSizeBytes(path.join(target, entry));
+  let total = 0;
+  let entries;
+  try { entries = await fs.promises.readdir(target); } catch (_e) { return total; }
+  for (const entry of entries) total += await measureDirBytes(path.join(target, entry));
   return total;
 }
 
 // §4a step 5: prune a folder's drops that are confirmed ignored. Every path is resolved and
 // checked to stay inside THAT folder's root — a malicious or corrupt manifest must not reach
-// outside it, and one folder's drop can never touch another's tree.
-function pruneDrops(ctx, fp, loadedIgnores) {
+// outside it, and one folder's drop can never touch another's tree. Deletion is asynchronous and
+// one title at a time: `fs.promises.rm` yields to the event loop (a synchronous `rmSync` on a big
+// TV folder could block Node for seconds), and freed bytes are estimated from the planner's
+// inventory size instead of a synchronous recursive stat of the tree.
+async function pruneDrops(ctx, fp, loadedIgnores) {
   const dropped = [];
   const errors = [];
   let bytesFreed = 0;
@@ -215,14 +228,18 @@ function pruneDrops(ctx, fp, loadedIgnores) {
       errors.push(`skipped ${entry.relPath}: escapes folder root`);
       continue;
     }
-    if (!fs.existsSync(target)) continue; // already gone (or never pulled) — idempotent
+    try { await fs.promises.stat(target); }
+    catch (_e) { continue; } // already gone (or never pulled) — idempotent
+    // Prefer the planner's inventory size (movies: sizeOnDisk; TV: whole-series total) so the
+    // common case does no filesystem walk at all; only measure asynchronously when it's missing.
+    let bytes = Number(entry.sizeBytes);
+    if (!Number.isFinite(bytes) || bytes < 0) bytes = await measureDirBytes(target);
     try {
-      const bytes = dirSizeBytes(target);
       if (ctx.dryRun) {
-        ctx.log(`[dry-run] would delete ${target} (${bytes} bytes)`);
+        ctx.log(`[dry-run] would delete ${target} (~${bytes} bytes)`);
       } else {
-        fs.rmSync(target, { recursive: true, force: true });
-        ctx.log(`pruned ${entry.relPath} (${bytes} bytes)`);
+        await fs.promises.rm(target, { recursive: true, force: true });
+        ctx.log(`pruned ${entry.relPath} (~${bytes} bytes)`);
       }
       dropped.push({ folderId: fp.folderId, relPath: entry.relPath, bytes });
       bytesFreed += bytes;
@@ -386,7 +403,19 @@ async function runOnce(ctx) {
 
   if (!planChanged && !inventoryChanged && !recovered) {
     ctx.log(`plan ${manifest.planHash} unchanged and inventory unchanged — nothing to do`);
-    return { skipped: true, planHash: manifest.planHash };
+    // Heartbeat: a no-op run still checks in so the bot can tell "healthy idle" from "stopped / net
+    // down / timer broken". Cheap by design — no inventory, no prune, just proof of life. But the
+    // delivery IS the whole point: if it can't reach the bot, do NOT let the scheduler (systemd
+    // timer) see a clean exit, or an unreachable bot stays masked behind a stale UI until someone
+    // notices. Signal failure with a non-zero exit code, matching the failed-report path.
+    try {
+      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, planHash: manifest.planHash });
+      return { skipped: true, heartbeat: true, planHash: manifest.planHash };
+    } catch (err) {
+      ctx.log(`heartbeat report failed: ${err.message}`);
+      process.exitCode = 1;
+      return { skipped: true, heartbeat: false, error: err.message, planHash: manifest.planHash };
+    }
   }
   if (recovered) ctx.log(`media drive recovered — reporting to clear the bot's drive-missing state`);
 
@@ -398,7 +427,7 @@ async function runOnce(ctx) {
         await assertReceiveOnly(ctx, fp.syncFolderId);                  // 2. topology guard
         writeStignore(ctx, fp);                                         // 3. ignore first
         const loaded = ctx.dryRun ? new Set(fp.drop.map(e => `/${escapeStignore(e.relPath)}`)) : await rescanAndConfirmIgnores(ctx, fp); // 4. confirm loaded
-        const pr = pruneDrops(ctx, fp, loaded);                         // 5. then prune
+        const pr = await pruneDrops(ctx, fp, loaded);                   // 5. then prune (async, non-blocking)
         pruneResult.dropped.push(...pr.dropped);
         pruneResult.bytesFreed += pr.bytesFreed;
         pruneResult.errors.push(...pr.errors);

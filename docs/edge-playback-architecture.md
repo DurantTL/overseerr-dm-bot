@@ -4,16 +4,18 @@
 
 ```
 PH play-triggered promotion:        implemented, off by default
-PH merged fallback mount:           not implemented (infra, outside this repo)
+PH merged fallback mount:           infra runbook ready (mergerfs-plex-operational.md), stand-up pending
 California tiering:                 implemented
-California play promotion:          not implemented
-California merged fallback mount:   not implemented
+California play promotion:          not implemented (needs §2.2 bot work)
+California merged fallback mount:   infra runbook ready (mergerfs-plex-operational.md), stand-up pending
 Season-level TV planning:           not implemented
 ```
 
-The merged-library *mount* work (mergerfs, Plex test library) is infra outside this repo and is
-the remaining Phase 2/3 work; the bot-side promotion, planner correctness (Phase 1), and PH staging
-fixes (path layout, DB reconciliation, durable promotion cap) are in place.
+The merged-library *mount* work (mergerfs, Plex test library) is infra outside this repo — the
+step-by-step stand-up, with verification and rollback at each step, is now written up as a runbook:
+[`mergerfs-plex-operational.md`](mergerfs-plex-operational.md). The bot-side promotion, planner
+correctness (Phase 1), and PH staging fixes (path layout, DB reconciliation, durable promotion cap)
+are in place, as are the operational agent-heartbeat and async-deletion items.
 
 **Applies to:** the California edge node *and* the Philippines (PH) cache box
 **Author's intent:** "Press Play in an edge Plex → the title plays immediately → the bot

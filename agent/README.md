@@ -7,14 +7,20 @@ local Syncthing replica onto it — ignore-first, then prune, never the other wa
 One run does, in order:
 
 1. `GET <bot>/agent/manifest/<node>` with the node's bearer token. If the `planHash` is
-   unchanged **and** the local inventory hasn't changed, it exits — safe on any schedule.
+   unchanged **and** the local inventory hasn't changed, it POSTs a lightweight
+   `{heartbeat:true}` and exits — safe on any schedule. The heartbeat is proof of life so the bot
+   can tell a healthy idle node from a stopped / unreachable / timer-broken one (last-check-in age
+   shows in `/tier-node list`, `/tier preview`, and the dashboard).
 2. **Asserts the Syncthing folder is Receive Only** via the Syncthing REST API. If someone
    flipped it to send-receive, the agent aborts and reports — that misconfiguration is the only
    way an edge node could ever push a delete back to the master.
 3. Writes the manifest's `.stignore` into the folder root.
 4. Triggers a rescan and **confirms Syncthing loaded the ignore patterns**.
 5. Prunes local files that are in `drop` *and* confirmed ignored (ignored files are never
-   re-pulled). Every deletion is logged; paths are confined to the folder root.
+   re-pulled). Every deletion is logged; paths are confined to the folder root. Deletion is
+   asynchronous and one title at a time (`fs.promises.rm`, which yields to the event loop rather
+   than blocking Node on a big TV folder), and freed bytes are estimated from the planner's
+   inventory size instead of a synchronous recursive stat of the tree.
 6. `POST <bot>/agent/report/<node>` — bytes freed, errors, and (by default) the local media
    inventory `{relPath, sizeBytes, atime}`, which is the planner's demand signal for
    `demand_source = atime` nodes.
