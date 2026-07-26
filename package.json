@@ -1,10 +1,10 @@
 {
   "name": "durant-media-server-bot",
   "version": "3.0.0",
-  "main": "index.js",
+  "main": "bootstrap.js",
   "scripts": {
-    "start": "node index.js",
-    "test": "node --check index.js && node scripts/tests/run-all.js",
+    "start": "node bootstrap.js",
+    "test": "node --check index.js && node --check bootstrap.js && node --check src/episode-recovery.js && node scripts/tests/run-all.js",
     "test:helpers": "node scripts/test-security.js",
     "doctor:edge": "node scripts/check-edge-transfer.js"
   },
