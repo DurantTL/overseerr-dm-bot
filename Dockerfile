@@ -16,6 +16,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 
 COPY index.js ./
+COPY bootstrap.js ./
 COPY src ./src
 COPY scripts ./scripts
 
@@ -25,4 +26,4 @@ ENV GIT_SHA=$GIT_SHA
 
 RUN mkdir -p /app/data
 
-CMD ["node", "index.js"]
+CMD ["node", "bootstrap.js"]
