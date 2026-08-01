@@ -38,7 +38,7 @@ const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = requi
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
-const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, releaseContentClaim, contentClaimsOverlap, describeContentClaim, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
+const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
 const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
@@ -612,9 +612,34 @@ function splitTitleYear(title) {
 
 const grabDailyAllowance = () => grabAllowance(countGrabJobsToday(), CONFIG.AVISTAZ_DAILY_GRAB_LIMIT);
 
+// How many releases a whole-series grab may take right now: the config ceiling, tightened by
+// whatever is left of today's AvistaZ allowance (0/unset = unlimited, so the ceiling stands).
+function seriesGrabBudget(allowance = grabDailyAllowance()) {
+  const cap = Math.max(1, CONFIG.GRAB_TV_MAX_RELEASES);
+  return allowance.limited ? Math.max(0, Math.min(cap, allowance.remaining)) : cap;
+}
+
+// The whole-series plan for a TV offer, or null when the feature is off, the media isn't TV,
+// or there's nothing beyond the single best release to add. Releases already in flight are
+// excluded, so re-running a search after a partial grab only plans the gaps.
+function buildSeriesPlan({ candidates, mediaType, season = null, allowance = grabDailyAllowance() }) {
+  if (!CONFIG.GRAB_TV_COMPLETE || mediaType !== 'tv') return null;
+  const max = seriesGrabBudget(allowance);
+  if (max < 1) return null;
+  const plan = planSeriesGrab(candidates, {
+    season,
+    max,
+    minConfidence: CONFIG.GRAB_TV_COMPLETE_MIN_CONFIDENCE,
+    exclude: listActiveGrabJobs().filter(j => j.media_type === 'tv').map(j => j.release_title || j.title),
+  });
+  if (!plan.picks.length) return null;
+  return { ...plan, coverage: describeGrabPlan(plan.picks) };
+}
+
 // The candidates embed + Download/Cancel buttons, shared by /avistaz search and the
 // escalation flow. The offer behind the buttons lives in SQLite (stashGrabOffer).
-function grabCandidatesMessage({ heading, candidates, nonce, allowance, footnote }) {
+// `plan` (from buildSeriesPlan) adds the one-click whole-series button for TV.
+function grabCandidatesMessage({ heading, candidates, nonce, allowance, footnote, plan = null }) {
   const lines = candidates.map((c, i) => {
     const bits = [
       [c.resolution, { webdl: 'WEB-DL', webrip: 'WEBRip', hdtv: 'HDTV', bluray: 'BluRay' }[c.source]].filter(Boolean).join(' ') || 'unknown quality',
@@ -629,13 +654,27 @@ function grabCandidatesMessage({ heading, candidates, nonce, allowance, footnote
   const allowanceLine = allowance.limited
     ? `\n\nDownloads remaining today: **${allowance.remaining}**${allowance.exhausted ? ' — daily AvistaZ allowance is used up, try again tomorrow.' : ''}`
     : '';
+  // A Download button grabs exactly one release and consumes the offer; for a show that's
+  // usually one season (or one episode) out of several, so spell out what the bulk button adds.
+  const multi = plan && plan.picks.length > 1;
+  const planLine = multi
+    ? `\n\n**Grab Everything** takes all **${plan.picks.length}** non-overlapping releases covering **${plan.coverage}** in a single click${plan.trimmed ? ` — **${plan.trimmed}** more won't fit in today's budget and stay for later` : ''}.`
+    : '';
   const embed = brandedEmbed(COLORS.INFO)
     .setTitle(heading)
-    .setDescription(`${lines.join('\n\n')}${allowanceLine}${footnote ? `\n\n${footnote}` : ''}`.slice(0, 4000));
+    .setDescription(`${lines.join('\n\n')}${allowanceLine}${planLine}${footnote ? `\n\n${footnote}` : ''}`.slice(0, 4000));
   const buttons = allowance.exhausted ? [] : candidates.map((c, i) =>
-    new ButtonBuilder().setCustomId(`grab_dl:${nonce}:${i}`).setLabel(`Download ${i + 1}`).setStyle(i === 0 ? ButtonStyle.Success : ButtonStyle.Primary));
+    new ButtonBuilder().setCustomId(`grab_dl:${nonce}:${i}`).setLabel(`Download ${i + 1}`)
+      .setStyle(i === 0 && !multi ? ButtonStyle.Success : ButtonStyle.Primary));
+  // A Discord action row holds 5 buttons; Cancel and (when it applies) Grab Everything are
+  // worth more than the tail of the numbered list, so they win the seats. Grab Everything
+  // takes the green highlight — for a series it's almost always the intended action.
+  if (!allowance.exhausted && multi) {
+    buttons.length = Math.min(buttons.length, 3);
+    buttons.push(new ButtonBuilder().setCustomId(`grab_all:${nonce}`).setLabel(`Grab Everything (${plan.picks.length})`).setStyle(ButtonStyle.Success));
+  }
   buttons.push(new ButtonBuilder().setCustomId(`grab_cancel:${nonce}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary));
-  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(...buttons)] };
+  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(...buttons.slice(0, 5))] };
 }
 
 // Content-level duplicate: an active grab job that already covers the same episode(s) as this
@@ -717,6 +756,54 @@ async function executeGrab(candidate, meta) {
   }
 }
 
+// Run a whole-series plan: one executeGrab per picked release, sequentially so the daily
+// allowance is re-checked between them and rTorrent isn't hit with a burst. Never throws —
+// a failure on one release doesn't abandon the rest, and the caller reports the mix.
+async function executeSeriesGrab(picks, meta) {
+  const sent = [];
+  const dup = [];
+  const failed = [];
+  let stopped = null;
+  for (const candidate of picks) {
+    // Re-checked per release: a parallel escalation or a hand-clicked Download can exhaust the
+    // day mid-plan, and spending past the limit is exactly what the counter exists to prevent.
+    if (grabDailyAllowance().exhausted) { stopped = 'allowance'; break; }
+    const result = await executeGrab(candidate, meta);
+    if (result.ok) sent.push({ candidate, job: result.job });
+    else if (result.dup) dup.push({ candidate, why: result.why });
+    else failed.push({ candidate, why: result.why });
+  }
+  const remaining = picks.length - sent.length - dup.length - failed.length;
+  audit('avistaz_series_grab', {
+    actorDiscordId: meta.actorDiscordId || null, title: meta.title, origin: meta.origin,
+    planned: picks.length, sent: sent.length, dup: dup.length, failed: failed.length, stopped,
+  });
+  return { sent, dup, failed, stopped, remaining };
+}
+
+// The multi-line body shared by the button summary and the auto-grab escalation notice.
+function seriesGrabSummary(outcome, { planned, trimmed = 0 }) {
+  const lines = [];
+  if (outcome.sent.length) {
+    lines.push(`Sent **${outcome.sent.length}** of ${planned} release${planned === 1 ? '' : 's'} to the seedbox:`);
+    for (const s of outcome.sent.slice(0, 10)) lines.push(`• **${String(s.candidate.releaseTitle).slice(0, 140)}** (${fmtSpace(s.candidate.size)})`);
+    if (outcome.sent.length > 10) lines.push(`…and ${outcome.sent.length - 10} more.`);
+  } else {
+    lines.push(`Nothing new was sent — none of the ${planned} planned release${planned === 1 ? '' : 's'} could be grabbed.`);
+  }
+  if (outcome.dup.length) lines.push('', `Skipped **${outcome.dup.length}** already in the pipeline (same episodes under another release).`);
+  if (outcome.failed.length) {
+    lines.push('', `**${outcome.failed.length} failed:**`);
+    for (const f of outcome.failed.slice(0, 5)) lines.push(`• ${String(f.candidate.releaseTitle).slice(0, 100)} — ${String(f.why).slice(0, 200)}`);
+  }
+  if (outcome.stopped === 'allowance') {
+    lines.push('', `⏸️ Stopped early — the daily AvistaZ allowance (${CONFIG.AVISTAZ_DAILY_GRAB_LIMIT}/day) ran out with **${outcome.remaining}** release(s) left. Re-run \`/avistaz search\` tomorrow to pick up the rest.`);
+  } else if (trimmed) {
+    lines.push('', `ℹ️ **${trimmed}** further release(s) didn't fit today's budget — re-run \`/avistaz search\` once the allowance resets.`);
+  }
+  return lines.join('\n');
+}
+
 // Escalation via the direct pipeline: search, rank, then either auto-grab (GRAB_MODE=auto +
 // high confidence + allowance left) or post the candidates to the downloads channel for a
 // one-click decision. ok:false lets runEscalation fall back to the tag-based path.
@@ -731,27 +818,48 @@ async function runDirectGrabEscalation(row) {
   if (!indexer) return { ok: false, why: 'no AvistaZ indexer found in Prowlarr' };
   const { query, year } = splitTitleYear(row.title);
   const results = await searchAvistaz({ query, mediaType: row.media_type, indexerId: indexer.id });
-  const candidates = rankAvistazResults(results, { title: query, year, mediaType: row.media_type });
-  if (!candidates.length) return { ok: false, why: 'no AvistaZ results' };
+  // A show needs a wider pool than the three shown: the whole-series plan is built from every
+  // usable release (a pack per season), not just the podium.
+  const ranked = rankAvistazResults(results, { title: query, year, mediaType: row.media_type }, { limit: avistazRankLimit(row.media_type) });
+  if (!ranked.length) return { ok: false, why: 'no AvistaZ results' };
+  const candidates = ranked.slice(0, 3);
+  const plan = buildSeriesPlan({ candidates: ranked, mediaType: row.media_type, allowance });
 
-  const top = candidates[0];
+  const top = ranked[0];
+  const meta = { mediaId: row.media_id, mediaType: row.media_type, title: row.title, discordId: row.requested_by_discord_id, origin: 'escalation-auto' };
   if (CONFIG.GRAB_MODE === 'auto' && top.confidence >= CONFIG.GRAB_AUTO_CONFIDENCE) {
-    const grab = await executeGrab(top, { mediaId: row.media_id, mediaType: row.media_type, title: row.title, discordId: row.requested_by_discord_id, origin: 'escalation-auto' });
-    if (grab.ok) {
-      return { ok: true, detail: `Auto-grabbed **${top.releaseTitle}** (${top.confidence}% confidence) → seedbox rTorrent. I'll transfer and import it when the download finishes.` };
+    // Auto mode takes the whole plan for a series, not just the best release — the top pick
+    // still has to clear GRAB_AUTO_CONFIDENCE, so a weak search never triggers a bulk grab.
+    if (plan && plan.picks.length > 1) {
+      const outcome = await executeSeriesGrab(plan.picks, meta);
+      if (outcome.sent.length || outcome.dup.length) {
+        return { ok: true, detail: `Auto-grabbed the available run of this series (**${plan.coverage}**, best match ${top.confidence}% confidence).\n${seriesGrabSummary(outcome, { planned: plan.picks.length, trimmed: plan.trimmed })}` };
+      }
+      // Every release failed (rTorrent down, bad torrents) — fall through to human approval.
+    } else {
+      const grab = await executeGrab(top, meta);
+      if (grab.ok) {
+        return { ok: true, detail: `Auto-grabbed **${top.releaseTitle}** (${top.confidence}% confidence) → seedbox rTorrent. I'll transfer and import it when the download finishes.` };
+      }
+      if (grab.dup) return { ok: true, detail: `Best match **${top.releaseTitle}** was ${grab.why} — nothing new to grab.` };
+      // Grab itself failed (rTorrent down, bad torrent) — fall through to human approval.
     }
-    if (grab.dup) return { ok: true, detail: `Best match **${top.releaseTitle}** was ${grab.why} — nothing new to grab.` };
-    // Grab itself failed (rTorrent down, bad torrent) — fall through to human approval.
   }
 
-  const nonce = stashGrabOffer({ mediaId: row.media_id, mediaType: row.media_type, title: row.title, discordId: row.requested_by_discord_id, origin: 'escalation', candidates });
+  // The full ranked list is stashed, not just the three shown: Grab Everything re-plans from it
+  // against live state on click, so an offer that outlived a restart can't re-grab what landed.
+  const nonce = stashGrabOffer({ mediaId: row.media_id, mediaType: row.media_type, title: row.title, discordId: row.requested_by_discord_id, origin: 'escalation', candidates: ranked });
   notifyChannel('downloads', grabCandidatesMessage({
     heading: `🔎 AvistaZ Matches — ${row.title}`,
-    candidates, nonce, allowance,
+    candidates, nonce, allowance, plan,
     footnote: `Requested by ${row.requested_by_discord_id ? `<@${row.requested_by_discord_id}>` : 'unknown'}. Downloading sends the torrent to the seedbox rTorrent; the bot copies it home and imports it when done.`,
   }));
-  return { ok: true, detail: `Found ${candidates.length} AvistaZ candidate(s) — posted to the downloads channel for approval (best: ${top.confidence}% confidence).` };
+  return { ok: true, detail: `Found ${ranked.length} AvistaZ candidate(s) — posted to the downloads channel for approval (best: ${top.confidence}% confidence${plan && plan.picks.length > 1 ? `, Grab Everything covers ${plan.coverage}` : ''}).` };
 }
+
+// How deep to rank a search. Movies only ever need the podium; a series is planned across every
+// usable release, so the pool has to be big enough to hold a pack per season.
+const avistazRankLimit = mediaType => (mediaType === 'tv' && CONFIG.GRAB_TV_COMPLETE ? 25 : 3);
 
 // Watch active grab jobs against rTorrent and act on the state machine's verdicts.
 async function sweepGrabJobs() {
@@ -3609,14 +3717,18 @@ async function handleAvistazCommand(interaction) {
     const indexer = await findAvistazIndexer();
     if (!indexer) return interaction.editReply(`❌ No Prowlarr indexer matching \`${CONFIG.AVISTAZ_INDEXER_NAME}\` — add AvistaZ in Prowlarr first.`);
     const results = await searchAvistaz({ query: split.query, mediaType, indexerId: indexer.id });
-    const candidates = rankAvistazResults(results, { title: split.query, year, mediaType, season });
-    if (!candidates.length) return interaction.editReply(`🔍 No AvistaZ results for **${split.query}**${season != null ? ` S${pad(season)}` : ''}. Try alternate spellings or the show's original title.`);
+    const ranked = rankAvistazResults(results, { title: split.query, year, mediaType, season }, { limit: avistazRankLimit(mediaType) });
+    if (!ranked.length) return interaction.editReply(`🔍 No AvistaZ results for **${split.query}**${season != null ? ` S${pad(season)}` : ''}. Try alternate spellings or the show's original title.`);
+    const candidates = ranked.slice(0, 3);
     const allowance = grabDailyAllowance();
-    const nonce = stashGrabOffer({ mediaType, title: rawTitle, discordId: interaction.user.id, origin: 'manual', candidates });
-    audit('avistaz_search', { actorDiscordId: interaction.user.id, query: split.query, mediaType, season, results: results.length, shown: candidates.length });
+    // An explicit `season:` scopes the whole-series plan to that season; without one it plans
+    // across every season the search turned up.
+    const plan = buildSeriesPlan({ candidates: ranked, mediaType, season, allowance });
+    const nonce = stashGrabOffer({ mediaType, title: rawTitle, discordId: interaction.user.id, origin: 'manual', candidates: ranked, season });
+    audit('avistaz_search', { actorDiscordId: interaction.user.id, query: split.query, mediaType, season, results: results.length, shown: candidates.length, planned: plan?.picks.length || 0 });
     return interaction.editReply(grabCandidatesMessage({
-      heading: `🔎 Found ${candidates.length} AvistaZ match${candidates.length === 1 ? '' : 'es'} — ${split.query}`,
-      candidates, nonce, allowance,
+      heading: `🔎 Found ${ranked.length} AvistaZ match${ranked.length === 1 ? '' : 'es'} — ${split.query}`,
+      candidates, nonce, allowance, plan,
     }));
   } catch (err) {
     audit('external_api_error', { provider: 'prowlarr', error: err.message, action: 'avistaz_search' });
@@ -4652,7 +4764,7 @@ async function handleButton(interaction) {
     return interaction.showModal(modal);
   }
 
-  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_cancel', 'grab_retry', 'adopt_do', 'adopt_bulk', 'adopt_cancel'].includes(action) && !isAdminInteraction(interaction)) {
+  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'adopt_do', 'adopt_bulk', 'adopt_cancel'].includes(action) && !isAdminInteraction(interaction)) {
     return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
   }
 
@@ -5036,6 +5148,41 @@ async function handleButton(interaction) {
     return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`🔐 Sent to Seedbox — ${offer.title}`)
       .setDescription(`**${candidate.releaseTitle}** (${fmtSpace(candidate.size)}) → rTorrent as \`${result.job.label}\`, picked by <@${interaction.user.id}>.\nI'll watch it, copy it home when it finishes, and hand it to ${offer.mediaType === 'movie' ? 'Radarr' : 'Sonarr'} for import.${after.limited ? `\nDownloads remaining today: **${after.remaining}**` : ''}`)], components: [] });
+  }
+  // "Grab Everything": send every non-overlapping release in the stashed plan, so a series whose
+  // best AvistaZ match is one season (or one episode) doesn't need N prompts that never come.
+  if (action === 'grab_all') {
+    const offer = takeGrabOffer(parts[0]);
+    if (!offer) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
+    const candidates = offer.candidates || [];
+    // Re-plan against live state rather than trusting the stashed indexes: the offer survives
+    // restarts, and anything grabbed since it was posted must not be grabbed twice.
+    const allowance = grabDailyAllowance();
+    if (allowance.exhausted) {
+      restashGrabOffer(parts[0], offer);
+      return interaction.reply({ content: `❌ Daily AvistaZ allowance is used up (${CONFIG.AVISTAZ_DAILY_GRAB_LIMIT}/day) — the buttons will work again tomorrow (UTC).`, ephemeral: true });
+    }
+    const plan = buildSeriesPlan({ candidates, mediaType: offer.mediaType, season: offer.season ?? null, allowance });
+    if (!plan) {
+      return interaction.update({ embeds: [brandedEmbed(COLORS.INFO)
+        .setTitle(`ℹ️ Nothing Left to Grab — ${offer.title}`)
+        .setDescription('Every release from this search is already downloading or imported.')], components: [] });
+    }
+    await interaction.deferUpdate();
+    await interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle(`⏳ Grabbing ${plan.picks.length} Releases — ${offer.title}`)
+      .setDescription(`Started by <@${interaction.user.id}>, covering **${plan.coverage}**. Sending them to the seedbox one at a time — a summary follows here.`)], components: [] });
+    const outcome = await executeSeriesGrab(plan.picks, {
+      mediaId: offer.mediaId || null, mediaType: offer.mediaType, title: offer.title,
+      discordId: offer.discordId, origin: `${offer.origin || 'manual'}-all`, actorDiscordId: interaction.user.id,
+    });
+    const after = grabDailyAllowance();
+    const body = `${seriesGrabSummary(outcome, { planned: plan.picks.length, trimmed: plan.trimmed })}\nI'll watch each one, copy it home when it finishes, and hand it to ${offer.mediaType === 'movie' ? 'Radarr' : 'Sonarr'} for import.${after.limited ? `\nDownloads remaining today: **${after.remaining}**` : ''}`;
+    const summary = { embeds: [brandedEmbed(outcome.sent.length ? (outcome.failed.length ? COLORS.WARN : COLORS.SUCCESS) : COLORS.DANGER)
+      .setTitle(`🔐 Whole-Series Grab — ${offer.title}`.slice(0, 256))
+      .setDescription(body.slice(0, 4000))], components: [] };
+    // A long plan can outlive the 15-minute interaction token; fall back to a fresh post.
+    return interaction.editReply(summary).catch(() => notifyChannel('downloads', summary));
   }
   if (action === 'grab_cancel') {
     const offer = takeGrabOffer(parts[0]);
