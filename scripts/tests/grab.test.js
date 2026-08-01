@@ -8,7 +8,7 @@ const crypto = require('crypto');
 const express = require('express');
 
 (async () => {
-  const { parseReleaseName, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction, grabImportTarget, findAvistazIndexer, searchAvistaz, releaseContentClaim, contentClaimsOverlap, describeContentClaim } = require('../../src/grab');
+  const { parseReleaseName, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction, grabImportTarget, findAvistazIndexer, searchAvistaz, releaseContentClaim, contentClaimsOverlap, describeContentClaim, claimCoversSeason, planSeriesGrab, describeGrabPlan } = require('../../src/grab');
   const { serializeXmlRpcCall, parseXmlRpcResponse, computeInfoHash } = require('../../src/rtorrent');
 
   // --- Release-name parsing ---
@@ -181,6 +181,94 @@ const express = require('express');
   assert.strictEqual(describeContentClaim(releaseContentClaim('Some.Show.S02E05.720p')), 'S02E05', 'episode label');
   assert.strictEqual(describeContentClaim(releaseContentClaim('Some.Show.S01.1080p')), 'S01', 'season label');
   assert.strictEqual(describeContentClaim(releaseContentClaim('Old.Drama.Complete.Series.1080p')), 'the complete series', 'complete-series label');
+
+  // --- Whole-series planning (planSeriesGrab / describeGrabPlan) ---
+  // The point of the feature: one search, one click, every episode AvistaZ actually has.
+  const plan = (titles, opts) => planSeriesGrab(
+    titles.map(([releaseTitle, confidence]) => ({ releaseTitle, confidence })), opts);
+  const titlesOf = p => p.picks.map(x => x.releaseTitle);
+
+  let sp = plan([
+    ['Blood.vs.Duty.S01.1080p.WEB-DL', 95],
+    ['Blood.vs.Duty.S02.1080p.WEB-DL', 93],
+    ['Blood.vs.Duty.S03.1080p.WEB-DL', 91],
+  ]);
+  assert.deepStrictEqual(titlesOf(sp), ['Blood.vs.Duty.S01.1080p.WEB-DL', 'Blood.vs.Duty.S02.1080p.WEB-DL', 'Blood.vs.Duty.S03.1080p.WEB-DL'],
+    'one pack per season is grabbed as a set');
+  assert.strictEqual(describeGrabPlan(sp.picks), 'S01, S02, S03', 'the plan label lists every season covered');
+
+  // Overlapping releases of the same season collapse to the highest-confidence one — the plan
+  // can never spend two download slots on the same episodes.
+  sp = plan([
+    ['Blood.vs.Duty.S01.1080p.WEB-DL', 95],
+    ['Blood vs Duty S01 720p HDTV x264-OTHER', 88],
+    ['Blood.vs.Duty.S01E04.1080p.WEB-DL', 80],
+    ['Blood.vs.Duty.S02.1080p.WEB-DL', 93],
+  ]);
+  assert.deepStrictEqual(titlesOf(sp), ['Blood.vs.Duty.S01.1080p.WEB-DL', 'Blood.vs.Duty.S02.1080p.WEB-DL'], 'duplicate coverage of a season is dropped');
+  assert.strictEqual(sp.covered, 2, 'both redundant S01 releases are counted as covered');
+
+  // A complete-series pack that outranks everything absorbs the whole show in one grab.
+  sp = plan([
+    ['Old.Drama.Complete.Series.1080p.WEBRip', 96],
+    ['Old.Drama.S02.1080p.WEB-DL', 90],
+  ]);
+  assert.deepStrictEqual(titlesOf(sp), ['Old.Drama.Complete.Series.1080p.WEBRip'], 'a winning complete-series pack covers the rest');
+  assert.strictEqual(describeGrabPlan(sp.picks), 'the complete series', 'complete-series plan label');
+
+  // Season packs plus the stray episodes that fill the gaps — the case that used to need one
+  // prompt per episode and only ever got one.
+  sp = plan([
+    ['Some.Show.S01.1080p.WEB-DL', 94],
+    ['Some.Show.S02E01.1080p.WEB-DL', 82],
+    ['Some.Show.S02E02.1080p.WEB-DL', 81],
+  ]);
+  assert.deepStrictEqual(titlesOf(sp), ['Some.Show.S01.1080p.WEB-DL', 'Some.Show.S02E01.1080p.WEB-DL', 'Some.Show.S02E02.1080p.WEB-DL'],
+    'a pack and the loose episodes of another season are all planned');
+  assert.strictEqual(describeGrabPlan(sp.picks), 'S01, S02E01, S02E02', 'mixed plan label');
+
+  // Other shows in the same result set are never swept in — the top result anchors the series.
+  sp = plan([
+    ['Blood.vs.Duty.S01.1080p.WEB-DL', 95],
+    ['Completely.Other.Drama.S01.1080p.WEB-DL', 94],
+  ]);
+  assert.deepStrictEqual(titlesOf(sp), ['Blood.vs.Duty.S01.1080p.WEB-DL'], 'a different series in the results is not planned');
+  assert.strictEqual(sp.series, 'blood vs duty', 'the plan reports the anchored series token');
+
+  // `max` is how the daily allowance caps a plan; the shortfall is reported, not silently lost.
+  sp = plan([
+    ['Blood.vs.Duty.S01.1080p.WEB-DL', 95],
+    ['Blood.vs.Duty.S02.1080p.WEB-DL', 93],
+    ['Blood.vs.Duty.S03.1080p.WEB-DL', 91],
+  ], { max: 2 });
+  assert.strictEqual(sp.picks.length, 2, 'max caps the number of releases');
+  assert.strictEqual(sp.trimmed, 1, 'releases beyond the cap are reported as trimmed');
+
+  // minConfidence keeps junk out of an unattended (auto-mode) bulk grab.
+  sp = plan([['Blood.vs.Duty.S01.1080p.WEB-DL', 95], ['Blood.vs.Duty.S02.CAM.XviD', 41]], { minConfidence: 70 });
+  assert.deepStrictEqual(titlesOf(sp), ['Blood.vs.Duty.S01.1080p.WEB-DL'], 'low-confidence releases are excluded');
+
+  // `exclude` = releases already in flight, so re-running a search only plans the gaps.
+  sp = plan([
+    ['Blood.vs.Duty.S01.1080p.WEB-DL', 95],
+    ['Blood.vs.Duty.S02.1080p.WEB-DL', 93],
+  ], { exclude: ['Blood vs Duty S01 720p HDTV x264-OTHER'] });
+  assert.deepStrictEqual(titlesOf(sp), ['Blood.vs.Duty.S02.1080p.WEB-DL'], 'an already-active season is not re-grabbed');
+
+  // A season-scoped search plans only that season.
+  sp = plan([
+    ['Some.Show.S01.1080p.WEB-DL', 94],
+    ['Some.Show.S02.1080p.WEB-DL', 93],
+    ['Some.Show.S02E05.720p.HDTV', 80],
+  ], { season: 2 });
+  assert.deepStrictEqual(titlesOf(sp), ['Some.Show.S02.1080p.WEB-DL'], 'season scope keeps other seasons out of the plan');
+  assert.ok(claimCoversSeason(releaseContentClaim('Old.Drama.Complete.Series.1080p'), 7), 'a complete-series pack covers any season');
+  assert.ok(!claimCoversSeason(releaseContentClaim('Some.Show.S01.1080p'), 2), 'a single-season pack does not cover another season');
+
+  // Movie-shaped and unparseable names claim nothing, so a movie search never plans a bulk grab.
+  assert.strictEqual(plan([['Great.Movie.2019.2160p.BluRay.REMUX', 96]]).picks.length, 0, 'movies yield no series plan');
+  assert.strictEqual(planSeriesGrab([]).picks.length, 0, 'an empty result set plans nothing');
+  assert.strictEqual(describeGrabPlan([]), 'this title', 'an empty plan degrades to a generic label');
 
   console.log('ok - grab');
 })().catch(err => { console.error('FAILED grab:', err.message); process.exit(1); });

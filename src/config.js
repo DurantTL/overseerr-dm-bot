@@ -72,7 +72,7 @@ const CONFIG = {
   AVISTAZ_INDEXER_NAME: (process.env.AVISTAZ_INDEXER_NAME || 'avistaz').toLowerCase(),
   // Max grabs per UTC day (failed attempts count — the tracker may have already counted the
   // download). 0 = unlimited.
-  AVISTAZ_DAILY_GRAB_LIMIT: Number.parseInt(process.env.AVISTAZ_DAILY_GRAB_LIMIT || '4', 10),
+  AVISTAZ_DAILY_GRAB_LIMIT: Number.parseInt(process.env.AVISTAZ_DAILY_GRAB_LIMIT || '100', 10),
   // 'approve' = always post candidates with Download buttons; 'auto' = escalations grab the
   // top candidate automatically when its confidence ≥ GRAB_AUTO_CONFIDENCE.
   GRAB_MODE: (process.env.GRAB_MODE || 'approve').toLowerCase(),
@@ -81,6 +81,18 @@ const CONFIG = {
   // different release/encoding/size of them (info-hash and exact-title dedupe can't see that).
   // On by default; set false to allow multiple releases of the same content into the pipeline.
   GRAB_CONTENT_DEDUPE: parseBool(process.env.GRAB_CONTENT_DEDUPE, true),
+  // ---- Whole-series grabs (TV only) ----
+  // A single AvistaZ search usually holds more than one useful release for a show (a season
+  // pack per season, or packs plus stray episodes). With this on, TV offers gain a "Grab
+  // Everything" button that takes every non-overlapping release in one click, and GRAB_MODE=auto
+  // grabs that whole set instead of only the top candidate.
+  GRAB_TV_COMPLETE: parseBool(process.env.GRAB_TV_COMPLETE, true),
+  // Hard ceiling on releases per whole-series grab. The daily allowance still applies and is
+  // the tighter limit whenever AVISTAZ_DAILY_GRAB_LIMIT is set.
+  GRAB_TV_MAX_RELEASES: Number.parseInt(process.env.GRAB_TV_MAX_RELEASES || '6', 10),
+  // Floor for inclusion in a whole-series plan. Deliberately below GRAB_AUTO_CONFIDENCE: the
+  // top pick has to clear that bar on its own, while later seasons only need to be plausible.
+  GRAB_TV_COMPLETE_MIN_CONFIDENCE: Number.parseInt(process.env.GRAB_TV_COMPLETE_MIN_CONFIDENCE || '70', 10),
   // rclone remote pointing at the seedbox's rTorrent download folder, e.g. `rapidseedbox:files`.
   GRAB_RCLONE_REMOTE: (process.env.GRAB_RCLONE_REMOTE || '').replace(/\/$/, ''),
   // Extra rclone flags for seedbox copies (SFTP tuning etc.), space-separated.

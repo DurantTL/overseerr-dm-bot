@@ -108,7 +108,7 @@ See `.env.example` for full values.
 - `PREMIUMIZE_API_KEY` — enables `/debrid` (fair-use %, cloud storage, active/failed transfers, plus **Clear Stuck/0%** and **Clear Finished** buttons) and the **stuck-transfer watchdog**: every `PREMIUMIZE_CHECK_MINUTES` (default `15`, `0` disables) transfers that are errored or whose progress hasn't moved for `PREMIUMIZE_STUCK_AFTER_MINUTES` (default `45` — catches "0% forever") alert the downloads channel with **Retry / Clear Transfer / Ignore** buttons, at most once per transfer per `PREMIUMIZE_ALERT_COOLDOWN_HOURS` (default `6`)
 - `STUCK_CHECK_MINUTES` (default `10`), `STUCK_AFTER_MINUTES` (default `45`), `STUCK_ALERT_COOLDOWN_HOURS` (default `6`) — stuck-download watchdog: when a queue item makes no progress for `STUCK_AFTER_MINUTES` (e.g. no seeders), the admin channel gets an alert with **Remove & Try Another Release** (blocklist + auto re-search), **Remove Only**, and **Ignore** buttons. TV episodes are consolidated **per season** — a whole season stalling (from either download path, public indexers or the AvistaZ fallback) is one alert listing every stuck episode, and its buttons act on all of them at once, instead of one message per episode. Set `STUCK_CHECK_MINUTES=0` to disable.
 - `ESCALATION_ENABLED` (default `false`), `AVISTAZ_TAG` (default `avistaz`), `ESCALATION_DELAY_MINUTES` (default `45`; the legacy `ESCALATION_DELAY_HOURS` still works when the minutes key is unset), `ESCALATION_CHECK_MINUTES` (default `15`), `ESCALATION_MAX_AGE_DAYS` (default `14`), `ESCALATION_ARR_GRACE_MINUTES` (default `10`; the "request never landed" check), plus optional `RADARR_ROOT_FOLDER`/`SONARR_ROOT_FOLDER`/`RADARR_QUALITY_PROFILE`/`SONARR_QUALITY_PROFILE` for the direct-add rescue button — the AvistaZ private-tracker fallback; see the dedicated section below. Requires the one-time Radarr/Sonarr/Prowlarr setup described there.
-- `RTORRENT_URL`, `RTORRENT_LABEL_MOVIE`/`RTORRENT_LABEL_TV` (defaults `radarr`/`sonarr`), `AVISTAZ_INDEXER_NAME` (default `avistaz`), `AVISTAZ_DAILY_GRAB_LIMIT` (default `4`, `0` = unlimited), `GRAB_MODE` (`approve` default / `auto`), `GRAB_AUTO_CONFIDENCE` (default `92`), `GRAB_RCLONE_REMOTE`, `GRAB_RCLONE_FLAGS`, `GRAB_STAGING_PATH`, `GRAB_IMPORT_PATH`, `GRAB_CHECK_MINUTES` (default `5`), `GRAB_COPY_TIMEOUT_MINUTES` (default `240`), `GRAB_MISSING_AFTER_MINUTES` (default `10`), `GRAB_DOWNLOAD_TIMEOUT_HOURS` (default `72`) — the AvistaZ **direct grab** pipeline (`/avistaz`, and the smarter escalation path); see the dedicated section below.
+- `RTORRENT_URL`, `RTORRENT_LABEL_MOVIE`/`RTORRENT_LABEL_TV` (defaults `radarr`/`sonarr`), `AVISTAZ_INDEXER_NAME` (default `avistaz`), `AVISTAZ_DAILY_GRAB_LIMIT` (default `100`, `0` = unlimited), `GRAB_MODE` (`approve` default / `auto`), `GRAB_AUTO_CONFIDENCE` (default `92`), `GRAB_TV_COMPLETE` (default on — one-click whole-series grabs), `GRAB_TV_MAX_RELEASES` (default `6`), `GRAB_TV_COMPLETE_MIN_CONFIDENCE` (default `70`), `GRAB_RCLONE_REMOTE`, `GRAB_RCLONE_FLAGS`, `GRAB_STAGING_PATH`, `GRAB_IMPORT_PATH`, `GRAB_CHECK_MINUTES` (default `5`), `GRAB_COPY_TIMEOUT_MINUTES` (default `240`), `GRAB_MISSING_AFTER_MINUTES` (default `10`), `GRAB_DOWNLOAD_TIMEOUT_HOURS` (default `72`) — the AvistaZ **direct grab** pipeline (`/avistaz`, and the smarter escalation path); see the dedicated section below.
 - `RTORRENT_ADOPT_ENABLED` (default `false`), `RTORRENT_ADOPT_CHECK_MINUTES` (default `5`), `RTORRENT_ADOPT_LABELS` (default `sonarr,radarr`), `RTORRENT_ADOPT_AUTO` (default `false`), `RTORRENT_REMOTE_ROOT` (unset) — **adoption** of torrents that already exist in the seedbox rTorrent (`/rtorrent`); see "Adopting existing torrents" below. Manual `/rtorrent adopt` works whenever the direct-grab transfer pieces are configured; `RTORRENT_ADOPT_ENABLED` gates only the discovery sweep.
 - `JANITOR_CHECK_MINUTES` (default `60`) — janitor sweep interval; `0` disables. The janitor:
   1. **Grace deletes** — enforces the "Finished Watching" prompt's auto-delete promise for an
@@ -431,10 +431,37 @@ Radarr DownloadedMoviesScan / Sonarr DownloadedEpisodesScan (importMode Move)
 ### Modes
 - **Automatic** (`GRAB_MODE=auto`): escalations grab the top candidate themselves when its
   confidence ≥ `GRAB_AUTO_CONFIDENCE`; anything less confident falls back to approval buttons.
+  For a series this grabs the whole available run, not just the top release (see below).
 - **Approval** (`GRAB_MODE=approve`, default): escalations post the top 3 scored candidates to
-  the downloads channel with **Download 1/2/3 / Cancel** buttons.
+  the downloads channel with **Download 1/2/3 / Cancel** buttons, plus **Grab Everything** for a
+  series.
 - **Manual**: `/avistaz search title:<...> type:movie|tv [season] [year]` any time;
   `/avistaz status` shows the allowance, mode, seedbox reachability, and active grabs.
+
+### Whole-series grabs
+A **Download** button grabs exactly one release and consumes the offer — so a show whose best
+AvistaZ match is a single season (or a single episode) used to get that one release and never
+prompt again. `GRAB_TV_COMPLETE` (default on) fixes that: TV searches rank the full result set
+instead of just the podium, and the bot plans a set of releases whose episode-spaces **don't
+overlap** — a complete-series pack, or a pack per season, plus any loose episodes that fill the
+gaps. That plan sits behind one **Grab Everything (N)** button, and in `GRAB_MODE=auto` the
+escalation takes the whole plan by itself once the top match clears `GRAB_AUTO_CONFIDENCE`.
+
+The plan is built from the same episode-space claims as the dedupe above, so it can never spend
+two download slots on the same episodes, and releases already in flight are excluded — re-running
+`/avistaz search` after a partial grab only offers the gaps. Only the search's top-scoring series
+is planned, so other shows in the result set are never swept in. Releases join a plan at
+`GRAB_TV_COMPLETE_MIN_CONFIDENCE` (default `70`) — below `GRAB_AUTO_CONFIDENCE` on purpose, since
+the top match must clear that bar on its own before any bulk grab starts.
+
+Size is bounded by `GRAB_TV_MAX_RELEASES` (default `6`) **and** by whatever is left of
+`AVISTAZ_DAILY_GRAB_LIMIT`, whichever is smaller; the allowance is re-checked between releases, so
+a plan that outgrows the day stops cleanly and says how many are left rather than overspending.
+Set `GRAB_TV_COMPLETE=false` to go back to one-release-per-click.
+
+Episodes that air *later* are a different problem — that's the
+[episode recovery watchdog](docs/episode-recovery.md), which watches monitored series for aired
+episodes that never landed. Whole-series grabs cover what AvistaZ has **now**, at request time.
 
 ### Allowance
 Every grab (failed attempts included — the tracker may count the download the moment the

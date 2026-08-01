@@ -132,6 +132,72 @@ function contentClaimsOverlap(a, b) {
   return false;
 }
 
+// ---- Whole-series planning ----
+// "Just get the whole thing": from ONE ranked search, choose a set of releases whose episode
+// spaces don't overlap, so a complete-series pack — or per-season packs plus the odd
+// gap-filling episode — can all be grabbed from a single prompt. Without this the Download
+// buttons are one-of-N: clicking "Download 1" consumes the offer, and a title whose best
+// AvistaZ release is a single episode never gets the rest.
+//
+// Greedy by confidence (scoreAvistazResult already ranks a season pack above a lone episode),
+// tie-broken by breadth. The strongest release claims its episodes first and every later pick
+// can only add NEW ones, so the one-copy-per-episode guarantee is unchanged — this reuses the
+// exact claim/overlap machinery that blocks duplicate grabs.
+
+const claimBreadth = claim => (claim.whole ? 3 : claim.seasons.size > 1 ? 2 : claim.seasons.size ? 1 : 0);
+
+// Does a claim touch the season the caller asked about? A null season means "any".
+function claimCoversSeason(claim, season) {
+  if (season == null) return true;
+  if (!claim || claim.whole) return !!claim;
+  if (claim.seasons.has(Number(season))) return true;
+  for (const e of claim.episodes) if (Number(e.split('.')[0]) === Number(season)) return true;
+  return false;
+}
+
+// picks = releases to grab, in grab order. covered = candidates dropped because an earlier pick
+// already covers those episodes. trimmed = dropped by the `max` cap (allowance/config), i.e.
+// real episodes left on the table — callers surface that so nobody thinks it grabbed everything.
+// `exclude` takes release titles already in flight (active grab jobs) so a re-run adds only gaps.
+function planSeriesGrab(candidates, { season = null, minConfidence = 0, max = 8, exclude = [] } = {}) {
+  const taken = (exclude || []).map(releaseContentClaim).filter(Boolean);
+  const eligible = (candidates || [])
+    .map(c => ({ c, claim: releaseContentClaim(c.releaseTitle) }))
+    .filter(x => x.claim && Number(x.c.confidence) >= minConfidence && claimCoversSeason(x.claim, season))
+    .sort((a, b) => b.c.confidence - a.c.confidence || claimBreadth(b.claim) - claimBreadth(a.claim));
+  // A tracker search for one show also returns other shows, and two different series never
+  // overlap — so without this anchor the planner would happily grab all of them. The
+  // highest-confidence result decides which series the plan is about.
+  const series = eligible[0]?.claim.series || null;
+  const picks = [];
+  let covered = 0;
+  let trimmed = 0;
+  for (const { c, claim } of eligible) {
+    if (claim.series !== series) continue;
+    if (taken.some(t => contentClaimsOverlap(claim, t))) { covered++; continue; }
+    if (picks.length >= max) { trimmed++; continue; }
+    taken.push(claim);
+    picks.push(c);
+  }
+  return { picks, covered, trimmed, series };
+}
+
+// One label for everything a plan would grab ("S01, S02, S03E11"), for the confirm prompt
+// and the summary embed.
+function describeGrabPlan(picks) {
+  const merged = { series: '', seasons: new Set(), episodes: new Set(), whole: false };
+  for (const p of picks || []) {
+    const c = releaseContentClaim(p.releaseTitle);
+    if (!c) continue;
+    merged.series = merged.series || c.series;
+    if (c.whole) merged.whole = true;
+    for (const s of c.seasons) merged.seasons.add(s);
+    for (const e of c.episodes) merged.episodes.add(e);
+  }
+  if (!merged.whole && !merged.seasons.size && !merged.episodes.size) return describeContentClaim(null);
+  return describeContentClaim(merged);
+}
+
 // Short human label for a claim, for the "already grabbing …" message.
 function describeContentClaim(c) {
   if (!c) return 'this title';
@@ -254,4 +320,4 @@ function decideGrabJobAction(row, facts, now, cfg) {
   return row.state === 'sent' ? 'mark_downloading' : 'wait';
 }
 
-module.exports = { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, parseReleaseName, seriesToken, releaseContentClaim, contentClaimsOverlap, describeContentClaim, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction };
+module.exports = { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, parseReleaseName, seriesToken, releaseContentClaim, contentClaimsOverlap, describeContentClaim, claimCoversSeason, planSeriesGrab, describeGrabPlan, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction };
