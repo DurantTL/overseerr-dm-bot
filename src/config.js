@@ -72,7 +72,7 @@ const CONFIG = {
   AVISTAZ_INDEXER_NAME: (process.env.AVISTAZ_INDEXER_NAME || 'avistaz').toLowerCase(),
   // Max grabs per UTC day (failed attempts count — the tracker may have already counted the
   // download). 0 = unlimited.
-  AVISTAZ_DAILY_GRAB_LIMIT: Number.parseInt(process.env.AVISTAZ_DAILY_GRAB_LIMIT || '4', 10),
+  AVISTAZ_DAILY_GRAB_LIMIT: Number.parseInt(process.env.AVISTAZ_DAILY_GRAB_LIMIT || '100', 10),
   // 'approve' = always post candidates with Download buttons; 'auto' = escalations grab the
   // top candidate automatically when its confidence ≥ GRAB_AUTO_CONFIDENCE.
   GRAB_MODE: (process.env.GRAB_MODE || 'approve').toLowerCase(),
