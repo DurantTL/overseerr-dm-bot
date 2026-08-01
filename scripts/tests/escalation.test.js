@@ -9,12 +9,14 @@ const { loadSandbox } = require('./extract');
 
 (async () => {
   // --- Pure state machine ---
-  const { decideEscalationAction, escalationEligible } = require('../../src/escalation');
+  const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('../../src/escalation');
   const MIN = 60000;
   const HOUR = 3600000;
   const cfg = { delayMinutes: 45, maxAgeDays: 14 };
-  const row = (over = {}) => ({ approved_at: 0, pre_authorized: 0, ...over });
-  const noFacts = { isAvailable: false, hasQueueItem: false, hasFile: false };
+  // Auto-escalation is TV-only and Asian-only, so the baseline row/facts here are an
+  // obviously-Asian show — the case where 'escalate' is still the right answer.
+  const row = (over = {}) => ({ approved_at: 0, pre_authorized: 0, media_type: 'tv', ...over });
+  const noFacts = { isAvailable: false, hasQueueItem: false, hasFile: false, avistazFit: 'asian' };
 
   assert.strictEqual(decideEscalationAction(row(), { ...noFacts, isAvailable: true }, 2 * HOUR, cfg), 'resolve', 'available resolves');
   assert.strictEqual(decideEscalationAction(row(), { ...noFacts, hasQueueItem: true }, 2 * HOUR, cfg), 'resolve', 'queue item resolves');
@@ -33,6 +35,48 @@ const { loadSandbox } = require('./extract');
   assert.strictEqual(decideEscalationAction(row({ arr_missing_alerted: 1 }), { ...noFacts, inArr: false }, 46 * MIN, cfg), 'wait', 'already-alerted missing row holds');
   assert.strictEqual(decideEscalationAction(row({ pre_authorized: 1 }), { ...noFacts, inArr: null }, 46 * MIN, cfg), 'escalate', 'unknown arr state never blocks escalation');
   assert.strictEqual(decideEscalationAction(row(), { ...noFacts, inArr: false }, 15 * 24 * HOUR, cfg), 'expire', 'expiry beats the missing-arr alert');
+
+  // Auto-escalation gate: AvistaZ only carries Asian movies and TV, so firing without a human
+  // is limited to shows that obviously belong there. Everything else falls back to the button.
+  assert.strictEqual(autoEscalateAllowed({ media_type: 'tv' }, 'asian'), true, 'asian show auto-escalates');
+  assert.strictEqual(autoEscalateAllowed({ media_type: 'tv' }, 'non_asian'), false, 'non-asian show asks first');
+  assert.strictEqual(autoEscalateAllowed({ media_type: 'tv' }, 'unknown'), false, 'unknown origin asks first');
+  assert.strictEqual(autoEscalateAllowed({ media_type: 'tv' }, null), false, 'unassessed show asks first');
+  assert.strictEqual(autoEscalateAllowed({ media_type: 'movie' }, 'asian'), false, 'movies never auto-escalate, asian or not');
+
+  // ...and the same rules through the state machine, which is what the sweep actually calls.
+  const past = 46 * MIN;
+  const preAuth = over => row({ pre_authorized: 1, ...over });
+  assert.strictEqual(decideEscalationAction(preAuth({ media_type: 'movie' }), noFacts, past, cfg), 'alert', 'pre-authorized movie alerts instead of escalating');
+  assert.strictEqual(decideEscalationAction(preAuth(), { ...noFacts, avistazFit: 'non_asian' }, past, cfg), 'alert', 'pre-authorized non-asian show alerts');
+  assert.strictEqual(decideEscalationAction(preAuth(), { ...noFacts, avistazFit: 'unknown' }, past, cfg), 'alert', 'pre-authorized show of unknown origin alerts');
+  assert.strictEqual(decideEscalationAction(preAuth(), { ...noFacts, avistazFit: undefined }, past, cfg), 'alert', 'missing verdict never auto-escalates');
+  // The gate only narrows auto-escalation — it must not turn an alert into an escalation, nor
+  // pre-empt resolve/expire/alert_missing.
+  assert.strictEqual(decideEscalationAction(row(), noFacts, past, cfg), 'alert', 'asian show without pre-auth still alerts');
+  assert.strictEqual(decideEscalationAction(preAuth({ media_type: 'movie' }), { ...noFacts, hasFile: true }, past, cfg), 'resolve', 'resolve still beats the gate');
+  assert.strictEqual(decideEscalationAction(preAuth({ media_type: 'movie' }), noFacts, 15 * 24 * HOUR, cfg), 'expire', 'expiry still beats the gate');
+
+  // --- Origin assessment (src/asian.js) ---
+  const { assessAsianOrigin } = require('../../src/asian');
+  const verdict = meta => assessAsianOrigin(meta).verdict;
+  assert.strictEqual(verdict({ originalLanguage: 'ko', originCountry: ['KR'] }), 'asian', 'korean show is asian');
+  assert.strictEqual(verdict({ originalLanguage: 'ja' }), 'asian', 'japanese language alone is enough');
+  assert.strictEqual(verdict({ originalLanguage: 'hi', originCountry: ['IN'] }), 'asian', 'indian content is in scope');
+  // Language and country disagreeing: either one saying "Asian" is enough, because AvistaZ
+  // carries English-language Asian productions too.
+  assert.strictEqual(verdict({ originalLanguage: 'en', originCountry: ['JP'] }), 'asian', 'japanese production in english is asian');
+  assert.strictEqual(verdict({ originalLanguage: 'ko', productionCountries: [{ iso_3166_1: 'US' }] }), 'asian', 'korean-language US co-production is asian');
+  // Script detection carries a record with no language or country at all.
+  assert.strictEqual(verdict({ originalName: '킹덤' }), 'asian', 'hangul original title is asian');
+  assert.strictEqual(verdict({ originalTitle: '鬼滅の刃' }), 'asian', 'japanese original title is asian');
+  assert.strictEqual(verdict({ originalLanguage: 'en', productionCountries: [{ iso_3166_1: 'US' }], originalTitle: 'Breaking Bad' }), 'non_asian', 'US english show is non-asian');
+  assert.strictEqual(verdict({ originCountry: ['GB'] }), 'non_asian', 'country alone can settle it');
+  // Out-of-remit regions are not "asian" for AvistaZ's purposes — they get a human decision.
+  assert.strictEqual(verdict({ originalLanguage: 'tr', originCountry: ['TR'] }), 'non_asian', 'turkish content is out of AvistaZ scope');
+  // Nothing usable claims nothing — a Seerr outage must not read as "definitely not Asian".
+  assert.strictEqual(verdict({}), 'unknown', 'empty record is unknown');
+  assert.strictEqual(verdict({ originCountry: [], productionCountries: [] }), 'unknown', 'empty lists are unknown');
 
   const eCfg = { enabled: true, radarrConfigured: true, sonarrConfigured: true };
   assert.strictEqual(escalationEligible({ mediaType: 'movie', is4k: false }, eCfg), true, 'movie eligible');

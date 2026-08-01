@@ -351,15 +351,48 @@ tags**: an indexer with a tag only applies to movies/series that carry the same 
 indexer is tagged, no title carries the tag by default, so nothing ever hits AvistaZ until the bot
 "escalates" a title by adding the tag to it and re-searching.
 
+### What escalates on its own, and what asks first
+AvistaZ is an **Asian-content tracker** — East, Southeast and South Asian movies and TV, plus
+anime. It has nothing else, so escalating a title it can't possibly carry burns a metered tracker
+search (and sometimes a download slot on a wrong match somebody then has to notice and delete).
+Auto-escalation is therefore narrower than pre-authorization:
+
+| Title | Pre-authorized | What happens after the delay |
+| --- | --- | --- |
+| TV, obviously Asian | yes | **escalates automatically** |
+| TV, obviously Asian | no | button alert |
+| TV, not obviously Asian | either | button alert |
+| Movie (any origin) | either | button alert |
+
+"Obviously Asian" is decided from the title's TMDB record, which Overseerr already serves: an
+Asian **original language**, an Asian **production/origin country**, or an **original title in an
+Asian script** (kana, hanzi, hangul, Thai, Devanagari, …). Any one of those is enough — AvistaZ
+carries English-language Asian productions too, and a Korean-language US co-production is still
+Korean. Central and West Asia (Turkey, Israel, the Gulf, the -stans) are deliberately out of scope
+because the tracker doesn't cover them.
+
+The verdict is three-valued, and only a decided one is cached on the watch row. If Overseerr is
+unreachable or the TMDB record is bare, the answer is **unknown** — which asks a human rather than
+guessing in either direction, and is re-checked on the next sweep.
+
+**Movies never auto-escalate, whatever their origin.** A film is one shot at one release, hard to
+tell apart from its same-titled cousins, and a wrong automatic grab is expensive to undo. Films
+always get the button.
+
+Being asked isn't a dead end — the **Escalate to AvistaZ** button does exactly what the automatic
+path would have done, and the alert embed carries an **AvistaZ fit** line explaining the verdict so
+the call is an informed one.
+
 ### How the bot uses it
 - The approval embed gets a third button, **Approve + AvistaZ Fallback**, which pre-authorizes the
   fallback: the `avistaz` tag goes onto the title in Radarr/Sonarr right at approval (it's
   definitely AvistaZ-bound), and if nothing public has been grabbed within
-  `ESCALATION_DELAY_MINUTES` the bot escalates automatically.
+  `ESCALATION_DELAY_MINUTES` the bot escalates — automatically for an obviously-Asian show, via
+  the button for anything else (see the table above).
 - Plain **Approve** gets the watchdog flavor instead: after the delay, the downloads channel gets
   a **⏳ Nothing Found Yet** embed with **Escalate to AvistaZ / Ignore** buttons.
 - Admin self-requests skip the gate entirely (no button to click), so they're pre-authorized
-  automatically — tagged at request time and auto-escalated after the delay, same as
+  automatically — tagged at request time, and subject to the same auto-escalation rules as
   **Approve + AvistaZ Fallback**.
 - A watch row resolves automatically the moment the media turns available, starts downloading, or
   the request is declined; unresolved rows expire after `ESCALATION_MAX_AGE_DAYS`.
@@ -374,6 +407,8 @@ indexer is tagged, no title carries the tag by default, so nothing ever hits Avi
   The escalation clock restarts from the add, so public indexers get the full delay before
   any fallback.
 - 4K requests are never escalated (the fallback is for hard-to-find content, not 4K upgrades).
+- Clicking **Escalate to AvistaZ** by hand is never blocked by the origin check — it's an
+  override for exactly the cases the automation won't take on its own.
 
 ### One-time arr/Prowlarr setup
 1. **Prowlarr**: add the AvistaZ indexer (needs your AvistaZ account; mind its seeding rules).

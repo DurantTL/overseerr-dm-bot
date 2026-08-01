@@ -27,13 +27,14 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
-const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
+const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
-const { decideEscalationAction, escalationEligible } = require('./src/escalation');
+const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('./src/escalation');
+const { assessAsianOrigin, describeAvistazFit } = require('./src/asian');
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
@@ -215,6 +216,13 @@ function markApprovalNoticePosted(requestId) {
 // "45m" / "1h 30m" — the escalation delay as shown in embeds and logs.
 const escalationDelayLabel = () => fmtDuration(CONFIG.ESCALATION_DELAY_MINUTES * 60000);
 
+// What pre-authorization actually buys, per media type — auto-escalation is narrower than the
+// flag (see autoEscalateAllowed in src/escalation.js), so the approval embeds have to promise
+// the narrower thing or an admin reads the later button prompt as a bug.
+const preAuthOutcomeLabel = mediaType => (mediaType === 'tv'
+  ? 'escalates on its own if the show looks like Asian content (AvistaZ carries nothing else), otherwise it asks first'
+  : 'still asks first — films never escalate on their own');
+
 // Whether this request could be escalated to AvistaZ (feature on, right media type, arr present).
 function canEscalate({ mediaType, is4k }) {
   return escalationEligible({ mediaType, is4k }, {
@@ -231,7 +239,7 @@ async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discord
   const azEligible = canEscalate({ mediaType, is4k });
   const embed = brandedEmbed(COLORS.INFO)
     .setTitle(`${mediaTypeEmoji(mediaType, is4k)} New Request`)
-    .setDescription(`**${label}**${azEligible ? `\n-# "+ AvistaZ Fallback" pre-authorizes the private tracker if nothing public shows up within ${escalationDelayLabel()}.` : ''}`)
+    .setDescription(`**${label}**${azEligible ? `\n-# "+ AvistaZ Fallback" pre-authorizes the private tracker if nothing public shows up within ${escalationDelayLabel()} — it then ${preAuthOutcomeLabel(mediaType)}.` : ''}`)
     .addFields(
       { name: 'Requested by', value: `<@${discordId}> · \`${email}\``, inline: true },
       { name: 'Type', value: mediaTypeLabel(mediaType, is4k), inline: true },
@@ -293,7 +301,7 @@ async function handleGateApprove(interaction, nonce, { azPreAuth }) {
       .setDescription(`**${pending.label}** was approved and is being grabbed now. You'll get a DM when it's on Plex! 🍿`)] });
     return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`✅ Approved — ${pending.label}`)
-      .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}> — sent to Seerr${data?.id != null ? ` (request #${data.id})` : ''}.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now; auto-escalates if nothing public is grabbed within ${escalationDelayLabel()}.` : ''}`)], components: [] });
+      .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}> — sent to Seerr${data?.id != null ? ` (request #${data.id})` : ''}.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(pending.mediaType)}.` : ''}`)], components: [] });
   } catch (err) {
     const status = err.response?.status;
     const seerrMessage = err.response?.data?.message;
@@ -464,6 +472,23 @@ async function gatherEscalationFacts(row, queue) {
   return { isAvailable: false, hasQueueItem: false, hasFile: (series?.statistics?.episodeFileCount || 0) > 0, inArr };
 }
 
+// The AvistaZ-plausibility verdict for one watch row: the cached column when it's already
+// decided, otherwise one Seerr origin lookup. Only a decided verdict is cached — 'unknown'
+// (Seerr unreachable, bare TMDB record) is left NULL so a blip can't permanently strand a show
+// on the "ask a human" path. The reasons ride along on the row for this sweep's embed only.
+async function resolveAvistazFit(row) {
+  if (row.avistaz_fit) return row.avistaz_fit;
+  const meta = await fetchSeerrMediaOrigin(row.media_type, row.tmdb_id);
+  const { verdict, reasons } = meta ? assessAsianOrigin(meta) : { verdict: 'unknown', reasons: [] };
+  row.avistazFitReasons = reasons;
+  if (verdict !== 'unknown') {
+    setEscalationAvistazFit(row.id, verdict);
+    row.avistaz_fit = verdict;
+    audit('avistaz_fit_assessed', { mediaId: row.media_id, title: row.title, verdict, reasons });
+  }
+  return verdict;
+}
+
 async function runEscalation(row) {
   // Direct-grab pipeline first when configured: the bot searches AvistaZ itself and either
   // auto-grabs or posts scored candidates. The state moves to 'escalated' either way — the
@@ -511,6 +536,12 @@ async function sweepEscalations() {
   const cfg = { delayMinutes: CONFIG.ESCALATION_DELAY_MINUTES, maxAgeDays: CONFIG.ESCALATION_MAX_AGE_DAYS, arrGraceMinutes: CONFIG.ESCALATION_ARR_GRACE_MINUTES };
   for (const row of rows) {
     const facts = await gatherEscalationFacts(row, queue);
+    // Whether AvistaZ could plausibly have this title gates auto-escalation (and colours the
+    // alert). Resolved only for rows the public pipeline hasn't served that are old enough to
+    // be decided this sweep — a row still inside its delay never pays for the lookup.
+    if (!facts.isAvailable && !facts.hasQueueItem && !facts.hasFile && Date.now() - row.approved_at >= cfg.delayMinutes * 60000) {
+      facts.avistazFit = await resolveAvistazFit(row);
+    }
     const action = decideEscalationAction(row, facts, Date.now(), cfg);
     if (action === 'wait') continue;
     if (action === 'resolve') {
@@ -568,23 +599,32 @@ async function sweepEscalations() {
       notifyChannel('downloads', { embeds: [brandedEmbed(result.ok ? COLORS.SUCCESS : COLORS.WARN)
         .setTitle(result.ok ? `🔐 Escalated to AvistaZ — ${row.title}` : `⚠️ AvistaZ Escalation Failed — ${row.title}`)
         .setDescription(result.ok
-          ? `Nothing public showed up in ${waited} and the fallback was pre-authorized at approval.\n${result.detail}`
+          ? `Nothing public showed up in ${waited}, the fallback was pre-authorized at approval, and this looks like Asian content — so it went automatically.\n${result.detail}`
           : `Auto-escalation was pre-authorized but failed: ${result.why}`)] });
       continue;
     }
     // action === 'alert': one embed per title (state moves to 'alerted' and stays there until a
     // button is clicked or the media resolves). Buttons survive restarts — state is in SQLite.
     setEscalationState(row.id, 'alerted');
-    audit('escalation_alerted', { mediaId: row.media_id, title: row.title, waited });
+    audit('escalation_alerted', { mediaId: row.media_id, title: row.title, waited, avistazFit: facts.avistazFit || null, preAuthorized: !!row.pre_authorized });
     // Escalating a title that isn't out yet is pointless — surface the release timing so the
     // admin can tell "no seeders" apart from "not released".
     const eta = releaseEtaInfo(await fetchReleaseEta({ mediaType: row.media_type, tmdbId: row.tmdb_id, tvdbId: row.tvdb_id }));
+    // A pre-authorized row that lands here was held back on purpose: it's a film, or a show
+    // AvistaZ probably doesn't carry. Say so — otherwise "I pre-authorized this" and "it's
+    // asking me anyway" look like a bug.
+    const heldBack = row.pre_authorized
+      ? `\n🔐 The AvistaZ fallback was pre-authorized, but ${row.media_type === 'movie'
+        ? 'films never escalate on their own — AvistaZ is an Asian-content tracker and a wrong automatic grab costs a download slot'
+        : 'this doesn\'t look like Asian content, and only obviously-Asian shows escalate on their own'}. Your call:`
+      : '';
     const alertEmbed = brandedEmbed(COLORS.WARN)
       .setTitle(`⏳ Nothing Found Yet — ${row.title}`)
-      .setDescription(`No public release grabbed in **${waited}** since approval. Escalate to AvistaZ (private tracker → seedbox)?`)
+      .setDescription(`No public release grabbed in **${waited}** since approval.${heldBack} Escalate to AvistaZ (private tracker → seedbox)?`)
       .addFields(
         { name: 'Requested by', value: row.requested_by_discord_id ? `<@${row.requested_by_discord_id}>` : 'Unknown', inline: true },
         { name: 'Type', value: mediaTypeLabel(row.media_type, false), inline: true },
+        { name: 'AvistaZ fit', value: describeAvistazFit(facts.avistazFit, row.avistazFitReasons), inline: false },
       );
     if (eta) alertEmbed.addFields({ name: 'Release timing', value: `${eta.line}${eta.waiting ? '\nEscalating now likely won\'t help — the title isn\'t out yet.' : ''}`, inline: false });
     notifyChannel('downloads', { embeds: [alertEmbed],
@@ -2717,7 +2757,7 @@ async function handleRequestCommand(interaction) {
     audit('media_requested', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seerrUserId, requestId: data?.id ?? null, azPreAuth });
     await interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Request Sent`)
-      .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — approved and grabbing it now! 🚀\nYou\'ll get a DM when it\'s on Plex.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now; auto-escalates if nothing public is grabbed within ${escalationDelayLabel()}.` : ''}`)] });
+      .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — approved and grabbing it now! 🚀\nYou\'ll get a DM when it\'s on Plex.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(mediaType)}.` : ''}`)] });
   } catch (err) {
     // Seerr answered but said no (rejection body, or the created-nothing shapes from
     // createSeerrRequestAs) vs. never answered at all — show which, so "Couldn't reach Seerr"
@@ -5080,7 +5120,7 @@ async function handleButton(interaction) {
       const arrName = row.media_type === 'movie' ? 'Radarr' : 'Sonarr';
       return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
         .setTitle(`🛠️ Added Directly to ${arrName} — ${row.title}`)
-        .setDescription(`${result.detail}\nAdded by <@${interaction.user.id}>. Public indexers get ${escalationDelayLabel()} first; the AvistaZ fallback ${row.pre_authorized ? 'is pre-authorized and fires automatically' : 'will ask before firing'} if nothing lands.`)], components: [] });
+        .setDescription(`${result.detail}\nAdded by <@${interaction.user.id}>. Public indexers get ${escalationDelayLabel()} first; the AvistaZ fallback ${row.pre_authorized ? `is pre-authorized and ${preAuthOutcomeLabel(row.media_type)}` : 'will ask before firing'} if nothing lands.`)], components: [] });
     }
     const why = {
       arr_not_configured: 'that arr isn\'t configured',

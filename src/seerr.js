@@ -174,6 +174,24 @@ async function fetchSeerrTvdbId(tmdbId) {
   } catch (_e) { return null; }
 }
 
+// Where a title is from, for the AvistaZ fit check (src/asian.js). Seerr proxies TMDB, so this
+// is the same record its own UI shows — no extra API key needed. Fails open (null): the caller
+// treats "couldn't ask" as unknown origin and asks a human instead of guessing.
+async function fetchSeerrMediaOrigin(mediaType, tmdbId) {
+  try {
+    const path = mediaType === 'tv' ? 'tv' : 'movie';
+    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/${path}/${tmdbId}`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY }, timeout: 8000 });
+    const d = res.data || {};
+    return {
+      originalLanguage: d.originalLanguage ?? null,
+      originCountry: d.originCountry || [],
+      productionCountries: d.productionCountries || [],
+      originalTitle: d.originalTitle ?? d.originalName ?? null,
+      title: d.title ?? d.name ?? null,
+    };
+  } catch (_e) { return null; }
+}
+
 // Place a Seerr request AS a specific Seerr user. The admin API key has MANAGE_USERS, which is
 // what lets the body's userId override the requesting identity — this is how requests made from
 // Discord get attributed to the real person instead of the server owner.
@@ -279,4 +297,4 @@ async function fetchSeerrRequests() {
   return requests;
 }
 
-module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers, fetchSeerrRequests };
+module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers, fetchSeerrRequests };
