@@ -33,6 +33,28 @@ const express = require('express');
   assert.deepStrictEqual({ season: p.season, multi: p.multiSeason, pack: p.seasonPack },
     { season: 2, multi: false, pack: true }, 'a complete SINGLE season is a pack but not multi-season');
 
+  // Old/Asian shows are routinely uploaded as a season-less episode run. Without this the
+  // release parses as nothing at all and the whole-series planner never sees the only pack
+  // on offer; a single-season show is the one that omits the marker, hence season 1.
+  p = parseReleaseName('They.Kiss.Again.2007.E01-E30.1080p.WEB-DL.AAC.H264');
+  assert.deepStrictEqual({ season: p.season, pack: p.seasonPack, ep: p.episode },
+    { season: 1, pack: true, ep: null }, 'a season-less "E01-E30" run is a season-1 pack');
+  assert.deepStrictEqual([...releaseContentClaim('They.Kiss.Again.2007.E01-E30.1080p.WEB-DL').seasons], [1],
+    'the episode-run pack claims the whole season');
+  assert.strictEqual(releaseContentClaim('They.Kiss.Again.2007.E01-E30.1080p').series, 'they kiss again',
+    'the series token stops at the episode run, not at the quality tags');
+  p = parseReleaseName('Some.Drama.1x05.720p.HDTV');
+  assert.deepStrictEqual({ season: p.season, ep: p.episode, pack: p.seasonPack },
+    { season: 1, ep: 5, pack: false }, 'the 1x05 form parses as season 1 episode 5');
+  // A multi-episode file claims its whole run, so a second release of E02-E10 is a duplicate.
+  p = parseReleaseName('Show.Name.S01E01-E10.1080p');
+  assert.strictEqual(p.episodeEnd, 10, 'the end of a multi-episode range parses');
+  assert.strictEqual(releaseContentClaim('Show.Name.S01E01-E10.1080p').episodes.size, 10, 'a multi-episode file claims every episode in it');
+  assert.ok(contentClaimsOverlap(releaseContentClaim('Show.Name.S01E01-E10.1080p'), releaseContentClaim('Show.Name.S01E07.720p')),
+    'an episode inside a multi-episode file is recognized as already covered');
+  assert.strictEqual(parseReleaseName('Show.Name.S01E01.1080p.WEB-DL').episodeEnd, null,
+    'a resolution after a single episode is not read as an episode range');
+
   // --- Scoring ---
   const tvCtx = { title: 'My Father Is Strange', mediaType: 'tv', season: 1 };
   const mk = (title, over = {}) => ({ title, size: 38 * 1024 ** 3, seeders: 12, downloadUrl: 'http://x/dl', ...over });
@@ -69,6 +91,23 @@ const express = require('express');
   const freeleech = scoreAvistazResult(mk('Great.Movie.2019.1080p.WEB-DL', { size: 8 * 1024 ** 3, indexerFlags: ['FreeLeech'] }), movieCtx);
   assert.ok(freeleech.confidence > rightYear.confidence, 'freeleech adds points');
   assert.strictEqual(freeleech.freeleech, true, 'freeleech flag detected case-insensitively');
+
+  // Same-titled shows: "Full House" is a 1987 US sitcom AND a 2004 Korean drama. The TV branches
+  // never looked at the year, so both scored identically and the wrong show could win a plan.
+  const fhCtx = { title: 'Full House', year: 2004, mediaType: 'tv' };
+  const fh = t => scoreAvistazResult(mk(t, { size: 20 * 1024 ** 3, seeders: 8 }), fhCtx);
+  const wanted = fh('Full House S01 2004 1080p KOCOWA WEB-DL AAC H.264');
+  const otherShow = fh('Full.House.S01.1987.1080p.BluRay.x264');
+  assert.ok(wanted.confidence - otherShow.confidence >= 20, `the right show clearly outranks the same-titled one (${wanted.confidence} vs ${otherShow.confidence})`);
+  assert.match(otherShow.notes.join(' '), /different show/, 'the mismatch is explained in the candidate embed');
+  assert.deepStrictEqual(wanted.notes, [], 'the wanted release is flagged for nothing');
+  // A TV release's year is the SEASON's air year, so a later season legitimately carries a later
+  // year and must not be penalized — only a release predating the series proves a mismatch.
+  assert.strictEqual(fh('Full.House.S02.2012.1080p.WEB-DL').confidence, wanted.confidence, 'a later season with a later year is not penalized');
+  assert.strictEqual(fh('Full.House.S01.1080p.WEB-DL').confidence, wanted.confidence, 'a release with no year is not penalized');
+  assert.strictEqual(
+    scoreAvistazResult(mk('Full.House.S01.1987.1080p.BluRay.x264', { size: 20 * 1024 ** 3, seeders: 8 }), { title: 'Full House', mediaType: 'tv' }).confidence,
+    wanted.confidence, 'with no year in the request nothing is penalized');
 
   // Ranking: sorted by confidence, capped, and undownloadable results dropped.
   const ranked = rankAvistazResults([
@@ -226,6 +265,34 @@ const express = require('express');
   assert.deepStrictEqual(titlesOf(sp), ['Some.Show.S01.1080p.WEB-DL', 'Some.Show.S02E01.1080p.WEB-DL', 'Some.Show.S02E02.1080p.WEB-DL'],
     'a pack and the loose episodes of another season are all planned');
   assert.strictEqual(describeGrabPlan(sp.picks), 'S01, S02E01, S02E02', 'mixed plan label');
+
+  // The old-show case the planner exists for: on a finished show the complete pack is a
+  // poorly-seeded 720p rip while a re-encoded single episode is a well-seeded 1080p WEB-DL, so
+  // the episode scores HIGHER. Sorted by confidence it would anchor the plan and the pack that
+  // holds every episode would be discarded as redundant — two slots for two episodes.
+  sp = plan([
+    ['Winter.Sonata.S01E01.1080p.WEB-DL', 90],
+    ['Winter.Sonata.S01E02.1080p.WEB-DL', 89],
+    ['Winter.Sonata.S01.COMPLETE.720p.HDTV', 78],
+  ], { minConfidence: 70 });
+  assert.deepStrictEqual(titlesOf(sp), ['Winter.Sonata.S01.COMPLETE.720p.HDTV'],
+    'a season pack wins over higher-confidence single episodes of the same season');
+  assert.strictEqual(sp.covered, 2, 'the episodes the pack contains are absorbed, not grabbed separately');
+
+  // Breadth only orders releases that are already eligible — a pack below minConfidence (dead,
+  // wrong show, mislabelled) can't ride breadth past the quality bar.
+  sp = plan([
+    ['Winter.Sonata.S01E01.1080p.WEB-DL', 90],
+    ['Winter.Sonata.S01.COMPLETE.CAM.XviD', 41],
+  ], { minConfidence: 70 });
+  assert.deepStrictEqual(titlesOf(sp), ['Winter.Sonata.S01E01.1080p.WEB-DL'], 'a junk pack never outranks a usable episode');
+
+  // Complete series beats a single-season pack beats an episode, regardless of confidence order.
+  sp = plan([
+    ['Old.Drama.S01.1080p.WEB-DL', 94],
+    ['Old.Drama.Complete.Series.720p.HDTV', 80],
+  ], { minConfidence: 70 });
+  assert.deepStrictEqual(titlesOf(sp), ['Old.Drama.Complete.Series.720p.HDTV'], 'the widest release wins the plan');
 
   // Other shows in the same result set are never swept in — the top result anchors the series.
   sp = plan([

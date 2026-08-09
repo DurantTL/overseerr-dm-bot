@@ -5,6 +5,8 @@
 // recovery sweep gives Sonarr/public indexers a targeted search first, then sends an exact SxxEyy
 // AvistaZ match through the existing rTorrent -> rclone -> Sonarr import pipeline.
 
+const { assessSeriesAge, planSeasonSearches } = require('./season-pack');
+
 const pad2 = n => String(n).padStart(2, '0');
 
 function episodeKey(episode) {
@@ -105,7 +107,7 @@ function setEpisodeRecoveryState(db, key, fields) {
 
 async function createEpisodeRecoveryWorker(deps = {}) {
   const CONFIG = deps.CONFIG || require('./config').CONFIG;
-  const { db, audit, recordGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, countGrabJobsToday } = deps.dbApi || require('./db');
+  const { db, audit, recordGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, countGrabJobsToday, listRequestedTvdbIds } = deps.dbApi || require('./db');
   const { sonarrGet, fetchArrQueues, getArrTagId } = deps.arrApi || require('./arr');
   const { findAvistazIndexer, searchAvistaz, fetchTorrentFile, rankAvistazResults, grabAllowance, releaseContentClaim, contentClaimsOverlap } = deps.grabApi || require('./grab');
   const { addTorrentToRtorrent } = deps.rtorrentApi || require('./rtorrent');
@@ -131,11 +133,29 @@ async function createEpisodeRecoveryWorker(deps = {}) {
     const now = Date.now();
     const cutoff = now - cfg.lookbackDays * 86400000;
     const activeJobs = listActiveGrabJobs();
+    // Requested shows are season-pack eligible whatever their age, so the stand-down below has
+    // to know about them too — otherwise both paths would chase the same requested season.
+    const requestedTvdbIds = CONFIG.SEASON_PACK_REQUESTED && listRequestedTvdbIds ? listRequestedTvdbIds() : new Set();
     let acted = 0;
 
     for (const series of seriesList.filter(s => s.monitored && (s.tags || []).includes(tagId))) {
       const episodes = await sonarrGet('/episode', { seriesId: series.id });
+      // Seasons the season-pack path owns (old show, enough missing episodes to be worth a
+      // pack). Recovering those one episode at a time is the exact waste season-pack-first
+      // exists to prevent — and on a metered tracker the two paths would race for the same
+      // slots. Left untouched here; they resume episode-level recovery if the season later
+      // drops below the pack threshold.
+      const packCfg = {
+        dormantDays: CONFIG.SEASON_PACK_DORMANT_DAYS,
+        minMissing: CONFIG.SEASON_PACK_MIN_MISSING,
+      };
+      const packEligible = assessSeriesAge(series, now, packCfg).old || requestedTvdbIds.has(Number(series.tvdbId));
+      const packSeasons = new Set(
+        CONFIG.SEASON_PACK_FIRST && packEligible
+          ? planSeasonSearches(episodes, now, packCfg).map(s => s.season)
+          : []);
       for (const episode of episodes) {
+        if (packSeasons.has(Number(episode.seasonNumber))) continue;
         const airedAt = Date.parse(episode.airDateUtc || episode.airDate || '');
         if (!isAiredEpisode(episode, now) || !Number.isFinite(airedAt) || airedAt < cutoff) continue;
         const row = upsertMissingEpisode(db, series, episode, now);
@@ -178,7 +198,9 @@ async function createEpisodeRecoveryWorker(deps = {}) {
         if (allowance.exhausted) return { acted, deferred: true, reason: 'allowance_exhausted' };
         try {
           const raw = await searchAvistaz({ query: label, mediaType: 'tv', indexerId: indexer.id });
-          const ranked = rankAvistazResults(raw, { title: series.title, mediaType: 'tv', season: episode.seasonNumber }, { limit: 10 });
+          // series.year disambiguates same-titled shows ("Full House" is a 1987 US sitcom and a
+          // 2004 Korean drama); without it both score identically and the wrong one can win.
+          const ranked = rankAvistazResults(raw, { title: series.title, year: series.year || null, mediaType: 'tv', season: episode.seasonNumber }, { limit: 10 });
           const exact = exactEpisodeCandidates(ranked.map(c => ({ ...c, parsed: { season: c.season, episode: (String(c.releaseTitle).match(/\bS(\d{1,2})[\s._-]*E(\d{1,3})\b/i) || [])[2], seasonPack: c.seasonPack } })), episode)
             .filter(c => c.confidence >= cfg.minConfidence);
           const chosen = exact[0];

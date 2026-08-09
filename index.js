@@ -27,13 +27,14 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
-const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
+const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('./src/escalation');
+const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch } = require('./src/season-pack');
 const { assessAsianOrigin, describeAvistazFit } = require('./src/asian');
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
@@ -635,6 +636,85 @@ async function sweepEscalations() {
   }
 }
 
+// ---- Season-pack-first searching (all indexers) ----
+// Sonarr hunts missing episodes one at a time. For a show that stopped airing years ago that's
+// the expensive way to get a season that exists as a single torrent, so this sweep finds old
+// shows with gaps and asks Sonarr for a SeasonSearch per incomplete season instead. Shows still
+// airing are skipped entirely — no pack exists for a season that's still going out weekly.
+function seasonPackConfig() {
+  return {
+    dormantDays: CONFIG.SEASON_PACK_DORMANT_DAYS,
+    minMissing: CONFIG.SEASON_PACK_MIN_MISSING,
+    cooldownHours: CONFIG.SEASON_PACK_COOLDOWN_HOURS,
+    includeRequested: CONFIG.SEASON_PACK_REQUESTED,
+  };
+}
+
+// Season numbers already downloading for a series, so a season mid-grab is never re-searched.
+function queuedSeasons(queue, seriesId) {
+  return queue.filter(q => q.source.kind === 'tv' && q.seriesId === seriesId && q.seasonNumber != null).map(q => q.seasonNumber);
+}
+
+async function sweepSeasonPacks() {
+  if (!CONFIG.SEASON_PACK_FIRST || !CONFIG.SONARR_URL) return;
+  const cfg = seasonPackConfig();
+  const now = Date.now();
+  const [seriesList, queue] = await Promise.all([listSonarrSeries(), fetchArrQueues()]);
+  // Shows somebody actually asked for get the pack treatment whatever their age — most releases
+  // are "S01" packs regardless of how old the show is, and a requester is waiting on this one.
+  const requestedTvdbIds = CONFIG.SEASON_PACK_REQUESTED ? listRequestedTvdbIds() : new Set();
+  const searched = [];
+  for (const series of seriesList) {
+    if (searched.length >= CONFIG.SEASON_PACK_MAX_PER_RUN) break;
+    if (!series.monitored) continue;
+    // Cheap pre-filters before spending an /episode call per series: a show that's complete has
+    // no gaps to fill, and one that's neither old nor requested isn't eligible whatever its
+    // episodes say.
+    const stats = series.statistics || {};
+    if (stats.episodeCount != null && stats.episodeFileCount != null && stats.episodeFileCount >= stats.episodeCount) continue;
+    const requested = requestedTvdbIds.has(Number(series.tvdbId));
+    if (!requested && !assessSeriesAge(series, now, cfg).old) continue;
+    let episodes;
+    try {
+      episodes = await getSeriesEpisodes(series.id);
+    } catch (err) {
+      audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'season_pack_episodes', seriesId: series.id });
+      continue;
+    }
+    const { eligible, reason, seasons } = seasonSearchTargets({
+      series, episodes, requested, inQueue: queuedSeasons(queue, series.id), searchedAt: getSeasonSearchTimes(series.id),
+    }, now, cfg);
+    if (!eligible) continue;
+    for (const season of seasons) {
+      if (searched.length >= CONFIG.SEASON_PACK_MAX_PER_RUN) break;
+      try {
+        await triggerSeasonSearch(series.id, season.season);
+      } catch (err) {
+        audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'season_search', seriesId: series.id, season: season.season });
+        continue;
+      }
+      // Recorded only after the command is accepted, so a failed search retries next sweep
+      // instead of sitting out the cooldown.
+      recordSeasonSearch({ seriesId: series.id, seasonNumber: season.season, seriesTitle: series.title, missing: season.missing });
+      audit('season_pack_search', { seriesId: series.id, title: series.title, season: season.season, missing: season.missing, aired: season.aired, reason, requested });
+      searched.push({ series, season, reason });
+    }
+  }
+  if (searched.length) {
+    notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle(`📦 Season-Pack Search — ${searched.length} season(s)`)
+      .setDescription([
+        'Sonarr was asked for these seasons as a whole instead of episode by episode:',
+        '',
+        ...searched.map(s => `${describeSeasonSearch(s.series.title, s.season)} _(${s.reason})_`),
+        '',
+        'Whatever Sonarr grabs still imports normally. Seasons with nothing available are retried after '
+          + `${CONFIG.SEASON_PACK_COOLDOWN_HOURS}h.`,
+      ].join('\n').slice(0, 4000))] });
+  }
+  return { searched: searched.length };
+}
+
 // ---- AvistaZ direct-grab pipeline ----
 // The smarter escalation path: search AvistaZ through Prowlarr, score the candidates, send
 // the chosen torrent to the seedbox rTorrent (labeled radarr/sonarr), watch it to
@@ -698,7 +778,7 @@ function grabCandidatesMessage({ heading, candidates, nonce, allowance, footnote
   // usually one season (or one episode) out of several, so spell out what the bulk button adds.
   const multi = plan && plan.picks.length > 1;
   const planLine = multi
-    ? `\n\n**Grab Everything** takes all **${plan.picks.length}** non-overlapping releases covering **${plan.coverage}** in a single click${plan.trimmed ? ` — **${plan.trimmed}** more won't fit in today's budget and stay for later` : ''}.`
+    ? `\n\n**Grab Everything** takes all **${plan.picks.length}** non-overlapping releases covering **${plan.coverage}** in a single click${plan.trimmed ? ` — **${plan.trimmed}** more won't fit in today's budget and stay for later` : ''}.${plan.covered ? ` ${plan.covered} other release(s) cover episodes the plan already has, so they'd only spend slots twice.` : ''}`
     : '';
   const embed = brandedEmbed(COLORS.INFO)
     .setTitle(heading)
@@ -2180,6 +2260,14 @@ client.once('ready', async () => {
       setInterval(() => sweepEscalations().catch(err => log.warn(`Escalation sweep failed: ${err.message}`)), CONFIG.ESCALATION_CHECK_MINUTES * 60000).unref();
       log.ok(`AvistaZ escalation watchdog running every ${CONFIG.ESCALATION_CHECK_MINUTES} min (delay ${escalationDelayLabel()}, tag '${CONFIG.AVISTAZ_TAG}')`);
     }
+  }
+  if (CONFIG.SEASON_PACK_FIRST && CONFIG.SONARR_URL && CONFIG.SEASON_PACK_CHECK_MINUTES > 0) {
+    const runSeasonPacks = () => sweepSeasonPacks().catch(err => log.warn(`Season-pack sweep failed: ${err.message}`));
+    // A first pass shortly after boot, then on the interval — Sonarr needs a moment to settle
+    // after a restart, and the sweep is capped per run anyway.
+    setTimeout(runSeasonPacks, 120000).unref();
+    setInterval(runSeasonPacks, CONFIG.SEASON_PACK_CHECK_MINUTES * 60000).unref();
+    log.ok(`Season-pack-first search running every ${CONFIG.SEASON_PACK_CHECK_MINUTES} min (old = ended or ${CONFIG.SEASON_PACK_DORMANT_DAYS}d dormant, max ${CONFIG.SEASON_PACK_MAX_PER_RUN}/run)`);
   }
   if (grabConfigured()) {
     // A restart mid-transfer leaves 'transferring' rows behind; put them back in the queue
@@ -4352,7 +4440,7 @@ async function buildTierPlans() {
   const nodes = listTierNodes().map(n => ({ ...n, folders: listTierNodeFolders(n.name) }));
   const enabled = nodes.filter(n => n.enabled);
   if (!enabled.length) return { manifests: {}, warnings: ['No enabled tier nodes — add one with `/tier-node add`.'], nodes };
-  const inventory = await fetchTierInventory({
+  const { items: inventory, failedSources } = await fetchTierInventory({
     sources: arrSources(),
     remap: remapPath,
     sourceRoot: CONFIG.TIER_SOURCE_ROOT,
@@ -4408,7 +4496,18 @@ async function buildTierPlans() {
       churnPenaltyPerTb: CONFIG.TIER_CHURN_PENALTY_PER_TB,
     },
   });
-  return { ...result, nodes, planRecords };
+  // A source that failed contributes zero titles, and a title missing from the inventory is in
+  // neither keep nor drop — so its folder's .stignore renders EMPTY and Syncthing re-pulls
+  // everything the previous plan held back (hundreds of GB, over the edge node's uplink). The
+  // apply-impact caps can't see it either: those titles aren't in the keep set, so newDownloadBytes
+  // stays 0 and no confirm is demanded. So a partial inventory makes the whole plan unpublishable —
+  // not a warning to read past. `/tier preview` still renders it, clearly marked.
+  const inventoryIncomplete = failedSources.map(f => `\`${f.label}\` — ${f.error}`);
+  const warnings = [...(result.warnings || [])];
+  if (inventoryIncomplete.length) {
+    warnings.unshift(`🛑 Inventory incomplete — ${failedSources.map(f => f.label).join(', ')} could not be read. Publishing now would blank the \`.stignore\` for every title they serve and trigger a full re-sync, so \`/tier apply\` is blocked until they answer.`);
+  }
+  return { ...result, warnings, nodes, planRecords, failedSources };
 }
 
 // Global apply-guardrail caps (§1.5) in bytes; a 0/negative CONFIG value disables that cap (null).
@@ -4518,6 +4617,25 @@ async function handleTierCommand(interaction) {
   }
 
   const blocked = [];
+  if (sub === 'apply' && plans.failedSources?.length) {
+    // Hard stop, not a cap that a confirm code can override: every plan in this run was built on a
+    // partial library, so publishing any of them blanks the .stignore for the missing arr's titles
+    // and starts a full re-sync onto the node. There is no correct confirmation for that — the only
+    // fix is to get the arr answering and re-plan.
+    audit('tier_apply_blocked_incomplete_inventory', {
+      actorDiscordId: interaction.user.id, nodes: names, failedSources: plans.failedSources.map(f => f.label),
+    });
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle('🛑 Apply Blocked — Incomplete Inventory')
+      .setDescription([
+        `Could not read ${plans.failedSources.length} media source(s), so the planner only saw part of the library:`,
+        ...plans.failedSources.map(f => `• \`${f.label}\` — ${String(f.error).slice(0, 200)}`),
+        '',
+        'Titles from a source that did not answer end up in neither keep nor drop, which renders an **empty `.stignore`** for their folders — the node would then re-download everything the last plan was holding back.',
+        '',
+        `Fix the source and re-run \`/tier apply\`. \`/tier preview\` still works and will show the same warning. Nothing was published${names.length > 1 ? ' for any node' : ''}.`,
+      ].join('\n').slice(0, 4000))] });
+  }
   if (sub === 'apply') {
     // A confirm code is echoed for exactly one plan; nodes over a cap without the matching code are
     // held back (the rest still apply). The code binds to the plan hash, so a stale code silently
@@ -5204,6 +5322,19 @@ async function handleButton(interaction) {
     }
     const plan = buildSeriesPlan({ candidates, mediaType: offer.mediaType, season: offer.season ?? null, allowance });
     if (!plan) {
+      // A null plan is not always "nothing left": buildSeriesPlan also returns null when
+      // GRAB_TV_COMPLETE is off or the day's budget is spent. Only the first case means the
+      // offer is finished — in the others the numbered Download buttons are still useful, so
+      // the offer goes back rather than being consumed by a click that grabbed nothing.
+      if (!CONFIG.GRAB_TV_COMPLETE || seriesGrabBudget(allowance) < 1) {
+        restashGrabOffer(parts[0], offer);
+        return interaction.reply({
+          content: CONFIG.GRAB_TV_COMPLETE
+            ? `❌ No room in today's AvistaZ budget for a bulk grab (${allowance.remaining} left). The numbered Download buttons still work.`
+            : '❌ Whole-series grabs are disabled (`GRAB_TV_COMPLETE=false`). The numbered Download buttons still work.',
+          ephemeral: true,
+        });
+      }
       return interaction.update({ embeds: [brandedEmbed(COLORS.INFO)
         .setTitle(`ℹ️ Nothing Left to Grab — ${offer.title}`)
         .setDescription('Every release from this search is already downloading or imported.')], components: [] });
@@ -5690,6 +5821,12 @@ function startExpressServer() {
       return res.json({ ok: true, heartbeat: true });
     }
     const errors = Array.isArray(body.errors) ? body.errors.slice(0, 10).map(e => String(e).slice(0, 300)) : [];
+    // Per-file prune skips are reported separately from errors: the file stays ignored either way,
+    // so the node still reached its plan. Counting them as errors used to hold the node at
+    // "published but not converged" forever — the agent advances its own plan hash after a skip and
+    // never retries, so nothing could ever clear it, and the lost converged state also cost the
+    // node its hysteresis keep-set on every subsequent plan. Surfaced, never convergence-blocking.
+    const skipped = Array.isArray(body.skipped) ? body.skipped.slice(0, 10).map(e => String(e).slice(0, 300)) : [];
     // Mount guard: when the node's external media drive is absent the agent refuses to run and
     // reports driveMissing WITHOUT an inventory — so the empty-directory walk can never wipe the
     // node's known contents (which would trigger a full re-seed onto the wrong disk). Handle it
@@ -5749,8 +5886,8 @@ function startExpressServer() {
     const publishedHash = getTierPlan(node)?.published?.planHash || null;
     const converged = body.converged === true && errors.length === 0 && !!body.planHash && body.planHash === publishedHash;
     if (converged) markTierPlanConverged(node, { planHash: body.planHash });
-    audit('tier_agent_report', { node, planHash: body.planHash || null, publishedHash, converged, bytesFreed: body.bytesFreed || 0, droppedCount: (body.dropped || []).length, inventoryCount: Array.isArray(body.inventory) ? body.inventory.length : 0, errors: errors.join('; ').slice(0, 500) || undefined });
-    if ((body.bytesFreed || 0) > 0 || errors.length) {
+    audit('tier_agent_report', { node, planHash: body.planHash || null, publishedHash, converged, bytesFreed: body.bytesFreed || 0, droppedCount: (body.dropped || []).length, inventoryCount: Array.isArray(body.inventory) ? body.inventory.length : 0, errors: errors.join('; ').slice(0, 500) || undefined, skipped: skipped.join('; ').slice(0, 500) || undefined });
+    if ((body.bytesFreed || 0) > 0 || errors.length || skipped.length) {
       // Report the honest state: "converged" only when the checks above passed; otherwise say the
       // agent has published-but-pending or hit errors, so a mismatched/failed run can't masquerade
       // as a clean convergence.
@@ -5765,6 +5902,8 @@ function startExpressServer() {
           statusLine,
           (body.bytesFreed || 0) > 0 ? `Freed **${fmtSpace(body.bytesFreed)}** across ${(body.dropped || []).length} title(s). Master copies untouched.` : null,
           errors.length ? `⚠️ Errors:\n${errors.map(e => `• ${e}`).join('\n')}` : null,
+          // Informational: these files stayed on disk but are ignored, so the node is still on plan.
+          skipped.length ? `ℹ️ Not pruned (still ignored, node is on plan):\n${skipped.map(e => `• ${e}`).join('\n')}` : null,
         ].filter(Boolean).join('\n').slice(0, 4000))] });
     }
     res.json({ ok: true, converged });

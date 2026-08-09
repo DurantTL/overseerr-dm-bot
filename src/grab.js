@@ -58,16 +58,26 @@ function parseReleaseName(name) {
       : /\bhdtv\b/i.test(n) ? 'hdtv'
         : /blu[-. ]?ray|bdrip|brrip|remux/i.test(n) ? 'bluray'
           : null;
-  const se = n.match(/\bS(\d{1,2})[\s._-]*E(\d{1,3})\b/i);
+  // SxxEyy, or the '1x05' form old rips still use.
+  const se = n.match(/\bS(\d{1,2})[\s._-]*E(\d{1,3})\b/i) || n.match(/\b(\d{1,2})x(\d{1,3})\b/);
+  // A trailing episode in a multi-episode file: "S01E01-E10", "S01E01E02". The E is required —
+  // without it "S01E01.1080p" would read 1080 as the end episode.
+  const seEnd = se ? n.slice(se.index + se[0].length).match(/^(?:[-–~]\s*)?E(\d{1,3})\b/i) : null;
   // Multi-season packs: "S01-S05", "S01~S03", "Season 1-3", "Seasons 1-5". Old shows are often
   // only available as one complete-series torrent, so these must parse as covering a RANGE of
   // seasons instead of mis-reading the first number as "season 1 only".
   const range = se ? null
     : n.match(/\bS(\d{1,2})\s*[-–~]\s*S?(\d{1,2})\b/i) || n.match(/\bseasons?[\s._]+(\d{1,2})\s*[-–~]\s*(\d{1,2})\b/i);
   const seasonOnly = se || range ? null : n.match(/\bS(\d{1,2})\b/i) || n.match(/\bseason[\s._]+(\d{1,2})\b/i);
+  // "E01-E30" with no SxxEyy anywhere: a run of episodes shipped as one pack, which is how
+  // single-season Asian dramas and old shows are usually uploaded. Without this the release
+  // parses as nothing at all and the whole-series planner never sees the only pack on offer.
+  const epRange = se || range ? null : n.match(/\bE(?:p)?(\d{1,3})\s*[-–~]\s*(?:E(?:p)?)?(\d{1,3})\b/i);
   const complete = /\bcomplete\b/i.test(n);
   const year = (n.match(/\b((?:19|20)\d{2})\b/) || [])[1];
-  const season = se ? Number(se[1]) : range ? Number(range[1]) : seasonOnly ? Number(seasonOnly[1]) : null;
+  // An episode range with no season marker is season 1 — a show with only one season is exactly
+  // the case that omits the marker.
+  const season = se ? Number(se[1]) : range ? Number(range[1]) : seasonOnly ? Number(seasonOnly[1]) : epRange ? 1 : null;
   const seasonEnd = range ? Number(range[2]) : null;
   return {
     resolution,
@@ -75,7 +85,10 @@ function parseReleaseName(name) {
     season,
     seasonEnd,
     episode: se ? Number(se[2]) : null,
-    seasonPack: (!!seasonOnly || !!range || complete) && !se,
+    // Last episode of a multi-episode file, else null. Lets a claim cover E01–E10 instead of
+    // just E01, so a second release of E02–E10 is recognized as a duplicate.
+    episodeEnd: seEnd ? Number(seEnd[1]) : null,
+    seasonPack: (!!seasonOnly || !!range || !!epRange || complete) && !se,
     // A whole show in one download: an explicit multi-season range, or "complete" with no
     // season marker at all ("Old.Drama.Complete.Series" — vs "S01.COMPLETE", one season).
     multiSeason: !se && ((!!range && Number(range[2]) > Number(range[1])) || (complete && season == null)),
@@ -95,7 +108,10 @@ function parseReleaseName(name) {
 // stripped, normalized. TV only — a movie has no such marker and is deduped by resolved media id.
 function seriesToken(name) {
   const n = String(name || '');
-  const m = n.match(/\b(s\d{1,2}(?:\s*e\d{1,3})?|\d{1,2}x\d{1,3}|seasons?[\s._]*\d{1,2}|complete)\b/i);
+  // The `e\d` alternative catches the season-less "E01-E30" pack form; it sits last so a normal
+  // SxxEyy name still cuts at the S (regex alternation takes the leftmost match, not the first
+  // listed alternative).
+  const m = n.match(/\b(s\d{1,2}(?:\s*e\d{1,3})?|\d{1,2}x\d{1,3}|seasons?[\s._]*\d{1,2}|complete|ep?\d{1,3}\s*[-–~])\b/i);
   const head = (m ? n.slice(0, m.index) : n).replace(/\b(?:19|20)\d{2}\b/g, ' ');
   return normalizeTitle(head);
 }
@@ -113,7 +129,11 @@ function releaseContentClaim(name) {
   let whole = false;
   if (p.season != null && p.seasonEnd != null) { for (let s = p.season; s <= p.seasonEnd && s - p.season < 100; s++) seasons.add(s); }
   else if (p.multiSeason && p.season == null) whole = true;   // "Complete Series" with no season marker
-  else if (p.season != null && p.episode != null) episodes.add(`${p.season}.${p.episode}`);
+  else if (p.season != null && p.episode != null) {
+    // A multi-episode file claims its whole run (E01-E10), not just the first episode.
+    const last = p.episodeEnd != null && p.episodeEnd > p.episode ? Math.min(p.episodeEnd, p.episode + 99) : p.episode;
+    for (let e = p.episode; e <= last; e++) episodes.add(`${p.season}.${e}`);
+  }
   else if (p.season != null) seasons.add(p.season);           // a single-season pack
   if (!whole && !seasons.size && !episodes.size) return null;
   return { series, seasons, episodes, whole };
@@ -139,10 +159,16 @@ function contentClaimsOverlap(a, b) {
 // buttons are one-of-N: clicking "Download 1" consumes the offer, and a title whose best
 // AvistaZ release is a single episode never gets the rest.
 //
-// Greedy by confidence (scoreAvistazResult already ranks a season pack above a lone episode),
-// tie-broken by breadth. The strongest release claims its episodes first and every later pick
-// can only add NEW ones, so the one-copy-per-episode guarantee is unchanged — this reuses the
-// exact claim/overlap machinery that blocks duplicate grabs.
+// Greedy by BREADTH first, confidence second. Confidence alone gets this backwards on exactly
+// the shows the feature exists for: an old drama's complete pack is typically a 2-seeder 720p
+// rip (~80%) while someone's re-encode of episode 1 is a 12-seeder 1080p WEB-DL (~84%). Sorted
+// by confidence the lone episode anchors the plan, claims S01E01, and the pack that holds all
+// thirty episodes is then dropped as "already covered" — two download slots spent on two
+// episodes. Breadth-first picks the pack and the episodes collapse into it instead.
+// minConfidence still gates entry, so a dead pack can't win on breadth alone. The widest
+// release claims its episodes first and every later pick can only add NEW ones, so the
+// one-copy-per-episode guarantee is unchanged — this reuses the exact claim/overlap machinery
+// that blocks duplicate grabs.
 
 const claimBreadth = claim => (claim.whole ? 3 : claim.seasons.size > 1 ? 2 : claim.seasons.size ? 1 : 0);
 
@@ -164,11 +190,12 @@ function planSeriesGrab(candidates, { season = null, minConfidence = 0, max = 8,
   const eligible = (candidates || [])
     .map(c => ({ c, claim: releaseContentClaim(c.releaseTitle) }))
     .filter(x => x.claim && Number(x.c.confidence) >= minConfidence && claimCoversSeason(x.claim, season))
-    .sort((a, b) => b.c.confidence - a.c.confidence || claimBreadth(b.claim) - claimBreadth(a.claim));
+    .sort((a, b) => claimBreadth(b.claim) - claimBreadth(a.claim) || b.c.confidence - a.c.confidence);
   // A tracker search for one show also returns other shows, and two different series never
   // overlap — so without this anchor the planner would happily grab all of them. The
-  // highest-confidence result decides which series the plan is about.
-  const series = eligible[0]?.claim.series || null;
+  // highest-confidence result decides which series the plan is about; breadth must not pick the
+  // series, or a complete pack of the wrong show would anchor a plan over an exact-title match.
+  const series = eligible.reduce((best, x) => (best && best.c.confidence >= x.c.confidence ? best : x), null)?.claim.series || null;
   const picks = [];
   let covered = 0;
   let trimmed = 0;
@@ -243,6 +270,23 @@ function scoreAvistazResult(result, ctx) {
     if (parsed.seasonPack) score += 15;
     else if (parsed.episode != null) { score += 4; notes.push('single episode'); }
     else score += 8;
+  }
+
+  // Two shows share a title far more often than two films do — "Full House" is both a 1987 US
+  // sitcom and a 2004 Korean drama, and the TV branches above never look at the year, so both
+  // scored identically and the wrong show could win a plan outright. Applied as a penalty rather
+  // than points because a TV release's year is usually the SEASON's air year, not the series':
+  // only a release predating the series proves a mismatch, and a later year is normal for a
+  // later season and costs nothing.
+  if (ctx.mediaType !== 'movie' && ctx.year && parsed.year) {
+    if (parsed.year < ctx.year - 1) {
+      score -= 25;
+      notes.push(`different show? release is from ${parsed.year}, series from ${ctx.year}`);
+    } else if (parsed.year > ctx.year + 1 && (parsed.season == null || parsed.season === 1)) {
+      // A first season dated years after the series began is usually a remake, not this show.
+      score -= 10;
+      notes.push(`year mismatch (${parsed.year})`);
+    }
   }
 
   const resPts = { '1080p': 10, '720p': 7, '2160p': 4, '480p': 2 }[parsed.resolution] ?? 4;

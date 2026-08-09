@@ -101,11 +101,15 @@ const { renderSyncthingStignore, computePlanHash } = require('../../src/tier');
   assert.ok(fs.existsSync(path.join(folderRoot, 'movies/Keep Movie (2024)/keep.mkv')), 'kept title untouched');
   assert.ok(!fs.existsSync(path.join(tmp, 'outside')), 'path traversal confined to folder root');
   assert.strictEqual(r1.bytesFreed, 4096, 'freed bytes accounted');
-  assert.ok(r1.errors.some(e => e.includes('../outside')), 'escaping path reported, not silently skipped');
+  // Reported, never silent — but as a SKIP, not an error: the file is ignored either way, so the
+  // node still reached its plan. Counting it as an error used to force converged:false forever.
+  assert.ok(r1.skipped.some(e => e.includes('../outside')), 'escaping path reported, not silently skipped');
+  assert.strictEqual(r1.errors.length, 0, 'a refused traversal is not a run failure');
+  assert.strictEqual(r1.converged, true, 'the run still converged despite the refused entry');
+  assert.notStrictEqual(process.exitCode, 1, 'and did not fail the systemd unit');
   assert.strictEqual(reports.length, 1, 'report posted');
   assert.ok(reports[0].inventory.some(f => f.relPath === 'movies/Keep Movie (2024)/keep.mkv'), 'inventory reports kept media files');
   assert.ok(reports[0].inventory.every(f => Number.isFinite(f.atime) && f.sizeBytes >= 0), 'inventory rows carry atime + size');
-  process.exitCode = 0; // the traversal entry counts as an error by design; reset for the suite
 
   // --- run 2: plan unchanged, inventory changed (the prune itself changed it) → report only ---
   stCalls.length = 0;
@@ -154,6 +158,30 @@ const { renderSyncthingStignore, computePlanHash } = require('../../src/tier');
   assert.strictEqual(process.exitCode, 1, 'undeliverable heartbeat sets a non-zero exit code');
   process.exitCode = 0;
   failReports = false;
+
+  // --- a benign per-file skip must NOT report the node as unconverged ---
+  // The agent advances its own plan hash after a skip and never retries that plan, so reporting
+  // converged:false for one would wedge the node at "published but pending" with nothing able to
+  // clear it — and the bot only carries a node's hysteresis keep-set forward from a CONVERGED
+  // state, so the node would also re-derive its keep set from scratch on every later plan.
+  mkMedia('movies/Skippable (1998)/s.mkv', 1024);
+  // A drop whose path escapes the folder root is the cheapest way to force the skip branch; the
+  // real file alongside it must still be pruned in the same run.
+  doomedAtScan = 'movies/Skippable (1998)/s.mkv';
+  manifest = mkManifest([
+    { relPath: 'movies/Skippable (1998)/s.mkv', sizeBytes: 1024 },
+    { relPath: '../outside/evil.mkv', sizeBytes: 1 },
+  ]);
+  const before = reports.length;
+  const r8 = await runOnce(ctx);
+  const rep8 = reports[before];
+  assert.strictEqual(r8.converged, true, 'a benign skip still converges — the file is ignored either way');
+  assert.strictEqual(rep8.errors.length, 0, 'a skip is not reported as an error');
+  assert.strictEqual(rep8.skipped.length, 1, 'the skip is reported separately, so it stays visible');
+  assert.match(rep8.skipped[0], /escapes folder root/, 'and says what was skipped and why');
+  assert.notStrictEqual(process.exitCode, 1, 'a benign skip does not fail the systemd unit');
+  assert.ok(!fs.existsSync(path.join(folderRoot, 'movies/Skippable (1998)/s.mkv')), 'the legitimate drop in the same run is still pruned');
+  assert.ok(!fs.existsSync(path.join(tmp, 'outside/evil.mkv')), 'the escaping path was never touched');
 
   botSrv.close();
   stSrv.close();

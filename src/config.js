@@ -61,6 +61,29 @@ const CONFIG = {
   SONARR_ROOT_FOLDER: process.env.SONARR_ROOT_FOLDER || '',
   RADARR_QUALITY_PROFILE: process.env.RADARR_QUALITY_PROFILE || '',
   SONARR_QUALITY_PROFILE: process.env.SONARR_QUALITY_PROFILE || '',
+  // ---- Season-pack-first searching for old shows (every indexer, not just AvistaZ) ----
+  // Sonarr searches missing episodes one at a time. For a show that finished airing years ago
+  // the whole season exists as one torrent, so the bot asks Sonarr for a SeasonSearch instead —
+  // one grab instead of N. Currently-airing shows are untouched (no pack exists for them yet).
+  SEASON_PACK_FIRST: parseBool(process.env.SEASON_PACK_FIRST, true),
+  SEASON_PACK_CHECK_MINUTES: Number.parseInt(process.env.SEASON_PACK_CHECK_MINUTES || '180', 10),
+  // Give shows somebody actually requested the same treatment even while they're still airing:
+  // most releases are "S01" season packs whatever the show's age, and a requester is waiting.
+  // Safe on an in-progress season — only aired episodes count toward the missing threshold.
+  SEASON_PACK_REQUESTED: parseBool(process.env.SEASON_PACK_REQUESTED, true),
+  // A 'continuing' series with nothing aired in this long (and nothing scheduled) counts as old.
+  // Series Sonarr marks 'ended' always count, whatever this is set to.
+  SEASON_PACK_DORMANT_DAYS: Number.parseInt(process.env.SEASON_PACK_DORMANT_DAYS || '365', 10),
+  // Missing episodes needed before a season is searched as a pack. A season that is entirely
+  // missing always qualifies; this is the threshold for partially-present seasons, where
+  // pulling a whole pack to fill one gap would cost more bandwidth than it saves.
+  SEASON_PACK_MIN_MISSING: Number.parseInt(process.env.SEASON_PACK_MIN_MISSING || '3', 10),
+  // Don't re-search the same season more often than this — a season with nothing available
+  // would otherwise be re-searched every sweep forever.
+  SEASON_PACK_COOLDOWN_HOURS: Number.parseInt(process.env.SEASON_PACK_COOLDOWN_HOURS || '24', 10),
+  // Ceiling on season searches per sweep, so a first run over a large library doesn't fire
+  // hundreds of indexer searches at once.
+  SEASON_PACK_MAX_PER_RUN: Number.parseInt(process.env.SEASON_PACK_MAX_PER_RUN || '5', 10),
   // ---- AvistaZ direct grab: Prowlarr search → seedbox rTorrent → rclone → arr import ----
   // Full rTorrent XML-RPC endpoint incl. credentials, e.g.
   // https://user:pass@server.rapidseedbox.com/plugins/rpc/rpc.php

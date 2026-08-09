@@ -159,6 +159,18 @@ function runMigrations() {
       imported_at INTEGER
     );
 
+    -- One row per (series, season) the season-pack sweep has asked Sonarr to search. Durable
+    -- because the cooldown has to survive restarts: an in-memory map would re-search every
+    -- dormant season of the whole library on every boot.
+    CREATE TABLE IF NOT EXISTS season_searches (
+      series_id INTEGER NOT NULL,
+      season_number INTEGER NOT NULL,
+      series_title TEXT,
+      missing_at_search INTEGER DEFAULT 0,
+      last_searched_at INTEGER NOT NULL,
+      PRIMARY KEY (series_id, season_number)
+    );
+
     CREATE TABLE IF NOT EXISTS staged_items (
       media_id TEXT PRIMARY KEY,
       media_type TEXT,
@@ -682,6 +694,40 @@ function resetInterruptedStageJobs() {
   return db.prepare("UPDATE stage_jobs SET status = 'queued', started_at = NULL WHERE status = 'copying'").run().changes;
 }
 
+// ---- Season-pack searches ----
+// Every TVDB id somebody actually asked for, from both places a TV request lands: the requests
+// table (keyed tvdb:<id> once the id is known) and the escalations table (explicit column).
+// Used to give requested shows the season-pack treatment even while they're still airing —
+// somebody is waiting on those, so a pack that gets the whole season at once is worth more than
+// on a show nobody asked about.
+function listRequestedTvdbIds() {
+  const rows = db.prepare(`
+    SELECT DISTINCT CAST(SUBSTR(media_id, 6) AS INTEGER) AS tvdb_id FROM requests
+      WHERE media_id LIKE 'tvdb:%'
+    UNION
+    SELECT DISTINCT tvdb_id FROM escalations WHERE tvdb_id IS NOT NULL`).all();
+  return new Set(rows.map(r => Number(r.tvdb_id)).filter(Boolean));
+}
+
+// season → last-searched timestamp for one series, in the shape seasonSearchTargets wants.
+function getSeasonSearchTimes(seriesId) {
+  const rows = db.prepare('SELECT season_number, last_searched_at FROM season_searches WHERE series_id = ?').all(seriesId);
+  return Object.fromEntries(rows.map(r => [r.season_number, r.last_searched_at]));
+}
+
+function recordSeasonSearch({ seriesId, seasonNumber, seriesTitle, missing }) {
+  db.prepare(`INSERT INTO season_searches (series_id, season_number, series_title, missing_at_search, last_searched_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(series_id, season_number) DO UPDATE SET
+      series_title = excluded.series_title,
+      missing_at_search = excluded.missing_at_search,
+      last_searched_at = excluded.last_searched_at`)
+    .run(seriesId, seasonNumber, seriesTitle || null, missing || 0, Date.now());
+}
+
+const listRecentSeasonSearches = (sinceMs = 7 * 86400000) =>
+  db.prepare('SELECT * FROM season_searches WHERE last_searched_at >= ? ORDER BY last_searched_at DESC').all(Date.now() - sinceMs);
+
 function recordStagedItem({ mediaId, mediaType, title, destPath, sizeBytes, discordId }) {
   db.prepare(`INSERT INTO staged_items (media_id, media_type, title, dest_path, size_bytes, staged_by_discord_id, staged_at, last_streamed_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
@@ -985,5 +1031,5 @@ function restashPendingRequest(nonce, payload) {
   setSetting(`pending_request:${nonce}`, JSON.stringify(payload));
 }
 
-module.exports = { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
+module.exports = { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;

@@ -18,6 +18,20 @@ episode recovery worker closes that gap for monitored Sonarr series carrying the
 The worker uses a durable `episode_recovery` SQLite table, honors the existing daily AvistaZ grab
 allowance, skips episodes already in the Sonarr queue or an active grab, and is disabled by default.
 
+## Relationship to season-pack-first searching
+
+This worker is deliberately episode-shaped: it exists for the *next* episode of a series you are
+following, where no season pack can exist yet. It is the wrong tool for an old show with a large
+hole in it — one AvistaZ download slot per episode is exactly the waste that
+[season-pack-first searching](../README.md#season-pack-first-searching-old-shows-every-indexer)
+prevents.
+
+So when `SEASON_PACK_FIRST` is on, the worker stands down on any season that path owns (an old
+show with at least `SEASON_PACK_MIN_MISSING` missing episodes, or an entirely missing season).
+Those seasons are left to the season search, and on a metered tracker the two never race for the
+same slots. A season that later drops below the pack threshold — one or two stragglers — resumes
+episode-level recovery automatically.
+
 ## Configuration
 
 ```env

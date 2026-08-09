@@ -82,8 +82,16 @@ function computeUniversalCore(historiesByNode, k) {
 // Full title inventory from the arrs, same sources and fields as /cleanup-suggestions, plus
 // the on-disk FOLDER path made relative to sourceRoot so manifests are folder-relative.
 // remap = arr.remapPath (injected to keep this module free of the db-touching arr module).
+// Returns { items, failedSources } — failedSources names every arr that could not be read.
+// That list is NOT cosmetic: a source that fails contributes zero titles, and a title absent from
+// the inventory lands in neither `keep` nor `drop` — so its folder's .stignore comes out EMPTY and
+// Syncthing re-pulls everything the previous plan was holding back. Callers must treat a non-empty
+// failedSources as "this plan is not publishable" rather than planning on what did answer.
+// (Returned as an object rather than an array carrying a property, so a caller's map/filter can't
+// silently drop the failure list and turn a partial inventory back into a publishable plan.)
 async function fetchTierInventory({ sources, remap, sourceRoot, onError }) {
   const items = [];
+  const failedSources = [];
   for (const s of sources) {
     try {
       if (s.kind === 'movie') {
@@ -123,10 +131,11 @@ async function fetchTierInventory({ sources, remap, sourceRoot, onError }) {
         }
       }
     } catch (err) {
+      failedSources.push({ label: s.label, error: err.message });
       if (onError) onError(s, err);
     }
   }
-  return items;
+  return { items, failedSources };
 }
 
 // Bounded-concurrency map: run `fn` over `items` with at most `limit` in flight. Used to resolve

@@ -434,6 +434,54 @@ the call is an informed one.
 - The stuck-download **Remove & Try Another Release** button blocklists the release; on an AvistaZ
   grab that blocklists a private-tracker release.
 
+## Season-Pack-First Searching (old shows, every indexer)
+Sonarr looks for missing episodes **one at a time**. For a show that's still airing that's
+right — episode 8 aired last night and no season pack exists yet. For a drama that finished in
+2007 it's the expensive way to get something that exists as a single torrent: 30 searches, 30
+grabs, 30 release groups, and on a metered private tracker 30 download slots for what one pack
+would have cost.
+
+`SEASON_PACK_FIRST` (default on) sweeps Sonarr every `SEASON_PACK_CHECK_MINUTES` (default 180)
+and asks for a **SeasonSearch** on each incomplete season of each old show — one search for the
+whole season, so a pack can satisfy every gap at once. This runs against whatever indexers
+Sonarr already has; it is not AvistaZ-specific and needs none of the direct-grab pipeline.
+
+A show counts as **old** when Sonarr marks it `ended`, or when nothing has aired in
+`SEASON_PACK_DORMANT_DAYS` (default 365) and nothing is scheduled. A scheduled next airing always
+wins — a series returning next week is current whatever its status field says, and its latest
+season is still being released weekly.
+
+**Requested shows skip the age gate entirely** (`SEASON_PACK_REQUESTED`, default on). Most
+releases are an `S01` season pack whatever the show's age, and somebody is waiting on a show they
+asked for, so a current series with a request behind it gets the same treatment. A show counts as
+requested when it appears in the bot's `requests` or `escalations` tables under its TVDB id. This
+stays safe on a live season because only **aired** episodes count toward the missing threshold —
+a season halfway through its run has nothing to search for until episodes actually go missing,
+and a season that's already up to date is never searched at all. The downloads-channel summary
+says which reason applied per season (`series has ended` vs `requested`).
+
+A season is searched when:
+- it has **aired, monitored, file-less** episodes (unaired ones can't be downloaded; unmonitored
+  ones were excluded on purpose), **and**
+- the whole aired season is missing, **or** at least `SEASON_PACK_MIN_MISSING` (default 3)
+  episodes are. One or two gaps fall through to Sonarr's normal per-episode search on purpose —
+  pulling a 20 GB pack to fill a single hole wastes more bandwidth than it saves.
+
+Specials (season 0) are never packed. A season already downloading is skipped rather than raced,
+and each season honors `SEASON_PACK_COOLDOWN_HOURS` (default 24) so a season with nothing
+available isn't re-searched every sweep. `SEASON_PACK_MAX_PER_RUN` (default 5) keeps a first pass
+over a large library from firing hundreds of indexer searches at once. Searched seasons are
+posted to the downloads channel and audited as `season_pack_search`.
+
+Nothing in your Sonarr configuration is touched — no profiles, no custom formats, no release
+profiles. The bot only issues search commands, so turning `SEASON_PACK_FIRST=false` back off
+returns Sonarr to exactly its previous behavior. Whatever Sonarr grabs imports normally.
+
+The [episode recovery watchdog](docs/episode-recovery.md) stands down on any season this path
+owns: recovering an old season one episode at a time is the waste this exists to prevent, and on
+AvistaZ the two would race for the same download slots. Seasons that fall below the pack
+threshold go back to episode-level recovery.
+
 ## AvistaZ Direct Grab (Prowlarr search → seedbox rTorrent → rclone → arr import)
 The next stage of the fallback above. Instead of handing the search to Radarr/Sonarr via the
 indexer tag (where the arrs grab whatever scores best and burn AvistaZ download slots on their
@@ -481,6 +529,27 @@ instead of just the podium, and the bot plans a set of releases whose episode-sp
 overlap** — a complete-series pack, or a pack per season, plus any loose episodes that fill the
 gaps. That plan sits behind one **Grab Everything (N)** button, and in `GRAB_MODE=auto` the
 escalation takes the whole plan by itself once the top match clears `GRAB_AUTO_CONFIDENCE`.
+
+Releases are picked **widest first** — complete series, then season packs, then loose episodes —
+and only then by confidence. Confidence alone gets this backwards on exactly the shows the
+feature exists for: an old drama's complete pack is typically a 2-seeder 720p rip (~80%) while
+someone's re-encode of episode 1 is a 12-seeder 1080p WEB-DL (~84%), so the lone episode would
+anchor the plan and the pack holding all thirty episodes would be dropped as "already covered".
+`GRAB_TV_COMPLETE_MIN_CONFIDENCE` still gates entry, so a dead or mislabelled pack can't ride
+breadth past the quality bar.
+
+**Same-titled shows are told apart by year.** "Full House" is both a 1987 US sitcom and a 2004
+Korean drama, and the TV scoring path never looked at the year — `Full House S01 1987` and
+`Full House S01 2004 1080p KOCOWA WEB-DL` scored identically, so the wrong show could win a plan
+outright. A release that *predates* the series now takes a 25-point penalty and says so in the
+candidate embed. It's a penalty rather than points because a TV release's year is usually the
+**season's** air year: `Show S03 2015` on a series that began in 2012 is correct and is left
+alone. Only a first season dated well after the series began (a remake) takes a smaller hit.
+
+Season-less episode runs (`E01-E30`, how single-season Asian dramas are usually uploaded) and the
+old `1x05` form are recognized as well — they used to parse as nothing at all, which made the
+only pack on offer invisible to the planner. A multi-episode file (`S01E01-E10`) claims its whole
+run, so a second release of `E02-E10` is caught as a duplicate.
 
 The plan is built from the same episode-space claims as the dedupe above, so it can never spend
 two download slots on the same episodes, and releases already in flight are excluded — re-running
@@ -771,6 +840,22 @@ Commands: `/tier preview [node]` (dry-run, shows the delta vs the last applied p
 shown once). Env knobs: `TIER_CORE_TOP_K`, `TIER_HALF_LIFE_DAYS`, `TIER_WARM_DAYS`,
 `TIER_FRESH_DAYS`, `TIER_REQUEST_GRACE_DAYS`, `TIER_HISTORY_DAYS`, `TIER_SOURCE_ROOT`,
 `TIER_NODES_SEED` (JSON seed applied only when the `tier_nodes` table is empty).
+
+**Apply is blocked on an incomplete inventory.** If any *arr fails to answer while the plan is
+being built, the titles it serves appear in neither `keep` nor `drop` — so their folder's
+`.stignore` renders **empty** and the node re-downloads everything the previous plan was holding
+back (potentially the whole library, over the edge uplink). The apply-impact caps cannot catch
+this, because those titles aren't in the keep set either, so no confirm code is demanded. `/tier
+apply` therefore refuses outright when a source failed, naming the source; there is no confirm
+code that overrides it. `/tier preview` still renders the plan with the same warning. Fix the
+source and re-run.
+
+A **per-file prune skip** on the agent (an entry that isn't in the loaded ignores, or whose path
+escapes the folder root) is reported in the report's `skipped` array, separately from `errors`.
+Skips do not block convergence: the file stays ignored either way, so the node is still on plan,
+and the agent advances its local plan hash after a skip and won't retry — counting a skip as an
+error would wedge the node at "published but not converged" with nothing able to clear it, and
+would also cost it the hysteresis keep-set that only carries forward from a converged state.
 
 See `agent/README.md` for deploying the node agent (systemd timer or Docker).
 

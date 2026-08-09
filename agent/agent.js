@@ -215,19 +215,37 @@ async function measureDirBytes(target) {
 // inventory size instead of a synchronous recursive stat of the tree.
 async function pruneDrops(ctx, fp, loadedIgnores) {
   const dropped = [];
+  // `skipped` (this file wasn't pruned) is kept separate from `errors` (the run is broken).
+  // They used to share one array, which reported converged:false forever for a single benign
+  // skip while the agent locally advanced its plan hash and stopped retrying — leaving the node
+  // permanently "published but not converged" and, worse, dropping its hysteresis keep-set so
+  // every subsequent plan re-derived from scratch.
+  const skipped = [];
   const errors = [];
   let bytesFreed = 0;
   for (const entry of fp.drop) {
     const pattern = `/${escapeStignore(entry.relPath)}`;
     if (!loadedIgnores.has(pattern)) {
-      errors.push(`skipped ${entry.relPath}: not in loaded ignores`);
+      skipped.push(`skipped ${entry.relPath}: not in loaded ignores`);
       continue;
     }
     const target = path.resolve(fp.folderRoot, entry.relPath);
     if (target !== fp.folderRoot && !target.startsWith(`${fp.folderRoot}${path.sep}`)) {
-      errors.push(`skipped ${entry.relPath}: escapes folder root`);
+      skipped.push(`skipped ${entry.relPath}: escapes folder root`);
       continue;
     }
+    // path.resolve is lexical, so the check above passes for a path routed THROUGH a symlinked
+    // directory inside the root — and fs.rm would then follow it out of the tree. Re-check the
+    // real parent. This is the only code path in the system that deletes files on a remote box,
+    // so it verifies rather than assumes the manifest is well-formed.
+    try {
+      const realParent = await fs.promises.realpath(path.dirname(target));
+      const realRoot = await fs.promises.realpath(fp.folderRoot);
+      if (realParent !== realRoot && !realParent.startsWith(`${realRoot}${path.sep}`)) {
+        skipped.push(`skipped ${entry.relPath}: resolves outside the folder root via a symlink`);
+        continue;
+      }
+    } catch (_e) { continue; } // parent gone — nothing to prune, stay idempotent
     try { await fs.promises.stat(target); }
     catch (_e) { continue; } // already gone (or never pulled) — idempotent
     // Prefer the planner's inventory size (movies: sizeOnDisk; TV: whole-series total) so the
@@ -247,7 +265,7 @@ async function pruneDrops(ctx, fp, loadedIgnores) {
       errors.push(`delete failed ${entry.relPath}: ${err.message}`);
     }
   }
-  return { dropped, bytesFreed, errors };
+  return { dropped, bytesFreed, errors, skipped };
 }
 
 const MEDIA_EXT = new Set(['.mkv', '.mp4', '.avi', '.mov', '.wmv', '.m4v', '.ts', '.webm', '.mpg', '.mpeg', '.flv', '.iso']);
@@ -419,7 +437,7 @@ async function runOnce(ctx) {
   }
   if (recovered) ctx.log(`media drive recovered — reporting to clear the bot's drive-missing state`);
 
-  const pruneResult = { dropped: [], bytesFreed: 0, errors: [] };
+  const pruneResult = { dropped: [], bytesFreed: 0, errors: [], skipped: [] };
   let hardError = false; // a thrown safety abort / ignore-confirm failure (not a benign prune skip)
   if (planChanged) {
     for (const fp of folderPlans) {
@@ -431,6 +449,7 @@ async function runOnce(ctx) {
         pruneResult.dropped.push(...pr.dropped);
         pruneResult.bytesFreed += pr.bytesFreed;
         pruneResult.errors.push(...pr.errors);
+        pruneResult.skipped.push(...pr.skipped);
       } catch (err) {
         ctx.log(`ERROR [folder ${fp.syncFolderId || '(default)'}]: ${err.message}`);
         pruneResult.errors.push(err.message);
@@ -443,19 +462,27 @@ async function runOnce(ctx) {
     if (!ctx.dryRun && !hardError) state.planHash = manifest.planHash;
   }
 
+  // Converged = this node reached the plan it was given. A benign per-file skip does not change
+  // that (the file is ignored either way, so Syncthing won't restore it), and it must not, because
+  // the local plan hash has already advanced above — reporting not-converged for a skip wedges the
+  // node at "published but pending" with no retry that could ever clear it. Only a real failure —
+  // a topology abort, unloaded ignores, or a delete that errored — blocks convergence.
   const report = {
     planHash: manifest.planHash,
-    converged: planChanged && !pruneResult.errors.length,
+    converged: planChanged && !hardError && !pruneResult.errors.length,
     bytesFreed: pruneResult.bytesFreed,
     dropped: pruneResult.dropped,
     errors: pruneResult.errors,
+    skipped: pruneResult.skipped,
   };
   if (inventoryChanged) report.inventory = inventory;
   await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, report);
   if (inventoryChanged && !ctx.dryRun) state.inventoryHash = invHash;
   if (recovered && !ctx.dryRun) delete state.driveMissing; // report delivered — clear the recovery flag
   if (!ctx.dryRun) saveState(ctx, state);
-  ctx.log(`done: plan ${manifest.planHash}${planChanged ? '' : ' (unchanged)'}, freed ${pruneResult.bytesFreed} bytes, ${pruneResult.errors.length} error(s)`);
+  ctx.log(`done: plan ${manifest.planHash}${planChanged ? '' : ' (unchanged)'}, freed ${pruneResult.bytesFreed} bytes, ${pruneResult.errors.length} error(s), ${pruneResult.skipped.length} skip(s)`);
+  // Only a real failure fails the unit — a skip is reported and visible, but the run did what it
+  // could and a red systemd timer for it would train the operator to ignore red.
   if (pruneResult.errors.length) process.exitCode = 1;
   return report;
 }
