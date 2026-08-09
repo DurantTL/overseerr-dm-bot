@@ -134,6 +134,32 @@ In Portainer, **Pull and redeploy** on the stack does the same. The SQLite
 database lives in the `durant_bot_data` named volume, so it survives every
 update.
 
+### Upgrading to the non-root image (one-time)
+
+The container now runs as the unprivileged `node` user (uid/gid 1000) instead
+of root. A `durant_bot_data` volume created by an older, root-running image is
+still owned by root, so the bot cannot write its SQLite database and **will
+fail to start** until you hand the volume over. Run this once on the host,
+before or right after pulling:
+
+```bash
+docker compose down
+docker run --rm -v durant_bot_data:/data alpine chown -R 1000:1000 /data
+docker compose pull durant-media-server-bot && docker compose up -d
+```
+
+If you use the AvistaZ direct-grab pipeline, the writable staging bind mount
+needs the same treatment (the read-only `/mnt/raid` media mount does not):
+
+```bash
+sudo chown -R 1000:1000 /mnt/raid/media/seedbox-staging   # your SEEDBOX_STAGING_HOST_PATH
+```
+
+Symptom if you skip this: the container restart-loops and the logs show a
+SQLite `SQLITE_CANTOPEN` / `attempt to write a readonly database` error on
+`/app/data/plex_invites.db`. Fresh installs need none of this — a new volume
+inherits the right ownership from the image.
+
 ### Rolling back
 
 Set `BOT_IMAGE_TAG=sha-<good-commit>` (the immutable per-commit tag) and

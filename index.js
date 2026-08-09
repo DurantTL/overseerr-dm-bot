@@ -5292,6 +5292,19 @@ async function handleButton(interaction) {
     }
     const plan = buildSeriesPlan({ candidates, mediaType: offer.mediaType, season: offer.season ?? null, allowance });
     if (!plan) {
+      // A null plan is not always "nothing left": buildSeriesPlan also returns null when
+      // GRAB_TV_COMPLETE is off or the day's budget is spent. Only the first case means the
+      // offer is finished — in the others the numbered Download buttons are still useful, so
+      // the offer goes back rather than being consumed by a click that grabbed nothing.
+      if (!CONFIG.GRAB_TV_COMPLETE || seriesGrabBudget(allowance) < 1) {
+        restashGrabOffer(parts[0], offer);
+        return interaction.reply({
+          content: CONFIG.GRAB_TV_COMPLETE
+            ? `❌ No room in today's AvistaZ budget for a bulk grab (${allowance.remaining} left). The numbered Download buttons still work.`
+            : '❌ Whole-series grabs are disabled (`GRAB_TV_COMPLETE=false`). The numbered Download buttons still work.',
+          ephemeral: true,
+        });
+      }
       return interaction.update({ embeds: [brandedEmbed(COLORS.INFO)
         .setTitle(`ℹ️ Nothing Left to Grab — ${offer.title}`)
         .setDescription('Every release from this search is already downloading or imported.')], components: [] });

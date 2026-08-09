@@ -26,4 +26,17 @@ ENV GIT_SHA=$GIT_SHA
 
 RUN mkdir -p /app/data
 
+# Drop root. The bot handles tracker-supplied filenames (rclone copies, arr imports) and serves
+# an HTTP endpoint, so it has no business running as uid 0. node:20-slim ships a `node` user at
+# uid/gid 1000; /app/data is chowned here so a FRESH named volume inherits that ownership.
+#
+# Upgrading an existing deployment: a volume created while the bot ran as root is still owned by
+# root and the bot cannot write its SQLite database, so it will fail to start. Fix it once on the
+# host before pulling this image:
+#   docker run --rm -v durant_bot_data:/data alpine chown -R 1000:1000 /data
+# The same applies to a GRAB_STAGING_PATH bind mount (chown -R 1000:1000 on the host folder).
+# See DEPLOYMENT.md "Upgrading to the non-root image".
+RUN chown -R node:node /app/data
+USER node
+
 CMD ["node", "bootstrap.js"]
