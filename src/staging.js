@@ -163,7 +163,26 @@ async function stageCopy(srcPath, destSubPath, timeoutMs) {
 
 // Remove a staged folder from the cache (eviction / evict-button). Purge only ever targets a
 // path under STAGE_RCLONE_REMOTE — the master library is a different filesystem entirely.
+// Is this a safe argument for `rclone purge`? purge is recursive and unconditional, so an empty
+// or degenerate subpath would resolve to the cache ROOT and wipe every staged title on the box in
+// one call. Every value in staged_items.dest_path is built with path.basename today, so this
+// should be unreachable — but "should be unreachable" is not a guard, and the blast radius here is
+// the entire remote cache. Rejects empty/whitespace, '.', '/', bare separators, and any traversal.
+function safeStageSubPath(destSubPath) {
+  const p = String(destSubPath ?? '').trim();
+  if (!p) return { ok: false, why: 'empty destination path' };
+  if (p.startsWith('/')) return { ok: false, why: `absolute destination path (${p})` };
+  const parts = p.split('/').filter(s => s !== '');
+  if (!parts.length) return { ok: false, why: `destination path resolves to the cache root (${p})` };
+  if (parts.some(s => s === '.' || s === '..')) return { ok: false, why: `destination path contains a traversal segment (${p})` };
+  return { ok: true };
+}
+
 async function purgeStagedPath(destSubPath) {
+  // Fail closed: refusing to purge leaves an orphaned folder on the cache (recoverable, costs
+  // disk); purging the wrong path destroys the whole cache (not recoverable, costs a re-seed).
+  const safe = safeStageSubPath(destSubPath);
+  if (!safe.ok) return { ok: false, error: `refusing to purge — ${safe.why}` };
   const res = await runRclone(['purge', stageDest(destSubPath)], { timeoutMs: 10 * 60000 });
   if (res.code !== 0 && !/directory not found|doesn't exist|not found/i.test(res.stderr)) {
     return { ok: false, error: res.stderr || `rclone exited ${res.code}` };
@@ -253,4 +272,4 @@ async function fetchStagedPresence(destPaths) {
   }
 }
 
-module.exports = { stagingConfigured, classifyServerIdentity, evictionOrder, planCacheSpace, planPlayPromotion, resolveStageSource, runRclone, stageCopy, purgeStagedPath, fetchCacheFreeBytes, getCacheStatus, reconcileStagedItems, sumBytesByDest, fetchStagedPresence };
+module.exports = { stagingConfigured, classifyServerIdentity, evictionOrder, planCacheSpace, planPlayPromotion, resolveStageSource, runRclone, stageCopy, safeStageSubPath, purgeStagedPath, fetchCacheFreeBytes, getCacheStatus, reconcileStagedItems, sumBytesByDest, fetchStagedPresence };

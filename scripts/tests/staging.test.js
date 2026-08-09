@@ -170,6 +170,35 @@ const { loadSandbox } = require('./extract');
   assert.strictEqual(recSb.run('reconcileStagedItems({ rows, presentBytes: null }).unknown'), true, 'null listing → unknown state');
   assert.strictEqual(recSb.run('reconcileStagedItems({ rows, presentBytes: null }).restage.length'), 0, 'a blind (failed) listing never restages — no mass re-copy on a transient rclone error');
 
+  // --- purge guard: `rclone purge` is recursive and unconditional, so a degenerate subpath would
+  // resolve to the cache ROOT and wipe every staged title in one call. Every dest_path is built
+  // with path.basename today, so these are unreachable — the guard exists because the blast radius
+  // is the whole remote cache, and "unreachable" is not a guarantee.
+  // Extracted rather than required: src/staging.js pulls in src/arr.js → src/db.js, which opens
+  // the real SQLite file. Same reason the rest of this suite uses loadSandbox.
+  let purgeArgs = null;
+  const purgeSb = loadSandbox(['safeStageSubPath', 'purgeStagedPath'], {
+    runRclone: async (args) => { purgeArgs = args; return { code: 0, stderr: '' }; },
+    stageDest: sub => `phbox:/cache/${sub}`,
+  });
+  const { safeStageSubPath, purgeStagedPath } = purgeSb;
+  for (const bad of ['', '   ', '/', '//', '.', './', '..', '../..', '/cache', 'a/../..', null, undefined]) {
+    assert.strictEqual(safeStageSubPath(bad).ok, false, `refuses to purge ${JSON.stringify(bad)}`);
+  }
+  for (const good of ['Movies/Some Film (2019)', 'TV Shows/A Series', 'A Title']) {
+    assert.strictEqual(safeStageSubPath(good).ok, true, `allows a normal staged path (${good})`);
+  }
+  // A rejected path must fail without ever reaching rclone.
+  const purged = await purgeStagedPath('');
+  assert.strictEqual(purged.ok, false, 'purging an empty path fails');
+  assert.match(purged.error, /refusing to purge/, 'and says why, so the caller logs a refusal rather than a wipe');
+  assert.strictEqual(purgeArgs, null, 'rclone is never invoked for a rejected path');
+  // …and a normal path still purges exactly what it should.
+  assert.strictEqual((await purgeStagedPath('Movies/Some Film (2019)')).ok, true, 'a normal purge still succeeds');
+  // JSON-compared: an array built inside the vm carries the sandbox's own Array prototype, which
+  // deepStrictEqual counts as a difference.
+  assert.strictEqual(JSON.stringify(purgeArgs), JSON.stringify(['purge', 'phbox:/cache/Movies/Some Film (2019)']), 'and targets only that title');
+
   server.close();
   console.log('staging.test.js: all assertions passed');
 })().catch(err => { console.error(err); process.exit(1); });

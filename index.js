@@ -4440,7 +4440,7 @@ async function buildTierPlans() {
   const nodes = listTierNodes().map(n => ({ ...n, folders: listTierNodeFolders(n.name) }));
   const enabled = nodes.filter(n => n.enabled);
   if (!enabled.length) return { manifests: {}, warnings: ['No enabled tier nodes — add one with `/tier-node add`.'], nodes };
-  const inventory = await fetchTierInventory({
+  const { items: inventory, failedSources } = await fetchTierInventory({
     sources: arrSources(),
     remap: remapPath,
     sourceRoot: CONFIG.TIER_SOURCE_ROOT,
@@ -4496,7 +4496,18 @@ async function buildTierPlans() {
       churnPenaltyPerTb: CONFIG.TIER_CHURN_PENALTY_PER_TB,
     },
   });
-  return { ...result, nodes, planRecords };
+  // A source that failed contributes zero titles, and a title missing from the inventory is in
+  // neither keep nor drop — so its folder's .stignore renders EMPTY and Syncthing re-pulls
+  // everything the previous plan held back (hundreds of GB, over the edge node's uplink). The
+  // apply-impact caps can't see it either: those titles aren't in the keep set, so newDownloadBytes
+  // stays 0 and no confirm is demanded. So a partial inventory makes the whole plan unpublishable —
+  // not a warning to read past. `/tier preview` still renders it, clearly marked.
+  const inventoryIncomplete = failedSources.map(f => `\`${f.label}\` — ${f.error}`);
+  const warnings = [...(result.warnings || [])];
+  if (inventoryIncomplete.length) {
+    warnings.unshift(`🛑 Inventory incomplete — ${failedSources.map(f => f.label).join(', ')} could not be read. Publishing now would blank the \`.stignore\` for every title they serve and trigger a full re-sync, so \`/tier apply\` is blocked until they answer.`);
+  }
+  return { ...result, warnings, nodes, planRecords, failedSources };
 }
 
 // Global apply-guardrail caps (§1.5) in bytes; a 0/negative CONFIG value disables that cap (null).
@@ -4606,6 +4617,25 @@ async function handleTierCommand(interaction) {
   }
 
   const blocked = [];
+  if (sub === 'apply' && plans.failedSources?.length) {
+    // Hard stop, not a cap that a confirm code can override: every plan in this run was built on a
+    // partial library, so publishing any of them blanks the .stignore for the missing arr's titles
+    // and starts a full re-sync onto the node. There is no correct confirmation for that — the only
+    // fix is to get the arr answering and re-plan.
+    audit('tier_apply_blocked_incomplete_inventory', {
+      actorDiscordId: interaction.user.id, nodes: names, failedSources: plans.failedSources.map(f => f.label),
+    });
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle('🛑 Apply Blocked — Incomplete Inventory')
+      .setDescription([
+        `Could not read ${plans.failedSources.length} media source(s), so the planner only saw part of the library:`,
+        ...plans.failedSources.map(f => `• \`${f.label}\` — ${String(f.error).slice(0, 200)}`),
+        '',
+        'Titles from a source that did not answer end up in neither keep nor drop, which renders an **empty `.stignore`** for their folders — the node would then re-download everything the last plan was holding back.',
+        '',
+        `Fix the source and re-run \`/tier apply\`. \`/tier preview\` still works and will show the same warning. Nothing was published${names.length > 1 ? ' for any node' : ''}.`,
+      ].join('\n').slice(0, 4000))] });
+  }
   if (sub === 'apply') {
     // A confirm code is echoed for exactly one plan; nodes over a cap without the matching code are
     // held back (the rest still apply). The code binds to the plan hash, so a stale code silently
@@ -5791,6 +5821,12 @@ function startExpressServer() {
       return res.json({ ok: true, heartbeat: true });
     }
     const errors = Array.isArray(body.errors) ? body.errors.slice(0, 10).map(e => String(e).slice(0, 300)) : [];
+    // Per-file prune skips are reported separately from errors: the file stays ignored either way,
+    // so the node still reached its plan. Counting them as errors used to hold the node at
+    // "published but not converged" forever — the agent advances its own plan hash after a skip and
+    // never retries, so nothing could ever clear it, and the lost converged state also cost the
+    // node its hysteresis keep-set on every subsequent plan. Surfaced, never convergence-blocking.
+    const skipped = Array.isArray(body.skipped) ? body.skipped.slice(0, 10).map(e => String(e).slice(0, 300)) : [];
     // Mount guard: when the node's external media drive is absent the agent refuses to run and
     // reports driveMissing WITHOUT an inventory — so the empty-directory walk can never wipe the
     // node's known contents (which would trigger a full re-seed onto the wrong disk). Handle it
@@ -5850,8 +5886,8 @@ function startExpressServer() {
     const publishedHash = getTierPlan(node)?.published?.planHash || null;
     const converged = body.converged === true && errors.length === 0 && !!body.planHash && body.planHash === publishedHash;
     if (converged) markTierPlanConverged(node, { planHash: body.planHash });
-    audit('tier_agent_report', { node, planHash: body.planHash || null, publishedHash, converged, bytesFreed: body.bytesFreed || 0, droppedCount: (body.dropped || []).length, inventoryCount: Array.isArray(body.inventory) ? body.inventory.length : 0, errors: errors.join('; ').slice(0, 500) || undefined });
-    if ((body.bytesFreed || 0) > 0 || errors.length) {
+    audit('tier_agent_report', { node, planHash: body.planHash || null, publishedHash, converged, bytesFreed: body.bytesFreed || 0, droppedCount: (body.dropped || []).length, inventoryCount: Array.isArray(body.inventory) ? body.inventory.length : 0, errors: errors.join('; ').slice(0, 500) || undefined, skipped: skipped.join('; ').slice(0, 500) || undefined });
+    if ((body.bytesFreed || 0) > 0 || errors.length || skipped.length) {
       // Report the honest state: "converged" only when the checks above passed; otherwise say the
       // agent has published-but-pending or hit errors, so a mismatched/failed run can't masquerade
       // as a clean convergence.
@@ -5866,6 +5902,8 @@ function startExpressServer() {
           statusLine,
           (body.bytesFreed || 0) > 0 ? `Freed **${fmtSpace(body.bytesFreed)}** across ${(body.dropped || []).length} title(s). Master copies untouched.` : null,
           errors.length ? `⚠️ Errors:\n${errors.map(e => `• ${e}`).join('\n')}` : null,
+          // Informational: these files stayed on disk but are ignored, so the node is still on plan.
+          skipped.length ? `ℹ️ Not pruned (still ignored, node is on plan):\n${skipped.map(e => `• ${e}`).join('\n')}` : null,
         ].filter(Boolean).join('\n').slice(0, 4000))] });
     }
     res.json({ ok: true, converged });

@@ -549,10 +549,11 @@ async function testInventoryAddedAt() {
   };
   try {
     const { fetchTierInventory } = require('../../src/tier');
-    const items = await fetchTierInventory({
+    const { items, failedSources } = await fetchTierInventory({
       sources: [{ kind: 'movie', url: 'http://radarr', key: 'x', label: 'radarr' }, { kind: 'tv', url: 'http://sonarr', key: 'y', label: 'sonarr' }],
       remap: p => p, sourceRoot: '/mnt/raid',
     });
+    assert.deepStrictEqual(failedSources, [], 'a healthy run reports no failed sources');
     const byId = Object.fromEntries(items.map(i => [i.mediaId, i]));
     assert.strictEqual(byId['tmdb:1'].addedAt, Date.parse('2020-01-02T00:00:00Z'), 'valid dateAdded parsed');
     assert.strictEqual(byId['tmdb:2'].addedAt, null, 'movie with no added date → null, not now');
@@ -771,9 +772,65 @@ async function testInventoryAddedAt() {
   assert.strictEqual(empty.hasReport, false, 'empty report flagged');
 }
 
-testInventoryAddedAt().then(() => {
-  console.log('tier.test.js: all assertions passed');
-}).catch(err => {
-  console.error(err);
-  process.exit(1);
-});
+// --- A failing media source must be reported, because a partial inventory blanks the .stignore ---
+// This is the failure the apply block exists for: an arr that doesn't answer contributes no titles,
+// those titles land in neither keep nor drop, and the folder's .stignore renders EMPTY — so the node
+// re-downloads everything the previous plan was holding back. The apply-impact caps can't catch it
+// (the titles aren't in the keep set either), so fetchTierInventory has to name the failure and the
+// caller has to refuse. Both halves are asserted here.
+async function testPartialInventoryIsReportedAndDangerous() {
+  const axios = require('axios');
+  const realGet = axios.get;
+  axios.get = async (url) => {
+    if (url.includes('/movie')) throw new Error('connect ECONNREFUSED radarr:7878');
+    return { data: [{ tvdbId: 3, title: 'A Series', statistics: { sizeOnDisk: 10 * GB }, path: '/mnt/raid/tv/A Series', added: '2019-05-05T00:00:00Z' }] };
+  };
+  try {
+    const { fetchTierInventory } = require('../../src/tier');
+    const { items, failedSources } = await fetchTierInventory({
+      sources: [{ kind: 'movie', url: 'http://radarr', key: 'x', label: 'radarr' }, { kind: 'tv', url: 'http://sonarr', key: 'y', label: 'sonarr' }],
+      remap: p => p, sourceRoot: '/mnt/raid',
+    });
+    assert.strictEqual(items.length, 1, 'only the source that answered contributed titles');
+    assert.strictEqual(failedSources.length, 1, 'the failed source is reported, not swallowed');
+    assert.strictEqual(failedSources[0].label, 'radarr', 'the failed source is named');
+    assert.match(failedSources[0].error, /ECONNREFUSED/, 'the failure reason is carried through');
+  } finally {
+    axios.get = realGet;
+  }
+
+  // The consequence, so the reason for the block is pinned down and not just asserted in prose:
+  // the same node planned with and without the movie source. Every ignore line disappears.
+  const { planTier, renderFolderStignore } = require('../../src/tier');
+  const master = { name: 'master', enabled: 1, full: 1, usable_bytes: 100 * GB * 1024, folders: [{ folderId: 'm', folderRoot: '/src' }] };
+  const node = {
+    name: 'edge', enabled: 1, usable_bytes: 300 * GB, headroom_pct: 15, demand_source: 'atime',
+    folders: [{ folderId: 'mov-1', folderRoot: '/mnt/media/Movies' }, { folderId: 'tv-1', folderRoot: '/mnt/media/TV' }],
+  };
+  const title = (id, type, folderId, relPath, sizeGb) => ({
+    mediaId: id, title: id, mediaType: type, sizeBytes: sizeGb * GB, addedAt: null,
+    path: `/src/${relPath}`, relPath, folderId,
+  });
+  const complete = [
+    ...Array.from({ length: 10 }, (_, i) => title(`tmdb:${i}`, 'movie', 'mov-1', `Movies/M${i}/M${i}.mkv`, 50)),
+    ...Array.from({ length: 2 }, (_, i) => title(`tvdb:${i}`, 'tv', 'tv-1', `TV/S${i}`, 20)),
+  ];
+  const ignoreLines = inventory => {
+    const m = planTier({ nodes: [master, node], inventory, atimeReports: { edge: [] } }).manifests.edge;
+    const folder = m.folders.find(f => f.folder_id === 'mov-1');
+    return renderFolderStignore(folder, m).trim().split('\n').filter(l => l && !l.startsWith('//')).length;
+  };
+  const healthy = ignoreLines(complete);
+  assert.ok(healthy > 0, `a complete inventory produces ignore patterns (got ${healthy})`);
+  assert.strictEqual(ignoreLines(complete.filter(t => t.mediaType === 'tv')), 0,
+    'a partial inventory blanks the Movies .stignore entirely — which is why apply must refuse to publish it');
+}
+
+testInventoryAddedAt()
+  .then(testPartialInventoryIsReportedAndDangerous)
+  .then(() => {
+    console.log('tier.test.js: all assertions passed');
+  }).catch(err => {
+    console.error(err);
+    process.exit(1);
+  });

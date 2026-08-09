@@ -841,6 +841,22 @@ shown once). Env knobs: `TIER_CORE_TOP_K`, `TIER_HALF_LIFE_DAYS`, `TIER_WARM_DAY
 `TIER_FRESH_DAYS`, `TIER_REQUEST_GRACE_DAYS`, `TIER_HISTORY_DAYS`, `TIER_SOURCE_ROOT`,
 `TIER_NODES_SEED` (JSON seed applied only when the `tier_nodes` table is empty).
 
+**Apply is blocked on an incomplete inventory.** If any *arr fails to answer while the plan is
+being built, the titles it serves appear in neither `keep` nor `drop` — so their folder's
+`.stignore` renders **empty** and the node re-downloads everything the previous plan was holding
+back (potentially the whole library, over the edge uplink). The apply-impact caps cannot catch
+this, because those titles aren't in the keep set either, so no confirm code is demanded. `/tier
+apply` therefore refuses outright when a source failed, naming the source; there is no confirm
+code that overrides it. `/tier preview` still renders the plan with the same warning. Fix the
+source and re-run.
+
+A **per-file prune skip** on the agent (an entry that isn't in the loaded ignores, or whose path
+escapes the folder root) is reported in the report's `skipped` array, separately from `errors`.
+Skips do not block convergence: the file stays ignored either way, so the node is still on plan,
+and the agent advances its local plan hash after a skip and won't retry — counting a skip as an
+error would wedge the node at "published but not converged" with nothing able to clear it, and
+would also cost it the hysteresis keep-set that only carries forward from a converged state.
+
 See `agent/README.md` for deploying the node agent (systemd timer or Docker).
 
 ## Slash Command List
