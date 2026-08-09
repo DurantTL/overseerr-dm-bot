@@ -30,13 +30,15 @@ RUN mkdir -p /app/data
 # an HTTP endpoint, so it has no business running as uid 0. node:20-slim ships a `node` user at
 # uid/gid 1000; /app/data is chowned here so a FRESH named volume inherits that ownership.
 #
-# Upgrading an existing deployment: a volume created while the bot ran as root is still owned by
-# root and the bot cannot write its SQLite database, so it will fail to start. Fix it once on the
-# host before pulling this image — read the real volume name off the container rather than assuming
-# it, since Compose prefixes `durant_bot_data` with the project/stack name:
-#   VOL=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{.Name}}{{end}}{{end}}' <container>)
-#   docker run --rm -v "$VOL":/data alpine chown -R 1000:1000 /data
-# The same applies to a GRAB_STAGING_PATH bind mount (chown -R 1000:1000 on the host folder).
+# Upgrading an existing deployment: storage created while the bot ran as root is still root-owned
+# and the bot cannot write its SQLite database, so it will fail to start. Fix it once on the host
+# before pulling this image. Don't assume how /app/data is wired — a named volume and a bind mount
+# need different commands, so ask the container first:
+#   docker inspect -f '{{range .Mounts}}{{.Type}}  {{.Source}} -> {{.Destination}}{{"\n"}}{{end}}' <container>
+# bind   → sudo chown -R 1000:1000 <the Source path>
+# volume → docker run --rm -v <name>:/data alpine chown -R 1000:1000 /data
+# Every other writable path needs it too (GRAB_STAGING_PATH; a bind-mounted rclone.conf), and the
+# read-only media mount must be readable by uid 1000.
 # See DEPLOYMENT.md "Upgrading to the non-root image".
 RUN chown -R node:node /app/data
 USER node
