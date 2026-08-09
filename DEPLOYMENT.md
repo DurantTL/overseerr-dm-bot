@@ -137,16 +137,29 @@ update.
 ### Upgrading to the non-root image (one-time)
 
 The container now runs as the unprivileged `node` user (uid/gid 1000) instead
-of root. A `durant_bot_data` volume created by an older, root-running image is
-still owned by root, so the bot cannot write its SQLite database and **will
-fail to start** until you hand the volume over. Run this once on the host,
-before or right after pulling:
+of root. The data volume created by an older, root-running image is still owned
+by root, so the bot cannot write its SQLite database and **will fail to start**
+until you hand the volume over.
+
+Note that `durant_bot_data` is the name *inside* `docker-compose.yml` — Docker
+prefixes it with the project/stack name, so the real volume is something like
+`overseerr-dm-bot_durant_bot_data`. Don't guess it; read it off the container
+so this works whatever your stack is called (substitute your own container name,
+from `docker ps --format '{{.Names}}'`):
 
 ```bash
+VOL=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{.Name}}{{end}}{{end}}' durant-media-server-bot)
+echo "$VOL"    # sanity-check it's non-empty before continuing
+
 docker compose down
-docker run --rm -v durant_bot_data:/data alpine chown -R 1000:1000 /data
-docker compose pull durant-media-server-bot && docker compose up -d
+docker run --rm -v "$VOL":/data alpine chown -R 1000:1000 /data
+docker compose pull && docker compose up -d
 ```
+
+If `$VOL` comes back empty the container name is wrong — `docker volume ls |
+grep durant_bot_data` will find the volume directly. Passing a name that doesn't
+exist to `docker run -v` silently creates a new empty volume and chowns *that*,
+which looks like it worked and changes nothing, so check `$VOL` first.
 
 If you use the AvistaZ direct-grab pipeline, the writable staging bind mount
 needs the same treatment (the read-only `/mnt/raid` media mount does not):

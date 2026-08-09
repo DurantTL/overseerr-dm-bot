@@ -32,8 +32,10 @@ RUN mkdir -p /app/data
 #
 # Upgrading an existing deployment: a volume created while the bot ran as root is still owned by
 # root and the bot cannot write its SQLite database, so it will fail to start. Fix it once on the
-# host before pulling this image:
-#   docker run --rm -v durant_bot_data:/data alpine chown -R 1000:1000 /data
+# host before pulling this image — read the real volume name off the container rather than assuming
+# it, since Compose prefixes `durant_bot_data` with the project/stack name:
+#   VOL=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{.Name}}{{end}}{{end}}' <container>)
+#   docker run --rm -v "$VOL":/data alpine chown -R 1000:1000 /data
 # The same applies to a GRAB_STAGING_PATH bind mount (chown -R 1000:1000 on the host folder).
 # See DEPLOYMENT.md "Upgrading to the non-root image".
 RUN chown -R node:node /app/data
