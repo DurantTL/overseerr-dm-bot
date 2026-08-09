@@ -170,8 +170,18 @@ docker run --rm -v <volume-name>:/data alpine chown -R 1000:1000 /data
 > a name that doesn't exist — it creates an empty volume and chowns *that*. The
 > command looks like it succeeded, and nothing has actually changed.
 
-Every other writable path the container touches needs the same ownership. Which
-ones apply depends on your deployment; the mount list above is the authority:
+**Check before you chown — most paths are usually already correct.** If the host
+user that owns your media is already uid 1000 (common: `id <user>` returns
+`uid=1000`), then everything it owns is already accessible to the container's
+`node` user, and typically only the Docker-created data directory is root-owned:
+
+```bash
+id <your-media-user>
+ls -ld <each Source path from the mount list>
+```
+
+Anything already showing `1000` (or your uid-1000 user's name) as owner needs
+nothing. Only fix what actually shows `root`:
 
 ```bash
 sudo chown -R 1000:1000 /mnt/raid/media/seedbox-staging      # GRAB_STAGING_PATH, if you use AvistaZ grabs
