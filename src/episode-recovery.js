@@ -5,6 +5,8 @@
 // recovery sweep gives Sonarr/public indexers a targeted search first, then sends an exact SxxEyy
 // AvistaZ match through the existing rTorrent -> rclone -> Sonarr import pipeline.
 
+const { assessSeriesAge, planSeasonSearches } = require('./season-pack');
+
 const pad2 = n => String(n).padStart(2, '0');
 
 function episodeKey(episode) {
@@ -135,7 +137,21 @@ async function createEpisodeRecoveryWorker(deps = {}) {
 
     for (const series of seriesList.filter(s => s.monitored && (s.tags || []).includes(tagId))) {
       const episodes = await sonarrGet('/episode', { seriesId: series.id });
+      // Seasons the season-pack path owns (old show, enough missing episodes to be worth a
+      // pack). Recovering those one episode at a time is the exact waste season-pack-first
+      // exists to prevent — and on a metered tracker the two paths would race for the same
+      // slots. Left untouched here; they resume episode-level recovery if the season later
+      // drops below the pack threshold.
+      const packCfg = {
+        dormantDays: CONFIG.SEASON_PACK_DORMANT_DAYS,
+        minMissing: CONFIG.SEASON_PACK_MIN_MISSING,
+      };
+      const packSeasons = new Set(
+        CONFIG.SEASON_PACK_FIRST && assessSeriesAge(series, now, packCfg).old
+          ? planSeasonSearches(episodes, now, packCfg).map(s => s.season)
+          : []);
       for (const episode of episodes) {
+        if (packSeasons.has(Number(episode.seasonNumber))) continue;
         const airedAt = Date.parse(episode.airDateUtc || episode.airDate || '');
         if (!isAiredEpisode(episode, now) || !Number.isFinite(airedAt) || airedAt < cutoff) continue;
         const row = upsertMissingEpisode(db, series, episode, now);

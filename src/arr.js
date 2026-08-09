@@ -261,6 +261,18 @@ async function triggerSeriesSearch(seriesId) {
     { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 15000 });
 }
 
+// Search one season as a unit. Unlike a per-episode search this asks the indexers for the
+// season as a whole, so a single pack can satisfy every missing episode at once — the point of
+// the whole season-pack path for old shows (see src/season-pack.js).
+async function triggerSeasonSearch(seriesId, seasonNumber) {
+  await axios.post(`${CONFIG.SONARR_URL}/api/v3/command`, { name: 'SeasonSearch', seriesId, seasonNumber },
+    { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 15000 });
+}
+
+const getSeriesEpisodes = seriesId => sonarrGet('/episode', { seriesId });
+
+const listSonarrSeries = () => sonarrGet('/series');
+
 // Add the AvistaZ tag to a movie/series without searching — used at approval time (a
 // pre-authorized fallback is definitely AvistaZ-bound, so the tag goes on up front) and by
 // the direct-grab escalation (every escalated title must carry the tag for traceability and
@@ -472,4 +484,4 @@ function remapPath(hostPath) {
   return hostPath;
 }
 
-module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };
+module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };

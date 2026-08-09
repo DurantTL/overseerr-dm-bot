@@ -27,13 +27,14 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
-const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath } = require('./src/arr');
+const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('./src/escalation');
+const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch } = require('./src/season-pack');
 const { assessAsianOrigin, describeAvistazFit } = require('./src/asian');
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
@@ -635,6 +636,79 @@ async function sweepEscalations() {
   }
 }
 
+// ---- Season-pack-first searching (all indexers) ----
+// Sonarr hunts missing episodes one at a time. For a show that stopped airing years ago that's
+// the expensive way to get a season that exists as a single torrent, so this sweep finds old
+// shows with gaps and asks Sonarr for a SeasonSearch per incomplete season instead. Shows still
+// airing are skipped entirely — no pack exists for a season that's still going out weekly.
+function seasonPackConfig() {
+  return {
+    dormantDays: CONFIG.SEASON_PACK_DORMANT_DAYS,
+    minMissing: CONFIG.SEASON_PACK_MIN_MISSING,
+    cooldownHours: CONFIG.SEASON_PACK_COOLDOWN_HOURS,
+  };
+}
+
+// Season numbers already downloading for a series, so a season mid-grab is never re-searched.
+function queuedSeasons(queue, seriesId) {
+  return queue.filter(q => q.source.kind === 'tv' && q.seriesId === seriesId && q.seasonNumber != null).map(q => q.seasonNumber);
+}
+
+async function sweepSeasonPacks() {
+  if (!CONFIG.SEASON_PACK_FIRST || !CONFIG.SONARR_URL) return;
+  const cfg = seasonPackConfig();
+  const now = Date.now();
+  const [seriesList, queue] = await Promise.all([listSonarrSeries(), fetchArrQueues()]);
+  const searched = [];
+  for (const series of seriesList) {
+    if (searched.length >= CONFIG.SEASON_PACK_MAX_PER_RUN) break;
+    if (!series.monitored) continue;
+    // Cheap pre-filters before spending an /episode call per series: a show that's complete has
+    // no gaps to fill, and one that's still airing isn't eligible whatever its episodes say.
+    const stats = series.statistics || {};
+    if (stats.episodeCount != null && stats.episodeFileCount != null && stats.episodeFileCount >= stats.episodeCount) continue;
+    if (!assessSeriesAge(series, now, cfg).old) continue;
+    let episodes;
+    try {
+      episodes = await getSeriesEpisodes(series.id);
+    } catch (err) {
+      audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'season_pack_episodes', seriesId: series.id });
+      continue;
+    }
+    const { old, reason, seasons } = seasonSearchTargets({
+      series, episodes, inQueue: queuedSeasons(queue, series.id), searchedAt: getSeasonSearchTimes(series.id),
+    }, now, cfg);
+    if (!old) continue;
+    for (const season of seasons) {
+      if (searched.length >= CONFIG.SEASON_PACK_MAX_PER_RUN) break;
+      try {
+        await triggerSeasonSearch(series.id, season.season);
+      } catch (err) {
+        audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'season_search', seriesId: series.id, season: season.season });
+        continue;
+      }
+      // Recorded only after the command is accepted, so a failed search retries next sweep
+      // instead of sitting out the cooldown.
+      recordSeasonSearch({ seriesId: series.id, seasonNumber: season.season, seriesTitle: series.title, missing: season.missing });
+      audit('season_pack_search', { seriesId: series.id, title: series.title, season: season.season, missing: season.missing, aired: season.aired, reason });
+      searched.push({ series, season });
+    }
+  }
+  if (searched.length) {
+    notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle(`📦 Season-Pack Search — ${searched.length} season(s)`)
+      .setDescription([
+        'These shows finished airing, so Sonarr was asked for the whole season at once instead of episode by episode:',
+        '',
+        ...searched.map(s => describeSeasonSearch(s.series.title, s.season)),
+        '',
+        'Whatever Sonarr grabs still imports normally. Seasons with nothing available are retried after '
+          + `${CONFIG.SEASON_PACK_COOLDOWN_HOURS}h.`,
+      ].join('\n').slice(0, 4000))] });
+  }
+  return { searched: searched.length };
+}
+
 // ---- AvistaZ direct-grab pipeline ----
 // The smarter escalation path: search AvistaZ through Prowlarr, score the candidates, send
 // the chosen torrent to the seedbox rTorrent (labeled radarr/sonarr), watch it to
@@ -698,7 +772,7 @@ function grabCandidatesMessage({ heading, candidates, nonce, allowance, footnote
   // usually one season (or one episode) out of several, so spell out what the bulk button adds.
   const multi = plan && plan.picks.length > 1;
   const planLine = multi
-    ? `\n\n**Grab Everything** takes all **${plan.picks.length}** non-overlapping releases covering **${plan.coverage}** in a single click${plan.trimmed ? ` — **${plan.trimmed}** more won't fit in today's budget and stay for later` : ''}.`
+    ? `\n\n**Grab Everything** takes all **${plan.picks.length}** non-overlapping releases covering **${plan.coverage}** in a single click${plan.trimmed ? ` — **${plan.trimmed}** more won't fit in today's budget and stay for later` : ''}.${plan.covered ? ` ${plan.covered} other release(s) cover episodes the plan already has, so they'd only spend slots twice.` : ''}`
     : '';
   const embed = brandedEmbed(COLORS.INFO)
     .setTitle(heading)
@@ -2180,6 +2254,14 @@ client.once('ready', async () => {
       setInterval(() => sweepEscalations().catch(err => log.warn(`Escalation sweep failed: ${err.message}`)), CONFIG.ESCALATION_CHECK_MINUTES * 60000).unref();
       log.ok(`AvistaZ escalation watchdog running every ${CONFIG.ESCALATION_CHECK_MINUTES} min (delay ${escalationDelayLabel()}, tag '${CONFIG.AVISTAZ_TAG}')`);
     }
+  }
+  if (CONFIG.SEASON_PACK_FIRST && CONFIG.SONARR_URL && CONFIG.SEASON_PACK_CHECK_MINUTES > 0) {
+    const runSeasonPacks = () => sweepSeasonPacks().catch(err => log.warn(`Season-pack sweep failed: ${err.message}`));
+    // A first pass shortly after boot, then on the interval — Sonarr needs a moment to settle
+    // after a restart, and the sweep is capped per run anyway.
+    setTimeout(runSeasonPacks, 120000).unref();
+    setInterval(runSeasonPacks, CONFIG.SEASON_PACK_CHECK_MINUTES * 60000).unref();
+    log.ok(`Season-pack-first search running every ${CONFIG.SEASON_PACK_CHECK_MINUTES} min (old = ended or ${CONFIG.SEASON_PACK_DORMANT_DAYS}d dormant, max ${CONFIG.SEASON_PACK_MAX_PER_RUN}/run)`);
   }
   if (grabConfigured()) {
     // A restart mid-transfer leaves 'transferring' rows behind; put them back in the queue
