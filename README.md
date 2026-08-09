@@ -451,6 +451,15 @@ A show counts as **old** when Sonarr marks it `ended`, or when nothing has aired
 wins — a series returning next week is current whatever its status field says, and its latest
 season is still being released weekly.
 
+**Requested shows skip the age gate entirely** (`SEASON_PACK_REQUESTED`, default on). Most
+releases are an `S01` season pack whatever the show's age, and somebody is waiting on a show they
+asked for, so a current series with a request behind it gets the same treatment. A show counts as
+requested when it appears in the bot's `requests` or `escalations` tables under its TVDB id. This
+stays safe on a live season because only **aired** episodes count toward the missing threshold —
+a season halfway through its run has nothing to search for until episodes actually go missing,
+and a season that's already up to date is never searched at all. The downloads-channel summary
+says which reason applied per season (`series has ended` vs `requested`).
+
 A season is searched when:
 - it has **aired, monitored, file-less** episodes (unaired ones can't be downloaded; unmonitored
   ones were excluded on purpose), **and**
@@ -528,6 +537,14 @@ someone's re-encode of episode 1 is a 12-seeder 1080p WEB-DL (~84%), so the lone
 anchor the plan and the pack holding all thirty episodes would be dropped as "already covered".
 `GRAB_TV_COMPLETE_MIN_CONFIDENCE` still gates entry, so a dead or mislabelled pack can't ride
 breadth past the quality bar.
+
+**Same-titled shows are told apart by year.** "Full House" is both a 1987 US sitcom and a 2004
+Korean drama, and the TV scoring path never looked at the year — `Full House S01 1987` and
+`Full House S01 2004 1080p KOCOWA WEB-DL` scored identically, so the wrong show could win a plan
+outright. A release that *predates* the series now takes a 25-point penalty and says so in the
+candidate embed. It's a penalty rather than points because a TV release's year is usually the
+**season's** air year: `Show S03 2015` on a series that began in 2012 is correct and is left
+alone. Only a first season dated well after the series began (a remake) takes a smaller hit.
 
 Season-less episode runs (`E01-E30`, how single-season Asian dramas are usually uploaded) and the
 old `1x05` form are recognized as well — they used to parse as nothing at all, which made the

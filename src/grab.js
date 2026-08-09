@@ -272,6 +272,23 @@ function scoreAvistazResult(result, ctx) {
     else score += 8;
   }
 
+  // Two shows share a title far more often than two films do — "Full House" is both a 1987 US
+  // sitcom and a 2004 Korean drama, and the TV branches above never look at the year, so both
+  // scored identically and the wrong show could win a plan outright. Applied as a penalty rather
+  // than points because a TV release's year is usually the SEASON's air year, not the series':
+  // only a release predating the series proves a mismatch, and a later year is normal for a
+  // later season and costs nothing.
+  if (ctx.mediaType !== 'movie' && ctx.year && parsed.year) {
+    if (parsed.year < ctx.year - 1) {
+      score -= 25;
+      notes.push(`different show? release is from ${parsed.year}, series from ${ctx.year}`);
+    } else if (parsed.year > ctx.year + 1 && (parsed.season == null || parsed.season === 1)) {
+      // A first season dated years after the series began is usually a remake, not this show.
+      score -= 10;
+      notes.push(`year mismatch (${parsed.year})`);
+    }
+  }
+
   const resPts = { '1080p': 10, '720p': 7, '2160p': 4, '480p': 2 }[parsed.resolution] ?? 4;
   const srcPts = { webdl: 5, bluray: 5, webrip: 4, hdtv: 2 }[parsed.source] ?? 2;
   score += Math.min(15, resPts + srcPts);

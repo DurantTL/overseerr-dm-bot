@@ -92,6 +92,23 @@ const express = require('express');
   assert.ok(freeleech.confidence > rightYear.confidence, 'freeleech adds points');
   assert.strictEqual(freeleech.freeleech, true, 'freeleech flag detected case-insensitively');
 
+  // Same-titled shows: "Full House" is a 1987 US sitcom AND a 2004 Korean drama. The TV branches
+  // never looked at the year, so both scored identically and the wrong show could win a plan.
+  const fhCtx = { title: 'Full House', year: 2004, mediaType: 'tv' };
+  const fh = t => scoreAvistazResult(mk(t, { size: 20 * 1024 ** 3, seeders: 8 }), fhCtx);
+  const wanted = fh('Full House S01 2004 1080p KOCOWA WEB-DL AAC H.264');
+  const otherShow = fh('Full.House.S01.1987.1080p.BluRay.x264');
+  assert.ok(wanted.confidence - otherShow.confidence >= 20, `the right show clearly outranks the same-titled one (${wanted.confidence} vs ${otherShow.confidence})`);
+  assert.match(otherShow.notes.join(' '), /different show/, 'the mismatch is explained in the candidate embed');
+  assert.deepStrictEqual(wanted.notes, [], 'the wanted release is flagged for nothing');
+  // A TV release's year is the SEASON's air year, so a later season legitimately carries a later
+  // year and must not be penalized — only a release predating the series proves a mismatch.
+  assert.strictEqual(fh('Full.House.S02.2012.1080p.WEB-DL').confidence, wanted.confidence, 'a later season with a later year is not penalized');
+  assert.strictEqual(fh('Full.House.S01.1080p.WEB-DL').confidence, wanted.confidence, 'a release with no year is not penalized');
+  assert.strictEqual(
+    scoreAvistazResult(mk('Full.House.S01.1987.1080p.BluRay.x264', { size: 20 * 1024 ** 3, seeders: 8 }), { title: 'Full House', mediaType: 'tv' }).confidence,
+    wanted.confidence, 'with no year in the request nothing is penalized');
+
   // Ranking: sorted by confidence, capped, and undownloadable results dropped.
   const ranked = rankAvistazResults([
     mk('My.Father.is.Strange.S01.720p.WEB-DL'),

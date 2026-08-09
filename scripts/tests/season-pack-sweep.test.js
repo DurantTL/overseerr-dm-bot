@@ -18,11 +18,11 @@ const ep = (season, number, over = {}) => ({
 
 // Two old shows with gaps, one airing show with the same gaps, one already-complete old show.
 const SERIES = [
-  { id: 1, title: 'Winter Sonata', monitored: true, status: 'ended', statistics: { episodeCount: 20, episodeFileCount: 0 } },
-  { id: 2, title: 'Dormant Drama', monitored: true, status: 'continuing', previousAiring: daysAgo(900), statistics: { episodeCount: 10, episodeFileCount: 2 } },
-  { id: 3, title: 'Airing Now', monitored: true, status: 'continuing', previousAiring: daysAgo(2), nextAiring: daysAhead(5), statistics: { episodeCount: 8, episodeFileCount: 1 } },
-  { id: 4, title: 'Finished And Complete', monitored: true, status: 'ended', statistics: { episodeCount: 12, episodeFileCount: 12 } },
-  { id: 5, title: 'Unmonitored Oldie', monitored: false, status: 'ended', statistics: { episodeCount: 12, episodeFileCount: 0 } },
+  { id: 1, tvdbId: 101, title: 'Winter Sonata', monitored: true, status: 'ended', statistics: { episodeCount: 20, episodeFileCount: 0 } },
+  { id: 2, tvdbId: 102, title: 'Dormant Drama', monitored: true, status: 'continuing', previousAiring: daysAgo(900), statistics: { episodeCount: 10, episodeFileCount: 2 } },
+  { id: 3, tvdbId: 103, title: 'Airing Now', monitored: true, status: 'continuing', previousAiring: daysAgo(2), nextAiring: daysAhead(5), statistics: { episodeCount: 8, episodeFileCount: 1 } },
+  { id: 4, tvdbId: 104, title: 'Finished And Complete', monitored: true, status: 'ended', statistics: { episodeCount: 12, episodeFileCount: 12 } },
+  { id: 5, tvdbId: 105, title: 'Unmonitored Oldie', monitored: false, status: 'ended', statistics: { episodeCount: 12, episodeFileCount: 0 } },
 ];
 const EPISODES = {
   1: [ep(1, 1), ep(1, 2), ep(1, 3), ep(2, 1), ep(2, 2), ep(2, 3)],
@@ -32,7 +32,7 @@ const EPISODES = {
   5: [ep(1, 1), ep(1, 2), ep(1, 3)],
 };
 
-function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = true } = {}) {
+function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = true, requestedTvdbIds = [], seasonPackRequested = true } = {}) {
   const calls = [];
   const recorded = [];
   const notices = [];
@@ -44,6 +44,7 @@ function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = t
     SEASON_PACK_MIN_MISSING: 3,
     SEASON_PACK_COOLDOWN_HOURS: 24,
     SEASON_PACK_MAX_PER_RUN: maxPerRun,
+    SEASON_PACK_REQUESTED: seasonPackRequested,
   };
   const sandbox = loadSandbox(['sweepSeasonPacks', 'seasonPackConfig', 'queuedSeasons'], {
     CONFIG,
@@ -55,6 +56,7 @@ function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = t
     getSeriesEpisodes: async id => { episodeFetches.push(id); return EPISODES[id] || []; },
     triggerSeasonSearch: async (seriesId, seasonNumber) => { calls.push(`${seriesId}:${seasonNumber}`); },
     getSeasonSearchTimes: id => searchedAt[id] || {},
+    listRequestedTvdbIds: () => new Set(requestedTvdbIds),
     recordSeasonSearch: row => recorded.push(row),
     audit: () => {},
     notifyChannel: (channel, msg) => notices.push({ channel, msg }),
@@ -84,6 +86,23 @@ function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = t
   assert.strictEqual(h.notices.length, 1, 'one summary is posted');
   assert.strictEqual(h.notices[0].channel, 'downloads', 'the summary goes to the downloads channel');
   assert.match(h.notices[0].msg.embeds[0].description, /Winter Sonata\*\* S01 — 3 of 3/, 'the summary names the seasons searched');
+
+  // --- A requested show gets packs even while it's still airing ---
+  // Most releases are an "S01" pack whatever the show's age, and somebody is waiting on this one.
+  h = build({ requestedTvdbIds: [103] });
+  await h.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(h.calls.sort(), ['1:1', '1:2', '2:1', '3:1'], 'the requested airing show is season-searched too');
+  assert.match(h.notices[0].msg.embeds[0].description, /Airing Now\*\* S01 .*_\(requested\)_/, 'the summary says why an airing show was included');
+  assert.match(h.notices[0].msg.embeds[0].description, /Winter Sonata\*\* S01 .*_\(series has ended\)_/, 'an old show still reports its age');
+
+  h = build({ requestedTvdbIds: [103], seasonPackRequested: false });
+  await h.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(h.calls.sort(), ['1:1', '1:2', '2:1'], 'SEASON_PACK_REQUESTED=false restores the age-only gate');
+
+  // A requested show that is complete is still filtered before costing an /episode call.
+  h = build({ requestedTvdbIds: [104] });
+  await h.sandbox.sweepSeasonPacks();
+  assert.ok(!h.episodeFetches.includes(4), 'being requested does not override the has-everything filter');
 
   // --- A season already downloading is left alone rather than raced ---
   h = build({ queue: [{ source: { kind: 'tv' }, seriesId: 1, seasonNumber: 1, episodeNumber: 2 }] });

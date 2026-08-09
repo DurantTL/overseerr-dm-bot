@@ -75,14 +75,25 @@ function planSeasonSearches(episodes, now = Date.now(), cfg = {}) {
     .sort((a, b) => a.season - b.season);
 }
 
-// The seasons of one series that warrant a pack search right now, with the age verdict that
+// The seasons of one series that warrant a pack search right now, with the verdict that
 // justified it. `inQueue` holds season numbers already downloading — Sonarr is mid-grab there,
 // so searching again would only race it. `searchedAt` maps season → last search time, applying
 // the cooldown so a season with nothing available isn't re-searched every sweep.
-// Returns { old, reason, seasons: [{ season, missing, aired, total }] }.
-function seasonSearchTargets({ series, episodes, inQueue = [], searchedAt = {} }, now = Date.now(), cfg = {}) {
+//
+// `requested` = somebody actually asked for this show. That bypasses the age gate (unless
+// cfg.includeRequested is false): most shows are uploaded as an "S01" season pack whatever their
+// age, and on a show someone is waiting for, one pack beating N episode grabs is worth more than
+// on a show nobody asked about. It stays safe on a currently-airing season because the season
+// still has to clear the missing-episode bar, and only aired episodes count — a season halfway
+// through its run has nothing to search for until episodes actually go missing.
+// Returns { old, eligible, reason, seasons: [{ season, missing, aired, total }] }.
+function seasonSearchTargets({ series, episodes, inQueue = [], searchedAt = {}, requested = false }, now = Date.now(), cfg = {}) {
   const age = assessSeriesAge(series, now, cfg);
-  if (!age.old) return { ...age, seasons: [] };
+  const byRequest = requested && cfg.includeRequested !== false;
+  const eligible = age.old || byRequest;
+  if (!eligible) return { ...age, eligible: false, seasons: [] };
+  // An old show says so; a current one is here purely because it was requested.
+  const reason = age.old ? age.reason : 'requested';
   const cooldownMs = (cfg.cooldownHours ?? 24) * 3600000;
   const queued = new Set((inQueue || []).map(Number));
   const seasons = planSeasonSearches(episodes, now, cfg).filter(s => {
@@ -90,7 +101,7 @@ function seasonSearchTargets({ series, episodes, inQueue = [], searchedAt = {} }
     const last = Number(searchedAt[s.season]);
     return !Number.isFinite(last) || now - last >= cooldownMs;
   });
-  return { ...age, seasons };
+  return { ...age, eligible, reason, seasons };
 }
 
 // One line per searched season for the Discord summary.

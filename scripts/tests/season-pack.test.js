@@ -80,6 +80,32 @@ assert.deepStrictEqual(seasonsOf(t.seasons), [2], 'a season inside its cooldown 
 t = seasonSearchTargets({ series: ended, episodes, searchedAt: { 1: NOW - 30 * 3600000 } }, NOW, cfg);
 assert.deepStrictEqual(seasonsOf(t.seasons), [1, 2], 'a season past its cooldown is retried');
 
+// --- Requested shows bypass the age gate ---
+// Most releases are an "S01" season pack whatever the show's age, and somebody is waiting on a
+// requested show — so a current series that was actually requested gets the pack treatment too.
+const airing = { status: 'continuing', previousAiring: daysAgo(3), nextAiring: daysAhead(4) };
+
+t = seasonSearchTargets({ series: airing, episodes, requested: true }, NOW, cfg);
+assert.deepStrictEqual(seasonsOf(t.seasons), [1, 2], 'a requested show is season-searched even while airing');
+assert.strictEqual(t.old, false, 'the age verdict is still reported honestly');
+assert.strictEqual(t.eligible, true, 'eligibility is what the sweep acts on');
+assert.strictEqual(t.reason, 'requested', 'the reason distinguishes a request from an ended show');
+
+t = seasonSearchTargets({ series: airing, episodes, requested: false }, NOW, cfg);
+assert.deepStrictEqual(t.seasons, [], 'an airing show nobody requested is still left alone');
+
+t = seasonSearchTargets({ series: ended, episodes, requested: true }, NOW, cfg);
+assert.strictEqual(t.reason, 'series has ended', 'an old show reports its age, not the request');
+
+t = seasonSearchTargets({ series: airing, episodes, requested: true }, NOW, { ...cfg, includeRequested: false });
+assert.deepStrictEqual(t.seasons, [], 'SEASON_PACK_REQUESTED=false restores the age-only gate');
+
+// The safety property that makes this OK on a live season: only AIRED episodes count, so a
+// season halfway through its run has nothing to search for until episodes actually go missing.
+const midSeason = [ep(1, 1, { hasFile: true }), ep(1, 2, { hasFile: true }), ep(1, 3, { airDateUtc: daysAhead(3) }), ep(1, 4, { airDateUtc: daysAhead(10) })];
+t = seasonSearchTargets({ series: airing, episodes: midSeason, requested: true }, NOW, cfg);
+assert.deepStrictEqual(t.seasons, [], 'a requested season that is up to date is not searched');
+
 assert.strictEqual(describeSeasonSearch('Winter Sonata', { season: 1, missing: 3, aired: 20 }),
   '**Winter Sonata** S01 — 3 of 20 aired episode(s) missing', 'summary line');
 

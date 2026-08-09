@@ -67,6 +67,10 @@ const CONFIG = {
   // one grab instead of N. Currently-airing shows are untouched (no pack exists for them yet).
   SEASON_PACK_FIRST: parseBool(process.env.SEASON_PACK_FIRST, true),
   SEASON_PACK_CHECK_MINUTES: Number.parseInt(process.env.SEASON_PACK_CHECK_MINUTES || '180', 10),
+  // Give shows somebody actually requested the same treatment even while they're still airing:
+  // most releases are "S01" season packs whatever the show's age, and a requester is waiting.
+  // Safe on an in-progress season — only aired episodes count toward the missing threshold.
+  SEASON_PACK_REQUESTED: parseBool(process.env.SEASON_PACK_REQUESTED, true),
   // A 'continuing' series with nothing aired in this long (and nothing scheduled) counts as old.
   // Series Sonarr marks 'ended' always count, whatever this is set to.
   SEASON_PACK_DORMANT_DAYS: Number.parseInt(process.env.SEASON_PACK_DORMANT_DAYS || '365', 10),
