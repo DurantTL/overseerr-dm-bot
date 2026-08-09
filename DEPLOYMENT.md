@@ -136,29 +136,80 @@ update.
 
 ### Upgrading to the non-root image (one-time)
 
-The container now runs as the unprivileged `node` user (uid/gid 1000) instead
-of root. A `durant_bot_data` volume created by an older, root-running image is
-still owned by root, so the bot cannot write its SQLite database and **will
-fail to start** until you hand the volume over. Run this once on the host,
-before or right after pulling:
+The container now runs as the unprivileged `node` user (uid/gid 1000) instead of
+root. Storage created while it ran as root is still root-owned, so the bot cannot
+write its SQLite database and **will fail to start** until you hand it over.
+Fresh installs need none of this.
+
+**Do not assume how your storage is wired.** This repo's `docker-compose.yml`
+declares a named volume, but a Portainer stack or a hand-rolled deployment often
+uses bind mounts instead, and Compose prefixes named volumes with the project
+name (so `durant_bot_data` is really `<stack>_durant_bot_data`). Ask the
+container, then act on what it says:
 
 ```bash
-docker compose down
-docker run --rm -v durant_bot_data:/data alpine chown -R 1000:1000 /data
-docker compose pull durant-media-server-bot && docker compose up -d
+docker ps -a --format '{{.Names}}\t{{.Image}}' | grep overseerr-dm-bot   # your container name
+docker inspect -f '{{range .Mounts}}{{.Type}}  {{.Source}} -> {{.Destination}}{{"\n"}}{{end}}' <container>
 ```
 
-If you use the AvistaZ direct-grab pipeline, the writable staging bind mount
-needs the same treatment (the read-only `/mnt/raid` media mount does not):
+**If `/app/data` is a `bind`** (its `Source` is a host path), chown that path —
+no `docker run` involved:
 
 ```bash
-sudo chown -R 1000:1000 /mnt/raid/media/seedbox-staging   # your SEEDBOX_STAGING_HOST_PATH
+sudo chown -R 1000:1000 /opt/docker/.../overseerr-dm-bot/data   # the Source from above
 ```
 
-Symptom if you skip this: the container restart-loops and the logs show a
+**If `/app/data` is a `volume`** (it has a name), chown it through a throwaway
+container:
+
+```bash
+docker run --rm -v <volume-name>:/data alpine chown -R 1000:1000 /data
+```
+
+> ⚠️ Never pass a guessed volume name here. `docker run -v` does **not** error on
+> a name that doesn't exist — it creates an empty volume and chowns *that*. The
+> command looks like it succeeded, and nothing has actually changed.
+
+**Check before you chown — most paths are usually already correct.** If the host
+user that owns your media is already uid 1000 (common: `id <user>` returns
+`uid=1000`), then everything it owns is already accessible to the container's
+`node` user, and typically only the Docker-created data directory is root-owned:
+
+```bash
+id <your-media-user>
+ls -ld <each Source path from the mount list>
+```
+
+Anything already showing `1000` (or your uid-1000 user's name) as owner needs
+nothing. Only fix what actually shows `root`:
+
+```bash
+sudo chown -R 1000:1000 /mnt/raid/media/seedbox-staging      # GRAB_STAGING_PATH, if you use AvistaZ grabs
+sudo chown 1000:1000 /home/media/.config/rclone/rclone.conf  # if rclone.conf is bind-mounted in
+```
+
+Two easy misses:
+
+* A file bind-mounted *inside* `/app/data` (commonly `rclone.conf`) lives in a
+  different host tree, so the recursive chown of the data directory does not
+  reach it. Chown it separately.
+* The read-only media mount needs to be **readable by uid 1000**. Root could read
+  it whatever its mode; the `node` user cannot. Check with
+  `ls -ld /mnt/raid/media` — if it isn't readable by that user or by other,
+  staging and imports fail in ways that look like application bugs.
+
+Then redeploy: **Pull and redeploy** on the stack in Portainer, or
+`docker compose pull && docker compose up -d` from the directory holding your
+compose file. (`docker compose` anywhere else fails with `no configuration file
+provided: not found` — a Portainer-managed stack has no compose file on the host.)
+
+Symptom if you skip all this: the container restart-loops and the logs show a
 SQLite `SQLITE_CANTOPEN` / `attempt to write a readonly database` error on
-`/app/data/plex_invites.db`. Fresh installs need none of this — a new volume
-inherits the right ownership from the image.
+`/app/data/plex_invites.db`.
+
+**If Watchtower manages this stack** it will pull the non-root image on its own
+schedule, so do the ownership changes *before* that happens rather than after the
+restart loop starts.
 
 ### Rolling back
 
