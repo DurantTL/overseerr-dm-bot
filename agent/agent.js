@@ -175,10 +175,35 @@ async function assertReceiveOnly(ctx, syncFolderId) {
   }
 }
 
+// Atomic write: a plain writeFileSync truncates the existing .stignore before the new bytes
+// land, so a crash or power loss mid-write (or Syncthing rescanning at exactly the wrong
+// moment — step 4 below triggers one right after this) can observe a truncated or empty
+// ignore file. An empty .stignore ignores nothing, which is exactly the state step 5's prune
+// must never run against. Write to a sibling temp file in the same directory (so the rename
+// stays on one filesystem), fsync the file's contents, then rename into place — POSIX rename
+// is atomic, so readers only ever see the old complete file or the new complete file, never a
+// partial one. fsync-ing the directory too makes the rename itself durable against power loss.
 function writeStignore(ctx, fp) {
   const target = path.join(fp.folderRoot, '.stignore');
   if (ctx.dryRun) return ctx.log(`[dry-run] would write ${fp.drop.length} ignore pattern(s) to ${target}`);
-  fs.writeFileSync(target, fp.stignore, 'utf8');
+  const tmp = path.join(fp.folderRoot, `.stignore.tmp.${process.pid}.${Date.now()}`);
+  try {
+    const fd = fs.openSync(tmp, 'w');
+    try {
+      fs.writeSync(fd, fp.stignore, null, 'utf8');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, target);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true }); // don't leave a half-written temp file behind on failure
+    throw err;
+  }
+  try {
+    const dirFd = fs.openSync(fp.folderRoot, 'r');
+    try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+  } catch (_e) { /* directory fsync isn't supported everywhere (e.g. some FUSE mounts) — the rename already landed */ }
 }
 
 // §4a step 4: rescan the folder, then verify Syncthing actually loaded our patterns before
@@ -413,11 +438,13 @@ async function runOnce(ctx) {
   const planChanged = manifest.planHash !== state.planHash;
   const folderPlans = resolveFolderPlans(ctx, manifest);
 
-  // atime accuracy note (§3.2a): the inventory is collected BEFORE any pruning below could
-  // touch files, and reading file *metadata* (stat) never bumps atime.
-  const inventory = ctx.reportInventory ? collectInventory(ctx, folderPlans) : null;
-  const invHash = inventory ? inventoryHash(inventory) : null;
-  const inventoryChanged = inventory && invHash !== state.inventoryHash;
+  // atime accuracy note (§3.2a): the inventory is walked BEFORE any pruning below could touch
+  // files, and reading file *metadata* (stat) never bumps atime. This snapshot decides whether
+  // there's anything to do at all (the no-op/heartbeat check just below) — it does NOT decide
+  // what gets reported: see the post-prune reconciliation further down.
+  const preInventory = ctx.reportInventory ? collectInventory(ctx, folderPlans) : null;
+  const preInvHash = preInventory ? inventoryHash(preInventory) : null;
+  const inventoryChanged = preInventory && preInvHash !== state.inventoryHash;
 
   if (!planChanged && !inventoryChanged && !recovered) {
     ctx.log(`plan ${manifest.planHash} unchanged and inventory unchanged — nothing to do`);
@@ -475,9 +502,28 @@ async function runOnce(ctx) {
     errors: pruneResult.errors,
     skipped: pruneResult.skipped,
   };
-  if (inventoryChanged) report.inventory = inventory;
+  // Reconcile the snapshot against what actually got pruned THIS run instead of reporting the
+  // pre-prune walk as-is: the bot's converged report and its file inventory used to arrive out
+  // of sync — pruneResult.dropped said "gone" while report.inventory (still the pre-prune
+  // snapshot) said "here", and the bot full-replaces its known files from report.inventory. The
+  // stale snapshot's hash also matched the previously-stored one (those files hadn't been
+  // pruned yet at either point), so inventoryChanged was false and the report omitted inventory
+  // entirely — leaving the dashboard wrong until a LATER run's fresh walk finally caught up.
+  // Subtracting here is cheaper than re-walking the tree and makes this run's own report correct.
+  let inventory = preInventory;
+  if (inventory && pruneResult.dropped.length) {
+    // A drop entry is usually a FOLDER (a movie's directory, a season pack) while inventory
+    // rows are individual FILES under it — relPath equality alone would miss every file inside
+    // a dropped folder, so a dropped entry also matches any inventory row nested under it.
+    const dropped = pruneResult.dropped.map(d => ({ folderId: d.folderId, relPath: d.relPath }));
+    inventory = inventory.filter(e => !dropped.some(d => d.folderId === e.folderId
+      && (e.relPath === d.relPath || e.relPath.startsWith(`${d.relPath}/`))));
+  }
+  const invHash = inventory ? inventoryHash(inventory) : null;
+  const inventoryReportChanged = inventory && invHash !== state.inventoryHash;
+  if (inventoryReportChanged) report.inventory = inventory;
   await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, report);
-  if (inventoryChanged && !ctx.dryRun) state.inventoryHash = invHash;
+  if (inventoryReportChanged && !ctx.dryRun) state.inventoryHash = invHash;
   if (recovered && !ctx.dryRun) delete state.driveMissing; // report delivered — clear the recovery flag
   if (!ctx.dryRun) saveState(ctx, state);
   ctx.log(`done: plan ${manifest.planHash}${planChanged ? '' : ' (unchanged)'}, freed ${pruneResult.bytesFreed} bytes, ${pruneResult.errors.length} error(s), ${pruneResult.skipped.length} skip(s)`);
@@ -494,4 +540,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, escapeStignore, loadState, saveState };
+module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, escapeStignore, loadState, saveState, writeStignore };

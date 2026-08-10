@@ -110,21 +110,21 @@ const { renderSyncthingStignore, computePlanHash } = require('../../src/tier');
   assert.strictEqual(reports.length, 1, 'report posted');
   assert.ok(reports[0].inventory.some(f => f.relPath === 'movies/Keep Movie (2024)/keep.mkv'), 'inventory reports kept media files');
   assert.ok(reports[0].inventory.every(f => Number.isFinite(f.atime) && f.sizeBytes >= 0), 'inventory rows carry atime + size');
+  // The inventory is walked BEFORE the prune loop runs, but the REPORT must reflect what the
+  // prune actually did — this run's own report, not a later one, since the bot fully replaces
+  // its known file set from report.inventory on every report that carries one.
+  assert.ok(!reports[0].inventory.some(f => f.relPath.startsWith('movies/Old Movie')), 'the SAME report already excludes the just-pruned title — no stale pre-prune entries');
 
-  // --- run 2: plan unchanged, inventory changed (the prune itself changed it) → report only ---
+  // --- run 2: plan unchanged, and the inventory was already settled by run 1's own report →
+  // a true no-op heartbeat, not a second full report ---
   stCalls.length = 0;
-  await runOnce(ctx);
+  const r2 = await runOnce(ctx);
   assert.deepStrictEqual(stCalls, [], 'unchanged plan → Syncthing untouched');
-  assert.strictEqual(reports.length, 2, 'post-prune inventory delta still reported');
-  assert.ok(!reports[1].inventory.some(f => f.relPath.startsWith('movies/Old Movie')), 'pruned files gone from the report');
-
-  // --- run 3: nothing changed at all → skip the heavy work, but still heartbeat ---
-  const r3 = await runOnce(ctx);
-  assert.strictEqual(r3.skipped, true, 'unchanged plan + unchanged inventory → skip prune/inventory');
-  assert.strictEqual(r3.heartbeat, true, 'a no-op run still checks in');
-  assert.strictEqual(reports.length, 3, 'no-op run posts a lightweight heartbeat (proof of life)');
-  assert.strictEqual(reports[2].heartbeat, true, 'the no-op post is a heartbeat');
-  assert.ok(!reports[2].inventory, 'heartbeat carries no inventory payload');
+  assert.strictEqual(r2.skipped, true, 'unchanged plan + already-settled inventory → skip prune/inventory');
+  assert.strictEqual(r2.heartbeat, true, 'a no-op run still checks in');
+  assert.strictEqual(reports.length, 2, 'no-op run posts a lightweight heartbeat (proof of life)');
+  assert.strictEqual(reports[1].heartbeat, true, 'the no-op post is a heartbeat');
+  assert.ok(!reports[1].inventory, 'heartbeat carries no inventory payload');
 
   // --- receive-only violation: abort before touching anything ---
   mkMedia('movies/Another Old (1999)/x.mkv', 1024);
@@ -135,7 +135,7 @@ const { renderSyncthingStignore, computePlanHash } = require('../../src/tier');
   assert.ok(r4.errors.some(e => e.includes('SAFETY ABORT')), 'send-receive folder → hard abort');
   assert.deepStrictEqual(stCalls, ['config'], 'abort happens at the topology check — no rescan, no prune');
   assert.ok(fs.existsSync(path.join(folderRoot, 'movies/Another Old (1999)/x.mkv')), 'nothing deleted on abort');
-  assert.strictEqual(reports.length, 4, 'abort still reported to the bot (after run 3\'s heartbeat)');
+  assert.strictEqual(reports.length, 3, 'abort still reported to the bot (after run 2\'s heartbeat)');
   process.exitCode = 0;
 
   // --- fixed folder type: the same plan converges on the next run (state not poisoned) ---
@@ -144,17 +144,17 @@ const { renderSyncthingStignore, computePlanHash } = require('../../src/tier');
   const r5 = await runOnce(ctx);
   assert.strictEqual(r5.converged, true, 'retry after abort converges');
   assert.ok(!fs.existsSync(path.join(folderRoot, 'movies/Another Old (1999)')), 'pruned on the healthy retry');
+  assert.ok(!reports[reports.length - 1].inventory.some(f => f.relPath.startsWith('movies/Another Old')), 'r5\'s own report already excludes the file it just pruned — no separate settle run needed');
 
   // --- heartbeat delivery failure must not read as a clean run ---
-  // r5 pruned a file, so r6 reports the post-prune inventory delta (a full report), and r7 is then a
-  // true no-op that only heartbeats. Make the report endpoint fail on r7: the undeliverable
-  // heartbeat must set a non-zero exit code, not a masked "clean skip" the systemd timer trusts.
-  await runOnce(ctx);                       // r6: settle the post-prune inventory
-  process.exitCode = 0;
+  // r5 already reported the settled post-prune inventory in the SAME run (the fix under test),
+  // so the very next call is already a true no-op — no extra "settle" run needed first. Make the
+  // report endpoint fail on it: the undeliverable heartbeat must set a non-zero exit code, not a
+  // masked "clean skip" the systemd timer trusts.
   failReports = true;
-  const r7 = await runOnce(ctx);
-  assert.strictEqual(r7.skipped, true, 'r7 is still a no-op run');
-  assert.strictEqual(r7.heartbeat, false, 'an undeliverable heartbeat is not reported as healthy');
+  const r6 = await runOnce(ctx);
+  assert.strictEqual(r6.skipped, true, 'r6 is a no-op run — r5 already settled the inventory');
+  assert.strictEqual(r6.heartbeat, false, 'an undeliverable heartbeat is not reported as healthy');
   assert.strictEqual(process.exitCode, 1, 'undeliverable heartbeat sets a non-zero exit code');
   process.exitCode = 0;
   failReports = false;

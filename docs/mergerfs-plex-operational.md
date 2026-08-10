@@ -102,13 +102,42 @@ Sanity-check the merge:
 ```bash
 # A title that exists ONLY on the master shows through:
 ls "/mnt/plex-library/Movies" | head
-# A title present in the local cache resolves to the LOCAL copy (same relative path):
-readlink -f "/mnt/plex-library/Movies/<a cached title>/<file>.mkv"   # → /mnt/cache/...
 ```
 
-If a cached title resolves to `/mnt/master-ro/...` instead of `/mnt/cache/...`, the path layout does
-**not** match — fix the cache tree (it must be `Movies/<folder>` / `TV Shows/<folder>`) before going
-further, or promotions will be invisible.
+**Don't use `readlink -f` to check which branch a file actually came from.** `/mnt/plex-library` is
+its own FUSE filesystem, not a tree of symlinks into the branches — a merged file is never a
+symlink, so `readlink -f` just canonicalizes to the merged path itself (`/mnt/plex-library/...`) no
+matter which branch actually serves it. It doesn't fail loudly; it silently reports the wrong thing,
+which is worse than an error here.
+
+Compare the merged file's device number against each branch's instead — same filesystem device
+means that's the branch actually backing it (the same technique the tier agent's mount guard uses,
+see `agent/agent.js`'s `checkMountGuard`):
+
+```bash
+check_branch() {
+  local merged="$1" cache_dev remote_dev merged_dev
+  cache_dev=$(stat -c %d /mnt/cache)
+  remote_dev=$(stat -c %d /mnt/master-ro)
+  merged_dev=$(stat -c %d "$merged")
+  if [ "$merged_dev" = "$cache_dev" ]; then echo "OK: served from the LOCAL cache branch"
+  elif [ "$merged_dev" = "$remote_dev" ]; then echo "served from the REMOTE (master) branch"
+  else echo "FAIL: device doesn't match either branch — check the mergerfs mount"; fi
+}
+check_branch "/mnt/plex-library/Movies/<a cached title>/<file>.mkv"
+```
+
+If `mergerfs` was built with xattr support and the mount wasn't started with `-o xattr=nosys`, the
+special `user.mergerfs.fullpath` xattr is a more direct alternative — it names the real
+backing path without any device-number arithmetic:
+
+```bash
+getfattr -n user.mergerfs.fullpath "/mnt/plex-library/Movies/<a cached title>/<file>.mkv"
+```
+
+Either way: if a cached title resolves to the remote branch instead of the local cache, the path
+layout does **not** match — fix the cache tree (it must be `Movies/<folder>` / `TV Shows/<folder>`)
+before going further, or promotions will be invisible.
 
 ### 2.3 Temporary Plex test library on the merged view
 
@@ -185,8 +214,10 @@ EDGE_PROMOTE_AUDIT_ONLY=false
 - Play an uncached title → the stage worker copies it into `/mnt/cache/Movies/<folder>` (or
   `TV Shows/...`). Because playback is already happening through the fallback, the copy just makes
   the **next** play local.
-- After the copy, confirm the merged path now resolves that title to the **local** branch
-  (`readlink -f` → `/mnt/cache/...`) and the next play reads from disk, not the tunnel.
+- After the copy, confirm the merged path now resolves that title to the **local** branch using the
+  `check_branch` device-number check (or the `user.mergerfs.fullpath` xattr) from §2.2 — not
+  `readlink -f`, which can't see through mergerfs's FUSE view — and that the next play reads from
+  disk, not the tunnel.
 
 ### 2.8 Cut production over (optional, once confident)
 
