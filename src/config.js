@@ -283,6 +283,7 @@ const CONFIG = {
   BACKUP_DIR: process.env.BACKUP_DIR || '/app/data/backups',
   BACKUP_KEEP_COUNT: Number.parseInt(process.env.BACKUP_KEEP_COUNT || '14', 10),
   REQUEST_SUBSCRIBER_RETENTION_DAYS: Number.parseInt(process.env.REQUEST_SUBSCRIBER_RETENTION_DAYS || '180', 10),
+  PLEX_MEMBER_ROLE_ID: process.env.PLEX_MEMBER_ROLE_ID || null,
   NEVER_DELETE_MEDIA_IDS: process.env.NEVER_DELETE_MEDIA_IDS ? process.env.NEVER_DELETE_MEDIA_IDS.split(',').map(s => s.trim()) : [],
 };
 

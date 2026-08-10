@@ -2520,6 +2520,7 @@ client.on('guildMemberRemove', async member => {
   try {
     const result = await removePlexAccess(user.email);
     removeUser(member.id);
+    revokeMemberRole(member.id).catch(() => {});
     audit('user_unlinked', { targetDiscordId: member.id, email: user.email, removed: result.removed });
     notifyChannel('audit', `⚠️ User left Discord: <@${member.id}> (${user.email}). Plex removed: ${result.removed ? 'yes' : 'no'}`);
   } catch (err) {
@@ -2868,6 +2869,64 @@ async function handleDownloadCommand(interaction) {
   await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
+// Keeps a Discord role in sync with actual Plex access — gated entirely on PLEX_MEMBER_ROLE_ID
+// so it's a no-op for deployments that haven't set one up. discord_id values here are sometimes
+// synthetic (plex_<id> rows for Plex friends never linked to Discord); isSnowflake filters those
+// out before ever touching the Discord API.
+async function grantMemberRole(discordId) {
+  if (!CONFIG.PLEX_MEMBER_ROLE_ID || !isSnowflake(discordId)) return;
+  try {
+    const guild = client.guilds.cache.get(CONFIG.DISCORD_GUILD_ID);
+    const member = await guild?.members.fetch(discordId).catch(() => null);
+    if (member && !member.roles.cache.has(CONFIG.PLEX_MEMBER_ROLE_ID)) {
+      await member.roles.add(CONFIG.PLEX_MEMBER_ROLE_ID);
+    }
+  } catch (err) {
+    log.warn(`Couldn't grant member role to ${discordId}: ${err.message}`);
+  }
+}
+
+async function revokeMemberRole(discordId) {
+  if (!CONFIG.PLEX_MEMBER_ROLE_ID || !isSnowflake(discordId)) return;
+  try {
+    const guild = client.guilds.cache.get(CONFIG.DISCORD_GUILD_ID);
+    const member = await guild?.members.fetch(discordId).catch(() => null);
+    if (member && member.roles.cache.has(CONFIG.PLEX_MEMBER_ROLE_ID)) {
+      await member.roles.remove(CONFIG.PLEX_MEMBER_ROLE_ID);
+    }
+  } catch (err) {
+    log.warn(`Couldn't revoke member role from ${discordId}: ${err.message}`);
+  }
+}
+
+// Full reconciliation pass: grants the role to everyone with real access and revokes it from
+// anyone who has it but shouldn't, so drift (a role added/removed by hand, a missed edge case)
+// self-heals instead of accumulating. Fetches the whole member list once, which is fine at the
+// private-server scale this bot targets.
+async function reconcilePlexMemberRoles() {
+  if (!CONFIG.PLEX_MEMBER_ROLE_ID) return { granted: 0, revoked: 0 };
+  const guild = client.guilds.cache.get(CONFIG.DISCORD_GUILD_ID);
+  const members = await guild?.members.fetch().catch(() => null);
+  if (!members) return { granted: 0, revoked: 0 };
+  const shouldHave = new Set(
+    db.prepare('SELECT discord_id FROM users WHERE invited = 1 AND overseerr_created = 1').all()
+      .map(u => u.discord_id)
+      .filter(isSnowflake),
+  );
+  let granted = 0; let revoked = 0;
+  for (const member of members.values()) {
+    const has = member.roles.cache.has(CONFIG.PLEX_MEMBER_ROLE_ID);
+    const should = shouldHave.has(member.id);
+    try {
+      if (should && !has) { await member.roles.add(CONFIG.PLEX_MEMBER_ROLE_ID); granted++; }
+      else if (!should && has) { await member.roles.remove(CONFIG.PLEX_MEMBER_ROLE_ID); revoked++; }
+    } catch (err) {
+      log.warn(`Role reconcile failed for ${member.id}: ${err.message}`);
+    }
+  }
+  return { granted, revoked };
+}
+
 // The full Plex → Discord → Seerr chain for linking one person, shared by /link and the
 // /sync-fix links buttons. Absorbs a matching plex_ synthetic row, sends a Plex invite only if
 // they don't already have access, and reconciles Seerr: link the existing user (wiring the Discord
@@ -2908,6 +2967,7 @@ async function applyFullChainLink(discordId, email, username) {
     seerrStatus = '❌ failed — run /sync apply to retry';
   }
 
+  if (plexStatus.startsWith('✅')) grantMemberRole(discordId).catch(() => {});
   return { absorbed, plexStatus, seerrStatus };
 }
 
@@ -2938,6 +2998,7 @@ async function handleUnlinkCommand(interaction) {
   const record = getUserByDiscordId(target.id);
   if (!record) return interaction.reply({ content: '⚠️ Not in DB.', ephemeral: true });
   removeUser(target.id);
+  revokeMemberRole(target.id).catch(() => {});
   audit('user_unlinked', { actorDiscordId: interaction.user.id, targetDiscordId: target.id, email: record.email });
   await interaction.reply({ content: `✅ Removed ${target.tag} from DB. Plex access and the Seerr account were left untouched — revoke from the leave-notification button or the Plex/Seerr admin UIs if needed.`, ephemeral: true });
 }
@@ -3466,8 +3527,10 @@ async function handleSyncCommand(interaction) {
     }
   }
   const afterCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
-  audit('sync_changes_applied', { actorDiscordId: interaction.user.id, added, updated, repaired, beforeCount, afterCount });
-  await interaction.editReply(`${formatSyncPreview(preview, 'Apply completed.')}\n\nAdded to DB: ${added}\nOverseerr users created: ${updated}\nLinks repaired: ${repaired}`);
+  const roles = await reconcilePlexMemberRoles().catch(err => { log.warn(`Role reconcile failed: ${err.message}`); return { granted: 0, revoked: 0 }; });
+  audit('sync_changes_applied', { actorDiscordId: interaction.user.id, added, updated, repaired, beforeCount, afterCount, rolesGranted: roles.granted, rolesRevoked: roles.revoked });
+  const roleLine = CONFIG.PLEX_MEMBER_ROLE_ID ? `\nMember role granted: ${roles.granted}\nMember role revoked: ${roles.revoked}` : '';
+  await interaction.editReply(`${formatSyncPreview(preview, 'Apply completed.')}\n\nAdded to DB: ${added}\nOverseerr users created: ${updated}\nLinks repaired: ${repaired}${roleLine}`);
 }
 
 // Store a long canonical-email key under a short deterministic handle so it fits Discord's 100-char customId limit.
@@ -5260,6 +5323,7 @@ async function handleButton(interaction) {
     let plexStatus = 'failed'; let overseerrStatus = 'failed'; let plexOk = false;
     try { const result = await inviteUserToPlex(user.email, { homeServer: homeServerFor(targetDiscordId) }); plexOk = result.successCount > 0; if (plexOk) markUserInvited(targetDiscordId); plexStatus = `ok (${result.successCount}/${result.total})`; } catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId }); }
     try { const du = await client.users.fetch(targetDiscordId); const oid = await createOverseerrUser(user.email, targetDiscordId, du.username); markOverseerrCreated(targetDiscordId, oid); overseerrStatus = `ok (${oid})`; } catch (err) { audit('external_api_error', { provider: 'overseerr', error: err.message, targetDiscordId }); }
+    if (plexOk) grantMemberRole(targetDiscordId).catch(() => {});
     audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: 'plex_approve' });
     // The welcome DM promises a confirmation — deliver it.
     await dmUser(targetDiscordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
@@ -5456,6 +5520,7 @@ async function handleButton(interaction) {
     try { const r = await removePlexAccess(user.email); removed = r.removed; }
     catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId: discordId }); }
     removeUser(discordId);
+    revokeMemberRole(discordId).catch(() => {});
     audit('user_unlinked', { actorDiscordId: interaction.user.id, targetDiscordId: discordId, email: user.email, removed, source: 'revoke_plex_button' });
     return interaction.editReply({ content: `🗑️ Revoked Plex for <@${discordId}> (${user.email}) and removed from DB. Removed: ${removed ? 'yes' : 'no'}.`, components: [] });
   }
