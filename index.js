@@ -152,7 +152,13 @@ function setPendingEmail(discordId) {
   setSetting(`pending_email:${discordId}`, '1');
 }
 function hasPendingEmail(discordId) {
-  return pendingEmailRequests.has(discordId) || !!getSetting(`pending_email:${discordId}`);
+  const row = db.prepare('SELECT updated_at FROM app_settings WHERE key = ?').get(`pending_email:${discordId}`);
+  if (!row) return false;
+  if (Date.now() - Date.parse(`${row.updated_at.replace(' ', 'T')}Z`) > CONFIG.PENDING_EMAIL_EXPIRY_DAYS * 86400000) {
+    clearPendingEmail(discordId);
+    return false;
+  }
+  return true;
 }
 function clearPendingEmail(discordId) {
   pendingEmailRequests.delete(discordId);
@@ -1969,6 +1975,14 @@ async function janitorSweep() {
       log.warn(`Log retention sweep failed: ${err.message}`);
     }
   }
+  try {
+    const age = `-${CONFIG.PENDING_EMAIL_EXPIRY_DAYS} days`;
+    const rows = db.prepare("SELECT key FROM app_settings WHERE key LIKE 'pending_email:%' AND updated_at < datetime('now', ?)").all(age);
+    for (const r of rows) clearPendingEmail(r.key.slice('pending_email:'.length));
+    if (rows.length) log.info(`Expired ${rows.length} stale pending-email onboarding flag(s) older than ${CONFIG.PENDING_EMAIL_EXPIRY_DAYS} days`);
+  } catch (err) {
+    log.warn(`Pending-email expiry sweep failed: ${err.message}`);
+  }
 }
 
 // ---- Plex Home staging worker ----
@@ -2435,6 +2449,7 @@ client.on('guildMemberAdd', async member => {
 });
 
 client.on('guildMemberRemove', async member => {
+  clearPendingEmail(member.id);
   const user = getUserByDiscordId(member.id);
   if (!user) return;
 
