@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // /request helpers (search, request-as-user, Seerr user backfill), channel routing, config
 // warnings, and Tautulli session formatting.
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const axios = require('axios');
 const express = require('express');
 const { loadSandbox } = require('./extract');
@@ -69,7 +70,7 @@ function mockSeerr() {
   });
 }
 
-(async () => {
+test('request: searchSeerr, createSeerrRequestAs, checkExistingSeerrMedia, verifySeerrRequestCreated, resolveSeerrUserId against a mock Seerr', async () => {
   const { server, state, port } = await mockSeerr();
   sandbox.CONFIG.OVERSEERR_URL = `http://127.0.0.1:${port}`;
 
@@ -154,8 +155,9 @@ function mockSeerr() {
   assert.deepStrictEqual(sandbox.markCalls, [{ discordId: '2', id: 9 }], 'backfill persisted');
   assert.strictEqual(await sandbox.run(`resolveSeerrUserId({ discord_id: '3', email: 'nobody@nowhere.io', overseerr_user_id: null })`), null, 'unknown email → null');
   server.close();
+});
 
-  // channelFor: fallback + override + deploy special case.
+test('request: channelFor fallback/override/deploy special case', () => {
   const cf = k => sandbox.run(`channelFor('${k}')`);
   for (const kind of ['requests', 'system', 'downloads', 'cleanup', 'audit', 'playback', 'admin']) {
     assert.strictEqual(cf(kind), 'ADMIN', `${kind}: falls back to admin when unset`);
@@ -166,11 +168,13 @@ function mockSeerr() {
   assert.strictEqual(cf('requests'), 'REQ', 'configured channel wins');
   assert.strictEqual(cf('deploy'), 'DEP', 'deploy sends when configured');
   assert.strictEqual(cf('cleanup'), 'ADMIN', 'other kinds still fall back');
+});
 
-  // configWarnings: quiet on a safe config, loud on risky combos. (length checks, not
-  // deepStrictEqual — vm-realm arrays have a different Array prototype than the host's)
-  // Blank WEBHOOK_SECRET/TAUTULLI_WEBHOOK_SECRET with TUNNEL_DOMAIN set is no longer a warning
-  // here — validateConfig() now refuses to start in that case, tested separately in config.test.js.
+test('request: configWarnings quiet on a safe config, loud on risky combos', () => {
+  // (length checks, not deepStrictEqual — vm-realm arrays have a different Array prototype
+  // than the host's.) Blank WEBHOOK_SECRET/TAUTULLI_WEBHOOK_SECRET with TUNNEL_DOMAIN set is
+  // no longer a warning here — validateConfig() now refuses to start in that case, tested
+  // separately in config.test.js.
   assert.strictEqual(sandbox.run('configWarnings()').length, 0, 'safe config: no warnings');
   sandbox.CONFIG.ENABLE_DELETION = true;
   sandbox.CONFIG.DELETION_DRY_RUN = false;
@@ -179,14 +183,16 @@ function mockSeerr() {
   sandbox.CONFIG.PLAYBACK_CHANNEL_ID = 'PLAY';
   const warnings = sandbox.run('configWarnings()');
   assert.strictEqual(warnings.length, 3, `all three risky combos flagged, got: ${JSON.stringify(warnings)}`);
+});
 
-  // describeSession: transcode vs direct play formatting.
+test('request: describeSession transcode vs direct play formatting', () => {
   sandbox.S = { friendly_name: 'John', full_title: 'Movie Title', video_decision: 'transcode', video_full_resolution: '4k', stream_video_full_resolution: '1080p', progress_percent: '45' };
   assert.strictEqual(sandbox.run('describeSession(S)'), '• **John** — Movie Title — 🔥 Transcoding — 4k → 1080p (45%)', 'transcode line');
   sandbox.S = { friendly_name: 'Sarah', full_title: 'Show S02E04', video_decision: 'direct play', transcode_decision: 'direct play', stream_video_full_resolution: '1080p' };
   assert.strictEqual(sandbox.run('describeSession(S)'), '• **Sarah** — Show S02E04 — ▶️ Direct Play — 1080p', 'direct play line');
+});
 
-  // Approval-gate stash: stash → take round-trip, take consumes, restash revives (failed approve).
+test('request: approval-gate stash/take/restash round-trip', () => {
   sandbox.PAYLOAD = { discordId: '123456789012345678', email: 'a@b.c', seerrUserId: 9, mediaType: 'movie', tmdbId: 603, is4k: false, label: 'The Matrix' };
   const nonce = sandbox.run('stashPendingRequest(PAYLOAD)');
   assert.match(nonce, /^[0-9a-f]{8}$/, 'stash returns an 8-hex nonce');
@@ -198,6 +204,4 @@ function mockSeerr() {
   sandbox.run(`restashPendingRequest('${nonce}', TAKEN)`);
   assert.strictEqual(sandbox.run(`takePendingRequest('${nonce}')`).label, 'The Matrix', 'restash revives the entry for retry');
   assert.strictEqual(sandbox.run(`takePendingRequest('zzzz')`), null, 'malformed nonce rejected');
-
-  console.log('ok - request-and-channels');
-})().catch(err => { console.error('FAILED request-and-channels:', err.message); process.exit(1); });
+});

@@ -3,15 +3,15 @@
 // machine (src/grab.js), plus the XML-RPC codec and bencode info-hash (src/rtorrent.js).
 // Both modules are db-free, so they're imported directly; the Prowlarr calls run against a
 // mock express server via the injectable cfg parameter.
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const crypto = require('crypto');
 const express = require('express');
 
-(async () => {
-  const { parseReleaseName, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction, grabImportTarget, findAvistazIndexer, searchAvistaz, releaseContentClaim, contentClaimsOverlap, describeContentClaim, claimCoversSeason, planSeriesGrab, describeGrabPlan } = require('../../src/grab');
-  const { serializeXmlRpcCall, parseXmlRpcResponse, computeInfoHash } = require('../../src/rtorrent');
+const { parseReleaseName, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction, grabImportTarget, findAvistazIndexer, searchAvistaz, releaseContentClaim, contentClaimsOverlap, describeContentClaim, claimCoversSeason, planSeriesGrab, describeGrabPlan } = require('../../src/grab');
+const { serializeXmlRpcCall, parseXmlRpcResponse, computeInfoHash } = require('../../src/rtorrent');
 
-  // --- Release-name parsing ---
+test('grab: parseReleaseName', () => {
   let p = parseReleaseName('My.Father.is.Strange.S01.1080p.WEB-DL.H264.AAC-AGK');
   assert.deepStrictEqual({ season: p.season, episode: p.episode, pack: p.seasonPack, res: p.resolution, src: p.source },
     { season: 1, episode: null, pack: true, res: '1080p', src: 'webdl' }, 'season pack parses');
@@ -54,8 +54,9 @@ const express = require('express');
     'an episode inside a multi-episode file is recognized as already covered');
   assert.strictEqual(parseReleaseName('Show.Name.S01E01.1080p.WEB-DL').episodeEnd, null,
     'a resolution after a single episode is not read as an episode range');
+});
 
-  // --- Scoring ---
+test('grab: scoreAvistazResult / rankAvistazResults', () => {
   const tvCtx = { title: 'My Father Is Strange', mediaType: 'tv', season: 1 };
   const mk = (title, over = {}) => ({ title, size: 38 * 1024 ** 3, seeders: 12, downloadUrl: 'http://x/dl', ...over });
   const pack1080 = scoreAvistazResult(mk('My.Father.is.Strange.S01.1080p.WEB-DL.H264.AAC-AGK'), tvCtx);
@@ -124,20 +125,23 @@ const express = require('express');
   const withHash = rankAvistazResults([mk('My.Father.is.Strange.S01.1080p.WEB-DL', { infoHash: 'abc123def' })], tvCtx);
   assert.strictEqual(withHash[0].infoHash, 'ABC123DEF', 'infoHash preserved and uppercased');
   assert.strictEqual(ranked[0].infoHash, null, 'missing infoHash is null, not undefined');
+});
 
-  // --- Import target: don't download what can never be imported ---
+test('grab: grabImportTarget (do not download what can never be imported)', () => {
   assert.strictEqual(grabImportTarget('movie', { RADARR_URL: 'http://r', SONARR_URL: '' }), 'radarr', 'movie imports via radarr');
   assert.strictEqual(grabImportTarget('movie', { RADARR_URL: '', SONARR_URL: 'http://s' }), null, 'movie without radarr refused');
   assert.strictEqual(grabImportTarget('tv', { RADARR_URL: '', SONARR_URL: 'http://s' }), 'sonarr', 'tv imports via sonarr');
   assert.strictEqual(grabImportTarget('tv', { RADARR_URL: 'http://r', SONARR_URL: '' }), null, 'tv without sonarr refused');
+});
 
-  // --- Allowance ---
+test('grab: grabAllowance', () => {
   assert.deepStrictEqual(grabAllowance(0, 4), { limited: true, remaining: 4, exhausted: false }, 'fresh day');
   assert.deepStrictEqual(grabAllowance(4, 4), { limited: true, remaining: 0, exhausted: true }, 'limit reached');
   assert.deepStrictEqual(grabAllowance(9, 4), { limited: true, remaining: 0, exhausted: true }, 'over the limit clamps to 0');
   assert.deepStrictEqual(grabAllowance(99, 0), { limited: false, remaining: null, exhausted: false }, '0 = unlimited');
+});
 
-  // --- Grab-job state machine ---
+test('grab: decideGrabJobAction state machine', () => {
   const MIN = 60000;
   const cfg = { missingAfterMinutes: 10, downloadTimeoutHours: 72 };
   const row = (over = {}) => ({ state: 'sent', sent_at: 0, ...over });
@@ -149,8 +153,9 @@ const express = require('express');
   assert.strictEqual(decideGrabJobAction(row({ state: 'downloading' }), { reachable: true, found: true, complete: true }, 5 * MIN, cfg), 'transfer', 'complete triggers the transfer');
   assert.strictEqual(decideGrabJobAction(row({ state: 'downloading' }), { reachable: true, found: true, complete: false }, 73 * 60 * MIN, cfg), 'fail_timeout', 'stuck forever times out');
   assert.strictEqual(decideGrabJobAction(row({ state: 'downloading' }), { reachable: true, found: true, complete: true }, 73 * 60 * MIN, cfg), 'transfer', 'a late completion still transfers');
+});
 
-  // --- XML-RPC codec ---
+test('grab: XML-RPC codec', () => {
   const call = serializeXmlRpcCall('load.raw_start', ['', Buffer.from('torrentbytes'), 'd.custom1.set=sonarr']);
   assert.ok(call.includes('<methodName>load.raw_start</methodName>'), 'method name serialized');
   assert.ok(call.includes(`<base64>${Buffer.from('torrentbytes').toString('base64')}</base64>`), 'buffers become base64');
@@ -164,8 +169,9 @@ const express = require('express');
     () => parseXmlRpcResponse('<methodResponse><fault><value><struct><member><name>faultCode</name><value><i8>-501</i8></value></member><member><name>faultString</name><value><string>Could not find info-hash.</string></value></member></struct></value></fault></methodResponse>'),
     err => err.fault && err.fault.faultCode === -501 && /info-hash/.test(err.fault.faultString),
     'faults throw with the parsed struct attached');
+});
 
-  // --- bencode info-hash ---
+test('grab: bencode info-hash', () => {
   // info dict placed mid-file to prove the walker skips keys before and after it.
   const infoDict = 'd6:lengthi123e4:name9:test0.mkve';
   const torrent = Buffer.from(`d8:announce13:http://a/anno4:info${infoDict}5:extra3:abce`, 'latin1');
@@ -173,8 +179,9 @@ const express = require('express');
   assert.strictEqual(computeInfoHash(torrent), expected, 'info-hash is sha1 of the raw info dict');
   assert.throws(() => computeInfoHash(Buffer.from('d3:foo3:bare')), /no info dict/, 'missing info dict throws');
   assert.throws(() => computeInfoHash(Buffer.from('<html>not a torrent</html>')), /not a bencoded/, 'HTML error pages are rejected');
+});
 
-  // --- Prowlarr calls against a mock server ---
+test('grab: Prowlarr calls against a mock server', async () => {
   const app = express();
   const seen = { searches: [] };
   app.get('/api/v1/indexer', (req, res) => res.json([{ id: 3, name: 'Nyaa' }, { id: 7, name: 'AvistaZ (API)' }]));
@@ -190,8 +197,9 @@ const express = require('express');
   assert.strictEqual(seen.searches[0].categories, '5000', 'tv searches use the TV category');
 
   server.close();
+});
 
-  // --- Content-identity dedupe (same episode/pack, different release/encoding) ---
+test('grab: content-identity dedupe (same episode/pack, different release/encoding)', () => {
   const overlap = (a, b) => contentClaimsOverlap(releaseContentClaim(a), releaseContentClaim(b));
 
   // Same season pack, different encoding/group/size → duplicate.
@@ -220,8 +228,9 @@ const express = require('express');
   assert.strictEqual(describeContentClaim(releaseContentClaim('Some.Show.S02E05.720p')), 'S02E05', 'episode label');
   assert.strictEqual(describeContentClaim(releaseContentClaim('Some.Show.S01.1080p')), 'S01', 'season label');
   assert.strictEqual(describeContentClaim(releaseContentClaim('Old.Drama.Complete.Series.1080p')), 'the complete series', 'complete-series label');
+});
 
-  // --- Whole-series planning (planSeriesGrab / describeGrabPlan) ---
+test('grab: whole-series planning (planSeriesGrab / describeGrabPlan)', () => {
   // The point of the feature: one search, one click, every episode AvistaZ actually has.
   const plan = (titles, opts) => planSeriesGrab(
     titles.map(([releaseTitle, confidence]) => ({ releaseTitle, confidence })), opts);
@@ -336,6 +345,4 @@ const express = require('express');
   assert.strictEqual(plan([['Great.Movie.2019.2160p.BluRay.REMUX', 96]]).picks.length, 0, 'movies yield no series plan');
   assert.strictEqual(planSeriesGrab([]).picks.length, 0, 'an empty result set plans nothing');
   assert.strictEqual(describeGrabPlan([]), 'this title', 'an empty plan degrades to a generic label');
-
-  console.log('ok - grab');
-})().catch(err => { console.error('FAILED grab:', err.message); process.exit(1); });
+});

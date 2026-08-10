@@ -4,11 +4,12 @@
 // of leaving Sonarr to guess from the release filename. Extracted into a vm sandbox (like
 // escalation.test.js) since requiring arr.js directly would open the real SQLite database via
 // src/db.js; normalizeTitle is the real implementation from src/grab.js (no db dependency).
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const { loadSandbox } = require('./extract');
 const { normalizeTitle } = require('../../src/grab');
 
-(async () => {
+test('sonarr-resolve: resolveSonarrSeriesIdentity tvdb/exact/alternate/ambiguous outcomes', async () => {
   const series = [
     { id: 1, title: 'Blood Vs Duty', year: 2020, tvdbId: 111, alternateTitles: [] },
     { id: 2, title: 'Full House', year: 1987, tvdbId: 222, alternateTitles: [] },
@@ -48,6 +49,4 @@ const { normalizeTitle } = require('../../src/grab');
   assert.strictEqual(r.status, 'ambiguous', 'even a single loose token-overlap hit still requires a click, never auto-selected');
   assert.strictEqual(r.series, null);
   assert.strictEqual(r.candidates[0].id, 4);
-
-  console.log('ok - sonarr-resolve');
-})().catch(err => { console.error('FAILED sonarr-resolve:', err.message); process.exit(1); });
+});

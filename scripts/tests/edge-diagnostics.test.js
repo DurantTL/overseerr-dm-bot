@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-(async () => {
+test('edge-diagnostics: runEdgeDiagnostics against a fake rclone binary', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'edge-doctor-'));
   const source = path.join(tmp, 'california');
   fs.mkdirSync(source);
@@ -35,5 +36,4 @@ else process.exitCode = 2;
   assert.ok(checks.some(c => c.name === 'Philippines free space' && /100\.0 GB free/.test(c.detail)));
   assert.ok(checks.some(c => c.name === 'Philippines cache read' && c.status === 'ok'));
   fs.rmSync(tmp, { recursive: true, force: true });
-  console.log('edge-diagnostics.test.js: all tests passed');
-})().catch(err => { console.error(err); process.exit(1); });
+});

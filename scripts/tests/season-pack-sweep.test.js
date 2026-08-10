@@ -2,7 +2,8 @@
 // The season-pack sweep as it actually ships: sweepSeasonPacks is pulled out of index.js and run
 // against stubbed Sonarr/db/Discord, so the wiring (age gate, queue skip, cooldown persistence,
 // per-run cap, notification) is covered without booting the bot or opening SQLite.
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const { loadSandbox } = require('./extract');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch } = require('../../src/season-pack');
 
@@ -66,10 +67,9 @@ function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = t
   return { sandbox, calls, recorded, notices, episodeFetches };
 }
 
-(async () => {
-  // --- The core gate: old shows get season searches, airing shows are never touched ---
-  let h = build();
-  let result = await h.sandbox.sweepSeasonPacks();
+test('season-pack-sweep: old shows get season searches, airing shows are never touched', async () => {
+  const h = build();
+  const result = await h.sandbox.sweepSeasonPacks();
   assert.deepStrictEqual(h.calls.sort(), ['1:1', '1:2', '2:1'], 'both old shows are season-searched, the airing one is not');
   assert.strictEqual(result.searched, 3, 'the sweep reports what it searched');
   assert.ok(!h.episodeFetches.includes(3), 'an airing series never costs an /episode call');
@@ -86,10 +86,11 @@ function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = t
   assert.strictEqual(h.notices.length, 1, 'one summary is posted');
   assert.strictEqual(h.notices[0].channel, 'downloads', 'the summary goes to the downloads channel');
   assert.match(h.notices[0].msg.embeds[0].description, /Winter Sonata\*\* S01 — 3 of 3/, 'the summary names the seasons searched');
+});
 
-  // --- A requested show gets packs even while it's still airing ---
+test('season-pack-sweep: a requested show gets packs even while it is still airing', async () => {
   // Most releases are an "S01" pack whatever the show's age, and somebody is waiting on this one.
-  h = build({ requestedTvdbIds: [103] });
+  let h = build({ requestedTvdbIds: [103] });
   await h.sandbox.sweepSeasonPacks();
   assert.deepStrictEqual(h.calls.sort(), ['1:1', '1:2', '2:1', '3:1'], 'the requested airing show is season-searched too');
   assert.match(h.notices[0].msg.embeds[0].description, /Airing Now\*\* S01 .*_\(requested\)_/, 'the summary says why an airing show was included');
@@ -103,32 +104,37 @@ function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = t
   h = build({ requestedTvdbIds: [104] });
   await h.sandbox.sweepSeasonPacks();
   assert.ok(!h.episodeFetches.includes(4), 'being requested does not override the has-everything filter');
+});
 
-  // --- A season already downloading is left alone rather than raced ---
-  h = build({ queue: [{ source: { kind: 'tv' }, seriesId: 1, seasonNumber: 1, episodeNumber: 2 }] });
+test('season-pack-sweep: a season already downloading is left alone rather than raced', async () => {
+  const h = build({ queue: [{ source: { kind: 'tv' }, seriesId: 1, seasonNumber: 1, episodeNumber: 2 }] });
   await h.sandbox.sweepSeasonPacks();
   assert.deepStrictEqual(h.calls.sort(), ['1:2', '2:1'], 'a season with a queue item is not re-searched');
+});
 
-  // --- Cooldown: a recently-searched season sits out, an expired one comes back ---
-  h = build({ searchedAt: { 1: { 1: NOW - 2 * 3600000, 2: NOW - 30 * 3600000 } } });
+test('season-pack-sweep: cooldown — a recently-searched season sits out, an expired one comes back', async () => {
+  const h = build({ searchedAt: { 1: { 1: NOW - 2 * 3600000, 2: NOW - 30 * 3600000 } } });
   await h.sandbox.sweepSeasonPacks();
   assert.deepStrictEqual(h.calls.sort(), ['1:2', '2:1'], 'only the season past its cooldown is re-searched');
+});
 
-  // --- The per-run cap bounds a first pass over a large library ---
-  h = build({ maxPerRun: 2 });
-  result = await h.sandbox.sweepSeasonPacks();
+test('season-pack-sweep: the per-run cap bounds a first pass over a large library', async () => {
+  const h = build({ maxPerRun: 2 });
+  const result = await h.sandbox.sweepSeasonPacks();
   assert.strictEqual(h.calls.length, 2, 'the per-run cap stops the sweep');
   assert.strictEqual(result.searched, 2, 'the capped run reports only what it did');
   assert.strictEqual(h.recorded.length, 2, 'nothing beyond the cap is marked as searched');
+});
 
-  // --- Off means off: no Sonarr calls at all ---
-  h = build({ seasonPackFirst: false });
+test('season-pack-sweep: off means off — no Sonarr calls at all', async () => {
+  const h = build({ seasonPackFirst: false });
   await h.sandbox.sweepSeasonPacks();
   assert.strictEqual(h.calls.length, 0, 'SEASON_PACK_FIRST=false disables the sweep completely');
   assert.strictEqual(h.notices.length, 0, 'and posts nothing');
+});
 
-  // --- A Sonarr failure on one series must not abort the rest of the sweep ---
-  h = build();
+test('season-pack-sweep: a Sonarr failure on one series must not abort the rest of the sweep', async () => {
+  const h = build();
   let first = true;
   h.sandbox.triggerSeasonSearch = async (seriesId, seasonNumber) => {
     if (first) { first = false; throw new Error('sonarr 500'); }
@@ -137,6 +143,4 @@ function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = t
   await h.sandbox.sweepSeasonPacks();
   assert.deepStrictEqual(h.calls.sort(), ['1:2', '2:1'], 'a failed season search is skipped, the rest continue');
   assert.strictEqual(h.recorded.length, 2, 'a failed search is not recorded, so it retries next sweep instead of sitting out the cooldown');
-
-  console.log('ok - season-pack sweep');
-})().catch(err => { console.error('FAILED season-pack sweep:', err.message); process.exit(1); });
+});

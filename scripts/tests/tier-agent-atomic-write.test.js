@@ -3,14 +3,15 @@
 // directory, fsynced, then renamed into place — never a truncate-in-place that a crash or a
 // concurrent Syncthing rescan could observe half-written. Directly exercises the helper (no
 // need to boot the full runOnce cycle for this).
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
 const { writeStignore } = require('../../agent/agent');
 
-(async () => {
+test('tier-agent: writeStignore writes atomically and leaves no temp-file residue', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tier-agent-atomic-'));
   const ctx = { dryRun: false, log: () => {} };
   const fp = { folderRoot: tmp, drop: [{ relPath: 'Old Movie (2001)' }], stignore: '/Old Movie (2001)\n' };
@@ -52,5 +53,4 @@ const { writeStignore } = require('../../agent/agent');
   }
 
   fs.rmSync(tmp, { recursive: true, force: true });
-  console.log('tier-agent-atomic-write.test.js: all assertions passed');
-})().catch(err => { console.error(err); process.exit(1); });
+});

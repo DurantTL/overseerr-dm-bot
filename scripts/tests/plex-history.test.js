@@ -3,7 +3,8 @@
 // (/status/sessions/history/all) — token auth, pagination, per-title aggregation with
 // episode→series collapse, and gatherNodeHistories routing (plex vs tautulli vs atime,
 // unreachable ⇒ empty demand).
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const express = require('express');
 
 const { fetchPlexHistory, gatherNodeHistories } = require('../../src/tier');
@@ -13,7 +14,7 @@ const nowSec = Math.floor(Date.now() / 1000);
 const movie = (key, title, account, daysAgo) => ({ type: 'movie', ratingKey: String(key), title, accountID: account, viewedAt: nowSec - daysAgo * DAY });
 const episode = (gpKey, gpTitle, account, daysAgo) => ({ type: 'episode', ratingKey: String(Math.random()), grandparentKey: `/library/metadata/${gpKey}`, grandparentTitle: gpTitle, accountID: account, viewedAt: nowSec - daysAgo * DAY });
 
-(async () => {
+test('plex-history: fetchPlexHistory pagination/aggregation and gatherNodeHistories routing', async () => {
   const rows = [
     movie(101, 'The Matrix', 1, 5),
     movie(101, 'The Matrix', 2, 2),
@@ -68,5 +69,4 @@ const episode = (gpKey, gpTitle, account, daysAgo) => ({ type: 'episode', rating
   assert.deepStrictEqual(histories.lru, [], 'atime node never calls the PMS');
 
   srv.close();
-  console.log('plex-history.test.js: all assertions passed');
-})().catch(err => { console.error(err); process.exit(1); });
+});

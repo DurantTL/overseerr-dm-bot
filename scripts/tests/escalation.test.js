@@ -2,22 +2,22 @@
 // AvistaZ escalation: the pure state machine (src/escalation.js, imported directly) and the
 // arr tag/search helpers (extracted from src/arr.js and run against a mock Radarr/Sonarr,
 // since requiring arr.js directly would open the real SQLite database via src/db.js).
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const express = require('express');
 const axios = require('axios');
 const { loadSandbox } = require('./extract');
 
-(async () => {
-  // --- Pure state machine ---
-  const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('../../src/escalation');
-  const MIN = 60000;
-  const HOUR = 3600000;
-  const cfg = { delayMinutes: 45, maxAgeDays: 14 };
-  // Auto-escalation is TV-only and Asian-only, so the baseline row/facts here are an
-  // obviously-Asian show — the case where 'escalate' is still the right answer.
-  const row = (over = {}) => ({ approved_at: 0, pre_authorized: 0, media_type: 'tv', ...over });
-  const noFacts = { isAvailable: false, hasQueueItem: false, hasFile: false, avistazFit: 'asian' };
+const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('../../src/escalation');
+const MIN = 60000;
+const HOUR = 3600000;
+const cfg = { delayMinutes: 45, maxAgeDays: 14 };
+// Auto-escalation is TV-only and Asian-only, so the baseline row/facts here are an
+// obviously-Asian show — the case where 'escalate' is still the right answer.
+const row = (over = {}) => ({ approved_at: 0, pre_authorized: 0, media_type: 'tv', ...over });
+const noFacts = { isAvailable: false, hasQueueItem: false, hasFile: false, avistazFit: 'asian' };
 
+test('escalation: decideEscalationAction state machine', () => {
   assert.strictEqual(decideEscalationAction(row(), { ...noFacts, isAvailable: true }, 2 * HOUR, cfg), 'resolve', 'available resolves');
   assert.strictEqual(decideEscalationAction(row(), { ...noFacts, hasQueueItem: true }, 2 * HOUR, cfg), 'resolve', 'queue item resolves');
   assert.strictEqual(decideEscalationAction(row(), { ...noFacts, hasFile: true }, 2 * HOUR, cfg), 'resolve', 'file on disk resolves');
@@ -35,7 +35,9 @@ const { loadSandbox } = require('./extract');
   assert.strictEqual(decideEscalationAction(row({ arr_missing_alerted: 1 }), { ...noFacts, inArr: false }, 46 * MIN, cfg), 'wait', 'already-alerted missing row holds');
   assert.strictEqual(decideEscalationAction(row({ pre_authorized: 1 }), { ...noFacts, inArr: null }, 46 * MIN, cfg), 'escalate', 'unknown arr state never blocks escalation');
   assert.strictEqual(decideEscalationAction(row(), { ...noFacts, inArr: false }, 15 * 24 * HOUR, cfg), 'expire', 'expiry beats the missing-arr alert');
+});
 
+test('escalation: autoEscalateAllowed gate, and the same rules through the state machine', () => {
   // Auto-escalation gate: AvistaZ only carries Asian movies and TV, so firing without a human
   // is limited to shows that obviously belong there. Everything else falls back to the button.
   assert.strictEqual(autoEscalateAllowed({ media_type: 'tv' }, 'asian'), true, 'asian show auto-escalates');
@@ -56,8 +58,9 @@ const { loadSandbox } = require('./extract');
   assert.strictEqual(decideEscalationAction(row(), noFacts, past, cfg), 'alert', 'asian show without pre-auth still alerts');
   assert.strictEqual(decideEscalationAction(preAuth({ media_type: 'movie' }), { ...noFacts, hasFile: true }, past, cfg), 'resolve', 'resolve still beats the gate');
   assert.strictEqual(decideEscalationAction(preAuth({ media_type: 'movie' }), noFacts, 15 * 24 * HOUR, cfg), 'expire', 'expiry still beats the gate');
+});
 
-  // --- Origin assessment (src/asian.js) ---
+test('escalation: assessAsianOrigin (src/asian.js)', () => {
   const { assessAsianOrigin } = require('../../src/asian');
   const verdict = meta => assessAsianOrigin(meta).verdict;
   assert.strictEqual(verdict({ originalLanguage: 'ko', originCountry: ['KR'] }), 'asian', 'korean show is asian');
@@ -77,7 +80,9 @@ const { loadSandbox } = require('./extract');
   // Nothing usable claims nothing — a Seerr outage must not read as "definitely not Asian".
   assert.strictEqual(verdict({}), 'unknown', 'empty record is unknown');
   assert.strictEqual(verdict({ originCountry: [], productionCountries: [] }), 'unknown', 'empty lists are unknown');
+});
 
+test('escalation: escalationEligible', () => {
   const eCfg = { enabled: true, radarrConfigured: true, sonarrConfigured: true };
   assert.strictEqual(escalationEligible({ mediaType: 'movie', is4k: false }, eCfg), true, 'movie eligible');
   assert.strictEqual(escalationEligible({ mediaType: 'tv', is4k: false }, eCfg), true, 'tv eligible');
@@ -85,8 +90,9 @@ const { loadSandbox } = require('./extract');
   assert.strictEqual(escalationEligible({ mediaType: 'movie', is4k: false }, { ...eCfg, enabled: false }), false, 'disabled never eligible');
   assert.strictEqual(escalationEligible({ mediaType: 'movie', is4k: false }, { ...eCfg, radarrConfigured: false }), false, 'movie needs radarr');
   assert.strictEqual(escalationEligible({ mediaType: 'tv', is4k: false }, { ...eCfg, sonarrConfigured: false }), false, 'tv needs sonarr');
+});
 
-  // --- arr helpers against a mock Radarr/Sonarr ---
+test('escalation: arr tag/search helpers against a mock Radarr/Sonarr', async () => {
   const app = express();
   app.use(express.json());
   const state = { tags: [{ id: 7, label: 'avistaz' }], movieEditor: [], seriesEditor: [], commands: [], movies: [], series: [], movieAdds: [], seriesAdds: [] };
@@ -217,5 +223,4 @@ const { loadSandbox } = require('./extract');
   assert.strictEqual(mapped.strategy, 'ordinal', 'duplicate episode numbers fall back to ordinal (never two files on one episode)');
 
   server.close();
-  console.log('ok - escalation');
-})().catch(err => { console.error('FAILED escalation:', err.message); process.exit(1); });
+});

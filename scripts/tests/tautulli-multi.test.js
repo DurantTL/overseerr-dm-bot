@@ -2,7 +2,8 @@
 // Multi-Tautulli refactor: the default endpoint binding keeps /watching's calls on the main
 // server, explicit endpoints reach per-node instances, fetchHistory aggregates and paginates,
 // and an unreachable Tautulli yields an empty history (never a failed plan).
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const express = require('express');
 
 // The main-server binding comes from CONFIG, which reads env at require time — set it before
@@ -39,7 +40,7 @@ function tautulliMock(name, historyRows) {
 const movieRow = (key, title, user, daysAgo) => ({ media_type: 'movie', rating_key: key, title, user_id: user, date: nowSec - daysAgo * DAY });
 const epRow = (gpKey, gpTitle, user, daysAgo) => ({ media_type: 'episode', rating_key: Math.random(), grandparent_rating_key: gpKey, grandparent_title: gpTitle, user_id: user, date: nowSec - daysAgo * DAY });
 
-(async () => {
+test('tautulli-multi: per-node endpoint binding, history aggregation/pagination, gatherNodeHistories', async () => {
   // Node B's history: >1000 rows so fetchHistory has to paginate, plus aggregation fodder.
   const bulk = Array.from({ length: 1001 }, (_, i) => movieRow(7, 'Padding Movie', 1, 80 - (i % 3)));
   const bRows = [
@@ -111,5 +112,4 @@ const epRow = (gpKey, gpTitle, user, daysAgo) => ({ media_type: 'episode', ratin
 
   mainSrv.close();
   nodeSrv.close();
-  console.log('tautulli-multi.test.js: all assertions passed');
-})().catch(err => { console.error(err); process.exit(1); });
+});
