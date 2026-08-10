@@ -164,6 +164,20 @@ async function checkExistingSeerrMedia(mediaType, tmdbId, is4k) {
   return allAvailable ? 'already fully available on Plex' : 'already requested — every season is on Plex or already on its way';
 }
 
+// Overseerr's internal Media.id (distinct from tmdbId) — required by the issue-report endpoint.
+async function fetchSeerrMediaId(mediaType, tmdbId) {
+  try {
+    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/${mediaType}/${tmdbId}`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY }, timeout: 8000 });
+    return res.data?.mediaInfo?.id ?? null;
+  } catch (_e) { return null; }
+}
+
+// issueType: 1 video, 2 audio, 3 subtitle, 4 other (Overseerr's IssueType enum).
+async function createSeerrIssue(mediaId, issueType, message, userId) {
+  const res = await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/issue`, { mediaId, issueType, message, userId }, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
+  return res.data;
+}
+
 // tvdb id for a TMDB show — needed to find the series in Sonarr (which keys off tvdb). The
 // escalation watch stores it when the request-create response carries it; this is the backfill
 // for rows where it didn't. Fails open (null): the sweep just retries next pass.
@@ -315,4 +329,4 @@ async function fetchSeerrRequests() {
   return requests;
 }
 
-module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers, fetchSeerrRequests };
+module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers, fetchSeerrRequests };

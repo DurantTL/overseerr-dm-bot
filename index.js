@@ -30,7 +30,7 @@ const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTy
 const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
-const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
+const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('./src/escalation');
@@ -2281,6 +2281,11 @@ const slashCommands = [
   new SlashCommandBuilder().setName('queue').setDescription('Show what is downloading right now'),
   new SlashCommandBuilder().setName('request-status').setDescription('Check why a requested movie or show is not ready yet').addStringOption(o => o.setName('title').setDescription('Start typing — matches your recent requests').setRequired(true).setAutocomplete(true)),
   new SlashCommandBuilder().setName('request-cancel').setDescription('Withdraw one of your own pending or awaiting-download requests').addStringOption(o => o.setName('title').setDescription('Start typing — matches your cancelable requests').setRequired(true).setAutocomplete(true)),
+  new SlashCommandBuilder().setName('report').setDescription('Report a problem with something already on Plex (wrong subtitles, bad audio, etc.)')
+    .addStringOption(o => o.setName('title').setDescription('Start typing — matches available media').setRequired(true).setAutocomplete(true))
+    .addStringOption(o => o.setName('type').setDescription('What kind of problem').setRequired(true)
+      .addChoices({ name: 'Video', value: '1' }, { name: 'Audio', value: '2' }, { name: 'Subtitle', value: '3' }, { name: 'Other', value: '4' }))
+    .addStringOption(o => o.setName('details').setDescription('Describe the problem').setRequired(true)),
   new SlashCommandBuilder().setName('watching').setDescription('Show current Plex playback (via Tautulli)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('indexers').setDescription('Prowlarr indexer + Byparr health').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('debrid').setDescription('Premiumize account + transfer status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -2711,6 +2716,26 @@ async function handleAutocomplete(interaction) {
     return interaction.respond(choices).catch(() => {});
   }
 
+  // /report title: — only media that's actually available, since a playback/subtitle/audio
+  // problem can't exist before then. Anyone can report on anything available (not scoped to
+  // their own requests — the person who noticed the bad audio may not be who requested it).
+  if (interaction.commandName === 'report') {
+    const focusedTitle = interaction.options.getFocused(true);
+    if (focusedTitle.name !== 'title') return interaction.respond([]).catch(() => {});
+    const q = String(focusedTitle.value || '').toLowerCase().trim();
+    const rows = db.prepare("SELECT * FROM requests WHERE status = 'available' ORDER BY id DESC LIMIT 500").all();
+    const seen = new Set();
+    const choices = [];
+    for (const r of rows) {
+      if (q && !String(r.title || '').toLowerCase().includes(q)) continue;
+      if (seen.has(r.media_id)) continue;
+      seen.add(r.media_id);
+      choices.push({ name: r.title.slice(0, 100), value: String(r.media_id).slice(0, 100) });
+      if (choices.length >= 25) break;
+    }
+    return interaction.respond(choices).catch(() => {});
+  }
+
   // /stage title: — the whole library (anything with a file). /pin and /unpin match only what's
   // currently cached. The library fetch is raced against Discord's deadline: a cold cache may
   // yield no suggestions once, then it's warm.
@@ -2800,6 +2825,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'queue') return handleQueueCommand(interaction);
   if (n === 'request-status') return handleRequestStatusCommand(interaction);
   if (n === 'request-cancel') return handleRequestCancelCommand(interaction);
+  if (n === 'report') return handleReportCommand(interaction);
   if (n === 'watching') return handleWatchingCommand(interaction);
   if (n === 'indexers') return handleIndexersCommand(interaction);
   if (n === 'debrid') return handleDebridCommand(interaction);
@@ -4081,6 +4107,53 @@ async function handleRequestCancelCommand(interaction) {
   return interaction.editReply(`↩️ Cancelled **${row.title}**${row.is_4k ? ' (4K)' : ''}.`);
 }
 
+const ISSUE_TYPE_LABELS = { 1: 'Video', 2: 'Audio', 3: 'Subtitle', 4: 'Other' };
+
+// /report — files a problem with existing media straight into Seerr's own Issues feature
+// (POST /api/v1/issue), so it lands where the admin already manages media instead of as
+// unstructured Discord chatter they have to notice and remember.
+async function handleReportCommand(interaction) {
+  const linked = getUserByDiscordId(interaction.user.id);
+  if (!linked) return interaction.reply({ content: '❌ You need to be linked first — ask an admin to run `/link` for you.', ephemeral: true });
+  await interaction.deferReply({ ephemeral: true });
+
+  const mediaId = String(interaction.options.getString('title') || '').trim();
+  const issueType = Number(interaction.options.getString('type'));
+  const details = String(interaction.options.getString('details') || '').trim().slice(0, 1000);
+
+  const row = /^(tmdb|tvdb):\d+$/.test(mediaId)
+    ? db.prepare("SELECT * FROM requests WHERE media_id = ? AND status = 'available' ORDER BY id DESC LIMIT 1").get(mediaId)
+    : db.prepare("SELECT * FROM requests WHERE title LIKE ? AND status = 'available' ORDER BY id DESC LIMIT 1").get(`%${mediaId}%`);
+  if (!row) return interaction.editReply('❌ Nothing available matches that — pick a suggestion from the list.');
+
+  let seerrUserId = null;
+  try { seerrUserId = await resolveSeerrUserId(linked); } catch (_e) {}
+  if (seerrUserId == null) return interaction.editReply('❌ No Seerr account is linked to you yet — ask an admin to run `/link` for you.');
+
+  const idNum = Number(row.media_id.split(':')[1]);
+  const tmdbId = row.media_id.startsWith('tmdb:') ? idNum : await fetchSeerrTvdbId(idNum).catch(() => null);
+  const seerrMediaId = tmdbId != null ? await fetchSeerrMediaId(row.media_type, tmdbId) : null;
+  if (seerrMediaId == null) {
+    return interaction.editReply(`❌ Couldn't find **${row.title}** in Seerr to attach the report to. Let an admin know directly.`);
+  }
+
+  try {
+    await createSeerrIssue(seerrMediaId, issueType, details, seerrUserId);
+  } catch (err) {
+    audit('external_api_error', { actorDiscordId: interaction.user.id, provider: 'overseerr', action: 'create_issue', error: err.message, mediaId: row.media_id });
+    return interaction.editReply(`❌ Couldn't file the report: ${err.response?.data?.message || err.message}`);
+  }
+  audit('issue_reported', { actorDiscordId: interaction.user.id, title: row.title, mediaId: row.media_id, issueType: ISSUE_TYPE_LABELS[issueType] });
+  notifyChannel('requests', { embeds: [brandedEmbed(COLORS.WARN)
+    .setTitle(`🛠️ Issue Reported — ${row.title}`)
+    .setDescription(details)
+    .addFields(
+      { name: 'Reported by', value: `<@${interaction.user.id}>`, inline: true },
+      { name: 'Type', value: ISSUE_TYPE_LABELS[issueType], inline: true },
+    )] });
+  return interaction.editReply(`✅ Reported a **${ISSUE_TYPE_LABELS[issueType].toLowerCase()}** issue with **${row.title}** — an admin will take a look.`);
+}
+
 // /watching — live Plex sessions via Tautulli.
 async function handleWatchingCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
@@ -4756,6 +4829,7 @@ async function handleHelpCommand(interaction) {
     '`/request` — Search and request a movie or show; an admin approves it in Discord',
     '`/request-status` — Check why a request isn\'t ready yet',
     '`/request-cancel` — Withdraw one of your own pending or awaiting-download requests',
+    '`/report` — Report a problem with something already on Plex (wrong subtitles, bad audio, etc.)',
     '`/download` — Get a secure download link for a movie or episode',
     '`/me` — Show your linked profile and access status',
     '`/myrequests` — Show your recent Seerr requests',
