@@ -1956,13 +1956,17 @@ async function janitorSweep() {
     }
   }
   if (CONFIG.LOG_RETENTION_DAYS > 0) {
-    const last = Number(getSetting('log_retention_last_run') || '0');
-    if (Date.now() - last >= 24 * 3600000) {
-      const age = `-${CONFIG.LOG_RETENTION_DAYS} days`;
-      const auditDeleted = db.prepare("DELETE FROM audit_log WHERE created_at < datetime('now', ?)").run(age).changes;
-      const accessDeleted = db.prepare("DELETE FROM download_access_log WHERE created_at < datetime('now', ?)").run(age).changes;
-      setSetting('log_retention_last_run', String(Date.now()));
-      if (auditDeleted || accessDeleted) log.info(`Pruned ${auditDeleted} audit and ${accessDeleted} download-access log row(s) older than ${CONFIG.LOG_RETENTION_DAYS} days`);
+    try {
+      const last = Number(getSetting('log_retention_last_run') || '0');
+      if (Date.now() - last >= 24 * 3600000) {
+        const age = `-${CONFIG.LOG_RETENTION_DAYS} days`;
+        const auditDeleted = db.prepare("DELETE FROM audit_log WHERE created_at < datetime('now', ?)").run(age).changes;
+        const accessDeleted = db.prepare("DELETE FROM download_access_log WHERE created_at < datetime('now', ?)").run(age).changes;
+        setSetting('log_retention_last_run', String(Date.now()));
+        if (auditDeleted || accessDeleted) log.info(`Pruned ${auditDeleted} audit and ${accessDeleted} download-access log row(s) older than ${CONFIG.LOG_RETENTION_DAYS} days`);
+      }
+    } catch (err) {
+      log.warn(`Log retention sweep failed: ${err.message}`);
     }
   }
 }
@@ -2379,7 +2383,7 @@ client.once('ready', async () => {
     log.ok(`rTorrent adoption discovery running every ${CONFIG.RTORRENT_ADOPT_CHECK_MINUTES} min (labels: ${CONFIG.RTORRENT_ADOPT_LABELS.join(', ') || 'none'}, auto: ${CONFIG.RTORRENT_ADOPT_AUTO ? 'on' : 'off'})`);
   }
   if (CONFIG.JANITOR_CHECK_MINUTES > 0) {
-    setInterval(() => janitorSweep(), CONFIG.JANITOR_CHECK_MINUTES * 60000).unref();
+    setInterval(() => janitorSweep().catch(err => log.warn(`Janitor sweep failed: ${err.message}`)), CONFIG.JANITOR_CHECK_MINUTES * 60000).unref();
     log.ok(`Janitor running every ${CONFIG.JANITOR_CHECK_MINUTES} min (grace deletes: ${CONFIG.ENABLE_DELETION ? 'on' : 'off'}, retention: ${CONFIG.RETENTION_ENFORCEMENT ? 'on' : 'off'}, dry-run: ${CONFIG.DELETION_DRY_RUN ? 'on' : 'off'})`);
   }
   if (tautulliConfigured() && CONFIG.PLAYBACK_CHECK_MINUTES > 0) {
@@ -6699,6 +6703,17 @@ async function handlePhWatchedEvent({ event, mediaId, title, mediaType, watcherE
     .setDescription(`Looks like you finished **${staged.title || title}**. Free up ${fmtSpace(staged.size_bytes)} of cache space?\n\nEither way the Main copies are untouched — \`/stage\` brings it back anytime.`)], components: [row] });
   audit('evict_prompt_sent', { mediaId, title: staged.title || title, targetDiscordId: targetId });
 }
+
+process.on('unhandledRejection', (reason) => {
+  const message = reason instanceof Error ? reason.stack || reason.message : String(reason);
+  log.error(`Unhandled rejection: ${message}`);
+  try { audit('unhandled_rejection', { error: reason instanceof Error ? reason.message : String(reason) }); } catch (_e) {}
+});
+
+process.on('uncaughtException', (err) => {
+  log.error(`Uncaught exception: ${err.stack || err.message}`);
+  try { audit('uncaught_exception', { error: err.message }); } catch (_e) {}
+});
 
 function shutdown(sig) {
   log.info(`Received ${sig}, shutting down`);
