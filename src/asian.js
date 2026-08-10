@@ -36,6 +36,7 @@ const ASIAN_COUNTRIES = new Set([
 // strong evidence on its own — it survives a record with no language or country at all.
 // Urdu's Arabic script is deliberately absent — it can't be told apart from Arabic or Persian,
 // which AvistaZ doesn't carry; the 'ur' language code covers those titles instead.
+// eslint-disable-next-line no-misleading-character-class -- adjacent Tamil/Telugu block boundary, not a combining sequence
 const ASIAN_SCRIPT = new RegExp('['
   + '\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff'  // kana, CJK ideographs
   + '\\u1100-\\u11ff\\uac00-\\ud7af'                                // hangul
