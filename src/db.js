@@ -94,6 +94,16 @@ function runMigrations() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    -- Always keyed tmdb:<id> regardless of media type (unlike requests.media_id, which is
+    -- rekeyed to tvdb:<id> for TV once Seerr assigns one) — tmdbId is the one identifier every
+    -- caller has up front, at request time and at webhook time alike.
+    CREATE TABLE IF NOT EXISTS request_subscribers (
+      media_id TEXT NOT NULL,
+      discord_id TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(media_id, discord_id)
+    );
+
     CREATE TABLE IF NOT EXISTS pending_deletions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       media_id TEXT NOT NULL UNIQUE,
@@ -1044,6 +1054,30 @@ function pruneWebhookEvents(retentionDays) {
   return db.prepare("DELETE FROM webhook_events WHERE created_at < datetime('now', ?)").run(`-${retentionDays} days`).changes;
 }
 
+// Registers interest in a title that's already in the pipeline under someone else's request.
+// Returns false when the caller is already subscribed (e.g. the original requester), so callers
+// can tell "you're already tracked" apart from "added, will notify" without a separate lookup.
+function addRequestSubscriber(mediaId, discordId) {
+  const result = db.prepare('INSERT OR IGNORE INTO request_subscribers (media_id, discord_id) VALUES (?, ?)').run(mediaId, discordId);
+  return result.changes > 0;
+}
+
+function listRequestSubscribers(mediaId) {
+  return db.prepare('SELECT discord_id FROM request_subscribers WHERE media_id = ?').all(mediaId).map(r => r.discord_id);
+}
+
+function countRequestSubscribers(mediaId) {
+  return db.prepare('SELECT COUNT(*) AS c FROM request_subscribers WHERE media_id = ?').get(mediaId).c;
+}
+
+function clearRequestSubscribers(mediaId) {
+  return db.prepare('DELETE FROM request_subscribers WHERE media_id = ?').run(mediaId).changes;
+}
+
+function pruneRequestSubscribers(retentionDays) {
+  return db.prepare("DELETE FROM request_subscribers WHERE created_at < datetime('now', ?)").run(`-${retentionDays} days`).changes;
+}
+
 function getSetting(key) {
   const row = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key);
   return row?.value || null;
@@ -1100,5 +1134,5 @@ function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k) {
   return null;
 }
 
-module.exports = { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, pruneWebhookEvents };
+module.exports = { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;

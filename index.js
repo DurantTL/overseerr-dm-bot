@@ -27,7 +27,7 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, pruneWebhookEvents } = require('./src/db');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
@@ -243,13 +243,14 @@ function canEscalate({ mediaType, is4k }) {
 }
 
 // Post the Approve/Deny gate embed for a stashed /request to the requests channel.
-async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discordId, email, seerrUserId }) {
+async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discordId, email, seerrUserId, tmdbId }) {
   const channel = await safeGetChannel(channelFor('requests'));
   if (!channel) return false;
   const azEligible = canEscalate({ mediaType, is4k });
   let quota = null;
   try { quota = await fetchUserQuota(seerrUserId); } catch (_e) {}
   const quotaText = quotaLine(quota, mediaType);
+  const subscriberCount = tmdbId != null ? countRequestSubscribers(`tmdb:${tmdbId}`) : 0;
   const embed = brandedEmbed(COLORS.INFO)
     .setTitle(`${mediaTypeEmoji(mediaType, is4k)} New Request`)
     .setDescription(`**${label}**${azEligible ? `\n-# "+ AvistaZ Fallback" pre-authorizes the private tracker if nothing public shows up within ${escalationDelayLabel()} — it then ${preAuthOutcomeLabel(mediaType)}.` : ''}`)
@@ -258,6 +259,7 @@ async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discord
       { name: 'Type', value: mediaTypeLabel(mediaType, is4k), inline: true },
       { name: 'Status', value: '⏳ Awaiting approval', inline: true },
       ...(quotaText ? [{ name: 'Requester quota', value: quotaText, inline: false }] : []),
+      ...(subscriberCount > 0 ? [{ name: 'Also wanted by', value: `${subscriberCount} other member${subscriberCount === 1 ? '' : 's'}`, inline: false }] : []),
     )
     .setFooter({ text: 'Durant Media Server · Not sent to Seerr until approved' });
   const buttons = [
@@ -325,12 +327,17 @@ async function handleGateApprove(interaction, nonce, { azPreAuth }) {
     // leaving live buttons the admin will click forever.
     if (status === 202 || status === 409 || /already (exists|available|requested)/i.test(seerrMessage || '')) {
       upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
+      // Another requester beat this one into Seerr between /request and this approval — subscribe
+      // them so the eventual MEDIA_AVAILABLE webhook DMs them too, instead of a dead-end DM that
+      // never promises a follow-up.
+      const added = addRequestSubscriber(`tmdb:${pending.tmdbId}`, pending.discordId);
+      audit('request_subscribed', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label, tmdbId: pending.tmdbId, is4k: pending.is4k, stage: 'gate_approve_collision' });
       await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.INFO)
         .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Already Requested`)
-        .setDescription(`Good news — **${pending.label}** is already in the system (requested earlier or already available), so there was nothing new to send. Check Plex, or track it with \`/request-status\`.`)] });
+        .setDescription(`Good news — **${pending.label}** is already in the system (requested earlier or already available).${added ? ' I\'ll DM you when it lands.' : ''} Check Plex, or track it with \`/request-status\`.`)] });
       return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
         .setTitle(`ℹ️ Already in Seerr — ${pending.label}`)
-        .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}>, but Seerr says: *${seerrMessage || err.message}*. Nothing new was created — it's already requested or available.`)], components: [] });
+        .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}>, but Seerr says: *${seerrMessage || err.message}*. Nothing new was created — it's already requested or available. <@${pending.discordId}> is now subscribed to the availability DM.`)], components: [] });
     }
     // Anything else (network, 5xx) is retryable: put the stash back so the button still works.
     restashPendingRequest(nonce, pending);
@@ -1995,6 +2002,15 @@ async function janitorSweep() {
   } catch (err) {
     log.warn(`Webhook event prune sweep failed: ${err.message}`);
   }
+  try {
+    // Safety net: subscribers are normally cleared the moment their title becomes available or
+    // gets declined. This only catches rows that never reach either outcome (e.g. the request
+    // stalls forever upstream).
+    const pruned = pruneRequestSubscribers(CONFIG.REQUEST_SUBSCRIBER_RETENTION_DAYS);
+    if (pruned) log.info(`Pruned ${pruned} stale request-subscriber row(s) older than ${CONFIG.REQUEST_SUBSCRIBER_RETENTION_DAYS} days`);
+  } catch (err) {
+    log.warn(`Request-subscriber prune sweep failed: ${err.message}`);
+  }
 }
 
 // better-sqlite3's db.backup() is online and WAL-safe, so this runs without pausing the bot.
@@ -2960,13 +2976,28 @@ async function handleRequestCommand(interaction) {
   // itself (requested there directly, already downloading, or already on Plex).
   const pendingDupe = db.prepare("SELECT * FROM requests WHERE media_id = ? AND is_4k = ? AND status = 'pending' LIMIT 1").get(`tmdb:${tmdbId}`, is4k ? 1 : 0);
   if (pendingDupe) {
-    const who = pendingDupe.requested_by_discord_id === interaction.user.id ? 'you' : 'someone else';
-    return interaction.editReply(`⏳ **${label}**${is4k ? ' (4K)' : ''} was already requested by ${who} and is waiting for admin approval — no need to request it again.`);
+    if (pendingDupe.requested_by_discord_id === interaction.user.id) {
+      return interaction.editReply(`⏳ **${label}**${is4k ? ' (4K)' : ''} was already requested by you and is waiting for admin approval — no need to request it again.`);
+    }
+    const added = addRequestSubscriber(`tmdb:${tmdbId}`, interaction.user.id);
+    audit('request_subscribed', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, stage: 'gate' });
+    return interaction.editReply(added
+      ? `⏳ **${label}**${is4k ? ' (4K)' : ''} was already requested by someone else and is waiting for admin approval — already on the way. I'll DM you too when it lands.`
+      : `⏳ **${label}**${is4k ? ' (4K)' : ''} is already waiting for admin approval — you're already tracked for it.`);
   }
   const existing = await checkExistingSeerrMedia(mediaType, tmdbId, is4k);
   if (existing) {
     audit('media_request_duplicate', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, reason: existing });
-    return interaction.editReply(`ℹ️ **${label}**${is4k ? ' (4K)' : ''} is ${existing} — no need to request it again.${existing.includes('available on Plex') ? ' 🍿' : ' Use `/request-status` to track it.'}`);
+    if (existing.includes('available on Plex')) {
+      return interaction.editReply(`ℹ️ **${label}**${is4k ? ' (4K)' : ''} is ${existing} — no need to request it again. 🍿`);
+    }
+    // Already in Seerr's pipeline (requested/downloading) under someone else — subscribe instead
+    // of dead-ending; the MEDIA_AVAILABLE webhook fans the DM out to every subscriber.
+    const added = addRequestSubscriber(`tmdb:${tmdbId}`, interaction.user.id);
+    audit('request_subscribed', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, stage: 'seerr' });
+    return interaction.editReply(added
+      ? `ℹ️ **${label}**${is4k ? ' (4K)' : ''} is ${existing} — already on the way. I'll DM you when it lands.`
+      : `ℹ️ **${label}**${is4k ? ' (4K)' : ''} is ${existing} — you're already tracked for it.`);
   }
 
   let seerrUserId = null;
@@ -3922,18 +3953,47 @@ async function handleRequestCancelCommand(interaction) {
     return interaction.editReply('❌ Nothing cancelable matches that — pick a suggestion from the list. Requests that are already available or declined can\'t be withdrawn.');
   }
 
+  // #75: cancelling shouldn't cancel it for other people who also asked for it — hand the
+  // request off to the next subscriber instead of dropping it, when there is one.
+  const idNum = Number(row.media_id.split(':')[1]);
+  const subscriberKey = `tmdb:${idNum}`;
+  const [heirId] = listRequestSubscribers(subscriberKey);
+  const heirUser = heirId ? getUserByDiscordId(heirId) : null;
+
   if (row.status === 'pending') {
-    const idNum = Number(row.media_id.split(':')[1]);
     const nonce = findPendingRequestNonce(interaction.user.id, row.media_type, idNum, !!row.is_4k);
-    if (nonce) takePendingRequest(nonce);
+    const pending = nonce ? takePendingRequest(nonce) : null;
+    if (pending && heirUser) {
+      let heirSeerrUserId = null;
+      try { heirSeerrUserId = await resolveSeerrUserId(heirUser); } catch (_e) {}
+      if (heirSeerrUserId != null) {
+        restashPendingRequest(nonce, { ...pending, discordId: heirId, email: heirUser.email, seerrUserId: heirSeerrUserId });
+        db.prepare('UPDATE requests SET requested_by_discord_id = ? WHERE id = ?').run(heirId, row.id);
+        db.prepare('DELETE FROM request_subscribers WHERE media_id = ? AND discord_id = ?').run(subscriberKey, heirId);
+        audit('request_handed_off', { actorDiscordId: interaction.user.id, targetDiscordId: heirId, title: row.title, mediaId: row.media_id, stage: 'gate' });
+        notifyChannel('requests', `↩️ <@${interaction.user.id}> withdrew their request for **${row.title}**${row.is_4k ? ' (4K)' : ''} — handed off to <@${heirId}>, who also wanted it. Still awaiting approval.`);
+        return interaction.editReply(`↩️ Withdrew your request for **${row.title}**${row.is_4k ? ' (4K)' : ''} — handed off to another member who wanted it too, so it's still pending approval.`);
+      }
+    }
+    // No one to hand off to (or the heir couldn't be resolved in Seerr) — drop it for real.
     db.prepare("UPDATE requests SET status = 'cancelled' WHERE id = ?").run(row.id);
     audit('request_cancelled_by_user', { actorDiscordId: interaction.user.id, title: row.title, mediaId: row.media_id, stage: 'gate' });
     notifyChannel('requests', `↩️ <@${interaction.user.id}> withdrew their own request for **${row.title}**${row.is_4k ? ' (4K)' : ''} before it was reviewed.`);
     return interaction.editReply(`↩️ Withdrew your request for **${row.title}**${row.is_4k ? ' (4K)' : ''} — it never reached an admin.`);
   }
 
-  // 'approved' — already submitted to Seerr. Let Seerr be the source of truth on whether it can
-  // still be pulled back (it refuses once the media is available/partially available).
+  // 'approved' — already submitted to Seerr. If someone else is subscribed, just reassign local
+  // ownership to them (the Seerr request itself stays exactly as it is — nothing to resubmit).
+  if (heirId) {
+    db.prepare('UPDATE requests SET requested_by_discord_id = ? WHERE id = ?').run(heirId, row.id);
+    db.prepare('DELETE FROM request_subscribers WHERE media_id = ? AND discord_id = ?').run(subscriberKey, heirId);
+    audit('request_handed_off', { actorDiscordId: interaction.user.id, targetDiscordId: heirId, title: row.title, mediaId: row.media_id, stage: 'seerr' });
+    notifyChannel('requests', `↩️ <@${interaction.user.id}> stepped back from **${row.title}**${row.is_4k ? ' (4K)' : ''} — handed off to <@${heirId}>, who also wanted it. Still on its way.`);
+    return interaction.editReply(`↩️ Stepped back from **${row.title}**${row.is_4k ? ' (4K)' : ''} — handed off to another member who wanted it too.`);
+  }
+
+  // Let Seerr be the source of truth on whether it can still be pulled back (it refuses once
+  // the media is available/partially available).
   if (!row.overseerr_request_id) {
     return interaction.editReply('❌ Can\'t cancel this one — it\'s already downloading or on Plex.');
   }
@@ -6627,6 +6687,7 @@ async function handleOverseerrWebhook(body) {
     if (poster) embed.setThumbnail(poster);
     await dmUser(requesterDiscordId, { embeds: [embed] });
   }
+  if (notification_type === 'MEDIA_DECLINED' && media.tmdbId != null) clearRequestSubscribers(`tmdb:${media.tmdbId}`);
 
   if (notification_type === 'MEDIA_FAILED') {
     const embed = brandedEmbed(COLORS.DANGER)
@@ -6656,6 +6717,25 @@ async function handleOverseerrWebhook(body) {
     if (poster) embed.setImage(poster);
     const sent = await dmUser(requesterDiscordId, { embeds: [embed] });
     if (sent) audit('media_available_notification_sent', { targetDiscordId: requesterDiscordId, title, autoStaged });
+  }
+
+  // Fan the same "it's ready" DM out to everyone who asked for this while it was already in
+  // flight (#75) — always keyed tmdb:<id> regardless of media type, since that's the identifier
+  // subscribers were recorded under. Runs even without a primary requesterDiscordId.
+  if (notification_type === 'MEDIA_AVAILABLE' && media.tmdbId != null) {
+    const subscriberKey = `tmdb:${media.tmdbId}`;
+    const subscribers = listRequestSubscribers(subscriberKey).filter(id => id !== requesterDiscordId);
+    if (subscribers.length) {
+      const embed = brandedEmbed(COLORS.SUCCESS)
+        .setTitle('🍿 Now Available on Plex')
+        .setDescription(`**${title}** is ready to watch — enjoy!\n\nWant something else? Use \`/download\` or request more anytime.`);
+      if (poster) embed.setImage(poster);
+      for (const discordId of subscribers) {
+        const sent = await dmUser(discordId, { embeds: [embed] });
+        if (sent) audit('media_available_notification_sent', { targetDiscordId: discordId, title, subscriber: true });
+      }
+    }
+    clearRequestSubscribers(subscriberKey);
   }
 }
 
