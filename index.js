@@ -27,7 +27,7 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest, recordWebhookEvent, pruneWebhookEvents } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
@@ -1982,6 +1982,12 @@ async function janitorSweep() {
     if (rows.length) log.info(`Expired ${rows.length} stale pending-email onboarding flag(s) older than ${CONFIG.PENDING_EMAIL_EXPIRY_DAYS} days`);
   } catch (err) {
     log.warn(`Pending-email expiry sweep failed: ${err.message}`);
+  }
+  try {
+    const pruned = pruneWebhookEvents(CONFIG.WEBHOOK_EVENT_RETENTION_DAYS);
+    if (pruned) log.info(`Pruned ${pruned} webhook-dedupe record(s) older than ${CONFIG.WEBHOOK_EVENT_RETENTION_DAYS} days`);
+  } catch (err) {
+    log.warn(`Webhook event prune sweep failed: ${err.message}`);
   }
 }
 
@@ -5843,6 +5849,10 @@ function startExpressServer() {
     try {
       let body = req.body;
       if (typeof body.payload === 'string') body = JSON.parse(body.payload);
+      if (!recordWebhookEvent(webhookEventKey('overseerr', body), 'overseerr')) {
+        audit('webhook_duplicate', { source: 'overseerr', type: body.notification_type });
+        return;
+      }
       audit('webhook_received', { source: 'overseerr', type: body.notification_type });
       await handleOverseerrWebhook(body);
     } catch (err) { audit('external_api_error', { provider: 'overseerr_webhook', error: err.message }); }
@@ -5853,6 +5863,10 @@ function startExpressServer() {
     res.sendStatus(200);
     try {
       const payload = JSON.parse(req.body.payload || '{}');
+      if (!recordWebhookEvent(webhookEventKey('plex', payload), 'plex')) {
+        audit('webhook_duplicate', { source: 'plex', event: payload.event });
+        return;
+      }
       audit('webhook_received', { source: 'plex', event: payload.event });
       await handlePlexWebhook(payload);
     } catch (err) { audit('external_api_error', { provider: 'plex_webhook', error: err.message }); }
@@ -5862,8 +5876,13 @@ function startExpressServer() {
     if (CONFIG.TAUTULLI_WEBHOOK_SECRET && !safeEqual(req.headers['x-tautulli-secret'], CONFIG.TAUTULLI_WEBHOOK_SECRET)) return res.status(401).json({ error: 'Unauthorized' });
     res.sendStatus(200);
     try {
-      audit('webhook_received', { source: 'tautulli', event: req.body?.event });
-      await handleTautulliWebhook(req.body || {});
+      const body = req.body || {};
+      if (!recordWebhookEvent(webhookEventKey('tautulli', body), 'tautulli')) {
+        audit('webhook_duplicate', { source: 'tautulli', event: body.event });
+        return;
+      }
+      audit('webhook_received', { source: 'tautulli', event: body.event });
+      await handleTautulliWebhook(body);
     } catch (err) {
       audit('external_api_error', { provider: 'tautulli_webhook', error: err.message });
     }
@@ -6395,6 +6414,28 @@ async function dmUser(discordId, payload) {
   } catch (_e) {
     return false;
   }
+}
+
+// Builds a stable dedupe key for a webhook payload, coarsened to a fixed time bucket so a
+// genuine redelivery (seconds to a few minutes later) collides with the original while a later,
+// unrelated re-occurrence of the same event (e.g. a rewatch) does not.
+function webhookEventKey(source, body) {
+  const bucket = Math.floor(Date.now() / (CONFIG.WEBHOOK_DEDUPE_WINDOW_MINUTES * 60000));
+  if (source === 'overseerr') {
+    const media = body.media || {};
+    const mediaId = media.media_type === 'tv' ? `tvdb:${media.tvdbId}` : `tmdb:${media.tmdbId}`;
+    const reqId = body.request?.request_id;
+    return `overseerr:${body.notification_type}:${reqId || mediaId}:${bucket}`;
+  }
+  if (source === 'plex') {
+    const { event, Account, Metadata, Server } = body;
+    return `plex:${event}:${Server?.uuid || ''}:${Metadata?.ratingKey || ''}:${Account?.id || ''}:${bucket}`;
+  }
+  if (source === 'tautulli') {
+    const mediaId = body.media_type === 'movie' ? `tmdb:${body.tmdb_id}` : `tvdb:${body.tvdb_id}`;
+    return `tautulli:${body.event}:${body.machine_id || ''}:${mediaId}:${body.user_email || ''}:${bucket}`;
+  }
+  return `${source}:unknown:${bucket}`;
 }
 
 async function handleOverseerrWebhook(body) {

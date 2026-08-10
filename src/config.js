@@ -277,6 +277,8 @@ const CONFIG = {
   LOG_RETENTION_DAYS: Number.parseInt(process.env.LOG_RETENTION_DAYS || '90', 10),
   PENDING_EMAIL_EXPIRY_DAYS: Number.parseInt(process.env.PENDING_EMAIL_EXPIRY_DAYS || '14', 10),
   SHUTDOWN_DRAIN_SECONDS: Number.parseInt(process.env.SHUTDOWN_DRAIN_SECONDS || '8', 10),
+  WEBHOOK_DEDUPE_WINDOW_MINUTES: Number.parseInt(process.env.WEBHOOK_DEDUPE_WINDOW_MINUTES || '5', 10),
+  WEBHOOK_EVENT_RETENTION_DAYS: Number.parseInt(process.env.WEBHOOK_EVENT_RETENTION_DAYS || '3', 10),
   NEVER_DELETE_MEDIA_IDS: process.env.NEVER_DELETE_MEDIA_IDS ? process.env.NEVER_DELETE_MEDIA_IDS.split(',').map(s => s.trim()) : [],
 };
 
