@@ -1,7 +1,7 @@
 // Environment-driven configuration: CONFIG, required-key validation, and non-fatal
 // risky-config warnings. dotenv loads here so CONFIG is correct no matter which module
 // is required first.
-require('dotenv').config();
+require('dotenv').config({ quiet: true });
 
 function parseBool(v, fallback = false) {
   if (v === undefined) return fallback;

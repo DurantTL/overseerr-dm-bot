@@ -59,7 +59,7 @@ test('seerr-selftest: runSeerrSelfTest across version/agent/legacy/keep scenario
   assert.strictEqual(state.deleted.length, 1, '3.3: fake user deleted');
   assert.ok(state.created[0].email.endsWith('@seerr-test.local'), 'test email is synthetic');
 
-  ({ result, state } = await runCase({ agentEnabled: false }));
+  ({ result } = await runCase({ agentEnabled: false }));
   const agentStep = step(result, 'Discord agent enabled');
   assert.strictEqual(agentStep.ok, false, 'agent off: flagged');
   assert.match(agentStep.detail, /Settings → Notifications → Discord/, 'agent off: says where to enable');
