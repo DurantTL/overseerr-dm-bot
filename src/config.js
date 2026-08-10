@@ -290,6 +290,18 @@ function validateConfig() {
   if (CONFIG.DASHBOARD_ENABLED && !CONFIG.DASHBOARD_ADMIN_PASSWORD && !CONFIG.DASHBOARD_ADMIN_TOKEN) {
     throw new Error('DASHBOARD_ENABLED=true requires DASHBOARD_ADMIN_PASSWORD or DASHBOARD_ADMIN_TOKEN');
   }
+  // TUNNEL_DOMAIN makes /webhook/overseerr, /webhook/plex, and /webhook/tautulli reachable from
+  // the public internet regardless of whether deletion is live — an unauthenticated webhook is a
+  // real attack surface (spoofed events, request/queue manipulation) on its own.
+  if (CONFIG.TUNNEL_DOMAIN && !CONFIG.WEBHOOK_SECRET) {
+    throw new Error('WEBHOOK_SECRET is required whenever TUNNEL_DOMAIN is set; the Overseerr/Plex webhook endpoints would otherwise be reachable from the internet without authentication');
+  }
+  if (CONFIG.TUNNEL_DOMAIN && !CONFIG.TAUTULLI_WEBHOOK_SECRET) {
+    throw new Error('TAUTULLI_WEBHOOK_SECRET is required whenever TUNNEL_DOMAIN is set; the Tautulli webhook endpoint would otherwise be reachable from the internet without authentication');
+  }
+  // Redundant with the TUNNEL_DOMAIN check above (which already covers every deployment, since
+  // TUNNEL_DOMAIN is itself required), kept as a second, deletion-specific guard so unauthenticated
+  // playback webhooks can never arm destructive actions even if the check above is ever loosened.
   if (CONFIG.ENABLE_DELETION && !CONFIG.DELETION_DRY_RUN && (!CONFIG.WEBHOOK_SECRET || !CONFIG.TAUTULLI_WEBHOOK_SECRET)) {
     throw new Error('Live deletion requires both WEBHOOK_SECRET and TAUTULLI_WEBHOOK_SECRET; unauthenticated playback webhooks must never arm destructive actions');
   }
@@ -307,14 +319,10 @@ function validateConfig() {
 // to the system channel after connect, so a dangerous combo can't sit unnoticed.
 function configWarnings() {
   const warnings = [];
-  if (CONFIG.TUNNEL_DOMAIN && !CONFIG.WEBHOOK_SECRET) {
-    warnings.push('`WEBHOOK_SECRET` is blank while `TUNNEL_DOMAIN` is set — the Seerr/Plex webhook endpoints are reachable from the internet without authentication.');
-  }
+  // WEBHOOK_SECRET/TAUTULLI_WEBHOOK_SECRET being blank while TUNNEL_DOMAIN is set is no longer
+  // reachable here — validateConfig() now refuses to start in that case (see above).
   if (CONFIG.ENABLE_DELETION && !CONFIG.DELETION_DRY_RUN) {
     warnings.push('Deletion is **live** (`ENABLE_DELETION=true`, `DELETION_DRY_RUN=false`) — the janitor and retention rules will delete real files.');
-  }
-  if (!CONFIG.TAUTULLI_WEBHOOK_SECRET) {
-    warnings.push('`TAUTULLI_WEBHOOK_SECRET` is blank — the Tautulli webhook endpoint is unauthenticated. Live deletion will refuse to start until it is set.');
   }
   const dashSecret = CONFIG.DASHBOARD_ADMIN_PASSWORD || CONFIG.DASHBOARD_ADMIN_TOKEN;
   if (CONFIG.DASHBOARD_ENABLED && dashSecret && dashSecret.length < 12) {

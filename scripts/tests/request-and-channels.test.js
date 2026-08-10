@@ -168,15 +168,16 @@ function mockSeerr() {
 
   // configWarnings: quiet on a safe config, loud on risky combos. (length checks, not
   // deepStrictEqual — vm-realm arrays have a different Array prototype than the host's)
+  // Blank WEBHOOK_SECRET/TAUTULLI_WEBHOOK_SECRET with TUNNEL_DOMAIN set is no longer a warning
+  // here — validateConfig() now refuses to start in that case, tested separately in config.test.js.
   assert.strictEqual(sandbox.run('configWarnings()').length, 0, 'safe config: no warnings');
-  sandbox.CONFIG.WEBHOOK_SECRET = '';
   sandbox.CONFIG.ENABLE_DELETION = true;
   sandbox.CONFIG.DELETION_DRY_RUN = false;
   sandbox.CONFIG.DASHBOARD_ENABLED = true;
   sandbox.CONFIG.DASHBOARD_ADMIN_PASSWORD = 'short';
   sandbox.CONFIG.PLAYBACK_CHANNEL_ID = 'PLAY';
   const warnings = sandbox.run('configWarnings()');
-  assert.strictEqual(warnings.length, 4, `all four risky combos flagged, got: ${JSON.stringify(warnings)}`);
+  assert.strictEqual(warnings.length, 3, `all three risky combos flagged, got: ${JSON.stringify(warnings)}`);
 
   // describeSession: transcode vs direct play formatting.
   sandbox.S = { friendly_name: 'John', full_title: 'Movie Title', video_decision: 'transcode', video_full_resolution: '4k', stream_video_full_resolution: '1080p', progress_percent: '45' };
