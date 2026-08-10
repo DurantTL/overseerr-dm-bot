@@ -275,6 +275,22 @@ const CONFIG = {
   DELETION_REMINDER_COOLDOWN_HOURS: Number.parseInt(process.env.DELETION_REMINDER_COOLDOWN_HOURS || '12', 10),
   KEEP_LIST_DEFAULT_DAYS: Number.parseInt(process.env.KEEP_LIST_DEFAULT_DAYS || '90', 10),
   LOG_RETENTION_DAYS: Number.parseInt(process.env.LOG_RETENTION_DAYS || '90', 10),
+  PENDING_EMAIL_EXPIRY_DAYS: Number.parseInt(process.env.PENDING_EMAIL_EXPIRY_DAYS || '14', 10),
+  SHUTDOWN_DRAIN_SECONDS: Number.parseInt(process.env.SHUTDOWN_DRAIN_SECONDS || '8', 10),
+  WEBHOOK_DEDUPE_WINDOW_MINUTES: Number.parseInt(process.env.WEBHOOK_DEDUPE_WINDOW_MINUTES || '5', 10),
+  WEBHOOK_EVENT_RETENTION_DAYS: Number.parseInt(process.env.WEBHOOK_EVENT_RETENTION_DAYS || '3', 10),
+  BACKUP_INTERVAL_HOURS: Number.parseInt(process.env.BACKUP_INTERVAL_HOURS || '0', 10),
+  BACKUP_DIR: process.env.BACKUP_DIR || '/app/data/backups',
+  BACKUP_KEEP_COUNT: Number.parseInt(process.env.BACKUP_KEEP_COUNT || '14', 10),
+  REQUEST_SUBSCRIBER_RETENTION_DAYS: Number.parseInt(process.env.REQUEST_SUBSCRIBER_RETENTION_DAYS || '180', 10),
+  PLEX_MEMBER_ROLE_ID: process.env.PLEX_MEMBER_ROLE_ID || null,
+  WHATS_NEW_ENABLED: parseBool(process.env.WHATS_NEW_ENABLED, false),
+  WHATS_NEW_CHANNEL_ID: process.env.WHATS_NEW_CHANNEL_ID || null,
+  // Multiple seasons of the same show becoming available close together collapse into one post.
+  WHATS_NEW_GROUP_WINDOW_HOURS: Number.parseInt(process.env.WHATS_NEW_GROUP_WINDOW_HOURS || '20', 10),
+  // 0 = disabled (default), preserving today's behavior — every non-admin request is gated.
+  AUTO_APPROVE_AFTER_N_APPROVED: Number.parseInt(process.env.AUTO_APPROVE_AFTER_N_APPROVED || '0', 10),
+  MONTHLY_RECAP_ENABLED: parseBool(process.env.MONTHLY_RECAP_ENABLED, false),
   NEVER_DELETE_MEDIA_IDS: process.env.NEVER_DELETE_MEDIA_IDS ? process.env.NEVER_DELETE_MEDIA_IDS.split(',').map(s => s.trim()) : [],
 };
 

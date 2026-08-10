@@ -6,7 +6,8 @@ const { CONFIG } = require('./config');
 const { sha256, canonicalizeEmail, isSnowflake } = require('./util');
 const { upsertTrackedRequest, collapseStalePendingRequests, reconcileTrackedRequestStatuses } = require('./request-tracking');
 
-const db = new Database('/app/data/plex_invites.db');
+const DB_PATH = '/app/data/plex_invites.db';
+const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 
 function ensureColumn(table, col, spec) {
@@ -85,6 +86,22 @@ function runMigrations() {
       key TEXT PRIMARY KEY,
       value TEXT,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS webhook_events (
+      event_key TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Always keyed tmdb:<id> regardless of media type (unlike requests.media_id, which is
+    -- rekeyed to tvdb:<id> for TV once Seerr assigns one) — tmdbId is the one identifier every
+    -- caller has up front, at request time and at webhook time alike.
+    CREATE TABLE IF NOT EXISTS request_subscribers (
+      media_id TEXT NOT NULL,
+      discord_id TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(media_id, discord_id)
     );
 
     CREATE TABLE IF NOT EXISTS pending_deletions (
@@ -1026,6 +1043,74 @@ function cleanExpiredTokens() {
   db.prepare('DELETE FROM download_tokens WHERE expires_at < ?').run(Date.now());
 }
 
+// Records a webhook event key the first time it's seen. Returns true when this call recorded it
+// (i.e. process the event), false when the key was already present (a redelivery/replay).
+// Atomic claim-or-reject: a plain floor(now/window) bucket baked into the key would let two
+// deliveries a fraction of a second apart straddle a bucket boundary and both be treated as new.
+// This instead does a real sliding-window check against created_at in one statement (avoiding a
+// separate check-then-insert race): if the key has never been seen, or was last seen outside the
+// window, the row is (re)claimed and this returns true; if it's within the window, the WHERE
+// clause blocks the update, changes stays 0, and this returns false (a genuine duplicate).
+function recordWebhookEvent(eventKey, source) {
+  const result = db.prepare(`
+    INSERT INTO webhook_events (event_key, source, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(event_key) DO UPDATE SET source = excluded.source, created_at = CURRENT_TIMESTAMP
+    WHERE webhook_events.created_at < datetime('now', ?)
+  `).run(eventKey, source, `-${CONFIG.WEBHOOK_DEDUPE_WINDOW_MINUTES} minutes`);
+  return result.changes > 0;
+}
+
+// Un-claims an event key after its processing failed, so a genuine redelivery (rather than a
+// blind retry-storm one) can go through instead of being silently swallowed for the rest of the
+// dedupe window.
+function forgetWebhookEvent(eventKey) {
+  db.prepare('DELETE FROM webhook_events WHERE event_key = ?').run(eventKey);
+}
+
+function pruneWebhookEvents(retentionDays) {
+  return db.prepare("DELETE FROM webhook_events WHERE created_at < datetime('now', ?)").run(`-${retentionDays} days`).changes;
+}
+
+// Registers interest in a title that's already in the pipeline under someone else's request.
+// Returns false when the caller is already subscribed (e.g. the original requester), so callers
+// can tell "you're already tracked" apart from "added, will notify" without a separate lookup.
+function addRequestSubscriber(mediaId, discordId) {
+  const result = db.prepare('INSERT OR IGNORE INTO request_subscribers (media_id, discord_id) VALUES (?, ?)').run(mediaId, discordId);
+  return result.changes > 0;
+}
+
+function listRequestSubscribers(mediaId) {
+  return db.prepare('SELECT discord_id FROM request_subscribers WHERE media_id = ?').all(mediaId).map(r => r.discord_id);
+}
+
+function countRequestSubscribers(mediaId) {
+  return db.prepare('SELECT COUNT(*) AS c FROM request_subscribers WHERE media_id = ?').get(mediaId).c;
+}
+
+function clearRequestSubscribers(mediaId) {
+  return db.prepare('DELETE FROM request_subscribers WHERE media_id = ?').run(mediaId).changes;
+}
+
+function pruneRequestSubscribers(retentionDays) {
+  return db.prepare("DELETE FROM request_subscribers WHERE created_at < datetime('now', ?)").run(`-${retentionDays} days`).changes;
+}
+
+// Standing toward auto-approval (#80). Deliberately not named "tier" — that word already means
+// regional storage tiering elsewhere in this codebase (tier.js, /tier, /tier-member).
+function getTrustScore(discordId) {
+  return Number.parseInt(getSetting(`trust_score:${discordId}`) || '0', 10);
+}
+
+function bumpTrustScore(discordId, delta) {
+  const next = Math.max(0, getTrustScore(discordId) + delta);
+  setSetting(`trust_score:${discordId}`, String(next));
+  return next;
+}
+
+function resetTrustScore(discordId) {
+  setSetting(`trust_score:${discordId}`, '0');
+}
+
 function getSetting(key) {
   const row = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key);
   return row?.value || null;
@@ -1067,5 +1152,20 @@ function restashPendingRequest(nonce, payload) {
   setSetting(`pending_request:${nonce}`, JSON.stringify(payload));
 }
 
-module.exports = { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
+// Finds the nonce for a still-gated request matching this requester + media, so /request-cancel
+// can drop it the same way a Deny button would. Table is small (only currently-pending gate
+// requests live here), so a scan is fine.
+function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k) {
+  const rows = db.prepare("SELECT key, value FROM app_settings WHERE key LIKE 'pending_request:%'").all();
+  for (const row of rows) {
+    let payload;
+    try { payload = JSON.parse(row.value); } catch (_e) { continue; }
+    if (payload.discordId === discordId && payload.mediaType === mediaType && payload.tmdbId === tmdbId && Boolean(payload.is4k) === Boolean(is4k)) {
+      return row.key.slice('pending_request:'.length);
+    }
+  }
+  return null;
+}
+
+module.exports = { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;

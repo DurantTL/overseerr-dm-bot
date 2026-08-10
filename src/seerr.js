@@ -164,6 +164,32 @@ async function checkExistingSeerrMedia(mediaType, tmdbId, is4k) {
   return allAvailable ? 'already fully available on Plex' : 'already requested — every season is on Plex or already on its way';
 }
 
+// Overseerr's internal Media.id (distinct from tmdbId) — required by the issue-report endpoint.
+async function fetchSeerrMediaId(mediaType, tmdbId) {
+  try {
+    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/${mediaType}/${tmdbId}`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY }, timeout: 8000 });
+    return res.data?.mediaInfo?.id ?? null;
+  } catch (_e) { return null; }
+}
+
+// Same internal Media.id as fetchSeerrMediaId, but resolved from a known Seerr request id
+// instead of a tmdbId lookup. Preferred whenever a request id is available: it needs no
+// tmdb/tvdb reasoning at all (the request already carries the media relation), and it works
+// correctly for TV requests, where the locally-tracked identifier is often a TVDB id rather
+// than the tmdbId fetchSeerrMediaId expects.
+async function fetchSeerrMediaIdByRequest(requestId) {
+  try {
+    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/request/${requestId}`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY }, timeout: 8000 });
+    return res.data?.media?.id ?? null;
+  } catch (_e) { return null; }
+}
+
+// issueType: 1 video, 2 audio, 3 subtitle, 4 other (Overseerr's IssueType enum).
+async function createSeerrIssue(mediaId, issueType, message, userId) {
+  const res = await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/issue`, { mediaId, issueType, message, userId }, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
+  return res.data;
+}
+
 // tvdb id for a TMDB show — needed to find the series in Sonarr (which keys off tvdb). The
 // escalation watch stores it when the request-create response carries it; this is the backfill
 // for rows where it didn't. Fails open (null): the sweep just retries next pass.
@@ -259,6 +285,24 @@ async function denyOverseerrRequest(requestId) {
   return axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/request/${requestId}/decline`, {}, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
 }
 
+// Overseerr permits deleting a request that's still pending/processing (i.e. not yet fulfilled);
+// it rejects deletion once media is available. Callers should treat a rejection as "can't cancel
+// this anymore" rather than a hard failure.
+async function deleteOverseerrRequest(requestId) {
+  return axios.delete(`${CONFIG.OVERSEERR_URL}/api/v1/request/${requestId}`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
+}
+
+// Overseerr's own per-user quota (movie/tv, each with days/limit/used/remaining). A limit of 0
+// (or a missing/malformed response) means unlimited — fail open rather than blocking a real
+// request on an API hiccup; the bot's own approval gate is still there as a backstop either way.
+async function fetchUserQuota(seerrUserId) {
+  const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/user/${seerrUserId}/quota`, {
+    headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY },
+    timeout: 8000,
+  });
+  return res.data || {};
+}
+
 async function fetchOverseerrUsers() {
   const users = [];
   const take = 100;
@@ -297,4 +341,4 @@ async function fetchSeerrRequests() {
   return requests;
 }
 
-module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers, fetchSeerrRequests };
+module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers, fetchSeerrRequests };

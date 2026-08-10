@@ -6,9 +6,9 @@ const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 
-async function main() {
-  const source = path.resolve(process.argv[2] || '/app/data/plex_invites.db');
-  const outDir = path.resolve(process.argv[3] || './backups');
+async function runBackup(source, outDir) {
+  source = path.resolve(source);
+  outDir = path.resolve(outDir);
   if (!fs.existsSync(source)) throw new Error(`Database not found: ${source}`);
   fs.mkdirSync(outDir, { recursive: true });
 
@@ -30,10 +30,43 @@ async function main() {
     snapshot.close();
   }
   fs.renameSync(temporary, destination);
+  // The temp snapshot picks up its own -wal/-shm sidecars while it's opened above; they're
+  // checkpointed into it on close, but the sidecar files themselves aren't renamed away with the
+  // main file, so clean them up explicitly instead of leaving them to accumulate on every backup.
+  for (const suffix of ['-wal', '-shm']) {
+    const sidecar = `${temporary}${suffix}`;
+    if (fs.existsSync(sidecar)) fs.unlinkSync(sidecar);
+  }
+  return destination;
+}
+
+// Deletes the oldest plex_invites-*.db backups in outDir beyond keepCount. Returns the deleted
+// file names.
+function rotateBackups(outDir, keepCount) {
+  outDir = path.resolve(outDir);
+  if (!keepCount || keepCount <= 0) return [];
+  const files = fs.readdirSync(outDir)
+    .filter(f => /^plex_invites-.*\.db$/.test(f))
+    .sort();
+  const excess = files.length - keepCount;
+  if (excess <= 0) return [];
+  const toDelete = files.slice(0, excess);
+  for (const f of toDelete) fs.unlinkSync(path.join(outDir, f));
+  return toDelete;
+}
+
+async function main() {
+  const source = process.argv[2] || '/app/data/plex_invites.db';
+  const outDir = process.argv[3] || './backups';
+  const destination = await runBackup(source, outDir);
   process.stdout.write(`Backup created: ${destination}\n`);
 }
 
-main().catch(err => {
-  process.stderr.write(`${err.message}\n`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch(err => {
+    process.stderr.write(`${err.message}\n`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { runBackup, rotateBackups };

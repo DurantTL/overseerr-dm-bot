@@ -26,11 +26,11 @@ const crypto = require('crypto');
 
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
-const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
-const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
+const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('./src/escalation');
@@ -43,6 +43,8 @@ const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderTable } = require('./src/dashboard-render');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, parseReleaseName, seriesToken, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
+const { runBackup, rotateBackups } = require('./scripts/backup-db');
+const { webhookEventKey } = require('./src/webhook-events');
 const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
@@ -125,6 +127,7 @@ function channelFor(kind) {
     cleanup: CONFIG.CLEANUP_CHANNEL_ID,
     audit: CONFIG.AUDIT_CHANNEL_ID,
     deploy: CONFIG.DEPLOY_CHANNEL_ID || null,
+    whats_new: CONFIG.WHATS_NEW_CHANNEL_ID,
   };
   const configured = Object.prototype.hasOwnProperty.call(map, kind) ? map[kind] : undefined;
   if (kind === 'deploy') return configured;
@@ -143,6 +146,65 @@ function notifyAdmin(msg) {
   notifyChannel('admin', msg);
 }
 
+// request_subscribers is always keyed tmdb:<id>, with a :4k suffix — a standard and a 4K
+// request for the same title are tracked (and quota'd) separately by Seerr, so they need
+// separate subscriber lists too; a shared key would let one edition's availability wrongly
+// notify and clear subscribers still waiting on the other.
+function subscriberKeyFor(tmdbId, is4k) {
+  return `tmdb:${tmdbId}${is4k ? ':4k' : ''}`;
+}
+
+// Seerr's own quota only counts requests that have actually reached it — this bot's approval
+// gate means a request can sit as a local 'pending' row for a while before (if ever) it's
+// created there. Checking live Seerr quota alone lets someone queue several gated requests in a
+// row that all pass, since none of the earlier ones have touched Seerr's counter yet. Reserving
+// against this user's own still-outstanding 'pending' rows for the same media type closes that:
+// each additional /request sees its predecessors as already spent, matching what would happen
+// once an admin actually approves them one by one. Returns an error string to show the user, or
+// null if the request is within quota.
+// `exclude` lets a caller that already has its own row counted in 'pending' status (the
+// approval-time recheck below) leave that one out — otherwise a request would count as its own
+// reservation and every quota=1 approval would look exhausted by itself.
+async function quotaBlockReason(seerrUserId, discordId, mediaType, exclude = null) {
+  let quota = null;
+  try { quota = await fetchUserQuota(seerrUserId); } catch (_e) {}
+  const q = quota?.[mediaType];
+  if (!q || !q.limit) return null;
+  const liveRemaining = Number.isFinite(q.remaining) ? q.remaining : q.limit - (q.used || 0);
+  let sql = "SELECT COUNT(*) AS c FROM requests WHERE requested_by_discord_id = ? AND media_type = ? AND status = 'pending'";
+  const params = [discordId, mediaType];
+  if (exclude) {
+    sql += ' AND NOT (media_id = ? AND is_4k = ?)';
+    params.push(`tmdb:${exclude.tmdbId}`, exclude.is4k ? 1 : 0);
+  }
+  const reserved = db.prepare(sql).get(...params).c;
+  if (liveRemaining - reserved > 0) return null;
+  return `❌ You're out of ${mediaType === 'tv' ? 'series' : 'movie'} request quota for now — ${quotaLine(quota, mediaType)}${reserved ? ` (${reserved} of your other requests are still awaiting approval)` : ''}. Check \`/me\` for your current standing.`;
+}
+
+// Resolves the real tmdbId for a requests row regardless of which form its media_id is
+// currently in. Rows start out tmdb:-keyed (the only identifier available at /request time), but
+// a TV row gets a second, tvdb:-keyed row once Seerr assigns a tvdbId — so a tvdb:-keyed row's
+// own media_id is not a tmdbId at all, and must never be treated as one (that mistake is what
+// broke #75 handoff for approved TV requests).
+//
+// The sibling tmdb:-keyed row can't be found via overseerr_request_id: handleGateApprove's
+// second upsertRequest call (the one that keeps that row in sync) deliberately passes a null
+// request id, because overseerr_request_id is UNIQUE and the tvdb:-keyed row already claims the
+// real one. Both rows are written back-to-back from the same `pending` object, so
+// (requested_by_discord_id, media_type, is_4k, title) is what's actually shared and reliable —
+// unlike a shared request id, which was never true in the first place.
+function resolveTmdbId(row) {
+  if (row.media_id.startsWith('tmdb:')) return Number(row.media_id.split(':')[1]);
+  const sibling = db.prepare(`
+    SELECT media_id FROM requests
+    WHERE media_id LIKE 'tmdb:%' AND media_type = ? AND is_4k = ? AND title = ?
+      AND requested_by_discord_id IS ?
+    ORDER BY id DESC LIMIT 1
+  `).get(row.media_type, row.is_4k, row.title, row.requested_by_discord_id);
+  return sibling ? Number(sibling.media_id.split(':')[1]) : null;
+}
+
 // Pending onboarding is mirrored in app_settings (pending_email:<discordId>) so it survives
 // restarts — including Watchtower's nightly update — mid-onboarding. The Map is a hot cache,
 // rehydrated from the DB at startup.
@@ -152,7 +214,13 @@ function setPendingEmail(discordId) {
   setSetting(`pending_email:${discordId}`, '1');
 }
 function hasPendingEmail(discordId) {
-  return pendingEmailRequests.has(discordId) || !!getSetting(`pending_email:${discordId}`);
+  const row = db.prepare('SELECT updated_at FROM app_settings WHERE key = ?').get(`pending_email:${discordId}`);
+  if (!row) return false;
+  if (Date.now() - Date.parse(`${row.updated_at.replace(' ', 'T')}Z`) > CONFIG.PENDING_EMAIL_EXPIRY_DAYS * 86400000) {
+    clearPendingEmail(discordId);
+    return false;
+  }
+  return true;
 }
 function clearPendingEmail(discordId) {
   pendingEmailRequests.delete(discordId);
@@ -235,10 +303,14 @@ function canEscalate({ mediaType, is4k }) {
 }
 
 // Post the Approve/Deny gate embed for a stashed /request to the requests channel.
-async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discordId, email }) {
+async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discordId, email, seerrUserId, tmdbId }) {
   const channel = await safeGetChannel(channelFor('requests'));
   if (!channel) return false;
   const azEligible = canEscalate({ mediaType, is4k });
+  let quota = null;
+  try { quota = await fetchUserQuota(seerrUserId); } catch (_e) {}
+  const quotaText = quotaLine(quota, mediaType);
+  const subscriberCount = tmdbId != null ? countRequestSubscribers(subscriberKeyFor(tmdbId, is4k)) : 0;
   const embed = brandedEmbed(COLORS.INFO)
     .setTitle(`${mediaTypeEmoji(mediaType, is4k)} New Request`)
     .setDescription(`**${label}**${azEligible ? `\n-# "+ AvistaZ Fallback" pre-authorizes the private tracker if nothing public shows up within ${escalationDelayLabel()} — it then ${preAuthOutcomeLabel(mediaType)}.` : ''}`)
@@ -246,6 +318,8 @@ async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discord
       { name: 'Requested by', value: `<@${discordId}> · \`${email}\``, inline: true },
       { name: 'Type', value: mediaTypeLabel(mediaType, is4k), inline: true },
       { name: 'Status', value: '⏳ Awaiting approval', inline: true },
+      ...(quotaText ? [{ name: 'Requester quota', value: quotaText, inline: false }] : []),
+      ...(subscriberCount > 0 ? [{ name: 'Also wanted by', value: `${subscriberCount} other member${subscriberCount === 1 ? '' : 's'}`, inline: false }] : []),
     )
     .setFooter({ text: 'Durant Media Server · Not sent to Seerr until approved' });
   const buttons = [
@@ -265,6 +339,11 @@ async function handleGateApprove(interaction, nonce, { azPreAuth }) {
   const pending = takePendingRequest(nonce);
   if (!pending) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
   await interaction.deferUpdate();
+  // Quota can drift between /request and this click — another of the requester's own gated
+  // requests may have been approved in the meantime, or the quota period may have reset. This
+  // doesn't block the click (an admin knowingly approving stays trivial, same as elsewhere in
+  // this gate), but it does make the drift visible instead of silently ignoring it.
+  const quotaWarning = await quotaBlockReason(pending.seerrUserId, pending.discordId, pending.mediaType, { tmdbId: pending.tmdbId, is4k: pending.is4k }).catch(() => null);
   try {
     const data = await createSeerrRequestAs(pending.seerrUserId, pending.mediaType, pending.tmdbId, pending.is4k);
     const mediaKey = pending.mediaType === 'tv' && data?.media?.tvdbId ? `tvdb:${data.media.tvdbId}` : `tmdb:${pending.tmdbId}`;
@@ -297,13 +376,14 @@ async function handleGateApprove(interaction, nonce, { azPreAuth }) {
           .catch(err => log.warn(`Approval-time AvistaZ tagging failed for ${pending.label}: ${err.message}`));
       }
     }
-    audit('request_approved_gate', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label, requestId: data?.id ?? null, azPreAuth });
+    bumpTrustScore(pending.discordId, 1);
+    audit('request_approved_gate', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label, requestId: data?.id ?? null, azPreAuth, overQuota: !!quotaWarning });
     await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Request Approved`)
       .setDescription(`**${pending.label}** was approved and is being grabbed now. You'll get a DM when it's on Plex! 🍿`)] });
     return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`✅ Approved — ${pending.label}`)
-      .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}> — sent to Seerr${data?.id != null ? ` (request #${data.id})` : ''}.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(pending.mediaType)}.` : ''}`)], components: [] });
+      .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}> — sent to Seerr${data?.id != null ? ` (request #${data.id})` : ''}.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(pending.mediaType)}.` : ''}${quotaWarning ? `\n⚠️ Note: <@${pending.discordId}> is over quota as of this approval — ${quotaWarning.replace(/^❌\s*/, '')}` : ''}`)], components: [] });
   } catch (err) {
     const status = err.response?.status;
     const seerrMessage = err.response?.data?.message;
@@ -313,12 +393,17 @@ async function handleGateApprove(interaction, nonce, { azPreAuth }) {
     // leaving live buttons the admin will click forever.
     if (status === 202 || status === 409 || /already (exists|available|requested)/i.test(seerrMessage || '')) {
       upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
+      // Another requester beat this one into Seerr between /request and this approval — subscribe
+      // them so the eventual MEDIA_AVAILABLE webhook DMs them too, instead of a dead-end DM that
+      // never promises a follow-up.
+      const added = addRequestSubscriber(subscriberKeyFor(pending.tmdbId, pending.is4k), pending.discordId);
+      audit('request_subscribed', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label, tmdbId: pending.tmdbId, is4k: pending.is4k, stage: 'gate_approve_collision' });
       await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.INFO)
         .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Already Requested`)
-        .setDescription(`Good news — **${pending.label}** is already in the system (requested earlier or already available), so there was nothing new to send. Check Plex, or track it with \`/request-status\`.`)] });
+        .setDescription(`Good news — **${pending.label}** is already in the system (requested earlier or already available).${added ? ' I\'ll DM you when it lands.' : ''} Check Plex, or track it with \`/request-status\`.`)] });
       return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
         .setTitle(`ℹ️ Already in Seerr — ${pending.label}`)
-        .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}>, but Seerr says: *${seerrMessage || err.message}*. Nothing new was created — it's already requested or available.`)], components: [] });
+        .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}>, but Seerr says: *${seerrMessage || err.message}*. Nothing new was created — it's already requested or available. <@${pending.discordId}> is now subscribed to the availability DM.`)], components: [] });
     }
     // Anything else (network, 5xx) is retryable: put the stash back so the button still works.
     restashPendingRequest(nonce, pending);
@@ -1956,15 +2041,81 @@ async function janitorSweep() {
     }
   }
   if (CONFIG.LOG_RETENTION_DAYS > 0) {
-    const last = Number(getSetting('log_retention_last_run') || '0');
-    if (Date.now() - last >= 24 * 3600000) {
-      const age = `-${CONFIG.LOG_RETENTION_DAYS} days`;
-      const auditDeleted = db.prepare("DELETE FROM audit_log WHERE created_at < datetime('now', ?)").run(age).changes;
-      const accessDeleted = db.prepare("DELETE FROM download_access_log WHERE created_at < datetime('now', ?)").run(age).changes;
-      setSetting('log_retention_last_run', String(Date.now()));
-      if (auditDeleted || accessDeleted) log.info(`Pruned ${auditDeleted} audit and ${accessDeleted} download-access log row(s) older than ${CONFIG.LOG_RETENTION_DAYS} days`);
+    try {
+      const last = Number(getSetting('log_retention_last_run') || '0');
+      if (Date.now() - last >= 24 * 3600000) {
+        const age = `-${CONFIG.LOG_RETENTION_DAYS} days`;
+        const auditDeleted = db.prepare("DELETE FROM audit_log WHERE created_at < datetime('now', ?)").run(age).changes;
+        const accessDeleted = db.prepare("DELETE FROM download_access_log WHERE created_at < datetime('now', ?)").run(age).changes;
+        setSetting('log_retention_last_run', String(Date.now()));
+        if (auditDeleted || accessDeleted) log.info(`Pruned ${auditDeleted} audit and ${accessDeleted} download-access log row(s) older than ${CONFIG.LOG_RETENTION_DAYS} days`);
+      }
+    } catch (err) {
+      log.warn(`Log retention sweep failed: ${err.message}`);
     }
   }
+  try {
+    const age = `-${CONFIG.PENDING_EMAIL_EXPIRY_DAYS} days`;
+    const rows = db.prepare("SELECT key FROM app_settings WHERE key LIKE 'pending_email:%' AND updated_at < datetime('now', ?)").all(age);
+    for (const r of rows) clearPendingEmail(r.key.slice('pending_email:'.length));
+    if (rows.length) log.info(`Expired ${rows.length} stale pending-email onboarding flag(s) older than ${CONFIG.PENDING_EMAIL_EXPIRY_DAYS} days`);
+  } catch (err) {
+    log.warn(`Pending-email expiry sweep failed: ${err.message}`);
+  }
+  try {
+    const pruned = pruneWebhookEvents(CONFIG.WEBHOOK_EVENT_RETENTION_DAYS);
+    if (pruned) log.info(`Pruned ${pruned} webhook-dedupe record(s) older than ${CONFIG.WEBHOOK_EVENT_RETENTION_DAYS} days`);
+  } catch (err) {
+    log.warn(`Webhook event prune sweep failed: ${err.message}`);
+  }
+  try {
+    // Safety net: subscribers are normally cleared the moment their title becomes available or
+    // gets declined. This only catches rows that never reach either outcome (e.g. the request
+    // stalls forever upstream).
+    const pruned = pruneRequestSubscribers(CONFIG.REQUEST_SUBSCRIBER_RETENTION_DAYS);
+    if (pruned) log.info(`Pruned ${pruned} stale request-subscriber row(s) older than ${CONFIG.REQUEST_SUBSCRIBER_RETENTION_DAYS} days`);
+  } catch (err) {
+    log.warn(`Request-subscriber prune sweep failed: ${err.message}`);
+  }
+  if (CONFIG.WHATS_NEW_ENABLED) {
+    try {
+      const pruned = db.prepare("DELETE FROM app_settings WHERE key LIKE 'whats_new_posted:%' AND updated_at < datetime('now', '-30 days')").run().changes;
+      if (pruned) log.info(`Pruned ${pruned} old whats-new dedupe flag(s)`);
+    } catch (err) {
+      log.warn(`Whats-new flag prune sweep failed: ${err.message}`);
+    }
+  }
+}
+
+// better-sqlite3's db.backup() is online and WAL-safe, so this runs without pausing the bot.
+// A silently failing backup is worse than no backup, so failures go to the system-alerts channel
+// rather than just the log.
+async function sweepBackup() {
+  try {
+    const destination = await runBackup(DB_PATH, CONFIG.BACKUP_DIR);
+    const deleted = rotateBackups(CONFIG.BACKUP_DIR, CONFIG.BACKUP_KEEP_COUNT);
+    log.info(`DB backup created: ${destination}${deleted.length ? ` (rotated out ${deleted.length} old backup(s))` : ''}`);
+    audit('db_backup_created', { destination, rotatedOut: deleted.length });
+  } catch (err) {
+    log.error(`DB backup failed: ${err.message}`);
+    audit('db_backup_failed', { error: err.message });
+    notifyChannel('system', { embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle('🛑 Database Backup Failed')
+      .setDescription(`\`\`\`${err.message}\`\`\``)] });
+  }
+}
+
+// #81: posts the same server-wide view /stats server:true shows, on a rolling ~30-day cadence
+// (last_run gate, same pattern as janitorSweep's retention checks) rather than a fixed calendar
+// date — simpler than cron, and "roughly monthly" is all this needs to be.
+async function sweepMonthlyRecap() {
+  const last = Number(getSetting('monthly_recap_last_run') || '0');
+  if (Date.now() - last < 30 * 86400000) return;
+  const sinceIso = last ? new Date(last).toISOString() : startOfMonthIso();
+  setSetting('monthly_recap_last_run', String(Date.now()));
+  const embed = await buildServerStatsEmbed({ sinceIso, periodLabel: 'The Last Month' });
+  notifyChannel('whats_new', { embeds: [embed] });
+  audit('monthly_recap_posted', { sinceIso });
 }
 
 // ---- Plex Home staging worker ----
@@ -2207,6 +2358,12 @@ const slashCommands = [
     .addSubcommand(s => s.setName('action').setDescription('Entries by action').addStringOption(o => o.setName('action').setDescription('Action name').setRequired(true)).addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100))),
   new SlashCommandBuilder().setName('queue').setDescription('Show what is downloading right now'),
   new SlashCommandBuilder().setName('request-status').setDescription('Check why a requested movie or show is not ready yet').addStringOption(o => o.setName('title').setDescription('Start typing — matches your recent requests').setRequired(true).setAutocomplete(true)),
+  new SlashCommandBuilder().setName('request-cancel').setDescription('Withdraw one of your own pending or awaiting-download requests').addStringOption(o => o.setName('title').setDescription('Start typing — matches your cancelable requests').setRequired(true).setAutocomplete(true)),
+  new SlashCommandBuilder().setName('report').setDescription('Report a problem with something already on Plex (wrong subtitles, bad audio, etc.)')
+    .addStringOption(o => o.setName('title').setDescription('Start typing — matches available media').setRequired(true).setAutocomplete(true))
+    .addStringOption(o => o.setName('type').setDescription('What kind of problem').setRequired(true)
+      .addChoices({ name: 'Video', value: '1' }, { name: 'Audio', value: '2' }, { name: 'Subtitle', value: '3' }, { name: 'Other', value: '4' }))
+    .addStringOption(o => o.setName('details').setDescription('Describe the problem').setRequired(true)),
   new SlashCommandBuilder().setName('watching').setDescription('Show current Plex playback (via Tautulli)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('indexers').setDescription('Prowlarr indexer + Byparr health').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('debrid').setDescription('Premiumize account + transfer status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -2246,6 +2403,8 @@ const slashCommands = [
     .addUserOption(o => o.setName('user').setDescription('User').setRequired(true))
     .addStringOption(o => o.setName('server').setDescription('Home server').setRequired(true).addChoices({ name: 'Main', value: 'primary' }, { name: 'Philippines', value: 'ph' })),
   new SlashCommandBuilder().setName('me').setDescription('Show your linked profile'),
+  new SlashCommandBuilder().setName('stats').setDescription('Your watch/request stats this month (admins can see the server-wide view)')
+    .addBooleanOption(o => o.setName('server').setDescription('Admin only: server-wide stats instead of your own')),
   new SlashCommandBuilder().setName('myrequests').setDescription('Show your recent requests'),
   new SlashCommandBuilder().setName('downloads').setDescription('Show your active download links'),
   new SlashCommandBuilder().setName('keep').setDescription('Show your keep list'),
@@ -2379,8 +2538,18 @@ client.once('ready', async () => {
     log.ok(`rTorrent adoption discovery running every ${CONFIG.RTORRENT_ADOPT_CHECK_MINUTES} min (labels: ${CONFIG.RTORRENT_ADOPT_LABELS.join(', ') || 'none'}, auto: ${CONFIG.RTORRENT_ADOPT_AUTO ? 'on' : 'off'})`);
   }
   if (CONFIG.JANITOR_CHECK_MINUTES > 0) {
-    setInterval(() => janitorSweep(), CONFIG.JANITOR_CHECK_MINUTES * 60000).unref();
+    setInterval(() => janitorSweep().catch(err => log.warn(`Janitor sweep failed: ${err.message}`)), CONFIG.JANITOR_CHECK_MINUTES * 60000).unref();
     log.ok(`Janitor running every ${CONFIG.JANITOR_CHECK_MINUTES} min (grace deletes: ${CONFIG.ENABLE_DELETION ? 'on' : 'off'}, retention: ${CONFIG.RETENTION_ENFORCEMENT ? 'on' : 'off'}, dry-run: ${CONFIG.DELETION_DRY_RUN ? 'on' : 'off'})`);
+  }
+  if (CONFIG.BACKUP_INTERVAL_HOURS > 0) {
+    setInterval(() => sweepBackup(), CONFIG.BACKUP_INTERVAL_HOURS * 3600000).unref();
+    log.ok(`DB backup running every ${CONFIG.BACKUP_INTERVAL_HOURS}h → ${CONFIG.BACKUP_DIR} (keeping last ${CONFIG.BACKUP_KEEP_COUNT})`);
+  }
+  if (CONFIG.MONTHLY_RECAP_ENABLED) {
+    // Checked hourly, like the other "last_run" gated sweeps in janitorSweep, but this one fires
+    // rarely enough to run on its own interval rather than folding into that sweep.
+    setInterval(() => sweepMonthlyRecap().catch(err => log.warn(`Monthly recap sweep failed: ${err.message}`)), 3600000).unref();
+    log.ok('Monthly community recap enabled — posts to the whats_new channel roughly every 30 days');
   }
   if (tautulliConfigured() && CONFIG.PLAYBACK_CHECK_MINUTES > 0) {
     setInterval(() => sweepTranscodes().catch(err => log.warn(`Transcode sweep failed: ${err.message}`)), CONFIG.PLAYBACK_CHECK_MINUTES * 60000).unref();
@@ -2414,17 +2583,24 @@ client.once('ready', async () => {
 });
 
 client.on('guildMemberAdd', async member => {
+  // Set the pending flag regardless of whether the DM lands, so that if this member has DMs
+  // disabled but later opens them (or messages the bot unsolicited), messageCreate still
+  // recognizes them as mid-onboarding instead of silently dropping their reply.
+  setPendingEmail(member.id);
   try {
     await member.send({ embeds: [brandedEmbed(COLORS.PLEX)
       .setTitle('👋 Welcome to Durant Media Server!')
       .setDescription('Glad to have you here! To request access, just **reply to this message with the email on your Plex account**.\n\nOnce an admin approves you, you\'ll get a Plex invite and a DM confirming you\'re all set. 🍿')] });
-    setPendingEmail(member.id);
   } catch (err) {
     log.warn(`Could not DM ${member.user.tag}: ${err.message}`);
+    notifyChannel('system', { embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle('⚠️ Welcome DM Failed')
+      .setDescription(`Couldn't DM <@${member.id}> (${member.user.tag}) — they likely have server DMs turned off, so the usual onboarding message never landed.\n\nPoint them at the **Request Plex Access** button instead (\`/invite-post\` if one isn't posted yet).`)] });
   }
 });
 
 client.on('guildMemberRemove', async member => {
+  clearPendingEmail(member.id);
   const user = getUserByDiscordId(member.id);
   if (!user) return;
 
@@ -2444,6 +2620,7 @@ client.on('guildMemberRemove', async member => {
   try {
     const result = await removePlexAccess(user.email);
     removeUser(member.id);
+    revokeMemberRole(member.id).catch(() => {});
     audit('user_unlinked', { targetDiscordId: member.id, email: user.email, removed: result.removed });
     notifyChannel('audit', `⚠️ User left Discord: <@${member.id}> (${user.email}). Plex removed: ${result.removed ? 'yes' : 'no'}`);
   } catch (err) {
@@ -2606,6 +2783,45 @@ async function handleAutocomplete(interaction) {
     return interaction.respond(choices).catch(() => {});
   }
 
+  // /request-cancel title: — only the requester's own still-outstanding (pending/approved)
+  // requests. Once available or declined there's nothing left to withdraw.
+  if (interaction.commandName === 'request-cancel') {
+    const focusedTitle = interaction.options.getFocused(true);
+    if (focusedTitle.name !== 'title') return interaction.respond([]).catch(() => {});
+    const q = String(focusedTitle.value || '').toLowerCase().trim();
+    const rows = db.prepare("SELECT * FROM requests WHERE requested_by_discord_id = ? AND status IN ('pending', 'approved') ORDER BY id DESC LIMIT 500").all(interaction.user.id);
+    const seen = new Set();
+    const choices = [];
+    for (const r of rows) {
+      if (q && !String(r.title || '').toLowerCase().includes(q)) continue;
+      if (seen.has(r.media_id)) continue;
+      seen.add(r.media_id);
+      choices.push({ name: `${r.title} · ${r.status}`.slice(0, 100), value: String(r.media_id).slice(0, 100) });
+      if (choices.length >= 25) break;
+    }
+    return interaction.respond(choices).catch(() => {});
+  }
+
+  // /report title: — only media that's actually available, since a playback/subtitle/audio
+  // problem can't exist before then. Anyone can report on anything available (not scoped to
+  // their own requests — the person who noticed the bad audio may not be who requested it).
+  if (interaction.commandName === 'report') {
+    const focusedTitle = interaction.options.getFocused(true);
+    if (focusedTitle.name !== 'title') return interaction.respond([]).catch(() => {});
+    const q = String(focusedTitle.value || '').toLowerCase().trim();
+    const rows = db.prepare("SELECT * FROM requests WHERE status = 'available' ORDER BY id DESC LIMIT 500").all();
+    const seen = new Set();
+    const choices = [];
+    for (const r of rows) {
+      if (q && !String(r.title || '').toLowerCase().includes(q)) continue;
+      if (seen.has(r.media_id)) continue;
+      seen.add(r.media_id);
+      choices.push({ name: r.title.slice(0, 100), value: String(r.media_id).slice(0, 100) });
+      if (choices.length >= 25) break;
+    }
+    return interaction.respond(choices).catch(() => {});
+  }
+
   // /stage title: — the whole library (anything with a file). /pin and /unpin match only what's
   // currently cached. The library fetch is raced against Discord's deadline: a cold cache may
   // yield no suggestions once, then it's warm.
@@ -2694,6 +2910,8 @@ async function handleSlashCommand(interaction) {
   if (n === 'audit') return handleAuditCommand(interaction);
   if (n === 'queue') return handleQueueCommand(interaction);
   if (n === 'request-status') return handleRequestStatusCommand(interaction);
+  if (n === 'request-cancel') return handleRequestCancelCommand(interaction);
+  if (n === 'report') return handleReportCommand(interaction);
   if (n === 'watching') return handleWatchingCommand(interaction);
   if (n === 'indexers') return handleIndexersCommand(interaction);
   if (n === 'debrid') return handleDebridCommand(interaction);
@@ -2707,6 +2925,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'stage-bulk') return handleStageBulkCommand(interaction);
   if (n === 'assign-server') return handleAssignServerCommand(interaction);
   if (n === 'me') return handleMeCommand(interaction);
+  if (n === 'stats') return handleStatsCommand(interaction);
   if (n === 'myrequests') return handleMyRequestsCommand(interaction);
   if (n === 'downloads') return handleDownloadsCommand(interaction);
   if (n === 'keep') return handleKeepCommand(interaction);
@@ -2772,6 +2991,83 @@ async function handleDownloadCommand(interaction) {
   await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
+// Keeps a Discord role in sync with actual Plex access — gated entirely on PLEX_MEMBER_ROLE_ID
+// so it's a no-op for deployments that haven't set one up. discord_id values here are sometimes
+// synthetic (plex_<id> rows for Plex friends never linked to Discord); isSnowflake filters those
+// out before ever touching the Discord API.
+async function grantMemberRole(discordId) {
+  if (!CONFIG.PLEX_MEMBER_ROLE_ID || !isSnowflake(discordId)) return;
+  try {
+    const guild = client.guilds.cache.get(CONFIG.DISCORD_GUILD_ID);
+    const member = await guild?.members.fetch(discordId).catch(() => null);
+    if (member && !member.roles.cache.has(CONFIG.PLEX_MEMBER_ROLE_ID)) {
+      await member.roles.add(CONFIG.PLEX_MEMBER_ROLE_ID);
+    }
+  } catch (err) {
+    log.warn(`Couldn't grant member role to ${discordId}: ${err.message}`);
+  }
+}
+
+async function revokeMemberRole(discordId) {
+  if (!CONFIG.PLEX_MEMBER_ROLE_ID || !isSnowflake(discordId)) return;
+  try {
+    const guild = client.guilds.cache.get(CONFIG.DISCORD_GUILD_ID);
+    const member = await guild?.members.fetch(discordId).catch(() => null);
+    if (member && member.roles.cache.has(CONFIG.PLEX_MEMBER_ROLE_ID)) {
+      await member.roles.remove(CONFIG.PLEX_MEMBER_ROLE_ID);
+    }
+  } catch (err) {
+    log.warn(`Couldn't revoke member role from ${discordId}: ${err.message}`);
+  }
+}
+
+// Full reconciliation pass: grants the role to everyone with real access and revokes it from
+// anyone who has it but shouldn't, so drift (a role added/removed by hand, a missed edge case)
+// self-heals instead of accumulating. Fetches the whole member list once, which is fine at the
+// private-server scale this bot targets.
+async function reconcilePlexMemberRoles() {
+  if (!CONFIG.PLEX_MEMBER_ROLE_ID) return { granted: 0, revoked: 0 };
+  const guild = client.guilds.cache.get(CONFIG.DISCORD_GUILD_ID);
+  const members = await guild?.members.fetch().catch(() => null);
+  if (!members) return { granted: 0, revoked: 0 };
+
+  // "Should have the role" is derived from Plex's own current friends list, not the local
+  // invited/overseerr_created flags — those only record that an invite was *sent* at some point,
+  // not whether it was ever accepted, and they don't move if access is later revoked outside the
+  // bot's own flows (directly in Plex, say). This is the same friends fetch /sync uses.
+  //
+  // A failed fetch must abort the whole reconciliation rather than fall back to an empty list —
+  // an empty friends list looks identical to "everyone lost access," which would revoke the role
+  // from every current holder on a transient Plex API outage.
+  let friendsData;
+  try {
+    const token = await getPlexToken();
+    friendsData = await plexApiGet('/api/v2/friends', token);
+  } catch (err) {
+    log.warn(`Role reconcile aborted — couldn't fetch the Plex friends list: ${err.message}`);
+    return { granted: 0, revoked: 0 };
+  }
+  const friends = Array.isArray(friendsData) ? friendsData : (friendsData.data || []);
+  const shouldHave = new Set();
+  for (const friend of friends) {
+    const match = friend.email ? getUserByCanonicalEmail(friend.email) : null;
+    if (match && isSnowflake(match.discord_id)) shouldHave.add(match.discord_id);
+  }
+
+  let granted = 0; let revoked = 0;
+  for (const member of members.values()) {
+    const has = member.roles.cache.has(CONFIG.PLEX_MEMBER_ROLE_ID);
+    const should = shouldHave.has(member.id);
+    try {
+      if (should && !has) { await member.roles.add(CONFIG.PLEX_MEMBER_ROLE_ID); granted++; }
+      else if (!should && has) { await member.roles.remove(CONFIG.PLEX_MEMBER_ROLE_ID); revoked++; }
+    } catch (err) {
+      log.warn(`Role reconcile failed for ${member.id}: ${err.message}`);
+    }
+  }
+  return { granted, revoked };
+}
+
 // The full Plex → Discord → Seerr chain for linking one person, shared by /link and the
 // /sync-fix links buttons. Absorbs a matching plex_ synthetic row, sends a Plex invite only if
 // they don't already have access, and reconciles Seerr: link the existing user (wiring the Discord
@@ -2812,6 +3108,7 @@ async function applyFullChainLink(discordId, email, username) {
     seerrStatus = '❌ failed — run /sync apply to retry';
   }
 
+  if (plexStatus.startsWith('✅')) grantMemberRole(discordId).catch(() => {});
   return { absorbed, plexStatus, seerrStatus };
 }
 
@@ -2842,6 +3139,7 @@ async function handleUnlinkCommand(interaction) {
   const record = getUserByDiscordId(target.id);
   if (!record) return interaction.reply({ content: '⚠️ Not in DB.', ephemeral: true });
   removeUser(target.id);
+  revokeMemberRole(target.id).catch(() => {});
   audit('user_unlinked', { actorDiscordId: interaction.user.id, targetDiscordId: target.id, email: record.email });
   await interaction.reply({ content: `✅ Removed ${target.tag} from DB. Plex access and the Seerr account were left untouched — revoke from the leave-notification button or the Plex/Seerr admin UIs if needed.`, ephemeral: true });
 }
@@ -2880,13 +3178,28 @@ async function handleRequestCommand(interaction) {
   // itself (requested there directly, already downloading, or already on Plex).
   const pendingDupe = db.prepare("SELECT * FROM requests WHERE media_id = ? AND is_4k = ? AND status = 'pending' LIMIT 1").get(`tmdb:${tmdbId}`, is4k ? 1 : 0);
   if (pendingDupe) {
-    const who = pendingDupe.requested_by_discord_id === interaction.user.id ? 'you' : 'someone else';
-    return interaction.editReply(`⏳ **${label}**${is4k ? ' (4K)' : ''} was already requested by ${who} and is waiting for admin approval — no need to request it again.`);
+    if (pendingDupe.requested_by_discord_id === interaction.user.id) {
+      return interaction.editReply(`⏳ **${label}**${is4k ? ' (4K)' : ''} was already requested by you and is waiting for admin approval — no need to request it again.`);
+    }
+    const added = addRequestSubscriber(subscriberKeyFor(tmdbId, is4k), interaction.user.id);
+    audit('request_subscribed', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, stage: 'gate' });
+    return interaction.editReply(added
+      ? `⏳ **${label}**${is4k ? ' (4K)' : ''} was already requested by someone else and is waiting for admin approval — already on the way. I'll DM you too when it lands.`
+      : `⏳ **${label}**${is4k ? ' (4K)' : ''} is already waiting for admin approval — you're already tracked for it.`);
   }
   const existing = await checkExistingSeerrMedia(mediaType, tmdbId, is4k);
   if (existing) {
     audit('media_request_duplicate', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, reason: existing });
-    return interaction.editReply(`ℹ️ **${label}**${is4k ? ' (4K)' : ''} is ${existing} — no need to request it again.${existing.includes('available on Plex') ? ' 🍿' : ' Use `/request-status` to track it.'}`);
+    if (existing.includes('available on Plex')) {
+      return interaction.editReply(`ℹ️ **${label}**${is4k ? ' (4K)' : ''} is ${existing} — no need to request it again. 🍿`);
+    }
+    // Already in Seerr's pipeline (requested/downloading) under someone else — subscribe instead
+    // of dead-ending; the MEDIA_AVAILABLE webhook fans the DM out to every subscriber.
+    const added = addRequestSubscriber(subscriberKeyFor(tmdbId, is4k), interaction.user.id);
+    audit('request_subscribed', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, stage: 'seerr' });
+    return interaction.editReply(added
+      ? `ℹ️ **${label}**${is4k ? ' (4K)' : ''} is ${existing} — already on the way. I'll DM you when it lands.`
+      : `ℹ️ **${label}**${is4k ? ' (4K)' : ''} is ${existing} — you're already tracked for it.`);
   }
 
   let seerrUserId = null;
@@ -2895,10 +3208,24 @@ async function handleRequestCommand(interaction) {
     return interaction.editReply('❌ No Seerr account is linked to you yet — ask an admin to run `/link` for you.');
   }
 
-  // Non-admins go through the bot-side approval gate: Seerr sees nothing until an admin clicks
-  // Approve (Seerr insta-approves anything the bot's admin API key creates, so approval has to
-  // happen here). Admins skip the gate — they'd only be approving themselves.
-  if (!isAdminInteraction(interaction)) {
+  const admin = isAdminInteraction(interaction);
+  // #80: a member with enough approved requests behind them skips the gate too — the gate's
+  // cost is admin attention, and that cost is worth paying for a new member, not someone who's
+  // made N reasonable requests already. 4K stays gated unconditionally regardless of trust (the
+  // AvistaZ pipeline has its own separate GRAB_MODE=approve gate later, so it doesn't need
+  // special-casing here).
+  const trustScore = admin ? 0 : getTrustScore(interaction.user.id);
+  const autoApprove = !admin && CONFIG.AUTO_APPROVE_AFTER_N_APPROVED > 0 && !is4k && trustScore >= CONFIG.AUTO_APPROVE_AFTER_N_APPROVED;
+
+  // Non-admins (and not auto-approved) go through the bot-side approval gate: Seerr sees nothing
+  // until an admin clicks Approve (Seerr insta-approves anything the bot's admin API key
+  // creates, so approval has to happen here).
+  if (!admin && !autoApprove) {
+    // Because every request is submitted with the admin API key, Seerr's own quota enforcement
+    // never sees the real requester — check it here instead so the fairness rule stays visible
+    // and self-enforcing rather than resting entirely on admin memory.
+    const quotaBlock = await quotaBlockReason(seerrUserId, interaction.user.id, mediaType);
+    if (quotaBlock) return interaction.editReply(quotaBlock);
     const payload = { discordId: interaction.user.id, email: row.email, seerrUserId, mediaType, tmdbId, is4k, label };
     const nonce = stashPendingRequest(payload);
     const posted = await postPendingRequestNotice(nonce, payload)
@@ -2914,6 +3241,13 @@ async function handleRequestCommand(interaction) {
       .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nWaiting for admin approval — you'll get a DM either way.`)] });
   }
 
+  // Quota still applies to an auto-approved request — trust skips the *admin*, not the fairness
+  // rule. (Admins bypass both; this block only reaches here for admin or auto-approve.)
+  if (autoApprove) {
+    const quotaBlock = await quotaBlockReason(seerrUserId, interaction.user.id, mediaType);
+    if (quotaBlock) return interaction.editReply(quotaBlock);
+  }
+
   try {
     const data = await createSeerrRequestAs(seerrUserId, mediaType, tmdbId, is4k);
     // Same media-key convention as the webhook handler, so the rows merge cleanly.
@@ -2927,19 +3261,35 @@ async function handleRequestCommand(interaction) {
       return interaction.editReply(`⚠️ Seerr accepted **${label}** (request #${data.id}) but ${verified.reason}.\nNothing will download until that's fixed — check the Seerr container logs from the last minute for the underlying error, then try again.`);
     }
     upsertRequest(data?.id, mediaKey, mediaType, is4k, label, interaction.user.id, 'approved');
-    // Admin self-requests skip the gate, so there's no "+ AvistaZ Fallback" button to click —
-    // pre-authorize the fallback automatically instead (the admin IS the person who'd click
-    // it), which also puts the arr tag on right away like a gate pre-auth does.
+    // Self-requests (admin or auto-approved) skip the gate, so there's no "+ AvistaZ Fallback"
+    // button to click — pre-authorize the fallback automatically instead, which also puts the
+    // arr tag on right away like a gate pre-auth does.
     const azPreAuth = canEscalate({ mediaType, is4k });
     if (azPreAuth) {
       recordEscalationWatch({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label, discordId: interaction.user.id, preAuthorized: true });
       tagPreAuthorizedMedia({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label })
         .catch(err => log.warn(`Approval-time AvistaZ tagging failed for ${label}: ${err.message}`));
     }
-    audit('media_requested', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seerrUserId, requestId: data?.id ?? null, azPreAuth });
+    if (autoApprove) {
+      const newScore = bumpTrustScore(interaction.user.id, 1);
+      audit('media_request_auto_approved', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seerrUserId, requestId: data?.id ?? null, trustScore: newScore });
+      // Visible, not blocking: admins see it happened and can one-click undo, but nothing waits
+      // on them.
+      const undoRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`trust_undo:${data?.id ?? ''}:${interaction.user.id}`).setLabel('Undo').setStyle(ButtonStyle.Danger),
+      );
+      notifyChannel('requests', {
+        embeds: [brandedEmbed(COLORS.INFO)
+          .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Auto-Approved`)
+          .setDescription(`**${label}** — <@${interaction.user.id}> has ${newScore} approved requests and skipped the gate.`)],
+        components: data?.id != null ? [undoRow] : [],
+      });
+    } else {
+      audit('media_requested', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seerrUserId, requestId: data?.id ?? null, azPreAuth });
+    }
     await interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Request Sent`)
-      .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — approved and grabbing it now! 🚀\nYou'll get a DM when it's on Plex.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(mediaType)}.` : ''}`)] });
+      .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — ${autoApprove ? 'auto-approved (you\'re a trusted requester) and grabbing it now! 🚀' : 'approved and grabbing it now! 🚀'}\nYou'll get a DM when it's on Plex.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(mediaType)}.` : ''}`)] });
   } catch (err) {
     // Seerr answered but said no (rejection body, or the created-nothing shapes from
     // createSeerrRequestAs) vs. never answered at all — show which, so "Couldn't reach Seerr"
@@ -3346,8 +3696,10 @@ async function handleSyncCommand(interaction) {
     }
   }
   const afterCount = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
-  audit('sync_changes_applied', { actorDiscordId: interaction.user.id, added, updated, repaired, beforeCount, afterCount });
-  await interaction.editReply(`${formatSyncPreview(preview, 'Apply completed.')}\n\nAdded to DB: ${added}\nOverseerr users created: ${updated}\nLinks repaired: ${repaired}`);
+  const roles = await reconcilePlexMemberRoles().catch(err => { log.warn(`Role reconcile failed: ${err.message}`); return { granted: 0, revoked: 0 }; });
+  audit('sync_changes_applied', { actorDiscordId: interaction.user.id, added, updated, repaired, beforeCount, afterCount, rolesGranted: roles.granted, rolesRevoked: roles.revoked });
+  const roleLine = CONFIG.PLEX_MEMBER_ROLE_ID ? `\nMember role granted: ${roles.granted}\nMember role revoked: ${roles.revoked}` : '';
+  await interaction.editReply(`${formatSyncPreview(preview, 'Apply completed.')}\n\nAdded to DB: ${added}\nOverseerr users created: ${updated}\nLinks repaired: ${repaired}${roleLine}`);
 }
 
 // Store a long canonical-email key under a short deterministic handle so it fits Discord's 100-char customId limit.
@@ -3819,6 +4171,131 @@ async function handleRequestStatusCommand(interaction) {
     .setDescription(lines.join('\n'))] });
 }
 
+// /request-cancel — let a user withdraw their own request. Two cases: still held behind the
+// bot's own approval gate (nothing exists in Seerr yet — just drop the stash), or already
+// submitted to Seerr (DELETE the request there, which Seerr permits while it's still
+// pending/processing and refuses once the media is available).
+async function handleRequestCancelCommand(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const mediaId = String(interaction.options.getString('title') || '').trim();
+  const row = /^(tmdb|tvdb):\d+$/.test(mediaId)
+    ? db.prepare("SELECT * FROM requests WHERE media_id = ? AND requested_by_discord_id = ? AND status IN ('pending', 'approved') ORDER BY id DESC LIMIT 1").get(mediaId, interaction.user.id)
+    : db.prepare("SELECT * FROM requests WHERE title LIKE ? AND requested_by_discord_id = ? AND status IN ('pending', 'approved') ORDER BY id DESC LIMIT 1").get(`%${mediaId}%`, interaction.user.id);
+  if (!row) {
+    return interaction.editReply('❌ Nothing cancelable matches that — pick a suggestion from the list. Requests that are already available or declined can\'t be withdrawn.');
+  }
+
+  // #75: cancelling shouldn't cancel it for other people who also asked for it — hand the
+  // request off to the next subscriber instead of dropping it, when there is one. Subscribers
+  // are keyed by the real tmdbId, which is NOT the same as row.media_id once a TV request is
+  // approved (that becomes tvdb:<id>) — resolveTmdbId() finds the tmdb:-keyed sibling row for
+  // that case instead of misreading the tvdb id as a tmdbId.
+  const tmdbId = resolveTmdbId(row);
+  const subscriberKey = tmdbId != null ? subscriberKeyFor(tmdbId, !!row.is_4k) : null;
+  const [heirId] = subscriberKey ? listRequestSubscribers(subscriberKey) : [];
+  const heirUser = heirId ? getUserByDiscordId(heirId) : null;
+
+  if (row.status === 'pending') {
+    const nonce = findPendingRequestNonce(interaction.user.id, row.media_type, tmdbId, !!row.is_4k);
+    const pending = nonce ? takePendingRequest(nonce) : null;
+    if (pending && heirUser) {
+      let heirSeerrUserId = null;
+      try { heirSeerrUserId = await resolveSeerrUserId(heirUser); } catch (_e) {}
+      if (heirSeerrUserId != null) {
+        restashPendingRequest(nonce, { ...pending, discordId: heirId, email: heirUser.email, seerrUserId: heirSeerrUserId });
+        db.prepare('UPDATE requests SET requested_by_discord_id = ? WHERE id = ?').run(heirId, row.id);
+        db.prepare('DELETE FROM request_subscribers WHERE media_id = ? AND discord_id = ?').run(subscriberKey, heirId);
+        audit('request_handed_off', { actorDiscordId: interaction.user.id, targetDiscordId: heirId, title: row.title, mediaId: row.media_id, stage: 'gate' });
+        notifyChannel('requests', `↩️ <@${interaction.user.id}> withdrew their request for **${row.title}**${row.is_4k ? ' (4K)' : ''} — handed off to <@${heirId}>, who also wanted it. Still awaiting approval.`);
+        return interaction.editReply(`↩️ Withdrew your request for **${row.title}**${row.is_4k ? ' (4K)' : ''} — handed off to another member who wanted it too, so it's still pending approval.`);
+      }
+    }
+    // No one to hand off to (or the heir couldn't be resolved in Seerr) — drop it for real.
+    db.prepare("UPDATE requests SET status = 'cancelled' WHERE id = ?").run(row.id);
+    audit('request_cancelled_by_user', { actorDiscordId: interaction.user.id, title: row.title, mediaId: row.media_id, stage: 'gate' });
+    notifyChannel('requests', `↩️ <@${interaction.user.id}> withdrew their own request for **${row.title}**${row.is_4k ? ' (4K)' : ''} before it was reviewed.`);
+    return interaction.editReply(`↩️ Withdrew your request for **${row.title}**${row.is_4k ? ' (4K)' : ''} — it never reached an admin.`);
+  }
+
+  // 'approved' — already submitted to Seerr. If someone else is subscribed, just reassign local
+  // ownership to them (the Seerr request itself stays exactly as it is — nothing to resubmit).
+  if (heirId) {
+    db.prepare('UPDATE requests SET requested_by_discord_id = ? WHERE id = ?').run(heirId, row.id);
+    db.prepare('DELETE FROM request_subscribers WHERE media_id = ? AND discord_id = ?').run(subscriberKey, heirId);
+    audit('request_handed_off', { actorDiscordId: interaction.user.id, targetDiscordId: heirId, title: row.title, mediaId: row.media_id, stage: 'seerr' });
+    notifyChannel('requests', `↩️ <@${interaction.user.id}> stepped back from **${row.title}**${row.is_4k ? ' (4K)' : ''} — handed off to <@${heirId}>, who also wanted it. Still on its way.`);
+    return interaction.editReply(`↩️ Stepped back from **${row.title}**${row.is_4k ? ' (4K)' : ''} — handed off to another member who wanted it too.`);
+  }
+
+  // Let Seerr be the source of truth on whether it can still be pulled back (it refuses once
+  // the media is available/partially available).
+  if (!row.overseerr_request_id) {
+    return interaction.editReply('❌ Can\'t cancel this one — it\'s already downloading or on Plex.');
+  }
+  try {
+    await deleteOverseerrRequest(row.overseerr_request_id);
+  } catch (err) {
+    audit('external_api_error', { actorDiscordId: interaction.user.id, provider: 'overseerr', action: 'cancel_request', requestId: row.overseerr_request_id, error: err.message });
+    return interaction.editReply(`❌ Couldn't cancel **${row.title}** — it's likely already downloading. (${err.response?.status === 403 ? 'Seerr refused the delete' : err.message})`);
+  }
+  db.prepare("UPDATE requests SET status = 'cancelled' WHERE id = ?").run(row.id);
+  audit('request_cancelled_by_user', { actorDiscordId: interaction.user.id, title: row.title, mediaId: row.media_id, stage: 'seerr', overseerrRequestId: row.overseerr_request_id });
+  notifyChannel('requests', `↩️ <@${interaction.user.id}> cancelled their own request for **${row.title}**${row.is_4k ? ' (4K)' : ''}.`);
+  return interaction.editReply(`↩️ Cancelled **${row.title}**${row.is_4k ? ' (4K)' : ''}.`);
+}
+
+const ISSUE_TYPE_LABELS = { 1: 'Video', 2: 'Audio', 3: 'Subtitle', 4: 'Other' };
+
+// /report — files a problem with existing media straight into Seerr's own Issues feature
+// (POST /api/v1/issue), so it lands where the admin already manages media instead of as
+// unstructured Discord chatter they have to notice and remember.
+async function handleReportCommand(interaction) {
+  const linked = getUserByDiscordId(interaction.user.id);
+  if (!linked) return interaction.reply({ content: '❌ You need to be linked first — ask an admin to run `/link` for you.', ephemeral: true });
+  await interaction.deferReply({ ephemeral: true });
+
+  const mediaId = String(interaction.options.getString('title') || '').trim();
+  const issueType = Number(interaction.options.getString('type'));
+  const details = String(interaction.options.getString('details') || '').trim().slice(0, 1000);
+
+  const row = /^(tmdb|tvdb):\d+$/.test(mediaId)
+    ? db.prepare("SELECT * FROM requests WHERE media_id = ? AND status = 'available' ORDER BY id DESC LIMIT 1").get(mediaId)
+    : db.prepare("SELECT * FROM requests WHERE title LIKE ? AND status = 'available' ORDER BY id DESC LIMIT 1").get(`%${mediaId}%`);
+  if (!row) return interaction.editReply('❌ Nothing available matches that — pick a suggestion from the list.');
+
+  let seerrUserId = null;
+  try { seerrUserId = await resolveSeerrUserId(linked); } catch (_e) {}
+  if (seerrUserId == null) return interaction.editReply('❌ No Seerr account is linked to you yet — ask an admin to run `/link` for you.');
+
+  // Prefer resolving via the known Seerr request id — it needs no tmdb/tvdb reasoning and works
+  // for TV, where the locally-tracked media_id is often tvdb:<id> (Seerr's tvdbId), not a tmdbId.
+  // fetchSeerrTvdbId() converts the other direction (tmdb → tvdb) and would silently misresolve
+  // if fed a tvdb id here, so it's only used as a last resort for movies (always tmdb:-keyed).
+  let seerrMediaId = row.overseerr_request_id != null ? await fetchSeerrMediaIdByRequest(row.overseerr_request_id) : null;
+  if (seerrMediaId == null && row.media_id.startsWith('tmdb:')) {
+    seerrMediaId = await fetchSeerrMediaId(row.media_type, Number(row.media_id.split(':')[1]));
+  }
+  if (seerrMediaId == null) {
+    return interaction.editReply(`❌ Couldn't find **${row.title}** in Seerr to attach the report to. Let an admin know directly.`);
+  }
+
+  try {
+    await createSeerrIssue(seerrMediaId, issueType, details, seerrUserId);
+  } catch (err) {
+    audit('external_api_error', { actorDiscordId: interaction.user.id, provider: 'overseerr', action: 'create_issue', error: err.message, mediaId: row.media_id });
+    return interaction.editReply(`❌ Couldn't file the report: ${err.response?.data?.message || err.message}`);
+  }
+  audit('issue_reported', { actorDiscordId: interaction.user.id, title: row.title, mediaId: row.media_id, issueType: ISSUE_TYPE_LABELS[issueType] });
+  notifyChannel('requests', { embeds: [brandedEmbed(COLORS.WARN)
+    .setTitle(`🛠️ Issue Reported — ${row.title}`)
+    .setDescription(details)
+    .addFields(
+      { name: 'Reported by', value: `<@${interaction.user.id}>`, inline: true },
+      { name: 'Type', value: ISSUE_TYPE_LABELS[issueType], inline: true },
+    )] });
+  return interaction.editReply(`✅ Reported a **${ISSUE_TYPE_LABELS[issueType].toLowerCase()}** issue with **${row.title}** — an admin will take a look.`);
+}
+
 // /watching — live Plex sessions via Tautulli.
 async function handleWatchingCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
@@ -4261,7 +4738,13 @@ async function handleMeCommand(interaction) {
       .setTitle('👤 Not Linked Yet')
       .setDescription('You aren\'t linked to a Plex account yet.\nDM me your Plex email to request access!')], ephemeral: true });
   }
+  await interaction.deferReply({ ephemeral: true });
   const requestCount = db.prepare('SELECT COUNT(*) AS c FROM requests WHERE requested_by_discord_id = ?').get(interaction.user.id).c;
+  let quota = null;
+  if (row.overseerr_user_id != null) {
+    try { quota = await fetchUserQuota(row.overseerr_user_id); } catch (_e) {}
+  }
+  const quotaLines = [quotaLine(quota, 'movie'), quotaLine(quota, 'tv')].filter(Boolean);
   const homeServer = row.home_server === 'ph' ? 'Philippines' : 'Main';
   const accessReady = !!(row.invited && row.overseerr_created);
   const checklist = [
@@ -4284,18 +4767,117 @@ async function handleMeCommand(interaction) {
       { name: 'Setup', value: checklist, inline: false },
       { name: 'Next step', value: nextStep, inline: false },
       { name: 'Total requests', value: `${requestCount}`, inline: true },
+      ...(quotaLines.length ? [{ name: 'Quota', value: quotaLines.join('\n'), inline: false }] : []),
+      ...(CONFIG.AUTO_APPROVE_AFTER_N_APPROVED > 0 ? [{ name: 'Standing', value: describeTrustStanding(interaction.user.id), inline: false }] : []),
     );
-  await interaction.reply({ embeds: [embed], ephemeral: true });
+  await interaction.editReply({ embeds: [embed] });
+}
+
+// #80: "12 approved requests" if not yet trusted, "auto-approved — 12 approved requests" once
+// past the threshold — gives members a reason to make good requests, and tells them why their
+// next /request might skip the gate.
+function describeTrustStanding(discordId) {
+  const score = getTrustScore(discordId);
+  const threshold = CONFIG.AUTO_APPROVE_AFTER_N_APPROVED;
+  if (score >= threshold) return `🚀 Auto-approved — ${score} approved request${score === 1 ? '' : 's'} (4K still needs admin approval)`;
+  return `${score} of ${threshold} approved requests until auto-approval`;
 }
 async function handleMyRequestsCommand(interaction) {
+  await interaction.deferReply({ ephemeral: true });
   const rows = db.prepare('SELECT * FROM requests WHERE requested_by_discord_id = ? ORDER BY id DESC LIMIT 15').all(interaction.user.id);
+  const cancelable = rows.some(r => r.status === 'pending' || r.status === 'approved');
   const embed = brandedEmbed(COLORS.INFO)
     .setTitle('🎬 Your Recent Requests')
     .setDescription(rows.length
       ? rows.map(r => `${requestStatusBadge(r.status)} — **${r.title}** (${mediaTypeLabel(r.media_type, r.is_4k)})`).join('\n')
       : 'No requests yet. Request something in Overseerr and it\'ll show up here!');
-  await interaction.reply({ embeds: [embed], ephemeral: true });
+  const user = getUserByDiscordId(interaction.user.id);
+  if (user?.overseerr_user_id != null) {
+    let quota = null;
+    try { quota = await fetchUserQuota(user.overseerr_user_id); } catch (_e) {}
+    const quotaLines = [quotaLine(quota, 'movie'), quotaLine(quota, 'tv')].filter(Boolean);
+    if (quotaLines.length) embed.addFields({ name: 'Quota', value: quotaLines.join('\n'), inline: false });
+  }
+  if (cancelable) embed.setFooter({ text: 'Changed your mind about one? Use /request-cancel.' });
+  await interaction.editReply({ embeds: [embed] });
 }
+
+function startOfMonthIso() {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString();
+}
+
+// Personal-only by default: a "top watcher" leaderboard is fun in a family server and
+// uncomfortable in a wider one, so this never surfaces anyone else's numbers.
+async function buildPersonalStatsEmbed(discordId) {
+  const since = startOfMonthIso();
+  const requestCount = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE requested_by_discord_id = ? AND created_at >= ? AND status != 'cancelled'").get(discordId, since).c;
+  const embed = brandedEmbed(COLORS.INFO).setTitle('📊 Your Stats This Month')
+    .addFields({ name: 'Requests', value: `${requestCount}`, inline: true });
+
+  const user = getUserByDiscordId(discordId);
+  if (tautulliConfigured() && user?.plex_username) {
+    try {
+      const data = await tautulliApi('get_history', { user: user.plex_username, after: since.slice(0, 10), length: 2000 });
+      const rows = (data?.data || []).filter(r => r.media_type !== 'track');
+      const titles = new Set(rows.map(r => ['episode', 'season', 'show'].includes(r.media_type) ? r.grandparent_title : r.title));
+      embed.addFields(
+        { name: 'Plays', value: `${rows.length}`, inline: true },
+        { name: 'Distinct titles', value: `${titles.size}`, inline: true },
+      );
+    } catch (err) {
+      log.warn(`Personal stats Tautulli lookup failed: ${err.message}`);
+    }
+  }
+  return embed;
+}
+
+// Server-wide view, reused by /stats server:true and the scheduled monthly recap. Kept
+// anonymous by default (no per-member breakdown) other than top requesters, which is closer to
+// a leaderboard than a privacy concern in a private server the same way personal watch time is.
+async function buildServerStatsEmbed({ sinceIso, periodLabel }) {
+  const since = sinceIso || startOfMonthIso();
+  // Counts primary-recipient availability DMs only (not the #75 subscriber fan-out copies, which
+  // are tagged {subscriber:true}), so a popular title with several subscribers isn't overcounted.
+  const titlesAdded = db.prepare(
+    "SELECT COUNT(*) AS c FROM audit_log WHERE action = 'media_available_notification_sent' AND created_at >= ? AND (metadata_json IS NULL OR metadata_json NOT LIKE '%\"subscriber\":true%')",
+  ).get(since).c;
+  const topRequesters = db.prepare(
+    "SELECT requested_by_discord_id AS id, COUNT(*) AS c FROM requests WHERE created_at >= ? AND status != 'cancelled' AND requested_by_discord_id IS NOT NULL GROUP BY requested_by_discord_id ORDER BY c DESC LIMIT 5",
+  ).all(since);
+
+  const embed = brandedEmbed(COLORS.SUCCESS).setTitle(`📊 Server Stats — ${periodLabel || 'This Month'}`)
+    .addFields({ name: 'Titles added', value: `${titlesAdded}`, inline: true });
+
+  if (topRequesters.length) {
+    embed.addFields({ name: 'Top requesters', value: topRequesters.map(r => `<@${r.id}> — ${r.c}`).join('\n'), inline: false });
+  }
+
+  if (tautulliConfigured()) {
+    try {
+      const days = Math.max(1, Math.ceil((Date.now() - Date.parse(since)) / 86400000));
+      const history = await fetchHistory(undefined, { afterDays: days, length: 5000 });
+      const mostWatched = [...history].sort((a, b) => b.plays - a.plays).slice(0, 5);
+      if (mostWatched.length) {
+        embed.addFields({ name: 'Most watched', value: mostWatched.map(h => `${h.title} — ${h.plays} play${h.plays === 1 ? '' : 's'}`).join('\n'), inline: false });
+      }
+    } catch (err) {
+      log.warn(`Server stats Tautulli lookup failed: ${err.message}`);
+    }
+  }
+  return embed;
+}
+
+async function handleStatsCommand(interaction) {
+  const wantsServer = interaction.options.getBoolean('server');
+  if (wantsServer && !isAdminInteraction(interaction)) {
+    return interaction.reply({ content: '❌ Server-wide stats are admin only — try `/stats` for your own.', ephemeral: true });
+  }
+  await interaction.deferReply({ ephemeral: !wantsServer });
+  const embed = wantsServer ? await buildServerStatsEmbed({}) : await buildPersonalStatsEmbed(interaction.user.id);
+  await interaction.editReply({ embeds: [embed] });
+}
+
 async function handleDownloadsCommand(interaction) {
   const rows = db.prepare('SELECT title, expires_at, one_time_use, created_at, revoked FROM download_tokens WHERE discord_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 20').all(interaction.user.id, Date.now());
   const active = rows.filter(r => !r.revoked);
@@ -4476,6 +5058,9 @@ async function handleHelpCommand(interaction) {
   const userCommands = [
     '`/request` — Search and request a movie or show; an admin approves it in Discord',
     '`/request-status` — Check why a request isn\'t ready yet',
+    '`/request-cancel` — Withdraw one of your own pending or awaiting-download requests',
+    '`/report` — Report a problem with something already on Plex (wrong subtitles, bad audio, etc.)',
+    '`/stats` — Your watch/request stats this month',
     '`/download` — Get a secure download link for a movie or episode',
     '`/me` — Show your linked profile and access status',
     '`/myrequests` — Show your recent Seerr requests',
@@ -5040,8 +5625,31 @@ async function handleButton(interaction) {
     return interaction.showModal(modal);
   }
 
-  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'adopt_do', 'adopt_bulk', 'adopt_cancel'].includes(action) && !isAdminInteraction(interaction)) {
+  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'trust_undo', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'adopt_do', 'adopt_bulk', 'adopt_cancel'].includes(action) && !isAdminInteraction(interaction)) {
     return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+  }
+
+  // One-click undo for an auto-approved request (#80) — pulls it back the same way
+  // /request-cancel does, and resets the requester's trust the same as a manual denial would.
+  if (action === 'trust_undo') {
+    const [requestId, targetDiscordId] = parts;
+    await interaction.deferUpdate();
+    if (requestId) {
+      try { await deleteOverseerrRequest(requestId); }
+      catch (err) {
+        audit('external_api_error', { actorDiscordId: interaction.user.id, provider: 'overseerr', action: 'trust_undo', requestId, error: err.message });
+        return interaction.followUp({ content: `❌ Couldn't undo — Seerr refused the delete (likely already downloading): ${err.response?.data?.message || err.message}`, ephemeral: true });
+      }
+    }
+    db.prepare("UPDATE requests SET status = 'cancelled' WHERE overseerr_request_id = ?").run(requestId || null);
+    resetTrustScore(targetDiscordId);
+    audit('media_request_auto_approve_undone', { actorDiscordId: interaction.user.id, targetDiscordId, requestId });
+    await dmUser(targetDiscordId, { embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle('Request Undone')
+      .setDescription('An admin undid one of your auto-approved requests. Your trusted-requester standing was reset — future requests go through the normal approval gate again.')] });
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle('↩️ Auto-Approval Undone')
+      .setDescription(`Undone by <@${interaction.user.id}>. <@${targetDiscordId}>'s trust was reset.`)], components: [] });
   }
 
   if (action === 'plex_approve') {
@@ -5052,6 +5660,7 @@ async function handleButton(interaction) {
     let plexStatus = 'failed'; let overseerrStatus = 'failed'; let plexOk = false;
     try { const result = await inviteUserToPlex(user.email, { homeServer: homeServerFor(targetDiscordId) }); plexOk = result.successCount > 0; if (plexOk) markUserInvited(targetDiscordId); plexStatus = `ok (${result.successCount}/${result.total})`; } catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId }); }
     try { const du = await client.users.fetch(targetDiscordId); const oid = await createOverseerrUser(user.email, targetDiscordId, du.username); markOverseerrCreated(targetDiscordId, oid); overseerrStatus = `ok (${oid})`; } catch (err) { audit('external_api_error', { provider: 'overseerr', error: err.message, targetDiscordId }); }
+    if (plexOk) grantMemberRole(targetDiscordId).catch(() => {});
     audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: 'plex_approve' });
     // The welcome DM promises a confirmation — deliver it.
     await dmUser(targetDiscordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
@@ -5100,6 +5709,7 @@ async function handleButton(interaction) {
     const pending = takePendingRequest(parts[0]);
     if (!pending) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
     upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'declined');
+    resetTrustScore(pending.discordId);
     audit('request_denied_gate', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label });
     await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.DANGER)
       .setTitle('Request Declined')
@@ -5248,6 +5858,7 @@ async function handleButton(interaction) {
     try { const r = await removePlexAccess(user.email); removed = r.removed; }
     catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId: discordId }); }
     removeUser(discordId);
+    revokeMemberRole(discordId).catch(() => {});
     audit('user_unlinked', { actorDiscordId: interaction.user.id, targetDiscordId: discordId, email: user.email, removed, source: 'revoke_plex_button' });
     return interaction.editReply({ content: `🗑️ Revoked Plex for <@${discordId}> (${user.email}) and removed from DB. Removed: ${removed ? 'yes' : 'no'}.`, components: [] });
   }
@@ -5773,6 +6384,8 @@ function dashboardAuth(req, res, next) {
   return next();
 }
 
+let httpServer = null;
+
 function startExpressServer() {
   const app = express();
   app.disable('x-powered-by');
@@ -5813,31 +6426,59 @@ function startExpressServer() {
   app.post('/webhook/overseerr', upload.any(), async (req, res) => {
     if (CONFIG.WEBHOOK_SECRET && !safeEqual(req.headers['x-webhook-secret'], CONFIG.WEBHOOK_SECRET)) return res.status(401).json({ error: 'Unauthorized' });
     res.sendStatus(200);
+    let eventKey;
     try {
       let body = req.body;
       if (typeof body.payload === 'string') body = JSON.parse(body.payload);
+      eventKey = webhookEventKey('overseerr', body);
+      if (!recordWebhookEvent(eventKey, 'overseerr')) {
+        audit('webhook_duplicate', { source: 'overseerr', type: body.notification_type });
+        return;
+      }
       audit('webhook_received', { source: 'overseerr', type: body.notification_type });
       await handleOverseerrWebhook(body);
-    } catch (err) { audit('external_api_error', { provider: 'overseerr_webhook', error: err.message }); }
+    } catch (err) {
+      // Un-claim on failure so a genuine redelivery isn't silently swallowed for the rest of the
+      // dedupe window — only a successfully processed event should stay deduped.
+      if (eventKey) forgetWebhookEvent(eventKey);
+      audit('external_api_error', { provider: 'overseerr_webhook', error: err.message });
+    }
   });
 
   app.post('/webhook/plex', upload.any(), async (req, res) => {
     if (CONFIG.WEBHOOK_SECRET && !safeEqual(req.headers['x-webhook-secret'], CONFIG.WEBHOOK_SECRET)) return res.status(401).json({ error: 'Unauthorized' });
     res.sendStatus(200);
+    let eventKey;
     try {
       const payload = JSON.parse(req.body.payload || '{}');
+      eventKey = webhookEventKey('plex', payload);
+      if (!recordWebhookEvent(eventKey, 'plex')) {
+        audit('webhook_duplicate', { source: 'plex', event: payload.event });
+        return;
+      }
       audit('webhook_received', { source: 'plex', event: payload.event });
       await handlePlexWebhook(payload);
-    } catch (err) { audit('external_api_error', { provider: 'plex_webhook', error: err.message }); }
+    } catch (err) {
+      if (eventKey) forgetWebhookEvent(eventKey);
+      audit('external_api_error', { provider: 'plex_webhook', error: err.message });
+    }
   });
 
   app.post('/webhook/tautulli', async (req, res) => {
     if (CONFIG.TAUTULLI_WEBHOOK_SECRET && !safeEqual(req.headers['x-tautulli-secret'], CONFIG.TAUTULLI_WEBHOOK_SECRET)) return res.status(401).json({ error: 'Unauthorized' });
     res.sendStatus(200);
+    let eventKey;
     try {
-      audit('webhook_received', { source: 'tautulli', event: req.body?.event });
-      await handleTautulliWebhook(req.body || {});
+      const body = req.body || {};
+      eventKey = webhookEventKey('tautulli', body);
+      if (!recordWebhookEvent(eventKey, 'tautulli')) {
+        audit('webhook_duplicate', { source: 'tautulli', event: body.event });
+        return;
+      }
+      audit('webhook_received', { source: 'tautulli', event: body.event });
+      await handleTautulliWebhook(body);
     } catch (err) {
+      if (eventKey) forgetWebhookEvent(eventKey);
       audit('external_api_error', { provider: 'tautulli_webhook', error: err.message });
     }
   });
@@ -6320,7 +6961,7 @@ function startExpressServer() {
     res.status(500).json({ error: 'Internal Server Error' });
   });
 
-  app.listen(CONFIG.PORT, () => log.ok(`Express server listening on port ${CONFIG.PORT}`));
+  httpServer = app.listen(CONFIG.PORT, () => log.ok(`Express server listening on port ${CONFIG.PORT}`));
 }
 
 // Resolve who actually made an Overseerr request.
@@ -6464,6 +7105,7 @@ async function handleOverseerrWebhook(body) {
     if (poster) embed.setThumbnail(poster);
     await dmUser(requesterDiscordId, { embeds: [embed] });
   }
+  if (notification_type === 'MEDIA_DECLINED' && media.tmdbId != null) clearRequestSubscribers(subscriberKeyFor(media.tmdbId, is4k));
 
   if (notification_type === 'MEDIA_FAILED') {
     const embed = brandedEmbed(COLORS.DANGER)
@@ -6493,6 +7135,43 @@ async function handleOverseerrWebhook(body) {
     if (poster) embed.setImage(poster);
     const sent = await dmUser(requesterDiscordId, { embeds: [embed] });
     if (sent) audit('media_available_notification_sent', { targetDiscordId: requesterDiscordId, title, autoStaged });
+  }
+
+  // Fan the same "it's ready" DM out to everyone who asked for this while it was already in
+  // flight (#75) — always keyed tmdb:<id> regardless of media type, since that's the identifier
+  // subscribers were recorded under. Runs even without a primary requesterDiscordId.
+  if (notification_type === 'MEDIA_AVAILABLE' && media.tmdbId != null) {
+    const subscriberKey = subscriberKeyFor(media.tmdbId, is4k);
+    const subscribers = listRequestSubscribers(subscriberKey).filter(id => id !== requesterDiscordId);
+    if (subscribers.length) {
+      const embed = brandedEmbed(COLORS.SUCCESS)
+        .setTitle('🍿 Now Available on Plex')
+        .setDescription(`**${title}** is ready to watch — enjoy!\n\nWant something else? Use \`/download\` or request more anytime.`);
+      if (poster) embed.setImage(poster);
+      for (const discordId of subscribers) {
+        const sent = await dmUser(discordId, { embeds: [embed] });
+        if (sent) audit('media_available_notification_sent', { targetDiscordId: discordId, title, subscriber: true });
+      }
+    }
+    clearRequestSubscribers(subscriberKey);
+  }
+
+  // "What's new" — the bot receives every MEDIA_AVAILABLE event already; post it somewhere the
+  // whole community sees it instead of only DMing the requester(s). Keyed by mediaId (stable
+  // across seasons) rather than title text, so a show that lands in a few separate season drops
+  // within WHATS_NEW_GROUP_WINDOW_HOURS collapses into one post instead of one per season.
+  if (CONFIG.WHATS_NEW_ENABLED && notification_type === 'MEDIA_AVAILABLE') {
+    const lastPostKey = `whats_new_posted:${mediaId}`;
+    const last = Number(getSetting(lastPostKey) || '0');
+    if (Date.now() - last >= CONFIG.WHATS_NEW_GROUP_WINDOW_HOURS * 3600000) {
+      setSetting(lastPostKey, String(Date.now()));
+      const embed = brandedEmbed(COLORS.SUCCESS)
+        .setTitle(`${mediaTypeEmoji(media.media_type, is4k)} New on Plex`)
+        .setDescription(`**${title}** just landed${is4k ? ' in 4K' : ''} — go watch it! 🍿`);
+      if (poster) embed.setImage(poster);
+      notifyChannel('whats_new', { embeds: [embed] });
+      audit('whats_new_posted', { mediaId, title, is4k });
+    }
   }
 }
 
@@ -6700,11 +7379,51 @@ async function handlePhWatchedEvent({ event, mediaId, title, mediaType, watcherE
   audit('evict_prompt_sent', { mediaId, title: staged.title || title, targetDiscordId: targetId });
 }
 
-function shutdown(sig) {
+process.on('unhandledRejection', (reason) => {
+  const message = reason instanceof Error ? reason.stack || reason.message : String(reason);
+  log.error(`Unhandled rejection: ${message}`);
+  try { audit('unhandled_rejection', { error: reason instanceof Error ? reason.message : String(reason) }); } catch (_e) {}
+});
+
+// Node's default behavior for an uncaught exception (no handler at all) is to print it and
+// exit — installing this handler suppresses that, so it must still terminate the process itself.
+// "It is not safe to resume normal operation after 'uncaughtException'" per Node's own docs: the
+// error could have fired mid-mutation of shared state (a Map, an in-progress DB write), and
+// letting the bot keep running risks compounding that into something worse than a restart.
+// Exits nonzero so a process manager/Docker treats this as a crash, not a clean stop.
+process.on('uncaughtException', (err) => {
+  log.error(`Uncaught exception: ${err.stack || err.message}`);
+  try { audit('uncaught_exception', { error: err.message }); } catch (_e) {}
+  shutdown('uncaughtException', 1).catch(() => process.exit(1));
+});
+
+let shuttingDown = false;
+
+async function shutdown(sig, exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   log.info(`Received ${sig}, shutting down`);
-  try { db.pragma('wal_checkpoint(TRUNCATE)'); db.close(); } catch (_e) {}
-  try { client.destroy(); } catch (_e) {}
-  process.exit(0);
+
+  // Hard fallback: a stuck in-flight download stream must never block shutdown forever.
+  const hardTimeout = setTimeout(() => {
+    log.warn('Shutdown drain timed out, forcing exit');
+    process.exit(exitCode);
+  }, CONFIG.SHUTDOWN_DRAIN_SECONDS * 1000).unref();
+
+  // Stop accepting new HTTP connections first (webhooks, dashboard, in-flight /download/:token
+  // streams) and give existing ones up to SHUTDOWN_DRAIN_SECONDS to finish before moving on.
+  if (httpServer) {
+    await new Promise(resolve => httpServer.close(err => {
+      if (err) log.warn(`HTTP server close error: ${err.message}`);
+      resolve();
+    }));
+  }
+
+  try { await client.destroy(); } catch (err) { log.warn(`Discord client destroy error: ${err.message}`); }
+  try { db.pragma('wal_checkpoint(TRUNCATE)'); db.close(); } catch (err) { log.warn(`DB close error: ${err.message}`); }
+
+  clearTimeout(hardTimeout);
+  process.exit(exitCode);
 }
 ['SIGTERM', 'SIGINT'].forEach(s => process.on(s, () => shutdown(s)));
 
