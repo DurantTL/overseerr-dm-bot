@@ -13,6 +13,7 @@ const sandbox = loadSandbox(
     axios,
     crypto: require('crypto'),
     CONFIG: {
+      LOG_LEVEL: 'info', LOG_FORMAT: 'text',
       OVERSEERR_URL: '', OVERSEERR_API_KEY: 'k', ADMIN_CHANNEL_ID: 'ADMIN',
       TUNNEL_DOMAIN: 'x.example.com', WEBHOOK_SECRET: 's3cret', TAUTULLI_WEBHOOK_SECRET: 'tautulli-secret', ENABLE_DELETION: false, DELETION_DRY_RUN: true,
       DASHBOARD_ENABLED: false, DASHBOARD_ADMIN_PASSWORD: '', DASHBOARD_ADMIN_TOKEN: '',

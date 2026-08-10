@@ -100,6 +100,7 @@ See `.env.example` for full values.
   the internet, live deletion or not; startup fails closed if either secret is blank.
 
 ### Optional (code)
+- `LOG_LEVEL` (default `info`; `debug`/`info`/`warn`/`error`) — anything below the configured level is dropped. `LOG_FORMAT` (default `text`; `text`/`json`) — `json` emits one `{ts, level, msg}` object per line for shipping to something like Loki/ELK/CloudWatch instead of the default human-readable console format.
 - `RADARR_URL`, `RADARR_API_KEY`
 - `RADARR_4K_URL`, `RADARR_4K_API_KEY`
 - `SONARR_URL`, `SONARR_API_KEY`

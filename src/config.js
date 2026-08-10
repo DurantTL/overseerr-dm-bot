@@ -9,6 +9,10 @@ function parseBool(v, fallback = false) {
 }
 
 const CONFIG = {
+  // Logging: level filters what gets emitted (debug < info < warn < error); format switches
+  // between the human-readable default and single-line JSON for log shippers (Loki/ELK/CloudWatch).
+  LOG_LEVEL: (process.env.LOG_LEVEL || 'info').toLowerCase(),
+  LOG_FORMAT: (process.env.LOG_FORMAT || 'text').toLowerCase(),
   DISCORD_BOT_TOKEN: process.env.DISCORD_BOT_TOKEN,
   DISCORD_CLIENT_ID: process.env.DISCORD_CLIENT_ID,
   DISCORD_GUILD_ID: process.env.DISCORD_GUILD_ID,
@@ -319,6 +323,12 @@ function validateConfig() {
 // to the system channel after connect, so a dangerous combo can't sit unnoticed.
 function configWarnings() {
   const warnings = [];
+  if (!['debug', 'info', 'warn', 'error'].includes(CONFIG.LOG_LEVEL)) {
+    warnings.push(`\`LOG_LEVEL=${CONFIG.LOG_LEVEL}\` is not a valid level (use \`debug\`, \`info\`, \`warn\`, or \`error\`) — treating it as \`info\`.`);
+  }
+  if (!['text', 'json'].includes(CONFIG.LOG_FORMAT)) {
+    warnings.push(`\`LOG_FORMAT=${CONFIG.LOG_FORMAT}\` is not a valid format (use \`text\` or \`json\`) — treating it as \`text\`.`);
+  }
   // WEBHOOK_SECRET/TAUTULLI_WEBHOOK_SECRET being blank while TUNNEL_DOMAIN is set is no longer
   // reachable here — validateConfig() now refuses to start in that case (see above).
   if (CONFIG.ENABLE_DELETION && !CONFIG.DELETION_DRY_RUN) {
