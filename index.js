@@ -6308,12 +6308,17 @@ function startExpressServer() {
 
   app.get('/', (_req, res) => res.send('Durant Media Server Bot is running.'));
 
+  // Terminal error handler: logs server-side and returns a generic body. Never falls through to
+  // Express's default handler, which includes the stack trace in the response whenever
+  // NODE_ENV !== 'production' — these routes are internet-reachable via TUNNEL_DOMAIN.
   app.use((err, req, res, next) => {
     if (err && err.name === 'MulterError') {
       log.warn(`Multer error on ${req.path}: ${err.message}`);
       return res.sendStatus(200);
     }
-    next(err);
+    log.error(`Unhandled error on ${req.method} ${req.path}: ${err && err.stack ? err.stack : err}`);
+    if (res.headersSent) return next(err);
+    res.status(500).json({ error: 'Internal Server Error' });
   });
 
   app.listen(CONFIG.PORT, () => log.ok(`Express server listening on port ${CONFIG.PORT}`));

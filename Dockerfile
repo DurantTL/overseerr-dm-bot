@@ -12,6 +12,11 @@ RUN apt-get update \
 
 WORKDIR /app
 
+# Disables Express's default error handler (which echoes stack traces into HTTP 500 responses)
+# and any other dev-mode behavior. Set before npm ci purely for clarity — npm ci --omit=dev
+# already skips devDependencies regardless of NODE_ENV.
+ENV NODE_ENV=production
+
 COPY package*.json ./
 RUN npm ci --omit=dev
 
