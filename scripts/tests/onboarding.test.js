@@ -153,3 +153,29 @@ test('onboarding: linkUserToEmail leaves unrelated users alone', () => {
 
   db.close();
 });
+
+test('onboarding: findConflictingRealUser flags a different real account already holding the email', () => {
+  const db = tempDb();
+  const sb = loadSandbox(['findConflictingRealUser'], { db, canonicalizeEmail });
+
+  db.prepare(`INSERT INTO users (discord_id, email, requested_at) VALUES ('other_real_user', 'shared@example.com', '2024-01-01T00:00:00Z')`).run();
+
+  const conflict = sb.run("findConflictingRealUser('999', 'shared@example.com')");
+  assert.strictEqual(conflict.discord_id, 'other_real_user');
+
+  db.close();
+});
+
+test('onboarding: findConflictingRealUser ignores plex_* placeholders, the caller\'s own row, and unrelated emails', () => {
+  const db = tempDb();
+  const sb = loadSandbox(['findConflictingRealUser'], { db, canonicalizeEmail });
+
+  db.prepare(`INSERT INTO users (discord_id, email, requested_at) VALUES ('plex_abc', 'shared@example.com', '2024-01-01T00:00:00Z')`).run();
+  db.prepare(`INSERT INTO users (discord_id, email, requested_at) VALUES ('999', 'own@example.com', '2024-01-01T00:00:00Z')`).run();
+
+  assert.strictEqual(sb.run("findConflictingRealUser('999', 'shared@example.com')"), null, 'a plex_* placeholder is not a conflict — it gets absorbed instead');
+  assert.strictEqual(sb.run("findConflictingRealUser('999', 'own@example.com')"), null, 'the caller\'s own row is never its own conflict');
+  assert.strictEqual(sb.run("findConflictingRealUser('999', 'nobody-has-this@example.com')"), null, 'no match at all');
+
+  db.close();
+});

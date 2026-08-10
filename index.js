@@ -27,7 +27,7 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
@@ -282,6 +282,13 @@ function markApprovalNoticePosted(requestId) {
   postedApprovalNotices.add(String(requestId));
   if (postedApprovalNotices.size > 500) postedApprovalNotices.delete(postedApprovalNotices.values().next().value);
 }
+
+// Discord IDs with a plex_approve/plex_deny click currently in flight. Unlike request_approve/
+// request_deny (which claim a nonce with an atomic SELECT+DELETE), this button acts straight on
+// the users table across several awaited API calls — without this, two admins double-clicking (or
+// one admin double-clicking) both pass the initial lookup before either finishes, producing
+// duplicate Plex invites / Seerr users / DMs for the same person.
+const plexGateInFlight = new Set();
 
 // "45m" / "1h 30m" — the escalation delay as shown in embeds and logs.
 const escalationDelayLabel = () => fmtDuration(CONFIG.ESCALATION_DELAY_MINUTES * 60000);
@@ -2675,6 +2682,18 @@ client.on('messageCreate', async message => {
     return;
   }
 
+  // Someone else's real (already-linked) Discord account already owns this email — don't create a
+  // second `users` row for the same address, since every canonical-email lookup after that (role
+  // sync, webhook DMs, escalation…) would arbitrarily pick one of the two and silently strand the
+  // other. Flag it for an admin instead of guessing.
+  const conflict = findConflictingRealUser(message.author.id, email);
+  if (conflict) {
+    audit('email_collision', { actorDiscordId: message.author.id, targetDiscordId: conflict.discord_id, email });
+    await message.reply('⚠️ That email is already linked to another Discord account here. If that wasn\'t you, please double-check the address — otherwise flag an admin to help sort it out.');
+    notifyChannel('admin', `⚠️ <@${message.author.id}> replied with \`${email}\`, which is already linked to <@${conflict.discord_id}>. Needs manual review before either account is approved.`);
+    return;
+  }
+
   // linkUserToEmail (not storeUserEmail) so an existing plex_ synthetic row with the same email is
   // absorbed instead of becoming a duplicate pair — e.g. an existing Plex friend joining Discord.
   linkUserToEmail(message.author.id, email);
@@ -3987,6 +4006,13 @@ async function handleModalSubmit(interaction) {
     return interaction.reply({ content: '❌ That doesn\'t look like a valid email address — click the button and try again.', ephemeral: true });
   }
   clearPendingEmail(interaction.user.id); // a DM ask may be outstanding; the modal supersedes it
+  const conflict = findConflictingRealUser(interaction.user.id, email);
+  if (conflict) {
+    audit('email_collision', { actorDiscordId: interaction.user.id, targetDiscordId: conflict.discord_id, email, source: 'request_access_button' });
+    await interaction.reply({ content: '⚠️ That email is already linked to another Discord account here. If that wasn\'t you, double-check the address — otherwise flag an admin to help sort it out.', ephemeral: true });
+    notifyChannel('admin', `⚠️ <@${interaction.user.id}> requested access with \`${email}\`, which is already linked to <@${conflict.discord_id}>. Needs manual review before either account is approved.`);
+    return;
+  }
   linkUserToEmail(interaction.user.id, email);
   audit('user_linked', { targetDiscordId: interaction.user.id, email, source: 'request_access_button' });
   await interaction.reply({ content: `✅ Thanks! Your request for \`${email}\` was sent to the admins. You'll get a DM as soon as you're approved.`, ephemeral: true });
@@ -5652,41 +5678,48 @@ async function handleButton(interaction) {
       .setDescription(`Undone by <@${interaction.user.id}>. <@${targetDiscordId}>'s trust was reset.`)], components: [] });
   }
 
-  if (action === 'plex_approve') {
+  if (action === 'plex_approve' || action === 'plex_deny') {
     const targetDiscordId = parts[0];
-    await interaction.deferUpdate();
-    const user = getUserByDiscordId(targetDiscordId);
-    if (!user) return interaction.editReply({ content: 'User not found.', components: [] });
-    let plexStatus = 'failed'; let overseerrStatus = 'failed'; let plexOk = false;
-    try { const result = await inviteUserToPlex(user.email, { homeServer: homeServerFor(targetDiscordId) }); plexOk = result.successCount > 0; if (plexOk) markUserInvited(targetDiscordId); plexStatus = `ok (${result.successCount}/${result.total})`; } catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId }); }
-    try { const du = await client.users.fetch(targetDiscordId); const oid = await createOverseerrUser(user.email, targetDiscordId, du.username); markOverseerrCreated(targetDiscordId, oid); overseerrStatus = `ok (${oid})`; } catch (err) { audit('external_api_error', { provider: 'overseerr', error: err.message, targetDiscordId }); }
-    if (plexOk) grantMemberRole(targetDiscordId).catch(() => {});
-    audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: 'plex_approve' });
-    // The welcome DM promises a confirmation — deliver it.
-    await dmUser(targetDiscordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
-      .setTitle('🎉 You\'re In!')
-      .setDescription(`Your access request was approved!\n\n${plexOk ? `📬 A Plex invite was sent to \`${user.email}\` — accept it and you're set.` : `⚠️ Your Plex invite to \`${user.email}\` hit a snag — an admin is on it.`}\n\nOnce you're in, use \`/help\` here to see everything I can do. 🍿`)] });
-    await interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
-      .setTitle('✅ Access Approved')
-      .addFields(
-        { name: 'User', value: `<@${targetDiscordId}>`, inline: true },
-        { name: 'Plex', value: plexStatus, inline: true },
-        { name: 'Seerr', value: overseerrStatus, inline: true },
-      )], components: [] });
-    return;
-  }
-
-  if (action === 'plex_deny') {
-    const targetDiscordId = parts[0];
-    removeUser(targetDiscordId);
-    audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: 'plex_deny' });
-    await dmUser(targetDiscordId, { embeds: [brandedEmbed(COLORS.DANGER)
-      .setTitle('Access Request Declined')
-      .setDescription('Sorry — your Plex access request was declined. Reach out to an admin if you think this was a mistake.')] });
-    await interaction.update({ embeds: [brandedEmbed(COLORS.DANGER)
-      .setTitle('🚫 Access Declined')
-      .setDescription(`Declined <@${targetDiscordId}>`)], components: [] });
-    return;
+    if (plexGateInFlight.has(targetDiscordId)) {
+      return interaction.reply({ content: '⏳ Already being processed by another click — hang tight.', ephemeral: true });
+    }
+    plexGateInFlight.add(targetDiscordId);
+    try {
+      if (action === 'plex_approve') {
+        await interaction.deferUpdate();
+        const user = getUserByDiscordId(targetDiscordId);
+        if (!user) return interaction.editReply({ content: 'User not found.', components: [] });
+        let plexStatus = 'failed'; let overseerrStatus = 'failed'; let plexOk = false;
+        try { const result = await inviteUserToPlex(user.email, { homeServer: homeServerFor(targetDiscordId) }); plexOk = result.successCount > 0; if (plexOk) markUserInvited(targetDiscordId); plexStatus = `ok (${result.successCount}/${result.total})`; } catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId }); }
+        try { const du = await client.users.fetch(targetDiscordId); const oid = await createOverseerrUser(user.email, targetDiscordId, du.username); markOverseerrCreated(targetDiscordId, oid); overseerrStatus = `ok (${oid})`; } catch (err) { audit('external_api_error', { provider: 'overseerr', error: err.message, targetDiscordId }); }
+        if (plexOk) grantMemberRole(targetDiscordId).catch(() => {});
+        audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: 'plex_approve' });
+        // The welcome DM promises a confirmation — deliver it.
+        await dmUser(targetDiscordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
+          .setTitle('🎉 You\'re In!')
+          .setDescription(`Your access request was approved!\n\n${plexOk ? `📬 A Plex invite was sent to \`${user.email}\` — accept it and you're set.` : `⚠️ Your Plex invite to \`${user.email}\` hit a snag — an admin is on it.`}\n\nOnce you're in, use \`/help\` here to see everything I can do. 🍿`)] });
+        await interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+          .setTitle('✅ Access Approved')
+          .addFields(
+            { name: 'User', value: `<@${targetDiscordId}>`, inline: true },
+            { name: 'Plex', value: plexStatus, inline: true },
+            { name: 'Seerr', value: overseerrStatus, inline: true },
+          )], components: [] });
+        return;
+      }
+      // plex_deny
+      removeUser(targetDiscordId);
+      audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: 'plex_deny' });
+      await dmUser(targetDiscordId, { embeds: [brandedEmbed(COLORS.DANGER)
+        .setTitle('Access Request Declined')
+        .setDescription('Sorry — your Plex access request was declined. Reach out to an admin if you think this was a mistake.')] });
+      await interaction.update({ embeds: [brandedEmbed(COLORS.DANGER)
+        .setTitle('🚫 Access Declined')
+        .setDescription(`Declined <@${targetDiscordId}>`)], components: [] });
+      return;
+    } finally {
+      plexGateInFlight.delete(targetDiscordId);
+    }
   }
 
   if (action === 'overseerr_approve') {
@@ -7007,6 +7040,13 @@ async function dmUser(discordId, payload) {
     await user.send(payload);
     return true;
   } catch (_e) {
+    // Mirrors the guildMemberAdd welcome-DM failure alert: every other dmUser caller (approval,
+    // denial, escalation, etc.) used to fail silently to stdout-only log.warn, so the requester
+    // could be approved/denied and never find out unless an admin happened to notice.
+    const title = payload?.embeds?.[0]?.data?.title;
+    notifyChannel('system', { embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle('⚠️ DM Failed')
+      .setDescription(`Couldn't DM <@${discordId}>${title ? ` — "${title}"` : ''} — they likely have server DMs turned off. Follow up another way if this was important.`)] });
     return false;
   }
 }
