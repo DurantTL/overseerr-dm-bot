@@ -42,6 +42,17 @@ function requestStatusBadge(status) {
 
 function discordTimestamp(ms, style = 'R') { return `<t:${Math.floor(ms / 1000)}:${style}>`; }
 
+// Formats one media type's slice of Overseerr's GET /user/{id}/quota response into a short
+// human line. A missing/zero limit means Overseerr has no quota configured for this user/type —
+// treated as unlimited (returns null) rather than shown as "0 left".
+function quotaLine(quota, mediaType) {
+  const q = quota?.[mediaType];
+  if (!q || !q.limit) return null;
+  const remaining = Number.isFinite(q.remaining) ? q.remaining : Math.max(0, q.limit - (q.used || 0));
+  const label = mediaType === 'tv' ? 'series' : 'movie';
+  return `${remaining} of ${q.limit} ${label} request${q.limit === 1 ? '' : 's'} left${q.days ? ` (resets every ${q.days}d)` : ''}`;
+}
+
 // Turns fetchReleaseEta()'s normalized info into a one-line human explanation of when the title
 // might become downloadable, or null when release timing adds nothing (released a while ago,
 // aired show with no upcoming episode). `waiting` is true when the title simply isn't out yet —
@@ -127,4 +138,4 @@ function queueItemLooksUnhealthy(item) {
   return item.trackedStatus === 'warning' || item.status === 'warning' || item.status === 'failed' || item.messages.length > 0;
 }
 
-module.exports = { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy };
+module.exports = { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy };

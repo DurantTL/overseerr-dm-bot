@@ -26,11 +26,11 @@ const crypto = require('crypto');
 
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
-const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
+const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
 const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, pruneWebhookEvents } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
-const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
+const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('./src/escalation');
@@ -243,10 +243,13 @@ function canEscalate({ mediaType, is4k }) {
 }
 
 // Post the Approve/Deny gate embed for a stashed /request to the requests channel.
-async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discordId, email }) {
+async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discordId, email, seerrUserId }) {
   const channel = await safeGetChannel(channelFor('requests'));
   if (!channel) return false;
   const azEligible = canEscalate({ mediaType, is4k });
+  let quota = null;
+  try { quota = await fetchUserQuota(seerrUserId); } catch (_e) {}
+  const quotaText = quotaLine(quota, mediaType);
   const embed = brandedEmbed(COLORS.INFO)
     .setTitle(`${mediaTypeEmoji(mediaType, is4k)} New Request`)
     .setDescription(`**${label}**${azEligible ? `\n-# "+ AvistaZ Fallback" pre-authorizes the private tracker if nothing public shows up within ${escalationDelayLabel()} — it then ${preAuthOutcomeLabel(mediaType)}.` : ''}`)
@@ -254,6 +257,7 @@ async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discord
       { name: 'Requested by', value: `<@${discordId}> · \`${email}\``, inline: true },
       { name: 'Type', value: mediaTypeLabel(mediaType, is4k), inline: true },
       { name: 'Status', value: '⏳ Awaiting approval', inline: true },
+      ...(quotaText ? [{ name: 'Requester quota', value: quotaText, inline: false }] : []),
     )
     .setFooter({ text: 'Durant Media Server · Not sent to Seerr until approved' });
   const buttons = [
@@ -2975,6 +2979,15 @@ async function handleRequestCommand(interaction) {
   // Approve (Seerr insta-approves anything the bot's admin API key creates, so approval has to
   // happen here). Admins skip the gate — they'd only be approving themselves.
   if (!isAdminInteraction(interaction)) {
+    // Because every request is submitted with the admin API key, Seerr's own quota enforcement
+    // never sees the real requester — check it here instead so the fairness rule stays visible
+    // and self-enforcing rather than resting entirely on admin memory.
+    let quota = null;
+    try { quota = await fetchUserQuota(seerrUserId); } catch (_e) {}
+    const q = quota?.[mediaType];
+    if (q && q.limit && (Number.isFinite(q.remaining) ? q.remaining : q.limit - (q.used || 0)) <= 0) {
+      return interaction.editReply(`❌ You're out of ${mediaType === 'tv' ? 'series' : 'movie'} request quota for now — ${quotaLine(quota, mediaType)}. Check \`/me\` for your current standing.`);
+    }
     const payload = { discordId: interaction.user.id, email: row.email, seerrUserId, mediaType, tmdbId, is4k, label };
     const nonce = stashPendingRequest(payload);
     const posted = await postPendingRequestNotice(nonce, payload)
@@ -4378,7 +4391,13 @@ async function handleMeCommand(interaction) {
       .setTitle('👤 Not Linked Yet')
       .setDescription('You aren\'t linked to a Plex account yet.\nDM me your Plex email to request access!')], ephemeral: true });
   }
+  await interaction.deferReply({ ephemeral: true });
   const requestCount = db.prepare('SELECT COUNT(*) AS c FROM requests WHERE requested_by_discord_id = ?').get(interaction.user.id).c;
+  let quota = null;
+  if (row.overseerr_user_id != null) {
+    try { quota = await fetchUserQuota(row.overseerr_user_id); } catch (_e) {}
+  }
+  const quotaLines = [quotaLine(quota, 'movie'), quotaLine(quota, 'tv')].filter(Boolean);
   const homeServer = row.home_server === 'ph' ? 'Philippines' : 'Main';
   const accessReady = !!(row.invited && row.overseerr_created);
   const checklist = [
@@ -4401,10 +4420,12 @@ async function handleMeCommand(interaction) {
       { name: 'Setup', value: checklist, inline: false },
       { name: 'Next step', value: nextStep, inline: false },
       { name: 'Total requests', value: `${requestCount}`, inline: true },
+      ...(quotaLines.length ? [{ name: 'Quota', value: quotaLines.join('\n'), inline: false }] : []),
     );
-  await interaction.reply({ embeds: [embed], ephemeral: true });
+  await interaction.editReply({ embeds: [embed] });
 }
 async function handleMyRequestsCommand(interaction) {
+  await interaction.deferReply({ ephemeral: true });
   const rows = db.prepare('SELECT * FROM requests WHERE requested_by_discord_id = ? ORDER BY id DESC LIMIT 15').all(interaction.user.id);
   const cancelable = rows.some(r => r.status === 'pending' || r.status === 'approved');
   const embed = brandedEmbed(COLORS.INFO)
@@ -4412,8 +4433,15 @@ async function handleMyRequestsCommand(interaction) {
     .setDescription(rows.length
       ? rows.map(r => `${requestStatusBadge(r.status)} — **${r.title}** (${mediaTypeLabel(r.media_type, r.is_4k)})`).join('\n')
       : 'No requests yet. Request something in Overseerr and it\'ll show up here!');
+  const user = getUserByDiscordId(interaction.user.id);
+  if (user?.overseerr_user_id != null) {
+    let quota = null;
+    try { quota = await fetchUserQuota(user.overseerr_user_id); } catch (_e) {}
+    const quotaLines = [quotaLine(quota, 'movie'), quotaLine(quota, 'tv')].filter(Boolean);
+    if (quotaLines.length) embed.addFields({ name: 'Quota', value: quotaLines.join('\n'), inline: false });
+  }
   if (cancelable) embed.setFooter({ text: 'Changed your mind about one? Use /request-cancel.' });
-  await interaction.reply({ embeds: [embed], ephemeral: true });
+  await interaction.editReply({ embeds: [embed] });
 }
 async function handleDownloadsCommand(interaction) {
   const rows = db.prepare('SELECT title, expires_at, one_time_use, created_at, revoked FROM download_tokens WHERE discord_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 20').all(interaction.user.id, Date.now());

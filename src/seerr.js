@@ -266,6 +266,17 @@ async function deleteOverseerrRequest(requestId) {
   return axios.delete(`${CONFIG.OVERSEERR_URL}/api/v1/request/${requestId}`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
 }
 
+// Overseerr's own per-user quota (movie/tv, each with days/limit/used/remaining). A limit of 0
+// (or a missing/malformed response) means unlimited — fail open rather than blocking a real
+// request on an API hiccup; the bot's own approval gate is still there as a backstop either way.
+async function fetchUserQuota(seerrUserId) {
+  const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/user/${seerrUserId}/quota`, {
+    headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY },
+    timeout: 8000,
+  });
+  return res.data || {};
+}
+
 async function fetchOverseerrUsers() {
   const users = [];
   const take = 100;
@@ -304,4 +315,4 @@ async function fetchSeerrRequests() {
   return requests;
 }
 
-module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchOverseerrUsers, fetchSeerrRequests };
+module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers, fetchSeerrRequests };
