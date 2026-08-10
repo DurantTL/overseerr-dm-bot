@@ -2418,13 +2418,19 @@ client.once('ready', async () => {
 });
 
 client.on('guildMemberAdd', async member => {
+  // Set the pending flag regardless of whether the DM lands, so that if this member has DMs
+  // disabled but later opens them (or messages the bot unsolicited), messageCreate still
+  // recognizes them as mid-onboarding instead of silently dropping their reply.
+  setPendingEmail(member.id);
   try {
     await member.send({ embeds: [brandedEmbed(COLORS.PLEX)
       .setTitle('👋 Welcome to Durant Media Server!')
       .setDescription('Glad to have you here! To request access, just **reply to this message with the email on your Plex account**.\n\nOnce an admin approves you, you\'ll get a Plex invite and a DM confirming you\'re all set. 🍿')] });
-    setPendingEmail(member.id);
   } catch (err) {
     log.warn(`Could not DM ${member.user.tag}: ${err.message}`);
+    notifyChannel('system', { embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle('⚠️ Welcome DM Failed')
+      .setDescription(`Couldn't DM <@${member.id}> (${member.user.tag}) — they likely have server DMs turned off, so the usual onboarding message never landed.\n\nPoint them at the **Request Plex Access** button instead (\`/invite-post\` if one isn't posted yet).`)] });
   }
 });
 
