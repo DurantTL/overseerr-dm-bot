@@ -288,6 +288,8 @@ const CONFIG = {
   WHATS_NEW_CHANNEL_ID: process.env.WHATS_NEW_CHANNEL_ID || null,
   // Multiple seasons of the same show becoming available close together collapse into one post.
   WHATS_NEW_GROUP_WINDOW_HOURS: Number.parseInt(process.env.WHATS_NEW_GROUP_WINDOW_HOURS || '20', 10),
+  // 0 = disabled (default), preserving today's behavior — every non-admin request is gated.
+  AUTO_APPROVE_AFTER_N_APPROVED: Number.parseInt(process.env.AUTO_APPROVE_AFTER_N_APPROVED || '0', 10),
   NEVER_DELETE_MEDIA_IDS: process.env.NEVER_DELETE_MEDIA_IDS ? process.env.NEVER_DELETE_MEDIA_IDS.split(',').map(s => s.trim()) : [],
 };
 

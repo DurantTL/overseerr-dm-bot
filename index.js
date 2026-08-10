@@ -27,7 +27,7 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers } = require('./src/db');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
@@ -312,6 +312,7 @@ async function handleGateApprove(interaction, nonce, { azPreAuth }) {
           .catch(err => log.warn(`Approval-time AvistaZ tagging failed for ${pending.label}: ${err.message}`));
       }
     }
+    bumpTrustScore(pending.discordId, 1);
     audit('request_approved_gate', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label, requestId: data?.id ?? null, azPreAuth });
     await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Request Approved`)
@@ -3102,10 +3103,19 @@ async function handleRequestCommand(interaction) {
     return interaction.editReply('❌ No Seerr account is linked to you yet — ask an admin to run `/link` for you.');
   }
 
-  // Non-admins go through the bot-side approval gate: Seerr sees nothing until an admin clicks
-  // Approve (Seerr insta-approves anything the bot's admin API key creates, so approval has to
-  // happen here). Admins skip the gate — they'd only be approving themselves.
-  if (!isAdminInteraction(interaction)) {
+  const admin = isAdminInteraction(interaction);
+  // #80: a member with enough approved requests behind them skips the gate too — the gate's
+  // cost is admin attention, and that cost is worth paying for a new member, not someone who's
+  // made N reasonable requests already. 4K stays gated unconditionally regardless of trust (the
+  // AvistaZ pipeline has its own separate GRAB_MODE=approve gate later, so it doesn't need
+  // special-casing here).
+  const trustScore = admin ? 0 : getTrustScore(interaction.user.id);
+  const autoApprove = !admin && CONFIG.AUTO_APPROVE_AFTER_N_APPROVED > 0 && !is4k && trustScore >= CONFIG.AUTO_APPROVE_AFTER_N_APPROVED;
+
+  // Non-admins (and not auto-approved) go through the bot-side approval gate: Seerr sees nothing
+  // until an admin clicks Approve (Seerr insta-approves anything the bot's admin API key
+  // creates, so approval has to happen here).
+  if (!admin && !autoApprove) {
     // Because every request is submitted with the admin API key, Seerr's own quota enforcement
     // never sees the real requester — check it here instead so the fairness rule stays visible
     // and self-enforcing rather than resting entirely on admin memory.
@@ -3130,6 +3140,17 @@ async function handleRequestCommand(interaction) {
       .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nWaiting for admin approval — you'll get a DM either way.`)] });
   }
 
+  // Quota still applies to an auto-approved request — trust skips the *admin*, not the fairness
+  // rule. (Admins bypass both; this block only reaches here for admin or auto-approve.)
+  if (autoApprove) {
+    let quota = null;
+    try { quota = await fetchUserQuota(seerrUserId); } catch (_e) {}
+    const q = quota?.[mediaType];
+    if (q && q.limit && (Number.isFinite(q.remaining) ? q.remaining : q.limit - (q.used || 0)) <= 0) {
+      return interaction.editReply(`❌ You're out of ${mediaType === 'tv' ? 'series' : 'movie'} request quota for now — ${quotaLine(quota, mediaType)}. Check \`/me\` for your current standing.`);
+    }
+  }
+
   try {
     const data = await createSeerrRequestAs(seerrUserId, mediaType, tmdbId, is4k);
     // Same media-key convention as the webhook handler, so the rows merge cleanly.
@@ -3143,19 +3164,35 @@ async function handleRequestCommand(interaction) {
       return interaction.editReply(`⚠️ Seerr accepted **${label}** (request #${data.id}) but ${verified.reason}.\nNothing will download until that's fixed — check the Seerr container logs from the last minute for the underlying error, then try again.`);
     }
     upsertRequest(data?.id, mediaKey, mediaType, is4k, label, interaction.user.id, 'approved');
-    // Admin self-requests skip the gate, so there's no "+ AvistaZ Fallback" button to click —
-    // pre-authorize the fallback automatically instead (the admin IS the person who'd click
-    // it), which also puts the arr tag on right away like a gate pre-auth does.
+    // Self-requests (admin or auto-approved) skip the gate, so there's no "+ AvistaZ Fallback"
+    // button to click — pre-authorize the fallback automatically instead, which also puts the
+    // arr tag on right away like a gate pre-auth does.
     const azPreAuth = canEscalate({ mediaType, is4k });
     if (azPreAuth) {
       recordEscalationWatch({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label, discordId: interaction.user.id, preAuthorized: true });
       tagPreAuthorizedMedia({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label })
         .catch(err => log.warn(`Approval-time AvistaZ tagging failed for ${label}: ${err.message}`));
     }
-    audit('media_requested', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seerrUserId, requestId: data?.id ?? null, azPreAuth });
+    if (autoApprove) {
+      const newScore = bumpTrustScore(interaction.user.id, 1);
+      audit('media_request_auto_approved', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seerrUserId, requestId: data?.id ?? null, trustScore: newScore });
+      // Visible, not blocking: admins see it happened and can one-click undo, but nothing waits
+      // on them.
+      const undoRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`trust_undo:${data?.id ?? ''}:${interaction.user.id}`).setLabel('Undo').setStyle(ButtonStyle.Danger),
+      );
+      notifyChannel('requests', {
+        embeds: [brandedEmbed(COLORS.INFO)
+          .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Auto-Approved`)
+          .setDescription(`**${label}** — <@${interaction.user.id}> has ${newScore} approved requests and skipped the gate.`)],
+        components: data?.id != null ? [undoRow] : [],
+      });
+    } else {
+      audit('media_requested', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seerrUserId, requestId: data?.id ?? null, azPreAuth });
+    }
     await interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Request Sent`)
-      .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — approved and grabbing it now! 🚀\nYou'll get a DM when it's on Plex.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(mediaType)}.` : ''}`)] });
+      .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — ${autoApprove ? 'auto-approved (you\'re a trusted requester) and grabbing it now! 🚀' : 'approved and grabbing it now! 🚀'}\nYou'll get a DM when it's on Plex.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(mediaType)}.` : ''}`)] });
   } catch (err) {
     // Seerr answered but said no (rejection body, or the created-nothing shapes from
     // createSeerrRequestAs) vs. never answered at all — show which, so "Couldn't reach Seerr"
@@ -4626,8 +4663,19 @@ async function handleMeCommand(interaction) {
       { name: 'Next step', value: nextStep, inline: false },
       { name: 'Total requests', value: `${requestCount}`, inline: true },
       ...(quotaLines.length ? [{ name: 'Quota', value: quotaLines.join('\n'), inline: false }] : []),
+      ...(CONFIG.AUTO_APPROVE_AFTER_N_APPROVED > 0 ? [{ name: 'Standing', value: describeTrustStanding(interaction.user.id), inline: false }] : []),
     );
   await interaction.editReply({ embeds: [embed] });
+}
+
+// #80: "12 approved requests" if not yet trusted, "auto-approved — 12 approved requests" once
+// past the threshold — gives members a reason to make good requests, and tells them why their
+// next /request might skip the gate.
+function describeTrustStanding(discordId) {
+  const score = getTrustScore(discordId);
+  const threshold = CONFIG.AUTO_APPROVE_AFTER_N_APPROVED;
+  if (score >= threshold) return `🚀 Auto-approved — ${score} approved request${score === 1 ? '' : 's'} (4K still needs admin approval)`;
+  return `${score} of ${threshold} approved requests until auto-approval`;
 }
 async function handleMyRequestsCommand(interaction) {
   await interaction.deferReply({ ephemeral: true });
@@ -5394,8 +5442,31 @@ async function handleButton(interaction) {
     return interaction.showModal(modal);
   }
 
-  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'adopt_do', 'adopt_bulk', 'adopt_cancel'].includes(action) && !isAdminInteraction(interaction)) {
+  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'trust_undo', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'adopt_do', 'adopt_bulk', 'adopt_cancel'].includes(action) && !isAdminInteraction(interaction)) {
     return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+  }
+
+  // One-click undo for an auto-approved request (#80) — pulls it back the same way
+  // /request-cancel does, and resets the requester's trust the same as a manual denial would.
+  if (action === 'trust_undo') {
+    const [requestId, targetDiscordId] = parts;
+    await interaction.deferUpdate();
+    if (requestId) {
+      try { await deleteOverseerrRequest(requestId); }
+      catch (err) {
+        audit('external_api_error', { actorDiscordId: interaction.user.id, provider: 'overseerr', action: 'trust_undo', requestId, error: err.message });
+        return interaction.followUp({ content: `❌ Couldn't undo — Seerr refused the delete (likely already downloading): ${err.response?.data?.message || err.message}`, ephemeral: true });
+      }
+    }
+    db.prepare("UPDATE requests SET status = 'cancelled' WHERE overseerr_request_id = ?").run(requestId || null);
+    resetTrustScore(targetDiscordId);
+    audit('media_request_auto_approve_undone', { actorDiscordId: interaction.user.id, targetDiscordId, requestId });
+    await dmUser(targetDiscordId, { embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle('Request Undone')
+      .setDescription('An admin undid one of your auto-approved requests. Your trusted-requester standing was reset — future requests go through the normal approval gate again.')] });
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle('↩️ Auto-Approval Undone')
+      .setDescription(`Undone by <@${interaction.user.id}>. <@${targetDiscordId}>'s trust was reset.`)], components: [] });
   }
 
   if (action === 'plex_approve') {
@@ -5455,6 +5526,7 @@ async function handleButton(interaction) {
     const pending = takePendingRequest(parts[0]);
     if (!pending) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
     upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'declined');
+    resetTrustScore(pending.discordId);
     audit('request_denied_gate', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label });
     await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.DANGER)
       .setTitle('Request Declined')
