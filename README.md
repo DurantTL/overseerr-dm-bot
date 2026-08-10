@@ -330,6 +330,29 @@ Checks include Discord, SQLite, Plex, Seerr/Overseerr, Radarr, Radarr-4K, Sonarr
 - Client-IP rate limits trust `X-Forwarded-For` only when `TRUST_PROXY=true` (one known proxy hop).
 - Audit and download-access logs are pruned after `LOG_RETENTION_DAYS` (default 90; `0` disables).
 
+### Rate limiting is in-process and in-memory (known limitation)
+`takeRateLimit` (`index.js`) is a `Map`-based sliding window kept entirely in the bot's own
+process memory, applied to `/download` generation, `/request`, `/stage`, the public
+`/download/:token` HTTP route, and dashboard login attempts. This is intentional and matches the
+rest of the architecture — a single instance backed by one SQLite file — but it's worth stating
+explicitly rather than leaving an operator to assume otherwise:
+- **Counters reset on every restart.** A deploy, crash, or Watchtower update clears every bucket;
+  nothing is persisted to SQLite.
+- **It cannot be distributed across multiple instances.** This app isn't designed to horizontally
+  scale (one SQLite file, one Discord client login), so this isn't a gap relative to how it's
+  meant to run — but if that ever changed, in-memory limits would need to move to something shared
+  (SQLite table, Redis, etc.) first.
+- **IP-based limiting depends on `TRUST_PROXY` being set correctly.** The download route and
+  dashboard login keys their buckets on `req.ip`, which only reflects the real client address when
+  `TRUST_PROXY=true` and the bot sits behind exactly one trusted proxy hop (the Cloudflare Tunnel
+  setup above). Left at the default `false` behind a tunnel, every request can appear to come from
+  the same upstream address, making the limiter either too strict (one real abuser blocks everyone)
+  or effectively a no-op depending on how the proxy is configured — see `TRUST_PROXY` above.
+
+None of this makes the limiter ineffective for its actual job (slowing down a single bad actor
+hitting one instance) — it just means it isn't the right tool if this ever needs to hold up under
+a distributed or highly available deployment.
+
 ## Testing Webhooks / Helpers
 - Seerr test webhook: send sample payload to `/webhook/overseerr`.
 - Plex test webhook: POST multipart `payload` to `/webhook/plex`.
