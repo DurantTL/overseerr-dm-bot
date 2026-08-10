@@ -95,10 +95,11 @@ See `.env.example` for full values.
 - `PLEX_TOKEN` **or** `PLEX_USERNAME` + `PLEX_PASSWORD`
 - `TUNNEL_DOMAIN`
 - `RAID_PATH`
+- `WEBHOOK_SECRET`, `TAUTULLI_WEBHOOK_SECRET` — since `TUNNEL_DOMAIN` is itself required, the
+  `/webhook/overseerr`, `/webhook/plex`, and `/webhook/tautulli` routes are always reachable from
+  the internet, live deletion or not; startup fails closed if either secret is blank.
 
 ### Optional (code)
-- `WEBHOOK_SECRET`, `TAUTULLI_WEBHOOK_SECRET` — optional only while deletion is disabled/dry-run;
-  **both are mandatory when live deletion is enabled**, and startup fails closed if either is blank.
 - `RADARR_URL`, `RADARR_API_KEY`
 - `RADARR_4K_URL`, `RADARR_4K_API_KEY`
 - `SONARR_URL`, `SONARR_API_KEY`
