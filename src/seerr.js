@@ -172,6 +172,18 @@ async function fetchSeerrMediaId(mediaType, tmdbId) {
   } catch (_e) { return null; }
 }
 
+// Same internal Media.id as fetchSeerrMediaId, but resolved from a known Seerr request id
+// instead of a tmdbId lookup. Preferred whenever a request id is available: it needs no
+// tmdb/tvdb reasoning at all (the request already carries the media relation), and it works
+// correctly for TV requests, where the locally-tracked identifier is often a TVDB id rather
+// than the tmdbId fetchSeerrMediaId expects.
+async function fetchSeerrMediaIdByRequest(requestId) {
+  try {
+    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/request/${requestId}`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY }, timeout: 8000 });
+    return res.data?.media?.id ?? null;
+  } catch (_e) { return null; }
+}
+
 // issueType: 1 video, 2 audio, 3 subtitle, 4 other (Overseerr's IssueType enum).
 async function createSeerrIssue(mediaId, issueType, message, userId) {
   const res = await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/issue`, { mediaId, issueType, message, userId }, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
@@ -329,4 +341,4 @@ async function fetchSeerrRequests() {
   return requests;
 }
 
-module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers, fetchSeerrRequests };
+module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers, fetchSeerrRequests };

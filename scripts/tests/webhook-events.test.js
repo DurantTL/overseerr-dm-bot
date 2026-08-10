@@ -10,7 +10,13 @@ test('webhook-events: overseerr key is stable across identical redeliveries', ()
 
 test('webhook-events: overseerr key falls back to media id when no request id', () => {
   const body = { notification_type: 'MEDIA_AVAILABLE', media: { media_type: 'tv', tvdbId: 99 } };
-  assert.match(webhookEventKey('overseerr', body), /^overseerr:MEDIA_AVAILABLE:tvdb:99:\d+$/);
+  assert.strictEqual(webhookEventKey('overseerr', body), 'overseerr:MEDIA_AVAILABLE:tvdb:99');
+});
+
+test('webhook-events: overseerr fallback key distinguishes 4K from non-4K', () => {
+  const sd = { notification_type: 'MEDIA_AVAILABLE', media: { media_type: 'movie', tmdbId: 42, is4k: false } };
+  const uhd = { notification_type: 'MEDIA_AVAILABLE', media: { media_type: 'movie', tmdbId: 42, is4k: true } };
+  assert.notStrictEqual(webhookEventKey('overseerr', sd), webhookEventKey('overseerr', uhd), 'a standard and a 4K delivery for the same title must not collide');
 });
 
 test('webhook-events: plex key distinguishes by server/rating key/account', () => {
@@ -26,5 +32,5 @@ test('webhook-events: tautulli key distinguishes by machine/media/user', () => {
 });
 
 test('webhook-events: unknown source still produces a key rather than throwing', () => {
-  assert.match(webhookEventKey('mystery', {}), /^mystery:unknown:\d+$/);
+  assert.strictEqual(webhookEventKey('mystery', {}), 'mystery:unknown');
 });
