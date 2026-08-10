@@ -5798,6 +5798,8 @@ function dashboardAuth(req, res, next) {
   return next();
 }
 
+let httpServer = null;
+
 function startExpressServer() {
   const app = express();
   app.disable('x-powered-by');
@@ -6345,7 +6347,7 @@ function startExpressServer() {
     res.status(500).json({ error: 'Internal Server Error' });
   });
 
-  app.listen(CONFIG.PORT, () => log.ok(`Express server listening on port ${CONFIG.PORT}`));
+  httpServer = app.listen(CONFIG.PORT, () => log.ok(`Express server listening on port ${CONFIG.PORT}`));
 }
 
 // Resolve who actually made an Overseerr request.
@@ -6736,10 +6738,32 @@ process.on('uncaughtException', (err) => {
   try { audit('uncaught_exception', { error: err.message }); } catch (_e) {}
 });
 
-function shutdown(sig) {
+let shuttingDown = false;
+
+async function shutdown(sig) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   log.info(`Received ${sig}, shutting down`);
-  try { db.pragma('wal_checkpoint(TRUNCATE)'); db.close(); } catch (_e) {}
-  try { client.destroy(); } catch (_e) {}
+
+  // Hard fallback: a stuck in-flight download stream must never block shutdown forever.
+  const hardTimeout = setTimeout(() => {
+    log.warn('Shutdown drain timed out, forcing exit');
+    process.exit(0);
+  }, CONFIG.SHUTDOWN_DRAIN_SECONDS * 1000).unref();
+
+  // Stop accepting new HTTP connections first (webhooks, dashboard, in-flight /download/:token
+  // streams) and give existing ones up to SHUTDOWN_DRAIN_SECONDS to finish before moving on.
+  if (httpServer) {
+    await new Promise(resolve => httpServer.close(err => {
+      if (err) log.warn(`HTTP server close error: ${err.message}`);
+      resolve();
+    }));
+  }
+
+  try { await client.destroy(); } catch (err) { log.warn(`Discord client destroy error: ${err.message}`); }
+  try { db.pragma('wal_checkpoint(TRUNCATE)'); db.close(); } catch (err) { log.warn(`DB close error: ${err.message}`); }
+
+  clearTimeout(hardTimeout);
   process.exit(0);
 }
 ['SIGTERM', 'SIGINT'].forEach(s => process.on(s, () => shutdown(s)));

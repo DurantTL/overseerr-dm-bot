@@ -276,6 +276,7 @@ const CONFIG = {
   KEEP_LIST_DEFAULT_DAYS: Number.parseInt(process.env.KEEP_LIST_DEFAULT_DAYS || '90', 10),
   LOG_RETENTION_DAYS: Number.parseInt(process.env.LOG_RETENTION_DAYS || '90', 10),
   PENDING_EMAIL_EXPIRY_DAYS: Number.parseInt(process.env.PENDING_EMAIL_EXPIRY_DAYS || '14', 10),
+  SHUTDOWN_DRAIN_SECONDS: Number.parseInt(process.env.SHUTDOWN_DRAIN_SECONDS || '8', 10),
   NEVER_DELETE_MEDIA_IDS: process.env.NEVER_DELETE_MEDIA_IDS ? process.env.NEVER_DELETE_MEDIA_IDS.split(',').map(s => s.trim()) : [],
 };
 
