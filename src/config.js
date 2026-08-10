@@ -131,6 +131,13 @@ const CONFIG = {
   GRAB_MISSING_AFTER_MINUTES: Number.parseInt(process.env.GRAB_MISSING_AFTER_MINUTES || '10', 10),
   // Give up watching a seedbox download after this long without completion.
   GRAB_DOWNLOAD_TIMEOUT_HOURS: Number.parseInt(process.env.GRAB_DOWNLOAD_TIMEOUT_HOURS || '72', 10),
+  // When an arr's scan silently declines cleanly-matched files, verifyArrImport can force
+  // them through ManualImport automatically — but only ever does so when the job is pinned
+  // to a single resolved Sonarr/Radarr id (see target_arr_id) AND every file maps to that
+  // exact id, never on a guessed match. Off by default: until that identity resolution is
+  // trustworthy for a given deployment, forced imports should go through the guided
+  // "Map to a Series…" wizard instead.
+  SONARR_AUTO_MANUAL_IMPORT: parseBool(process.env.SONARR_AUTO_MANUAL_IMPORT, false),
   // ---- rTorrent adoption (/rtorrent adopt): bring torrents the bot didn't submit into ----
   // ---- the same transfer/import pipeline. See README "Adopting existing torrents". ----
   // Enables the discovery sweep; /rtorrent adopt itself only needs the grab pipeline pieces.

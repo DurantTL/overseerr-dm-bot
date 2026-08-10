@@ -275,6 +275,20 @@ function runMigrations() {
   // Where the torrent's data lives under GRAB_RCLONE_REMOTE when it isn't just the torrent
   // name (adopted torrents can sit in per-label subfolders). NULL = use the rTorrent name.
   ensureColumn('grab_jobs', 'remote_path', 'TEXT');
+  // Sonarr seriesId / Radarr movieId the job is pinned to, resolved BEFORE the job starts
+  // (adoption) or already known (a normal request grab). NULL means Sonarr/Radarr has to
+  // guess from the release filename at import time — exactly the case forced ManualImport
+  // must not auto-fire for.
+  ensureColumn('grab_jobs', 'target_arr_id', 'INTEGER');
+  ensureColumn('grab_jobs', 'tvdb_id', 'INTEGER');
+  // How target_arr_id was resolved: 'tvdb' | 'exact' | 'alternate' | null (unresolved).
+  // 'ambiguous' never reaches this column — an ambiguous resolution blocks the job entirely
+  // until an admin picks one.
+  ensureColumn('grab_jobs', 'match_type', 'TEXT');
+  // When the import was actually confirmed to have landed (leftover-file check passed after
+  // the arr's scan/ManualImport completed) — distinct from imported_at, which used to be
+  // stamped the moment the scan command was *fired*, before anyone checked it worked.
+  ensureColumn('grab_jobs', 'verified_at', 'INTEGER');
   // One-shot flag: the "request never landed in the arr" alert was posted for this watch row.
   ensureColumn('escalations', 'arr_missing_alerted', 'INTEGER DEFAULT 0');
   // Cached AvistaZ-plausibility verdict ('asian' | 'non_asian'), from the title's TMDB origin
@@ -564,17 +578,28 @@ function resolveEscalationForMediaKey(mediaKey) {
 // ---- AvistaZ direct-grab jobs ----
 // One row per torrent the bot pushed to the seedbox rTorrent. States:
 // sent → downloading → complete (seedbox finished, transfer pending) → transferring →
-// done (imported by the arr), or failed. Durable so a restart mid-download/mid-transfer
-// picks the pipeline back up.
+// scanning (arr scan/import command running) → importing (forced ManualImport in flight) →
+// verified (leftover-file check confirmed the import actually happened), or one of
+// needs_mapping / import_rejected / failed. Durable so a restart mid-download/mid-transfer
+// picks the pipeline back up. A job only leaves the "active" set (see listActiveGrabJobs)
+// once it's verified or has definitively failed — "the scan command was fired" is not the
+// same thing as "the arr actually took the files".
 
 // state defaults to 'sent' (a torrent the bot just pushed); adoption records jobs directly
 // at 'downloading' or 'complete' since the torrent already exists in rTorrent.
-function recordGrabJob({ mediaId, mediaType, title, releaseTitle, infoHash, sizeBytes, label, discordId, origin, state = 'sent', remotePath }) {
+function recordGrabJob({ mediaId, mediaType, title, releaseTitle, infoHash, sizeBytes, label, discordId, origin, state = 'sent', remotePath, targetArrId, tvdbId, matchType }) {
   const now = Date.now();
-  const info = db.prepare(`INSERT INTO grab_jobs (media_id, media_type, title, release_title, info_hash, size_bytes, label, requested_by_discord_id, origin, state, remote_path, sent_at, completed_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(mediaId || null, mediaType, title, releaseTitle, infoHash || null, sizeBytes || 0, label || null, discordId || null, origin || 'manual', state, remotePath || null, now, state === 'complete' ? now : null);
+  const info = db.prepare(`INSERT INTO grab_jobs (media_id, media_type, title, release_title, info_hash, size_bytes, label, requested_by_discord_id, origin, state, remote_path, target_arr_id, tvdb_id, match_type, sent_at, completed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(mediaId || null, mediaType, title, releaseTitle, infoHash || null, sizeBytes || 0, label || null, discordId || null, origin || 'manual', state, remotePath || null, targetArrId || null, tvdbId || null, matchType || null, now, state === 'complete' ? now : null);
   return db.prepare('SELECT * FROM grab_jobs WHERE id = ?').get(info.lastInsertRowid);
+}
+
+// Pin (or re-pin) the job to a resolved Sonarr/Radarr identity — set once at adoption/grab
+// time, or by an admin resolving an ambiguous match after the fact.
+function setGrabJobIdentity(id, { targetArrId, tvdbId, matchType }) {
+  db.prepare('UPDATE grab_jobs SET target_arr_id = ?, tvdb_id = ?, match_type = ? WHERE id = ?')
+    .run(targetArrId ?? null, tvdbId ?? null, matchType ?? null, id);
 }
 
 const getGrabJob = id => db.prepare('SELECT * FROM grab_jobs WHERE id = ?').get(id);
@@ -587,15 +612,21 @@ const getGrabJobByHash = infoHash => db.prepare("SELECT * FROM grab_jobs WHERE i
 // info-hash. Failed jobs don't block a retry of the same release.
 const getGrabJobByRelease = releaseTitle => db.prepare("SELECT * FROM grab_jobs WHERE release_title = ? AND state != 'failed' ORDER BY id DESC LIMIT 1").get(releaseTitle);
 
-const listActiveGrabJobs = () => db.prepare("SELECT * FROM grab_jobs WHERE state IN ('sent','downloading','complete','transferring') ORDER BY id").all();
+// scanning/importing stay "active": the import hasn't been confirmed yet, so duplicate
+// protection and the adopted-batch progress counter must still count these jobs.
+const listActiveGrabJobs = () => db.prepare("SELECT * FROM grab_jobs WHERE state IN ('sent','downloading','complete','transferring','scanning','importing') ORDER BY id").all();
 
 const nextTransferableGrabJob = () => db.prepare("SELECT * FROM grab_jobs WHERE state = 'complete' ORDER BY id LIMIT 1").get();
 
 function setGrabJobState(id, state, error = null) {
-  const stampCol = state === 'complete' ? 'completed_at' : state === 'done' ? 'imported_at' : null;
+  const stampCol = state === 'complete' ? 'completed_at' : state === 'verified' ? 'imported_at' : null;
+  const extra = state === 'verified' ? ', verified_at = ?' : '';
   const stamp = stampCol ? `, ${stampCol} = ?` : '';
-  const args = stampCol ? [state, error ? String(error).slice(0, 500) : null, Date.now(), id] : [state, error ? String(error).slice(0, 500) : null, id];
-  db.prepare(`UPDATE grab_jobs SET state = ?, error = ?${stamp} WHERE id = ?`).run(...args);
+  const args = [state, error ? String(error).slice(0, 500) : null];
+  if (stampCol) args.push(Date.now());
+  if (extra) args.push(Date.now());
+  args.push(id);
+  db.prepare(`UPDATE grab_jobs SET state = ?, error = ?${stamp}${extra} WHERE id = ?`).run(...args);
 }
 
 // The allowance counts every grab attempted today (failed ones included — the tracker may
@@ -608,7 +639,12 @@ const countGrabJobsToday = () => db.prepare("SELECT COUNT(*) AS n FROM grab_jobs
 const requeueGrabTransfer = id => db.prepare("UPDATE grab_jobs SET state = 'complete', error = NULL WHERE id = ? AND state = 'failed'").run(id).changes > 0;
 
 // A restart mid-transfer leaves 'transferring' rows behind; rclone copy resumes cheaply.
-const resetInterruptedGrabTransfers = () => db.prepare("UPDATE grab_jobs SET state = 'complete' WHERE state = 'transferring'").run().changes;
+// 'scanning'/'importing' rows are stranded the same way — verification is an in-memory poll
+// with no durable resume point, so a restart mid-poll would otherwise leave the job parked
+// forever instead of ever reaching 'verified' or a real failure. Re-running the whole
+// transfer (copy → scan → verify) from 'complete' is safe: the copy is resumable and
+// re-firing the scan on files that already imported is a no-op for the arr.
+const resetInterruptedGrabTransfers = () => db.prepare("UPDATE grab_jobs SET state = 'complete' WHERE state IN ('transferring','scanning','importing')").run().changes;
 
 // AvistaZ search results parked behind Download buttons. Same app_settings stash pattern
 // as the request approval gate: consumed on click, so stale/double clicks are harmless
@@ -1031,5 +1067,5 @@ function restashPendingRequest(nonce, payload) {
   setSetting(`pending_request:${nonce}`, JSON.stringify(payload));
 }
 
-module.exports = { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
+module.exports = { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;
