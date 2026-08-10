@@ -13,7 +13,7 @@ test('deletion: resolveDeletableMedia/executeDeletion against a mock Radarr/Sona
   app.get('/radarr4k/api/v3/movie', (_req, res) => res.json(movie(20)));
   app.get('/sonarr/api/v3/series', (_req, res) => res.json([{ id: 30, tvdbId: 81189, title: 'Breaking Bad' }]));
   app.get('/sonarr/api/v3/episodefile', (_req, res) => res.json([{ id: 31, path: '/tv/e1.mkv' }, { id: 32, path: '/tv/e2.mkv' }]));
-  app.delete('*', (req, res) => { deleted.push(req.path); res.sendStatus(200); });
+  app.delete('/*splat', (req, res) => { deleted.push(req.path); res.sendStatus(200); });
   const server = await new Promise(resolve => { const s = app.listen(0, () => resolve(s)); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const CONFIG = {
