@@ -1,8 +1,8 @@
 # Durant Media Server Bot
-# Uses node:20-slim (Debian/glibc) instead of node:20-alpine, because
+# Uses node:24-slim (Debian/glibc) instead of node:24-alpine, because
 # better-sqlite3 is a native module: glibc installs a prebuilt binary with no
 # compiler; alpine/musl tries to compile it and fails (no toolchain).
-FROM node:20-slim
+FROM node:24-slim
 
 # rclone drives the Plex Home staging copies/evictions (see README "Plex Home staging").
 # ca-certificates lets it talk TLS to remotes like SFTP-over-VPS or cloud backends.
@@ -32,7 +32,7 @@ ENV GIT_SHA=$GIT_SHA
 RUN mkdir -p /app/data
 
 # Drop root. The bot handles tracker-supplied filenames (rclone copies, arr imports) and serves
-# an HTTP endpoint, so it has no business running as uid 0. node:20-slim ships a `node` user at
+# an HTTP endpoint, so it has no business running as uid 0. node:24-slim ships a `node` user at
 # uid/gid 1000; /app/data is chowned here so a FRESH named volume inherits that ownership.
 #
 # Upgrading an existing deployment: storage created while the bot ran as root is still root-owned
