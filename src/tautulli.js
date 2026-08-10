@@ -21,7 +21,7 @@ async function tautulliApi(cmd, params = {}, endpoint = undefined) {
     // Tautulli signals auth/param problems as HTTP 400 with the reason in the JSON body (e.g.
     // "Invalid apikey"); without this the log only shows axios's bare "status code 400".
     const detail = err.response?.data?.response?.message;
-    throw new Error(detail ? `Tautulli ${cmd}: ${detail}` : `Tautulli ${cmd}: ${err.message}`);
+    throw new Error(detail ? `Tautulli ${cmd}: ${detail}` : `Tautulli ${cmd}: ${err.message}`, { cause: err });
   }
   if (res.data?.response?.result !== 'success') throw new Error(res.data?.response?.message || `Tautulli ${cmd} failed`);
   return res.data.response.data;

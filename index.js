@@ -1396,7 +1396,7 @@ async function mapWizardImport(interaction, nonce, state) {
 // remains active, so the next batch starts a fresh message (and a fresh notification).
 async function updateAdoptTransferProgress(job, sizeBytes) {
   const remaining = listActiveGrabJobs().filter(j => String(j.origin || '').startsWith('adopt')).length;
-  let state = {};
+  let state;
   try { state = JSON.parse(getSetting('adopt_progress_msg') || '{}'); } catch (_e) { state = {}; }
   const imported = (state.imported || 0) + 1;
   const done = remaining === 0;
@@ -3699,7 +3699,7 @@ async function handleRequestsCommand(interaction) {
 async function handleAuditCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
   const sub = interaction.options.getSubcommand();
-  let rows = [];
+  let rows;
   if (sub === 'recent') {
     const count = interaction.options.getInteger('count') || 25;
     rows = db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT ?').all(count);
@@ -3995,10 +3995,9 @@ async function handleRtorrentCommand(interaction) {
   if (sub === 'status') {
     await interaction.deferReply({ ephemeral: true });
     const lines = [];
-    let torrents = null;
     try {
       const version = await getRtorrentVersion();
-      torrents = await listRtorrentTorrents();
+      const torrents = await listRtorrentTorrents();
       const complete = torrents.filter(t => t.complete).length;
       lines.push(`Seedbox rTorrent: ✅ reachable (v${version})`);
       lines.push(`Torrents: **${torrents.length}** (${complete} complete, ${torrents.length - complete} downloading)`);
@@ -4330,7 +4329,7 @@ async function handleStageCommand(interaction) {
   await interaction.deferReply({ ephemeral: true });
   const raw = interaction.options.getString('title').trim();
   const library = await getStageLibrary().catch(() => []);
-  let entry = null;
+  let entry;
   if (/^(tmdb|tvdb):\d+$/.test(raw)) {
     entry = library.find(e => e.mediaId === raw) || { mediaId: raw, kind: raw.startsWith('tvdb:') ? 'tv' : 'movie', title: raw, sizeBytes: 0 };
   } else {
