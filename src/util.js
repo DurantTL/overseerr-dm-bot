@@ -37,7 +37,7 @@ function mediaTypeLabel(mediaType, is4k) { if (mediaType === 'tv') return is4k ?
 function mediaTypeEmoji(mediaType, is4k) { if (mediaType === 'tv') return '📺'; return is4k ? '🎥' : '🎬'; }
 
 function requestStatusBadge(status) {
-  return ({ pending: '⏳ Pending', approved: '🚀 Approved', available: '✅ Available', declined: '🚫 Declined' })[status] || `▫️ ${status}`;
+  return ({ pending: '⏳ Pending', approved: '🚀 Approved', available: '✅ Available', declined: '🚫 Declined', cancelled: '↩️ Cancelled' })[status] || `▫️ ${status}`;
 }
 
 function discordTimestamp(ms, style = 'R') { return `<t:${Math.floor(ms / 1000)}:${style}>`; }

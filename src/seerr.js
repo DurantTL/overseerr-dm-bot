@@ -259,6 +259,13 @@ async function denyOverseerrRequest(requestId) {
   return axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/request/${requestId}/decline`, {}, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
 }
 
+// Overseerr permits deleting a request that's still pending/processing (i.e. not yet fulfilled);
+// it rejects deletion once media is available. Callers should treat a rejection as "can't cancel
+// this anymore" rather than a hard failure.
+async function deleteOverseerrRequest(requestId) {
+  return axios.delete(`${CONFIG.OVERSEERR_URL}/api/v1/request/${requestId}`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
+}
+
 async function fetchOverseerrUsers() {
   const users = [];
   const take = 100;
@@ -297,4 +304,4 @@ async function fetchSeerrRequests() {
   return requests;
 }
 
-module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers, fetchSeerrRequests };
+module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchOverseerrUsers, fetchSeerrRequests };

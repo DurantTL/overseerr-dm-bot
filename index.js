@@ -27,10 +27,10 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest, recordWebhookEvent, pruneWebhookEvents } = require('./src/db');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, pruneWebhookEvents } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
-const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
+const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('./src/escalation');
@@ -2251,6 +2251,7 @@ const slashCommands = [
     .addSubcommand(s => s.setName('action').setDescription('Entries by action').addStringOption(o => o.setName('action').setDescription('Action name').setRequired(true)).addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100))),
   new SlashCommandBuilder().setName('queue').setDescription('Show what is downloading right now'),
   new SlashCommandBuilder().setName('request-status').setDescription('Check why a requested movie or show is not ready yet').addStringOption(o => o.setName('title').setDescription('Start typing — matches your recent requests').setRequired(true).setAutocomplete(true)),
+  new SlashCommandBuilder().setName('request-cancel').setDescription('Withdraw one of your own pending or awaiting-download requests').addStringOption(o => o.setName('title').setDescription('Start typing — matches your cancelable requests').setRequired(true).setAutocomplete(true)),
   new SlashCommandBuilder().setName('watching').setDescription('Show current Plex playback (via Tautulli)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('indexers').setDescription('Prowlarr indexer + Byparr health').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('debrid').setDescription('Premiumize account + transfer status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -2661,6 +2662,25 @@ async function handleAutocomplete(interaction) {
     return interaction.respond(choices).catch(() => {});
   }
 
+  // /request-cancel title: — only the requester's own still-outstanding (pending/approved)
+  // requests. Once available or declined there's nothing left to withdraw.
+  if (interaction.commandName === 'request-cancel') {
+    const focusedTitle = interaction.options.getFocused(true);
+    if (focusedTitle.name !== 'title') return interaction.respond([]).catch(() => {});
+    const q = String(focusedTitle.value || '').toLowerCase().trim();
+    const rows = db.prepare("SELECT * FROM requests WHERE requested_by_discord_id = ? AND status IN ('pending', 'approved') ORDER BY id DESC LIMIT 500").all(interaction.user.id);
+    const seen = new Set();
+    const choices = [];
+    for (const r of rows) {
+      if (q && !String(r.title || '').toLowerCase().includes(q)) continue;
+      if (seen.has(r.media_id)) continue;
+      seen.add(r.media_id);
+      choices.push({ name: `${r.title} · ${r.status}`.slice(0, 100), value: String(r.media_id).slice(0, 100) });
+      if (choices.length >= 25) break;
+    }
+    return interaction.respond(choices).catch(() => {});
+  }
+
   // /stage title: — the whole library (anything with a file). /pin and /unpin match only what's
   // currently cached. The library fetch is raced against Discord's deadline: a cold cache may
   // yield no suggestions once, then it's warm.
@@ -2749,6 +2769,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'audit') return handleAuditCommand(interaction);
   if (n === 'queue') return handleQueueCommand(interaction);
   if (n === 'request-status') return handleRequestStatusCommand(interaction);
+  if (n === 'request-cancel') return handleRequestCancelCommand(interaction);
   if (n === 'watching') return handleWatchingCommand(interaction);
   if (n === 'indexers') return handleIndexersCommand(interaction);
   if (n === 'debrid') return handleDebridCommand(interaction);
@@ -3874,6 +3895,47 @@ async function handleRequestStatusCommand(interaction) {
     .setDescription(lines.join('\n'))] });
 }
 
+// /request-cancel — let a user withdraw their own request. Two cases: still held behind the
+// bot's own approval gate (nothing exists in Seerr yet — just drop the stash), or already
+// submitted to Seerr (DELETE the request there, which Seerr permits while it's still
+// pending/processing and refuses once the media is available).
+async function handleRequestCancelCommand(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const mediaId = String(interaction.options.getString('title') || '').trim();
+  const row = /^(tmdb|tvdb):\d+$/.test(mediaId)
+    ? db.prepare("SELECT * FROM requests WHERE media_id = ? AND requested_by_discord_id = ? AND status IN ('pending', 'approved') ORDER BY id DESC LIMIT 1").get(mediaId, interaction.user.id)
+    : db.prepare("SELECT * FROM requests WHERE title LIKE ? AND requested_by_discord_id = ? AND status IN ('pending', 'approved') ORDER BY id DESC LIMIT 1").get(`%${mediaId}%`, interaction.user.id);
+  if (!row) {
+    return interaction.editReply('❌ Nothing cancelable matches that — pick a suggestion from the list. Requests that are already available or declined can\'t be withdrawn.');
+  }
+
+  if (row.status === 'pending') {
+    const idNum = Number(row.media_id.split(':')[1]);
+    const nonce = findPendingRequestNonce(interaction.user.id, row.media_type, idNum, !!row.is_4k);
+    if (nonce) takePendingRequest(nonce);
+    db.prepare("UPDATE requests SET status = 'cancelled' WHERE id = ?").run(row.id);
+    audit('request_cancelled_by_user', { actorDiscordId: interaction.user.id, title: row.title, mediaId: row.media_id, stage: 'gate' });
+    notifyChannel('requests', `↩️ <@${interaction.user.id}> withdrew their own request for **${row.title}**${row.is_4k ? ' (4K)' : ''} before it was reviewed.`);
+    return interaction.editReply(`↩️ Withdrew your request for **${row.title}**${row.is_4k ? ' (4K)' : ''} — it never reached an admin.`);
+  }
+
+  // 'approved' — already submitted to Seerr. Let Seerr be the source of truth on whether it can
+  // still be pulled back (it refuses once the media is available/partially available).
+  if (!row.overseerr_request_id) {
+    return interaction.editReply('❌ Can\'t cancel this one — it\'s already downloading or on Plex.');
+  }
+  try {
+    await deleteOverseerrRequest(row.overseerr_request_id);
+  } catch (err) {
+    audit('external_api_error', { actorDiscordId: interaction.user.id, provider: 'overseerr', action: 'cancel_request', requestId: row.overseerr_request_id, error: err.message });
+    return interaction.editReply(`❌ Couldn't cancel **${row.title}** — it's likely already downloading. (${err.response?.status === 403 ? 'Seerr refused the delete' : err.message})`);
+  }
+  db.prepare("UPDATE requests SET status = 'cancelled' WHERE id = ?").run(row.id);
+  audit('request_cancelled_by_user', { actorDiscordId: interaction.user.id, title: row.title, mediaId: row.media_id, stage: 'seerr', overseerrRequestId: row.overseerr_request_id });
+  notifyChannel('requests', `↩️ <@${interaction.user.id}> cancelled their own request for **${row.title}**${row.is_4k ? ' (4K)' : ''}.`);
+  return interaction.editReply(`↩️ Cancelled **${row.title}**${row.is_4k ? ' (4K)' : ''}.`);
+}
+
 // /watching — live Plex sessions via Tautulli.
 async function handleWatchingCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
@@ -4344,11 +4406,13 @@ async function handleMeCommand(interaction) {
 }
 async function handleMyRequestsCommand(interaction) {
   const rows = db.prepare('SELECT * FROM requests WHERE requested_by_discord_id = ? ORDER BY id DESC LIMIT 15').all(interaction.user.id);
+  const cancelable = rows.some(r => r.status === 'pending' || r.status === 'approved');
   const embed = brandedEmbed(COLORS.INFO)
     .setTitle('🎬 Your Recent Requests')
     .setDescription(rows.length
       ? rows.map(r => `${requestStatusBadge(r.status)} — **${r.title}** (${mediaTypeLabel(r.media_type, r.is_4k)})`).join('\n')
       : 'No requests yet. Request something in Overseerr and it\'ll show up here!');
+  if (cancelable) embed.setFooter({ text: 'Changed your mind about one? Use /request-cancel.' });
   await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 async function handleDownloadsCommand(interaction) {
@@ -4531,6 +4595,7 @@ async function handleHelpCommand(interaction) {
   const userCommands = [
     '`/request` — Search and request a movie or show; an admin approves it in Discord',
     '`/request-status` — Check why a request isn\'t ready yet',
+    '`/request-cancel` — Withdraw one of your own pending or awaiting-download requests',
     '`/download` — Get a secure download link for a movie or episode',
     '`/me` — Show your linked profile and access status',
     '`/myrequests` — Show your recent Seerr requests',
