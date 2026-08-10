@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // setOverseerrDiscordNotification: Seerr 3.3 discordIds vs pre-3.3 discordId, settings round-trip.
 // resolveRequester: webhook payload attribution across template variants.
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const axios = require('axios');
 const express = require('express');
 const { loadSandbox } = require('./extract');
@@ -42,7 +43,7 @@ function mockSeerr({ modern }) {
   });
 }
 
-(async () => {
+test('seerr-notifications: setOverseerrDiscordNotification round-trips across Seerr versions', async () => {
   const USER_ID = '123456789012345678';
 
   // Seerr 3.3: merge + store via plural key, legacy key still present, other settings survive.
@@ -71,9 +72,9 @@ function mockSeerr({ modern }) {
   assert.strictEqual(state.posts[0].discordId, USER_ID, 'pre-3.3: singular key sent');
   assert.deepStrictEqual(state.otherSettings, { pgpKey: 'PGPKEY', telegramChatId: '42', pushoverUserKey: 'pk' }, 'pre-3.3: other settings round-tripped');
   server.close();
+});
 
-  // resolveRequester across payload shapes.
-  const rr = req => sandbox.run.call(null, 'resolveRequester(REQ)', Object.assign(sandbox, { REQ: req })) ?? null;
+test('seerr-notifications: resolveRequester across webhook payload shapes', () => {
   sandbox.dbUserByEmail = null;
 
   sandbox.REQ = { requestedBy_email: 'a@b.c', requestedBy_settings_discordIds: '222222222222222222, 333333333333333333' };
@@ -97,6 +98,4 @@ function mockSeerr({ modern }) {
   sandbox.REQ = { requestedBy_email: 'a@b.c', requestedBy_settings_discordIds: '222222222222222222' };
   r = sandbox.run('resolveRequester(REQ)');
   assert.deepStrictEqual([r.discordId, r.source], ['101010101010101010', 'db-email'], 'DB email match takes priority');
-
-  console.log('ok - seerr-notifications');
-})().catch(err => { console.error('FAILED seerr-notifications:', err.message); process.exit(1); });
+});

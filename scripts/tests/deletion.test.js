@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const express = require('express');
 const axios = require('axios');
 const { loadSandbox } = require('./extract');
 
-(async () => {
+test('deletion: resolveDeletableMedia/executeDeletion against a mock Radarr/Sonarr', async () => {
   const app = express();
   const deleted = [];
   const movie = id => [{ id, tmdbId: 603, title: 'The Matrix', movieFile: { path: `/media/${id}.mkv` } }];
@@ -44,5 +45,4 @@ const { loadSandbox } = require('./extract');
   assert.deepStrictEqual(deleted.sort(), ['/sonarr/api/v3/episodefile/31', '/sonarr/api/v3/episodefile/32']);
   assert.ok(audits.some(a => a.action === 'deletion_blocked' && a.details.result === 'tv_scope_required'));
   server.close();
-  console.log('deletion.test.js: all tests passed');
-})().catch(err => { console.error(err); process.exit(1); });
+});

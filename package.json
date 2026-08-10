@@ -4,7 +4,7 @@
   "main": "bootstrap.js",
   "scripts": {
     "start": "node bootstrap.js",
-    "test": "node --check index.js && node --check bootstrap.js && node --check src/episode-recovery.js && node scripts/tests/run-all.js",
+    "test": "node --check index.js && node --check bootstrap.js && node --check src/episode-recovery.js && node --test",
     "test:helpers": "node scripts/test-security.js",
     "lint": "eslint .",
     "doctor:edge": "node scripts/check-edge-transfer.js"

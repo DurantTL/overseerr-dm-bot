@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // src/premiumize.js — imported directly (no source extraction): stuck detection is pure, and
 // the API helpers run against a mock server via the PREMIUMIZE_API_URL override.
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const express = require('express');
 
-(async () => {
+test('premiumize: API helpers against a mock server, plus pure stuck-transfer detection', async () => {
   // Mock must be up before require so PM_API_BASE picks up the override.
   const app = express();
   app.use(express.urlencoded({ extended: false }));
@@ -73,6 +74,4 @@ const express = require('express');
   assert.strictEqual(tracker.size, 0, 'tracker pruned for departed/inactive transfers');
   assert.strictEqual(isStuckCandidate({ status: 'seeding' }), false, 'seeding not a candidate');
   assert.strictEqual(isStuckCandidate({ status: 'waiting' }), true, 'waiting is a candidate');
-
-  console.log('ok - premiumize');
-})().catch(err => { console.error('FAILED premiumize:', err.message); process.exit(1); });
+});

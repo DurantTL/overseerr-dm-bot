@@ -4,7 +4,8 @@
 // post an empty inventory that wipes the node's known contents and re-seeds onto the system disk.
 // Covers: guard off by default (back-compat), drive-missing abort, folder-outside-mount, and the
 // healthy pass-through where the guard is a no-op and normal convergence still happens.
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const express = require('express');
 const fs = require('fs');
 const os = require('os');
@@ -13,7 +14,7 @@ const path = require('path');
 const { buildCtx, runOnce, checkMountGuard } = require('../../agent/agent');
 const { renderSyncthingStignore, computePlanHash } = require('../../src/tier');
 
-(async () => {
+test('tier-agent-mountguard: guard-off default, drive-missing abort, recovery, folder-outside-mount, marker checks', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tier-mountguard-'));
   const mountRoot = path.join(tmp, 'media');       // stands in for /mnt/media
   const folderRoot = path.join(mountRoot, 'Movies');
@@ -163,5 +164,4 @@ const { renderSyncthingStignore, computePlanHash } = require('../../src/tier');
   botSrv.close();
   stSrv.close();
   fs.rmSync(tmp, { recursive: true, force: true });
-  console.log('tier-agent-mountguard.test.js: all assertions passed');
-})().catch(err => { console.error(err); process.exit(1); });
+});

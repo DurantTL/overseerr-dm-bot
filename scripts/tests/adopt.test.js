@@ -3,14 +3,17 @@
 // adoption verdict (src/adopt.js), plus the d.multicall2 listing (src/rtorrent.js) against
 // a mock XML-RPC server.
 // CONFIG.RTORRENT_URL is pointed at the mock XML-RPC server before the listing test below.
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const express = require('express');
 
-(async () => {
-  const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('../../src/adopt');
-  const { CONFIG } = require('../../src/config');
+const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('../../src/adopt');
+const { CONFIG } = require('../../src/config');
 
-  // --- Name matching ---
+const cfg = { RTORRENT_ADOPT_LABELS: ['sonarr', 'radarr', 'tv'], SONARR_URL: 'http://s', RADARR_URL: 'http://r' };
+const root = '/home/localclient/Downloads';
+
+test('adopt: matchTorrentsByName', () => {
   const torrents = [
     { name: 'Blood.Vs.Duty.S01.1080p.WEB-DL.H264-GROUP' },
     { name: 'Blood Vs Duty S02 COMPLETE 720p' },
@@ -20,18 +23,18 @@ const express = require('express');
   assert.strictEqual(matchTorrentsByName(torrents, 'blood duty s02').length, 1, 'case-insensitive, order-independent');
   assert.strictEqual(matchTorrentsByName(torrents, 'Blood Missing').length, 0, 'a missing token rejects the match');
   assert.deepStrictEqual(matchTorrentsByName(torrents, '   '), [], 'blank search matches nothing, not everything');
+});
 
-  // --- Label → target ---
-  const cfg = { RTORRENT_ADOPT_LABELS: ['sonarr', 'radarr', 'tv'], SONARR_URL: 'http://s', RADARR_URL: 'http://r' };
+test('adopt: adoptTargetForLabel', () => {
   assert.strictEqual(adoptTargetForLabel('sonarr', cfg), 'sonarr', 'sonarr label maps to sonarr');
   assert.strictEqual(adoptTargetForLabel('  Radarr ', cfg), 'radarr', 'label is trimmed and lowercased');
   assert.strictEqual(adoptTargetForLabel('', cfg), null, 'blank label needs an admin choice');
   assert.strictEqual(adoptTargetForLabel('music', cfg), null, 'label outside RTORRENT_ADOPT_LABELS is unknown');
   assert.strictEqual(adoptTargetForLabel('tv', cfg), null, 'adoptable label that names no arr still needs a choice');
   assert.strictEqual(adoptTargetForLabel('sonarr', { ...cfg, SONARR_URL: '' }), null, 'label pointing at an unconfigured arr resolves to nothing');
+});
 
-  // --- Remote subpath derivation ---
-  const root = '/home/localclient/Downloads';
+test('adopt: remoteSubpathFor', () => {
   assert.strictEqual(remoteSubpathFor(`${root}/Blood.Vs.Duty.S01`, root), 'Blood.Vs.Duty.S01', 'folder directly under the root');
   assert.strictEqual(remoteSubpathFor(`${root}/sonarr/Blood.Vs.Duty.S01`, root), 'sonarr/Blood.Vs.Duty.S01', 'per-label subfolder is preserved');
   assert.strictEqual(remoteSubpathFor(`${root}/Single.File.mkv`, `${root}/`), 'Single.File.mkv', 'trailing slash on the root is tolerated');
@@ -39,8 +42,9 @@ const express = require('express');
   assert.strictEqual(remoteSubpathFor(`${root}/../etc/passwd`, root), null, 'traversal is rejected');
   assert.strictEqual(remoteSubpathFor(`${root}/a/../b`, root), null, 'embedded traversal is rejected');
   assert.strictEqual(remoteSubpathFor(`${root}/Name`, ''), null, 'no root configured means no mapping');
+});
 
-  // --- Remote subpath candidates (self-correcting root mapping) ---
+test('adopt: remoteSubpathCandidates (self-correcting root mapping)', () => {
   let cands = remoteSubpathCandidates('/home/localclient/Downloads/Ep.mkv', 'Ep.mkv', '');
   assert.deepStrictEqual(cands, ['Ep.mkv', 'Downloads/Ep.mkv', 'localclient/Downloads/Ep.mkv', 'home/localclient/Downloads/Ep.mkv'],
     'without a configured root, every base_path suffix is probed — an SFTP remote rooted at the home dir finds Downloads/Ep.mkv');
@@ -51,8 +55,9 @@ const express = require('express');
   cands = remoteSubpathCandidates('/a/b/c/d/e/f/g/Ep.mkv', 'Ep.mkv', '');
   assert.strictEqual(cands.length, 5, 'suffix probing caps at 5 segments');
   assert.ok(!cands.includes(''), 'blank candidates are dropped');
+});
 
-  // --- Recursive listing parse + index (last-resort filename search) ---
+test('adopt: parseRemoteListing / indexRemoteListing (last-resort filename search)', () => {
   const parsed = parseRemoteListing('Blood Vs Duty/;-1\nSeason.Pack/;0\nStat.Sized.Dir/;4096\nBlood Vs Duty/Ep.mkv;220248144\nplain-lsf-line.mkv\nweird;name.mkv\n\n');
   assert.deepStrictEqual(parsed, [
     { path: 'Blood Vs Duty', size: null },
@@ -77,22 +82,26 @@ const express = require('express');
   assert.deepStrictEqual(idx.get('Blood Vs Duty'), [{ path: 'Blood Vs Duty', size: null }], 'directories index too for folder torrents');
   assert.strictEqual(idx.get('dupe.mkv').length, 2, 'duplicate basenames keep every location — callers must refuse ambiguity');
   assert.strictEqual(idx.get(''), undefined, 'blank lines never index');
+});
 
-  // Size gate: a listed FILE must match the torrent's byte count; dirs/unknowns pass.
+test('adopt: remoteSizeMatches size gate', () => {
+  // A listed FILE must match the torrent's byte count; dirs/unknowns pass.
   assert.strictEqual(remoteSizeMatches(376830706, 376830706), true, 'exact size matches');
   assert.strictEqual(remoteSizeMatches(0, 376830706), false, 'a 0-byte re-allocated placeholder is NOT the data');
   assert.strictEqual(remoteSizeMatches(123, 376830706), false, 'partial data is not the data');
   assert.strictEqual(remoteSizeMatches(null, 376830706), true, 'directories (unknown size) cannot be size-gated');
   assert.strictEqual(remoteSizeMatches(0, null), true, 'no expected size means no gate');
+});
 
-  // --- Remote path joining (SFTP home-relative vs root-relative) ---
+test('adopt: joinRemotePath (SFTP home-relative vs root-relative)', () => {
   assert.strictEqual(joinRemotePath('rapidseedbox:', 'Downloads/Ep.mkv'), 'rapidseedbox:Downloads/Ep.mkv',
     'bare remote joins without a slash — remote:/path would be root-relative on SFTP');
   assert.strictEqual(joinRemotePath('rapidseedbox:files', 'Ep.mkv'), 'rapidseedbox:files/Ep.mkv', 'remote with a path keeps the slash join');
   assert.strictEqual(joinRemotePath('rapidseedbox:', ''), 'rapidseedbox:', 'empty subpath returns the remote itself');
   assert.strictEqual(joinRemotePath('rapidseedbox:files', ''), 'rapidseedbox:files', 'empty subpath never appends a slash');
+});
 
-  // --- Adoption verdict ---
+test('adopt: decideAdoption verdict', () => {
   const t = (over = {}) => ({ hash: 'ABC123', name: 'Blood.Vs.Duty.S01', complete: true, ...over });
   let v = decideAdoption({ torrent: t(), existingJob: { id: 7, state: 'downloading' }, target: 'sonarr' });
   assert.deepStrictEqual({ ok: v.ok, dup: v.dup }, { ok: false, dup: true }, 'an info-hash already in grab_jobs is refused');
@@ -105,8 +114,9 @@ const express = require('express');
   assert.deepStrictEqual(v, { ok: true, state: 'complete', mediaType: 'tv' }, 'complete torrent starts at complete, sonarr means tv');
   v = decideAdoption({ torrent: t({ complete: false }), existingJob: null, target: 'radarr' });
   assert.deepStrictEqual(v, { ok: true, state: 'downloading', mediaType: 'movie' }, 'incomplete torrent starts at downloading, radarr means movie');
+});
 
-  // --- Bulk target choices ---
+test('adopt: bulkTargetChoices', () => {
   const sonarrish = [{ label: 'sonarr' }, { label: 'sonarr' }];
   assert.deepStrictEqual(bulkTargetChoices(sonarrish, null, cfg), ['sonarr'], 'uniform resolved labels pin one Adopt-all button');
   assert.deepStrictEqual(bulkTargetChoices(sonarrish, 'radarr', cfg), ['radarr'], 'explicit target overrides labels');
@@ -114,8 +124,9 @@ const express = require('express');
   assert.deepStrictEqual(bulkTargetChoices([{ label: 'sonarr' }, { label: 'radarr' }], null, cfg), ['sonarr', 'radarr'], 'mixed labels force an explicit choice');
   assert.deepStrictEqual(bulkTargetChoices([{ label: '' }], null, { ...cfg, RADARR_URL: '' }), ['sonarr'], 'only configured arrs are offered');
   assert.deepStrictEqual(bulkTargetChoices([], null, cfg), ['sonarr', 'radarr'], 'an empty cohort still never invents a target');
+});
 
-  // --- d.multicall2 listing against a mock XML-RPC endpoint ---
+test('adopt: d.multicall2 listing against a mock XML-RPC endpoint', async () => {
   const xmlValue = v2 => typeof v2 === 'number' ? `<i8>${v2}</i8>` : `<string>${v2}</string>`;
   const xmlRow = row => `<value><array><data>${row.map(c => `<value>${xmlValue(c)}</value>`).join('')}</data></array></value>`;
   const rows = [
@@ -144,5 +155,4 @@ const express = require('express');
   assert.strictEqual(listed[1].label, '', 'blank label survives as an empty string');
 
   server.close();
-  console.log('ok - adopt');
-})().catch(err => { console.error('FAILED adopt:', err.message); process.exit(1); });
+});

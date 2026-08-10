@@ -2,13 +2,13 @@
 // Release ETA: the pure formatter (src/util.js, imported directly) and fetchReleaseEta
 // (extracted from src/arr.js and run against a mock Radarr/Sonarr, since requiring arr.js
 // directly would open the real SQLite database via src/db.js).
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const express = require('express');
 const axios = require('axios');
 const { loadSandbox } = require('./extract');
 
-(async () => {
-  // --- Pure formatter ---
+test('release-eta: releaseEtaInfo pure formatter', () => {
   const { releaseEtaInfo } = require('../../src/util');
   const DAY = 86400000;
   const now = Date.parse('2026-07-15T00:00:00Z');
@@ -47,8 +47,9 @@ const { loadSandbox } = require('./extract');
   assert.strictEqual(releaseEtaInfo({ kind: 'tv', firstAired: iso(now - 300 * DAY), status: 'ended' }, now), null, 'ended show adds nothing');
 
   assert.strictEqual(releaseEtaInfo({ kind: 'movie', digitalRelease: 'garbage' }, now), null, 'unparseable dates are ignored');
+});
 
-  // --- fetchReleaseEta against a mock Radarr/Sonarr ---
+test('release-eta: fetchReleaseEta against a mock Radarr/Sonarr', async () => {
   const app = express();
   const state = { movies: [], movies4k: [], series: [], fail: false };
   app.get('/main/api/v3/movie', (req, res) => state.fail ? res.status(500).end() : res.json(state.movies.filter(m => m.tmdbId === Number(req.query.tmdbId))));
@@ -91,5 +92,4 @@ const { loadSandbox } = require('./extract');
   assert.strictEqual(audits.filter(a => a.action === 'external_api_error' && a.details.action === 'release_eta').length, 1, 'API failure is audited');
 
   server.close();
-  console.log('ok - release-eta');
-})().catch(err => { console.error('FAILED release-eta:', err.message); process.exit(1); });
+});

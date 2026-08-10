@@ -2,15 +2,17 @@
 // Plex Home staging: the server-identity gate that keeps PH playback events out of the delete
 // flow, LRU eviction order + cache-pressure planning, invite scoping per home server, and
 // stage-source resolution against a mock Radarr/Sonarr.
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const express = require('express');
 const axios = require('axios');
 const path = require('path');
 const { loadSandbox } = require('./extract');
 
-(async () => {
-  // --- classifyServerIdentity (pure; cfg injected) ---
-  const sb = loadSandbox(['classifyServerIdentity', 'evictionOrder', 'planCacheSpace', 'planPlayPromotion'], {});
+const GB = 1024 ** 3;
+const sb = loadSandbox(['classifyServerIdentity', 'evictionOrder', 'planCacheSpace', 'planPlayPromotion'], {});
+
+test('staging: classifyServerIdentity', () => {
   const classify = (ids, cfg) => sb.run(`classifyServerIdentity(${JSON.stringify(ids)}, ${JSON.stringify(cfg)})`);
   const none = { phNames: [], caEdgeNames: [], primaryNames: [] };
   const phOnly = { phNames: ['ph-box'], caEdgeNames: [], primaryNames: [] };
@@ -28,9 +30,9 @@ const { loadSandbox } = require('./extract');
   assert.strictEqual(classify({ machineId: 'california-cache' }, both), 'ca-edge', 'California machine id matches too');
   assert.strictEqual(classify({ serverName: 'neighbors-server' }, both), 'unknown', 'strict mode: unrecognized name → unknown');
   assert.strictEqual(classify({ serverName: 'ph-box', machineId: 'zzz' }, both), 'ph', 'PH wins when either id matches');
+});
 
-  // --- evictionOrder: unpinned only, least-recently-streamed first ---
-  const GB = 1024 ** 3;
+test('staging: evictionOrder (unpinned only, least-recently-streamed first)', () => {
   const items = [
     { media_id: 'tmdb:1', title: 'Old Unwatched', pinned: 0, staged_at: 100, last_streamed_at: null, size_bytes: 10 * GB },
     { media_id: 'tmdb:2', title: 'Weekly Rewatch', pinned: 1, staged_at: 50, last_streamed_at: 60, size_bytes: 10 * GB },
@@ -39,8 +41,15 @@ const { loadSandbox } = require('./extract');
   ];
   sb.run(`var items = ${JSON.stringify(items)}`);
   assert.strictEqual(sb.run('evictionOrder(items).map(i => i.media_id).join()'), 'tmdb:3,tmdb:1,tmdb:4', 'LRU order, pinned invisible');
+});
 
-  // --- planCacheSpace ---
+test('staging: planCacheSpace', () => {
+  const items = [
+    { media_id: 'tmdb:1', title: 'Old Unwatched', pinned: 0, staged_at: 100, last_streamed_at: null, size_bytes: 10 * GB },
+    { media_id: 'tmdb:2', title: 'Weekly Rewatch', pinned: 1, staged_at: 50, last_streamed_at: 60, size_bytes: 10 * GB },
+    { media_id: 'tmdb:3', title: 'Watched Long Ago', pinned: 0, staged_at: 10, last_streamed_at: 20, size_bytes: 10 * GB },
+    { media_id: 'tmdb:4', title: 'Watched Recently', pinned: 0, staged_at: 10, last_streamed_at: 900, size_bytes: 10 * GB },
+  ];
   const plan = args => sb.run(`planCacheSpace(${JSON.stringify(args)})`);
   const p1 = plan({ freeBytes: null, neededBytes: 5 * GB, minFreeBytes: GB, items });
   assert.strictEqual(p1.ok, true, 'unknown free space proceeds');
@@ -63,8 +72,9 @@ const { loadSandbox } = require('./extract');
   assert.strictEqual(p5.ok, false, 'impossible even after evicting everything unpinned → refuse');
   assert.strictEqual(p5.evict.length, 0, 'refusal evicts nothing (no pointless cache trashing)');
   assert.strictEqual(p5.shortfallBytes, 80 * GB, 'shortfall reported after counting all unpinned');
+});
 
-  // --- planPlayPromotion: play-triggered promotion decision (PH pilot) ---
+test('staging: planPlayPromotion (play-triggered promotion decision, PH pilot)', () => {
   const promo = args => sb.run(`planPlayPromotion(${JSON.stringify(args)})`);
   const HOUR = 3600000;
   assert.strictEqual(promo({ enabled: false }).action, 'skip', 'disabled → skip');
@@ -83,8 +93,9 @@ const { loadSandbox } = require('./extract');
   // Precedence: already-local beats cooldown beats rate-limit beats audit-only.
   assert.strictEqual(promo({ enabled: true, alreadyStaged: true, rateLimitOk: false, auditOnly: true }).reason, 'already_local', 'already_local wins over other skips');
   assert.strictEqual(promo({ enabled: true, alreadyStaged: false, rateLimitOk: false, auditOnly: true }).reason, 'rate_limited', 'rate-limit checked before audit-only');
+});
 
-  // --- serversForHomeServer: PH users get the PH box only, primary users everything else ---
+test('staging: serversForHomeServer (PH users get the PH box only, primary users everything else)', () => {
   const plexSb = loadSandbox(['serversForHomeServer'], {
     CONFIG: { PH_SERVER_NAMES: ['ph-box'] },
   });
@@ -99,8 +110,9 @@ const { loadSandbox } = require('./extract');
   assert.strictEqual(plexSb.run("serversForHomeServer(servers, 'primary').map(s => s.name).join()"), 'Durant-Master,PH-Box', 'feature off → all servers (legacy)');
   plexSb.run("CONFIG.PH_SERVER_NAMES = ['def']");
   assert.strictEqual(plexSb.run("serversForHomeServer(servers, 'ph').map(s => s.name).join()"), 'PH-Box', 'PH box matchable by clientIdentifier too');
+});
 
-  // --- resolveStageSource against a mock Radarr/Sonarr ---
+test('staging: resolveStageSource against a mock Radarr/Sonarr', async () => {
   const app = express();
   app.use(express.json());
   const movie = { tmdbId: 603, title: 'The Matrix', year: 1999, hasFile: true, path: '/data/movies/The Matrix (1999)', sizeOnDisk: 8 * GB };
@@ -142,7 +154,10 @@ const { loadSandbox } = require('./extract');
   const u = await stageSb.run("resolveStageSource('imdb:tt0133093')");
   assert.strictEqual(u.found, false, 'unknown media id scheme rejected');
 
-  // --- §Phase2 reconcileStagedItems + sumBytesByDest (pure) ---
+  server.close();
+});
+
+test('staging: §Phase2 reconcileStagedItems + sumBytesByDest (pure)', () => {
   const recSb = loadSandbox(['reconcileStagedItems', 'sumBytesByDest'], { Map });
   const entries = [
     { Path: 'Movies/Kept Full', IsDir: true },
@@ -169,11 +184,13 @@ const { loadSandbox } = require('./extract');
 
   assert.strictEqual(recSb.run('reconcileStagedItems({ rows, presentBytes: null }).unknown'), true, 'null listing → unknown state');
   assert.strictEqual(recSb.run('reconcileStagedItems({ rows, presentBytes: null }).restage.length'), 0, 'a blind (failed) listing never restages — no mass re-copy on a transient rclone error');
+});
 
-  // --- purge guard: `rclone purge` is recursive and unconditional, so a degenerate subpath would
-  // resolve to the cache ROOT and wipe every staged title in one call. Every dest_path is built
-  // with path.basename today, so these are unreachable — the guard exists because the blast radius
-  // is the whole remote cache, and "unreachable" is not a guarantee.
+test('staging: purge guard — rclone purge is recursive and unconditional', async () => {
+  // A degenerate subpath would resolve to the cache ROOT and wipe every staged title in one
+  // call. Every dest_path is built with path.basename today, so these are unreachable — the
+  // guard exists because the blast radius is the whole remote cache, and "unreachable" is not
+  // a guarantee.
   // Extracted rather than required: src/staging.js pulls in src/arr.js → src/db.js, which opens
   // the real SQLite file. Same reason the rest of this suite uses loadSandbox.
   let purgeArgs = null;
@@ -198,7 +215,4 @@ const { loadSandbox } = require('./extract');
   // JSON-compared: an array built inside the vm carries the sandbox's own Array prototype, which
   // deepStrictEqual counts as a difference.
   assert.strictEqual(JSON.stringify(purgeArgs), JSON.stringify(['purge', 'phbox:/cache/Movies/Some Film (2019)']), 'and targets only that title');
-
-  server.close();
-  console.log('staging.test.js: all assertions passed');
-})().catch(err => { console.error(err); process.exit(1); });
+});

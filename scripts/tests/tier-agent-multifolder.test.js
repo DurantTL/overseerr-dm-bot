@@ -4,7 +4,8 @@
 // rescan+confirm each, prune within each root (traversal-confined), and report the inventory
 // tagged with folder ids. Also covers TIER_FOLDERS parsing and the receive-only abort on ONE of
 // several folders.
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const express = require('express');
 const fs = require('fs');
 const os = require('os');
@@ -13,8 +14,7 @@ const path = require('path');
 const { buildCtx, runOnce, parseFolders, resolveFolderPlans } = require('../../agent/agent');
 const { planTier, renderFolderStignore } = require('../../src/tier');
 
-(async () => {
-  // --- parseFolders: both forms ---
+test('tier-agent-multifolder: parseFolders (compact form, JSON form, legacy single-folder fallback)', () => {
   assert.deepStrictEqual(
     parseFolders({ TIER_FOLDERS: 'mov:/data/Movies;tv:/data/TV Shows/' }),
     [{ id: 'mov', root: '/data/Movies' }, { id: 'tv', root: '/data/TV Shows' }],
@@ -30,7 +30,9 @@ const { planTier, renderFolderStignore } = require('../../src/tier');
     [{ id: 'media', root: '/media' }],
     'single-folder fallback from legacy env',
   );
+});
 
+test('tier-agent-multifolder: converge, no-op skip, and a per-folder receive-only abort', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tier-mf-test-'));
   const roots = {
     mov: path.join(tmp, 'Movies'),
@@ -185,6 +187,8 @@ const { planTier, renderFolderStignore } = require('../../src/tier');
   botSrv.close();
   stSrv.close();
   fs.rmSync(tmp, { recursive: true, force: true });
+  // The SAFETY ABORT scenario above deliberately triggers a real production behavior in
+  // agent.js (a non-zero process.exitCode on prune errors) — undo it so it doesn't fail this
+  // otherwise-passing test run.
   process.exitCode = 0;
-  console.log('tier-agent-multifolder.test.js: all assertions passed');
-})().catch(err => { console.error(err); process.exit(1); });
+});

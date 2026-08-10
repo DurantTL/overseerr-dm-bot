@@ -2,7 +2,8 @@
 // Node sync-agent against mock bot + Syncthing HTTP: the ignore-before-prune ordering, the
 // receive-only safety abort, path confinement, the atime inventory report, and the no-op
 // skip on an unchanged plan hash.
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const express = require('express');
 const fs = require('fs');
 const os = require('os');
@@ -11,7 +12,7 @@ const path = require('path');
 const { buildCtx, runOnce } = require('../../agent/agent');
 const { renderSyncthingStignore, computePlanHash } = require('../../src/tier');
 
-(async () => {
+test('tier-agent: ignore-before-prune ordering, receive-only abort, path confinement, inventory, no-op skip', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tier-agent-test-'));
   const folderRoot = path.join(tmp, 'media');
   const stateDir = path.join(tmp, 'state');
@@ -186,5 +187,4 @@ const { renderSyncthingStignore, computePlanHash } = require('../../src/tier');
   botSrv.close();
   stSrv.close();
   fs.rmSync(tmp, { recursive: true, force: true });
-  console.log('tier-agent.test.js: all assertions passed');
-})().catch(err => { console.error(err); process.exit(1); });
+});

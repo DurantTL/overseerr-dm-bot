@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // runSeerrSelfTest (/seerr-test): version check, Discord-agent check, throwaway-user round-trip,
 // cleanup semantics — against mock Seerr servers.
-const assert = require('assert');
+const { test } = require('node:test');
+const assert = require('node:assert');
 const axios = require('axios');
 const express = require('express');
 const crypto = require('crypto');
@@ -51,7 +52,7 @@ async function runCase(opts, testOpts = {}) {
 }
 const step = (result, name) => result.steps.find(s => s.name === name);
 
-(async () => {
+test('seerr-selftest: runSeerrSelfTest across version/agent/legacy/keep scenarios', async () => {
   let { result, state } = await runCase({ version: '3.3.0', agentEnabled: true, modern: true });
   assert.ok(result.steps.every(s => s.ok), '3.3 happy path: all steps ok');
   assert.match(step(result, 'Discord ID stored').detail, /discordIds/, '3.3: verified via plural field');
@@ -80,6 +81,4 @@ const step = (result, name) => result.steps.find(s => s.name === name);
   const down = await sandbox.run(`runSeerrSelfTest('${ADMIN_ID}', {})`);
   assert.strictEqual(down.steps.length, 1, 'down: bails after reachability');
   assert.strictEqual(down.testUserId, null, 'down: no user created');
-
-  console.log('ok - seerr-selftest');
-})().catch(err => { console.error('FAILED seerr-selftest:', err.message); process.exit(1); });
+});
