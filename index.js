@@ -27,12 +27,12 @@ const crypto = require('crypto');
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
+const { db, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
-const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries } = require('./src/arr');
+const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('./src/escalation');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch } = require('./src/season-pack');
 const { assessAsianOrigin, describeAvistazFit } = require('./src/asian');
@@ -40,7 +40,7 @@ const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = requi
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
-const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
+const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, parseReleaseName, seriesToken, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
 const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
@@ -848,6 +848,18 @@ async function executeGrab(candidate, meta) {
     audit('external_api_error', { provider: 'prowlarr', error: err.message, action: 'grab_fetch_torrent', title: meta.title });
     return { ok: false, why: `couldn't fetch the .torrent: ${err.message}` };
   }
+  // A request grab already knows which TVDB series it's for (meta.mediaId is 'tvdb:<id>') —
+  // pin the job to Sonarr's matching seriesId up front instead of leaving Sonarr to guess
+  // from the release filename, same as adoption's resolver. Best-effort: an unresolved id
+  // here still isn't fatal, it just leaves the job unpinned like before this existed.
+  let identity = {};
+  if (meta.mediaType === 'tv' && String(meta.mediaId || '').startsWith('tvdb:')) {
+    const tvdbId = Number(String(meta.mediaId).slice('tvdb:'.length));
+    if (Number.isFinite(tvdbId)) {
+      const resolved = await resolveSonarrSeriesIdentity({ tvdbId }).catch(() => null);
+      if (resolved?.series) identity = { targetArrId: resolved.series.id, tvdbId, matchType: 'tvdb' };
+    }
+  }
   // From here the tracker download slot may already be spent, so failures still record a
   // (failed) job — countGrabJobsToday counts every state, keeping the allowance honest.
   const label = meta.mediaType === 'tv' ? CONFIG.RTORRENT_LABEL_TV : CONFIG.RTORRENT_LABEL_MOVIE;
@@ -860,7 +872,7 @@ async function executeGrab(candidate, meta) {
     const job = recordGrabJob({
       mediaId: meta.mediaId || null, mediaType: meta.mediaType, title: meta.title,
       releaseTitle: candidate.releaseTitle, infoHash, sizeBytes: candidate.size, label,
-      discordId: meta.discordId, origin: meta.origin,
+      discordId: meta.discordId, origin: meta.origin, ...identity,
     });
     audit('avistaz_grab_sent', { actorDiscordId: meta.actorDiscordId || null, targetDiscordId: meta.discordId || null, jobId: job.id, mediaId: meta.mediaId, title: meta.title, release: candidate.releaseTitle, infoHash, label, confidence: candidate.confidence, origin: meta.origin });
     return { ok: true, job };
@@ -868,7 +880,7 @@ async function executeGrab(candidate, meta) {
     const failed = recordGrabJob({
       mediaId: meta.mediaId || null, mediaType: meta.mediaType, title: meta.title,
       releaseTitle: candidate.releaseTitle, infoHash, sizeBytes: candidate.size, label,
-      discordId: meta.discordId, origin: meta.origin,
+      discordId: meta.discordId, origin: meta.origin, ...identity,
     });
     setGrabJobState(failed.id, 'failed', err.message);
     audit('external_api_error', { provider: 'rtorrent', error: err.message, action: 'grab_send', title: meta.title, jobId: failed.id });
@@ -1082,26 +1094,35 @@ async function runGrabTransfer(job) {
   const arr = arrForMediaType(job.media_type);
   const cmdRes = await axios.post(`${arr.url}/api/v3/command`, { name: arr.scan, path: importPath, importMode: 'Move' },
     { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
-  // Fire-and-forget verification: an arr scan can complete while silently declining every
-  // file, and a wedged command queue completes nothing at all — both used to go unnoticed
-  // until someone checked the library by hand. Never blocks or un-does the job.
-  verifyArrImport(job, arr, cmdRes.data?.id, importPath, finalPath)
+  // The job stays active (scanning → importing → verified) until the arr's scan is actually
+  // confirmed to have taken the files — "the scan command was fired" is not "it imported".
+  // Verification runs in the background (it can take up to 10 minutes) but OWNS the
+  // terminal state transition and the success notification; runGrabTransfer must never mark
+  // the job done itself, or a scan that silently rejects everything reports false success.
+  setGrabJobState(job.id, 'scanning');
+  verifyArrImport(job, arr, cmdRes.data?.id, importPath, finalPath, st.sizeBytes)
     .catch(err => log.warn(`Import verification failed for job #${job.id}: ${err.message}`));
+}
 
-  setGrabJobState(job.id, 'done');
+// Shared success path once an import is actually confirmed (leftover-file check passed) —
+// called from verifyArrImport on every route that ends in success (plain scan, forced
+// ManualImport, or the guided mapping wizard).
+async function finishGrabJobImported(job, sizeBytes) {
+  if (job.id == null) return; // synthetic job from a manual /rtorrent import — no row, no notification
+  setGrabJobState(job.id, 'verified');
   const minutes = job.completed_at ? Math.max(1, Math.round((Date.now() - job.completed_at) / 60000)) : null;
   const adopted = String(job.origin || '').startsWith('adopt');
-  audit(adopted ? 'rtorrent_adopt_imported' : 'avistaz_grab_imported', { jobId: job.id, mediaId: job.media_id, title: job.title, release: job.release_title, sizeBytes: st.sizeBytes, transferMinutes: minutes });
+  audit(adopted ? 'rtorrent_adopt_imported' : 'avistaz_grab_imported', { jobId: job.id, mediaId: job.media_id, title: job.title, release: job.release_title, sizeBytes, transferMinutes: minutes });
   if (adopted) {
     // Batch-friendly: a 39-episode adoption must not ping the channel 39 times. One rolling
     // message is edited in place per import (edits don't notify); no requester DM either —
     // the discord id on an adopted job is the adopting admin.
-    await updateAdoptTransferProgress(job, st.sizeBytes || job.size_bytes);
+    await updateAdoptTransferProgress(job, sizeBytes || job.size_bytes);
     return;
   }
   notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.SUCCESS)
     .setTitle(`📦 AvistaZ Grab Imported — ${job.title}`)
-    .setDescription(`**${job.release_title}** (${fmtSpace(st.sizeBytes || job.size_bytes)}) finished on the seedbox, copied home, and was handed to ${job.media_type === 'movie' ? 'Radarr' : 'Sonarr'} for import. It keeps seeding on the seedbox.`)] });
+    .setDescription(`**${job.release_title}** (${fmtSpace(sizeBytes || job.size_bytes)}) finished on the seedbox, copied home, and was confirmed imported by ${job.media_type === 'movie' ? 'Radarr' : 'Sonarr'}. It keeps seeding on the seedbox.`)] });
   await dmUser(job.requested_by_discord_id, { embeds: [brandedEmbed(COLORS.SUCCESS)
     .setTitle(`🎉 On Its Way — ${job.title}`)
     .setDescription(`Your request came through the private-tracker route and just finished downloading. It should appear in Plex within a few minutes.`)] });
@@ -1128,15 +1149,10 @@ function leftoverVideoFiles(p) {
 
 const sleepMs = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-// Post-import verification: wait for the scan command, then check the video files actually
-// left staging. Three outcomes beyond silent success:
-//   - scan never completes → the arr's command queue is wedged; say so (a restart clears it).
-//   - scan completed but skipped cleanly-matched files → force them through the arr's
-//     ManualImport API (exactly what an admin would do in the Manual Import screen).
-//   - files are genuinely rejected → one alert NAMING the rejection reasons, instead of the
-//     silence that used to require API spelunking to explain.
-async function verifyArrImport(job, arr, commandId, importPath, finalPath) {
-  const deadline = Date.now() + 10 * 60000;
+// Poll an arr command until it reaches a terminal status or the deadline passes. Transient
+// request failures are swallowed and just retried — only a hard deadline gives up.
+async function pollArrCommand(arr, commandId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
   let status = 'unknown';
   while (Date.now() < deadline && commandId) {
     await sleepMs(15000);
@@ -1146,14 +1162,42 @@ async function verifyArrImport(job, arr, commandId, importPath, finalPath) {
       if (['completed', 'failed', 'aborted'].includes(status)) break;
     } catch (_e) { /* transient — keep polling until the deadline */ }
   }
-  if (!leftoverVideoFiles(finalPath).length) return; // consumed — the import really happened
+  return status;
+}
+
+// Whether it's safe to auto-force a batch of manualimport preview rows through ManualImport
+// without a human looking at them first: the flag has to be on, AND (for TV) the job must be
+// pinned to a single resolved Sonarr series (see target_arr_id / match_type) with every file
+// in the batch mapping to THAT exact series — never Sonarr's own per-file guess. A movie job
+// has no equivalent ambiguity concern (Radarr matched it by tmdbId already), so it only needs
+// the flag.
+function canAutoForceImport(job, mediaType, files) {
+  if (!CONFIG.SONARR_AUTO_MANUAL_IMPORT) return false;
+  if (mediaType === 'movie') return true;
+  if (!job.target_arr_id || !['tvdb', 'exact', 'alternate', 'manual'].includes(job.match_type)) return false;
+  return files.every(f => f.series?.id === job.target_arr_id);
+}
+
+// Post-import verification: wait for the scan command, then check the video files actually
+// left staging. Owns every terminal state the job can land in beyond 'scanning':
+//   - scan never completes → job stays 'scanning'; the arr's command queue is likely wedged
+//     (say so — a restart clears it, then `/rtorrent import` re-triggers this folder).
+//   - scan completed, everything imported → 'verified' (the actual success path).
+//   - scan completed but skipped cleanly-matched files, identity is certain → force them
+//     through ManualImport (opt-in via SONARR_AUTO_MANUAL_IMPORT), then re-verify.
+//   - files are genuinely rejected, or identity ISN'T certain enough to auto-force →
+//     'needs_mapping' (TV, with the guided wizard) or 'import_rejected' (movies), with the
+//     rejection reasons named instead of silence.
+async function verifyArrImport(job, arr, commandId, importPath, finalPath, sizeBytes) {
+  const status = await pollArrCommand(arr, commandId, 10 * 60000);
+  if (!leftoverVideoFiles(finalPath).length) return finishGrabJobImported(job, sizeBytes); // consumed — the import really happened
 
   if (status !== 'completed') {
     audit('grab_import_unverified', { jobId: job.id, title: job.title, commandId, status });
     notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
       .setTitle(`⏳ Import Not Confirmed — ${job.title}`.slice(0, 256))
       .setDescription(`${arr.label}'s scan is still \`${status}\` after 10 minutes and the files are still in staging — its command queue may be wedged (one stuck scan blocks everything behind it). Check ${arr.label} → System → Tasks; restarting ${arr.label} clears the queue, then \`/rtorrent import\` re-triggers this folder.`)] });
-    return;
+    return; // stays 'scanning' — not done, not failed, just unconfirmed
   }
 
   // Scan finished yet videos remain: ask the arr what it thinks of each file.
@@ -1162,20 +1206,32 @@ async function verifyArrImport(job, arr, commandId, importPath, finalPath) {
   }).then(r => r.data || []);
   const clean = preview.filter(f => !(f.rejections || []).length
     && (job.media_type === 'movie' ? f.movie : (f.series && (f.episodes || []).length)));
-  if (clean.length) {
+  if (clean.length && canAutoForceImport(job, job.media_type, clean)) {
     const files = clean.map(f => (job.media_type === 'movie'
       ? { path: f.path, movieId: f.movie.id, quality: f.quality, languages: f.languages, releaseGroup: f.releaseGroup || undefined, indexerFlags: f.indexerFlags || 0 }
       : { path: f.path, seriesId: f.series.id, episodeIds: f.episodes.map(e => e.id), quality: f.quality, languages: f.languages, releaseGroup: f.releaseGroup || undefined, indexerFlags: f.indexerFlags || 0 }));
-    await axios.post(`${arr.url}/api/v3/command`, { name: 'ManualImport', files, importMode: 'move' },
+    setGrabJobState(job.id, 'importing');
+    const cmdRes = await axios.post(`${arr.url}/api/v3/command`, { name: 'ManualImport', files, importMode: 'move' },
       { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
     audit('grab_import_forced', { jobId: job.id, title: job.title, files: files.length });
-    notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.INFO)
-      .setTitle(`🔧 Import Nudged — ${job.title}`.slice(0, 256))
-      .setDescription(`${arr.label}'s scan completed but quietly skipped **${files.length}** cleanly-matched file(s); they've been forced through ManualImport (move). They should appear in the library shortly.`)] });
+    // Verify the forced import too — firing the command is not proof it worked.
+    const forcedStatus = await pollArrCommand(arr, cmdRes.data?.id, 5 * 60000);
+    if (!leftoverVideoFiles(finalPath).length) {
+      notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.INFO)
+        .setTitle(`🔧 Import Nudged — ${job.title}`.slice(0, 256))
+        .setDescription(`${arr.label}'s scan completed but quietly skipped **${files.length}** cleanly-matched file(s); they've been forced through ManualImport (move) and confirmed imported.`)] });
+      return finishGrabJobImported(job, sizeBytes);
+    }
+    audit('grab_import_force_failed', { jobId: job.id, title: job.title, forcedStatus });
+    setGrabJobState(job.id, job.media_type === 'movie' ? 'import_rejected' : 'needs_mapping', `forced ManualImport (${forcedStatus}) still left files in staging`);
+    notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle(`⚠️ Forced Import Didn't Take — ${job.title}`.slice(0, 256))
+      .setDescription(`ManualImport was forced (status \`${forcedStatus}\`) but the files are still in staging. Check ${arr.label}'s Manual Import screen — this needs a human look.`)] });
     return;
   }
   const reasons = [...new Set(preview.flatMap(f => (f.rejections || []).map(x => x.reason)))].slice(0, 5);
-  audit('grab_import_rejected', { jobId: job.id, title: job.title, reasons });
+  audit('grab_import_rejected', { jobId: job.id, title: job.title, reasons, cleanUnforced: clean.length && !reasons.length });
+  setGrabJobState(job.id, job.media_type === 'movie' ? 'import_rejected' : 'needs_mapping', reasons.join('; ') || null);
   // TV declines get the guided-import wizard: pick series + season in Discord, the bot pushes
   // the mapping through ManualImport — covers TVDB filing the show under another title and
   // fansub names Sonarr can't parse, without touching the Sonarr UI.
@@ -1187,9 +1243,11 @@ async function verifyArrImport(job, arr, commandId, importPath, finalPath) {
       new ButtonBuilder().setCustomId(`mapimp_start:${nonce}`).setLabel('Map to a Series…').setStyle(ButtonStyle.Primary)));
     mapHint = '**Map to a Series…** below walks through picking the series + season right here and pushes the mapping into Sonarr';
   }
+  const whyNotForced = clean.length && !CONFIG.SONARR_AUTO_MANUAL_IMPORT ? ` (${clean.length} file(s) matched cleanly but \`SONARR_AUTO_MANUAL_IMPORT\` is off, or the series match isn't certain enough to auto-force)`
+    : clean.length ? ' (matched cleanly, but not to the series this job is pinned to)' : '';
   notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
     .setTitle(`🚫 ${arr.label} Declined the Import — ${job.title}`.slice(0, 256))
-    .setDescription(`The files copied home fine but ${arr.label} won't take them:\n${reasons.length ? reasons.map(r => `• ${r}`).join('\n') : '• (no reason reported — the series may be missing or the names unparseable)'}\n\nThey're still in staging. Fix the cause and re-run \`/rtorrent import target:${job.media_type === 'movie' ? 'radarr' : 'sonarr'} folder:${String(path.basename(finalPath)).slice(0, 80)}\` — or ${mapHint}.`)], components });
+    .setDescription(`The files copied home fine but ${arr.label} won't take them${whyNotForced}:\n${reasons.length ? reasons.map(r => `• ${r}`).join('\n') : '• (no reason reported — the series may be missing or the names unparseable)'}\n\nThey're still in staging. Fix the cause and re-run \`/rtorrent import target:${job.media_type === 'movie' ? 'radarr' : 'sonarr'} folder:${String(path.basename(finalPath)).slice(0, 80)}\` — or ${mapHint}.`)], components });
 }
 
 // ---- Guided manual import ("Map to a Series…") ----
@@ -1317,6 +1375,14 @@ async function mapWizardImport(interaction, nonce, state) {
   await axios.post(`${arr.url}/api/v3/command`, { name: 'ManualImport', files, importMode: 'move' },
     { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
   dropMapOffer(nonce);
+  // A human just confirmed the exact series/season/episode mapping — this IS "identity
+  // certain", so the job is pinned and marked verified directly rather than left to another
+  // leftover-file poll (the wizard already proved the files were consumed by walking the
+  // manualimport preview itself).
+  if (state.jobId != null) {
+    setGrabJobIdentity(state.jobId, { targetArrId: state.seriesId, tvdbId: null, matchType: 'manual' });
+    setGrabJobState(state.jobId, 'verified');
+  }
   audit('guided_import', { actorDiscordId: interaction.user.id, title: state.title, seriesId: state.seriesId, seriesTitle: state.seriesTitle, season: state.season, files: files.length, strategy: state.strategy, jobId: state.jobId ?? null });
   return interaction.editReply({ content: null, components: [], embeds: [brandedEmbed(COLORS.SUCCESS)
     .setTitle(`📦 Mapped & Importing — ${state.title}`.slice(0, 256))
@@ -1457,6 +1523,28 @@ async function executeAdoption(torrent, target, meta, resolver = null) {
   // don't adopt the duplicate. Runs before the remote-path search so we skip the wasted rclone work.
   const contentDup = findActiveContentDuplicate({ releaseTitle: torrent.name, mediaType: verdict.mediaType, excludeHash: torrent.hash });
   if (contentDup) return { ok: false, dup: true, why: `same content as job #${contentDup.job.id} (${contentDup.job.state}) — already have ${contentDup.label}; not adopting this duplicate` };
+  // Resolve the Sonarr series identity BEFORE the job (or the remote-path search) exists —
+  // Sonarr must not be left to guess the series from the release filename at import time,
+  // and an ambiguous match blocks adoption for one admin click rather than auto-picking.
+  // meta.seriesOverride (set by that click) skips resolution entirely.
+  let identity = {};
+  if (verdict.mediaType === 'tv') {
+    if (meta.seriesOverride) {
+      identity = { targetArrId: meta.seriesOverride.id, tvdbId: meta.seriesOverride.tvdbId || null, matchType: 'manual' };
+    } else {
+      const guessTitle = seriesToken(torrent.name);
+      const guessYear = parseReleaseName(torrent.name).year;
+      const resolved = await resolveSonarrSeriesIdentity({ title: guessTitle, year: guessYear }).catch(() => ({ status: 'none', series: null, candidates: [] }));
+      if (resolved.status === 'ambiguous') {
+        return {
+          ok: false, needsSeriesPick: true,
+          why: `matches ${resolved.candidates.length} series in Sonarr's library — pick one so it doesn't get imported under the wrong show`,
+          candidates: resolved.candidates.slice(0, 20).map(s => ({ id: s.id, title: s.title, year: s.year, tvdbId: s.tvdbId })),
+        };
+      }
+      if (resolved.series) identity = { targetArrId: resolved.series.id, tvdbId: resolved.series.tvdbId, matchType: resolved.status };
+    }
+  }
   const { sub: remotePath, tried, viaSearch, ambiguous, mismatch } = await findAdoptRemotePath(torrent, resolver || makeRemotePathResolver());
   if (!remotePath) {
     const probed = tried.slice(0, 3).map(p => `\`${p}\``).join(', ') + (tried.length > 3 ? ', …' : '');
@@ -1471,8 +1559,9 @@ async function executeAdoption(torrent, target, meta, resolver = null) {
     mediaType: verdict.mediaType, title: torrent.name, releaseTitle: torrent.name,
     infoHash: torrent.hash, sizeBytes: torrent.sizeBytes, label: torrent.label || target,
     discordId: meta.discordId, origin: meta.origin || 'adopt', state: verdict.state, remotePath,
+    ...identity,
   });
-  audit('rtorrent_adopted', { actorDiscordId: meta.actorDiscordId || null, jobId: job.id, infoHash: torrent.hash, name: torrent.name, target, state: verdict.state, remotePath, viaSearch: !!viaSearch, origin: meta.origin || 'adopt' });
+  audit('rtorrent_adopted', { actorDiscordId: meta.actorDiscordId || null, jobId: job.id, infoHash: torrent.hash, name: torrent.name, target, state: verdict.state, remotePath, viaSearch: !!viaSearch, origin: meta.origin || 'adopt', matchType: identity.matchType || null, targetArrId: identity.targetArrId || null });
   if (verdict.state === 'complete') pumpGrabTransfers().catch(err => log.warn(`Grab transfer pump failed: ${err.message}`));
   return { ok: true, job, state: verdict.state };
 }
@@ -1529,14 +1618,18 @@ function adoptCandidatesMessage({ heading, candidates, nonce, footnote }) {
 // are skipped quietly — a re-run after a partial failure only adopts what's still untracked.
 async function executeBulkAdoption(candidates, target, meta) {
   const resolver = makeRemotePathResolver();
-  const outcome = { adopted: 0, complete: 0, downloading: 0, dup: 0, failed: [] };
+  const outcome = { adopted: 0, complete: 0, downloading: 0, dup: 0, failed: [], ambiguous: [] };
   for (const t of candidates) {
     const result = await executeAdoption(t, target, meta, resolver);
     if (result.ok) { outcome.adopted++; outcome[result.state]++; }
     else if (result.dup) outcome.dup++;
+    // An ambiguous series match needs one admin click, not a bulk guess — surfaced
+    // separately so it doesn't read as an ordinary failure, and re-adoptable one-by-one via
+    // `/rtorrent adopt search:"..."` (which offers the series-pick buttons).
+    else if (result.needsSeriesPick) outcome.ambiguous.push({ name: t.name, candidates: result.candidates });
     else outcome.failed.push({ name: t.name, why: result.why });
   }
-  audit('rtorrent_adopt_bulk', { actorDiscordId: meta.actorDiscordId || null, target, requested: candidates.length, adopted: outcome.adopted, dup: outcome.dup, failed: outcome.failed.length });
+  audit('rtorrent_adopt_bulk', { actorDiscordId: meta.actorDiscordId || null, target, requested: candidates.length, adopted: outcome.adopted, dup: outcome.dup, ambiguous: outcome.ambiguous.length, failed: outcome.failed.length });
   return outcome;
 }
 
@@ -3477,6 +3570,7 @@ async function handleInvitePostCommand(interaction) {
 // Guided-import wizard select menus (series / season picks).
 async function handleSelectMenu(interaction) {
   const [action, nonce] = interaction.customId.split(':');
+  if (action === 'adopt_series_pick') return handleAdoptSeriesPick(interaction, nonce);
   if (!['mapimp_series', 'mapimp_season'].includes(action)) return;
   if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
   const state = readMapOffer(nonce);
@@ -3492,6 +3586,30 @@ async function handleSelectMenu(interaction) {
   state.season = Number(interaction.values[0]);
   writeMapOffer(nonce, state);
   return interaction.editReply(await mapWizardConfirmStep(nonce, state));
+}
+
+// The series picked from adoption's "Which Series?" select menu: adopt with the identity
+// pinned explicitly, bypassing the resolver entirely (a human decision beats any heuristic).
+async function handleAdoptSeriesPick(interaction, nonce) {
+  if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+  const offer = takeGrabOffer(nonce);
+  if (!offer) return interaction.update({ content: 'ℹ️ Already handled (or expired).', embeds: [], components: [] });
+  const seriesId = Number(interaction.values?.[0]);
+  const picked = (offer.candidates || []).find(c => c.id === seriesId);
+  if (!picked) return interaction.update({ content: 'ℹ️ That option no longer exists.', embeds: [], components: [] });
+  await interaction.deferUpdate();
+  const result = await executeAdoption(offer.torrent, offer.target, {
+    discordId: offer.discordId || interaction.user.id, origin: offer.origin || 'adopt', actorDiscordId: interaction.user.id,
+    seriesOverride: { id: picked.id, tvdbId: picked.tvdbId },
+  });
+  if (!result.ok) {
+    return interaction.editReply({ embeds: [brandedEmbed(result.dup ? COLORS.INFO : COLORS.DANGER)
+      .setTitle(`${result.dup ? 'ℹ️ Already Tracked' : '❌ Adoption Failed'} — ${String(offer.torrent.name).slice(0, 180)}`.slice(0, 256))
+      .setDescription(result.why)], components: [] });
+  }
+  return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+    .setTitle(`🧲 Adopted as ${picked.title} — ${String(offer.torrent.name).slice(0, 150)}`.slice(0, 256))
+    .setDescription(`Job #${result.job.id} pinned to Sonarr series **${picked.title}** by <@${interaction.user.id}>, created as **${result.state}**. ${result.state === 'complete' ? 'Transferring home now.' : 'Watched to 100% before transferring.'}`)], components: [] });
 }
 
 async function handleModalSubmit(interaction) {
@@ -5391,6 +5509,21 @@ async function handleButton(interaction) {
           .setTitle(`ℹ️ Already Tracked — ${String(torrent.name).slice(0, 200)}`.slice(0, 256))
           .setDescription(`This torrent is ${result.why}.`)], components: [] });
       }
+      if (result.needsSeriesPick) {
+        const nonce = stashGrabOffer({ kind: 'adopt-series-pick', torrent, target, discordId: offer.discordId, origin: offer.origin, candidates: result.candidates });
+        const options = result.candidates.map(c => ({
+          label: `${c.title}${c.year ? ` (${c.year})` : ''}`.slice(0, 100),
+          value: String(c.id),
+          description: c.tvdbId ? `TVDB ${c.tvdbId}` : undefined,
+        }));
+        return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
+          .setTitle(`🧭 Which Series? — ${String(torrent.name).slice(0, 180)}`.slice(0, 256))
+          .setDescription(`${result.why}. Pick the right one below — nothing is adopted until you do.`)],
+        components: [
+          new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(`adopt_series_pick:${nonce}`).setPlaceholder('Pick the series…').addOptions(...options)),
+          new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`adopt_cancel:${nonce}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)),
+        ] });
+      }
       restashGrabOffer(parts[0], offer);
       return interaction.followUp({ content: `❌ Adoption failed: ${result.why}\nThe buttons still work — try again once that's fixed.`, ephemeral: true });
     }
@@ -5417,14 +5550,20 @@ async function handleButton(interaction) {
       `Adopted **${outcome.adopted}** of ${candidates.length} → ${target === 'sonarr' ? 'Sonarr' : 'Radarr'} (${outcome.complete} complete → transferring one at a time, ${outcome.downloading} watched until 100%).`,
     ];
     if (outcome.dup) lines.push(`Skipped ${outcome.dup} already tracked.`);
+    if (outcome.ambiguous.length) {
+      lines.push('', `**${outcome.ambiguous.length} matched multiple Sonarr series — needs a pick:**`);
+      for (const a of outcome.ambiguous.slice(0, 8)) lines.push(`• ${String(a.name).slice(0, 100)} (${a.candidates.length} matches)`);
+      if (outcome.ambiguous.length > 8) lines.push(`…and ${outcome.ambiguous.length - 8} more.`);
+      lines.push('Adopt these one at a time with `/rtorrent adopt search:"..."` so the picker can show you the matches.');
+    }
     if (outcome.failed.length) {
       lines.push('', `**${outcome.failed.length} failed:**`);
       for (const f of outcome.failed.slice(0, 8)) lines.push(`• ${String(f.name).slice(0, 80)} — ${String(f.why).slice(0, 220)}`);
       if (outcome.failed.length > 8) lines.push(`…and ${outcome.failed.length - 8} more (see the audit log).`);
       lines.push('Re-running the same `/rtorrent adopt` only offers what\'s still untracked.');
     }
-    const summary = { embeds: [brandedEmbed(outcome.failed.length ? COLORS.WARN : COLORS.SUCCESS)
-      .setTitle(`🧲 Bulk Adoption ${outcome.failed.length ? 'Finished With Failures' : 'Complete'}`)
+    const summary = { embeds: [brandedEmbed((outcome.failed.length || outcome.ambiguous.length) ? COLORS.WARN : COLORS.SUCCESS)
+      .setTitle(`🧲 Bulk Adoption ${(outcome.failed.length || outcome.ambiguous.length) ? 'Finished With Follow-ups' : 'Complete'}`)
       .setDescription(lines.join('\n').slice(0, 4000))], components: [] };
     // The interaction token dies after 15 min; a slow stat-fallback batch can outlive it,
     // so the summary falls back to a fresh channel message.

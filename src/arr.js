@@ -3,6 +3,7 @@ const axios = require('axios');
 const { CONFIG } = require('./config');
 const { audit } = require('./db');
 const { pad } = require('./util');
+const { normalizeTitle } = require('./grab');
 
 async function radarrGetFrom(url, apiKey, endpoint) {
   const res = await axios.get(`${url}/api/v3${endpoint}`, { params: { apikey: apiKey }, timeout: 10000 });
@@ -273,6 +274,52 @@ const getSeriesEpisodes = seriesId => sonarrGet('/episode', { seriesId });
 
 const listSonarrSeries = () => sonarrGet('/series');
 
+// ---- Sonarr series identity resolution ----
+// Match a torrent/release name against the Sonarr library BEFORE a grab job is created for
+// it, instead of letting Sonarr guess from the release filename at import time — the guess
+// is where foreign titles, alternate names, sequels-filed-as-a-season, and complete-series
+// packs go wrong. tvdbId (when the caller already has one, e.g. a normal request grab) is
+// authoritative and wins outright. Otherwise: an exact normalized-title match, falling back
+// to alternate titles, falling back to a loose token-overlap match — but a loose match is
+// NEVER auto-selected, only offered as a candidate a human can click.
+//
+// status: 'tvdb' | 'exact' | 'alternate' | 'ambiguous' | 'none'. Only 'tvdb'/'exact'/
+// 'alternate' carry a single resolved `series`; 'ambiguous' carries `candidates` (2+) for a
+// manual pick; 'none' means nothing plausible was found (Sonarr can still be handed the
+// files for its own guess, same as before this resolver existed).
+async function resolveSonarrSeriesIdentity({ title, year, tvdbId } = {}) {
+  const all = await sonarrGet('/series').catch(() => []);
+  if (tvdbId) {
+    const hit = all.find(s => Number(s.tvdbId) === Number(tvdbId));
+    if (hit) return { status: 'tvdb', series: hit, candidates: [hit] };
+  }
+  const wanted = normalizeTitle(title);
+  if (!wanted) return { status: 'none', series: null, candidates: [] };
+  const altTitlesOf = s => (s.alternateTitles || []).map(t => t.title);
+  const exact = all.filter(s => normalizeTitle(s.title) === wanted);
+  const alt = all.filter(s => altTitlesOf(s).some(t => normalizeTitle(t) === wanted));
+  const pool = exact.length ? exact : alt;
+  const matchType = exact.length ? 'exact' : alt.length ? 'alternate' : null;
+  if (pool.length === 1) return { status: matchType, series: pool[0], candidates: pool };
+  if (pool.length > 1) {
+    // Year narrows an exact-title tie — two different shows sharing a name from different
+    // decades ("Full House" 1987 vs 2004) — but only when it narrows to exactly one.
+    const byYear = year ? pool.filter(s => Number(s.year) === Number(year)) : [];
+    if (byYear.length === 1) return { status: matchType, series: byYear[0], candidates: byYear };
+    return { status: 'ambiguous', series: null, candidates: pool };
+  }
+  const tokens = wanted.split(' ').filter(Boolean);
+  if (!tokens.length) return { status: 'none', series: null, candidates: [] };
+  const loose = all
+    .map(s => ({ s, score: tokens.filter(t => ` ${normalizeTitle(`${s.title} ${altTitlesOf(s).join(' ')}`)} `.includes(` ${t} `)).length }))
+    .filter(x => x.score >= Math.max(1, Math.ceil(tokens.length * 0.6)))
+    .sort((a, b) => b.score - a.score);
+  if (!loose.length) return { status: 'none', series: null, candidates: [] };
+  // Even a single loose hit still requires a click — nothing below exact/alternate is ever
+  // auto-selected.
+  return { status: 'ambiguous', series: null, candidates: loose.slice(0, 8).map(x => x.s) };
+}
+
 // Add the AvistaZ tag to a movie/series without searching — used at approval time (a
 // pre-authorized fallback is definitely AvistaZ-bound, so the tag goes on up front) and by
 // the direct-grab escalation (every escalated title must carry the tag for traceability and
@@ -484,4 +531,4 @@ function remapPath(hostPath) {
   return hostPath;
 }
 
-module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };
+module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries, resolveSonarrSeriesIdentity, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };

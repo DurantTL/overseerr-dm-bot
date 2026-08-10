@@ -108,7 +108,7 @@ See `.env.example` for full values.
 - `PREMIUMIZE_API_KEY` — enables `/debrid` (fair-use %, cloud storage, active/failed transfers, plus **Clear Stuck/0%** and **Clear Finished** buttons) and the **stuck-transfer watchdog**: every `PREMIUMIZE_CHECK_MINUTES` (default `15`, `0` disables) transfers that are errored or whose progress hasn't moved for `PREMIUMIZE_STUCK_AFTER_MINUTES` (default `45` — catches "0% forever") alert the downloads channel with **Retry / Clear Transfer / Ignore** buttons, at most once per transfer per `PREMIUMIZE_ALERT_COOLDOWN_HOURS` (default `6`)
 - `STUCK_CHECK_MINUTES` (default `10`), `STUCK_AFTER_MINUTES` (default `45`), `STUCK_ALERT_COOLDOWN_HOURS` (default `6`) — stuck-download watchdog: when a queue item makes no progress for `STUCK_AFTER_MINUTES` (e.g. no seeders), the admin channel gets an alert with **Remove & Try Another Release** (blocklist + auto re-search), **Remove Only**, and **Ignore** buttons. TV episodes are consolidated **per season** — a whole season stalling (from either download path, public indexers or the AvistaZ fallback) is one alert listing every stuck episode, and its buttons act on all of them at once, instead of one message per episode. Set `STUCK_CHECK_MINUTES=0` to disable.
 - `ESCALATION_ENABLED` (default `false`), `AVISTAZ_TAG` (default `avistaz`), `ESCALATION_DELAY_MINUTES` (default `45`; the legacy `ESCALATION_DELAY_HOURS` still works when the minutes key is unset), `ESCALATION_CHECK_MINUTES` (default `15`), `ESCALATION_MAX_AGE_DAYS` (default `14`), `ESCALATION_ARR_GRACE_MINUTES` (default `10`; the "request never landed" check), plus optional `RADARR_ROOT_FOLDER`/`SONARR_ROOT_FOLDER`/`RADARR_QUALITY_PROFILE`/`SONARR_QUALITY_PROFILE` for the direct-add rescue button — the AvistaZ private-tracker fallback; see the dedicated section below. Requires the one-time Radarr/Sonarr/Prowlarr setup described there.
-- `RTORRENT_URL`, `RTORRENT_LABEL_MOVIE`/`RTORRENT_LABEL_TV` (defaults `radarr`/`sonarr`), `AVISTAZ_INDEXER_NAME` (default `avistaz`), `AVISTAZ_DAILY_GRAB_LIMIT` (default `100`, `0` = unlimited), `GRAB_MODE` (`approve` default / `auto`), `GRAB_AUTO_CONFIDENCE` (default `92`), `GRAB_TV_COMPLETE` (default on — one-click whole-series grabs), `GRAB_TV_MAX_RELEASES` (default `6`), `GRAB_TV_COMPLETE_MIN_CONFIDENCE` (default `70`), `GRAB_RCLONE_REMOTE`, `GRAB_RCLONE_FLAGS`, `GRAB_STAGING_PATH`, `GRAB_IMPORT_PATH`, `GRAB_CHECK_MINUTES` (default `5`), `GRAB_COPY_TIMEOUT_MINUTES` (default `240`), `GRAB_MISSING_AFTER_MINUTES` (default `10`), `GRAB_DOWNLOAD_TIMEOUT_HOURS` (default `72`) — the AvistaZ **direct grab** pipeline (`/avistaz`, and the smarter escalation path); see the dedicated section below.
+- `RTORRENT_URL`, `RTORRENT_LABEL_MOVIE`/`RTORRENT_LABEL_TV` (defaults `radarr`/`sonarr`), `AVISTAZ_INDEXER_NAME` (default `avistaz`), `AVISTAZ_DAILY_GRAB_LIMIT` (default `100`, `0` = unlimited), `GRAB_MODE` (`approve` default / `auto`), `GRAB_AUTO_CONFIDENCE` (default `92`), `GRAB_TV_COMPLETE` (default on — one-click whole-series grabs), `GRAB_TV_MAX_RELEASES` (default `6`), `GRAB_TV_COMPLETE_MIN_CONFIDENCE` (default `70`), `GRAB_RCLONE_REMOTE`, `GRAB_RCLONE_FLAGS`, `GRAB_STAGING_PATH`, `GRAB_IMPORT_PATH`, `GRAB_CHECK_MINUTES` (default `5`), `GRAB_COPY_TIMEOUT_MINUTES` (default `240`), `GRAB_MISSING_AFTER_MINUTES` (default `10`), `GRAB_DOWNLOAD_TIMEOUT_HOURS` (default `72`), `SONARR_AUTO_MANUAL_IMPORT` (default `false` — see "Sonarr series identity" below) — the AvistaZ **direct grab** pipeline (`/avistaz`, and the smarter escalation path); see the dedicated section below.
 - `RTORRENT_ADOPT_ENABLED` (default `false`), `RTORRENT_ADOPT_CHECK_MINUTES` (default `5`), `RTORRENT_ADOPT_LABELS` (default `sonarr,radarr`), `RTORRENT_ADOPT_AUTO` (default `false`), `RTORRENT_REMOTE_ROOT` (unset) — **adoption** of torrents that already exist in the seedbox rTorrent (`/rtorrent`); see "Adopting existing torrents" below. Manual `/rtorrent adopt` works whenever the direct-grab transfer pieces are configured; `RTORRENT_ADOPT_ENABLED` gates only the discovery sweep.
 - `JANITOR_CHECK_MINUTES` (default `60`) — janitor sweep interval; `0` disables. The janitor:
   1. **Grace deletes** — enforces the "Finished Watching" prompt's auto-delete promise for an
@@ -659,12 +659,32 @@ Safety properties, by construction:
 - Adopted jobs are durable `grab_jobs` rows — restarts keep watching/transferring them, and the
   `.incoming` rename guard applies unchanged.
 
-**Import verification**: after every transfer's arr scan, the bot checks the video files
-actually left staging. A scan that never completes raises a "command queue may be wedged"
-alert; a scan that completes but silently skips cleanly-matched files gets them forced
-through the arr's ManualImport API automatically; genuinely rejected files produce one
-alert naming the rejection reasons. `/rtorrent staging` runs the same match/rejection
-analysis on demand, summarized per staging folder.
+**Import verification**: a grab job is never marked done just because the arr's scan command
+was *fired* — it moves through `scanning` → (`importing` if a forced ManualImport runs) →
+`verified`, and only `verified` counts as actually imported. After every transfer's arr scan,
+the bot checks the video files actually left staging. A scan that never completes leaves the
+job at `scanning` and raises a "command queue may be wedged" alert; a scan that completes but
+silently skips cleanly-matched files gets them forced through the arr's ManualImport API only
+when `SONARR_AUTO_MANUAL_IMPORT=true` **and** the job is pinned to a single resolved Sonarr
+series (see "Sonarr series identity" below) — otherwise it goes to `needs_mapping` (TV) or
+`import_rejected` (movies) with the guided **Map to a Series…** wizard offered for TV;
+genuinely rejected files land there too, with one alert naming the rejection reasons.
+`/rtorrent staging` runs the same match/rejection analysis on demand, summarized per staging
+folder.
+
+### Sonarr series identity
+Both a normal request grab (when the request already carries a TVDB id) and adoption resolve
+the Sonarr `seriesId` **before** the job is created, instead of leaving Sonarr to guess from
+the release filename at import time — the guess is where foreign titles, alternate names,
+sequels filed as a season of the original, and complete-series packs go wrong. Resolution
+order: TVDB id (authoritative when known) → exact normalized-title match → alternate-title
+match → nothing (Sonarr still gets the files and guesses on its own, unchanged from before).
+A title matching **more than one** Sonarr series blocks adoption for one admin click (a
+**Which Series?** picker) instead of guessing; `/rtorrent adopt` surfaces those separately
+from outright failures, and re-adopting one at a time offers the picker. The resolved
+`target_arr_id`/`tvdb_id`/`match_type` on the `grab_jobs` row is what gates the auto-forced
+ManualImport above — `match_type` is never `'ambiguous'`, since an ambiguous match never
+reaches a job row unresolved.
 
 Commands: `/rtorrent status` (connectivity + adoption settings), `/rtorrent list [search]`,
 `/rtorrent adopt search:"..." [target:]`, `/rtorrent ignore search:"..."` (toggle — the sweep
@@ -876,7 +896,7 @@ User:
 - `app_settings`
 - `media_retention_rules`
 - `escalations` (AvistaZ fallback watch list)
-- `grab_jobs` (AvistaZ direct-grab pipeline: sent → downloading → complete → transferring → done; adopted torrents enter at downloading/complete with origin `adopt`/`adopt-auto`)
+- `grab_jobs` (AvistaZ direct-grab pipeline: sent → downloading → complete → transferring → scanning → (importing) → verified, or needs_mapping/import_rejected/failed; adopted torrents enter at downloading/complete with origin `adopt`/`adopt-auto`; `target_arr_id`/`tvdb_id`/`match_type` pin the resolved Sonarr/Radarr identity)
 - `stage_jobs` (durable Plex Home staging queue)
 - `staged_items` (PH cache inventory + LRU/pin state)
 - `tier_nodes` (regional tiering node registry)
