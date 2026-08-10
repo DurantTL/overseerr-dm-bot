@@ -2041,6 +2041,19 @@ async function sweepBackup() {
   }
 }
 
+// #81: posts the same server-wide view /stats server:true shows, on a rolling ~30-day cadence
+// (last_run gate, same pattern as janitorSweep's retention checks) rather than a fixed calendar
+// date — simpler than cron, and "roughly monthly" is all this needs to be.
+async function sweepMonthlyRecap() {
+  const last = Number(getSetting('monthly_recap_last_run') || '0');
+  if (Date.now() - last < 30 * 86400000) return;
+  const sinceIso = last ? new Date(last).toISOString() : startOfMonthIso();
+  setSetting('monthly_recap_last_run', String(Date.now()));
+  const embed = await buildServerStatsEmbed({ sinceIso, periodLabel: 'The Last Month' });
+  notifyChannel('whats_new', { embeds: [embed] });
+  audit('monthly_recap_posted', { sinceIso });
+}
+
 // ---- Plex Home staging worker ----
 // One rclone copy at a time (the transpacific uplink is the bottleneck; parallel copies just
 // thrash it). The queue is SQLite (stage_jobs) so a 20-minute copy interrupted by a restart is
@@ -2326,6 +2339,8 @@ const slashCommands = [
     .addUserOption(o => o.setName('user').setDescription('User').setRequired(true))
     .addStringOption(o => o.setName('server').setDescription('Home server').setRequired(true).addChoices({ name: 'Main', value: 'primary' }, { name: 'Philippines', value: 'ph' })),
   new SlashCommandBuilder().setName('me').setDescription('Show your linked profile'),
+  new SlashCommandBuilder().setName('stats').setDescription('Your watch/request stats this month (admins can see the server-wide view)')
+    .addBooleanOption(o => o.setName('server').setDescription('Admin only: server-wide stats instead of your own')),
   new SlashCommandBuilder().setName('myrequests').setDescription('Show your recent requests'),
   new SlashCommandBuilder().setName('downloads').setDescription('Show your active download links'),
   new SlashCommandBuilder().setName('keep').setDescription('Show your keep list'),
@@ -2465,6 +2480,12 @@ client.once('ready', async () => {
   if (CONFIG.BACKUP_INTERVAL_HOURS > 0) {
     setInterval(() => sweepBackup(), CONFIG.BACKUP_INTERVAL_HOURS * 3600000).unref();
     log.ok(`DB backup running every ${CONFIG.BACKUP_INTERVAL_HOURS}h → ${CONFIG.BACKUP_DIR} (keeping last ${CONFIG.BACKUP_KEEP_COUNT})`);
+  }
+  if (CONFIG.MONTHLY_RECAP_ENABLED) {
+    // Checked hourly, like the other "last_run" gated sweeps in janitorSweep, but this one fires
+    // rarely enough to run on its own interval rather than folding into that sweep.
+    setInterval(() => sweepMonthlyRecap().catch(err => log.warn(`Monthly recap sweep failed: ${err.message}`)), 3600000).unref();
+    log.ok('Monthly community recap enabled — posts to the whats_new channel roughly every 30 days');
   }
   if (tautulliConfigured() && CONFIG.PLAYBACK_CHECK_MINUTES > 0) {
     setInterval(() => sweepTranscodes().catch(err => log.warn(`Transcode sweep failed: ${err.message}`)), CONFIG.PLAYBACK_CHECK_MINUTES * 60000).unref();
@@ -2840,6 +2861,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'stage-bulk') return handleStageBulkCommand(interaction);
   if (n === 'assign-server') return handleAssignServerCommand(interaction);
   if (n === 'me') return handleMeCommand(interaction);
+  if (n === 'stats') return handleStatsCommand(interaction);
   if (n === 'myrequests') return handleMyRequestsCommand(interaction);
   if (n === 'downloads') return handleDownloadsCommand(interaction);
   if (n === 'keep') return handleKeepCommand(interaction);
@@ -4696,6 +4718,83 @@ async function handleMyRequestsCommand(interaction) {
   if (cancelable) embed.setFooter({ text: 'Changed your mind about one? Use /request-cancel.' });
   await interaction.editReply({ embeds: [embed] });
 }
+
+function startOfMonthIso() {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString();
+}
+
+// Personal-only by default: a "top watcher" leaderboard is fun in a family server and
+// uncomfortable in a wider one, so this never surfaces anyone else's numbers.
+async function buildPersonalStatsEmbed(discordId) {
+  const since = startOfMonthIso();
+  const requestCount = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE requested_by_discord_id = ? AND created_at >= ? AND status != 'cancelled'").get(discordId, since).c;
+  const embed = brandedEmbed(COLORS.INFO).setTitle('📊 Your Stats This Month')
+    .addFields({ name: 'Requests', value: `${requestCount}`, inline: true });
+
+  const user = getUserByDiscordId(discordId);
+  if (tautulliConfigured() && user?.plex_username) {
+    try {
+      const data = await tautulliApi('get_history', { user: user.plex_username, after: since.slice(0, 10), length: 2000 });
+      const rows = (data?.data || []).filter(r => r.media_type !== 'track');
+      const titles = new Set(rows.map(r => ['episode', 'season', 'show'].includes(r.media_type) ? r.grandparent_title : r.title));
+      embed.addFields(
+        { name: 'Plays', value: `${rows.length}`, inline: true },
+        { name: 'Distinct titles', value: `${titles.size}`, inline: true },
+      );
+    } catch (err) {
+      log.warn(`Personal stats Tautulli lookup failed: ${err.message}`);
+    }
+  }
+  return embed;
+}
+
+// Server-wide view, reused by /stats server:true and the scheduled monthly recap. Kept
+// anonymous by default (no per-member breakdown) other than top requesters, which is closer to
+// a leaderboard than a privacy concern in a private server the same way personal watch time is.
+async function buildServerStatsEmbed({ sinceIso, periodLabel }) {
+  const since = sinceIso || startOfMonthIso();
+  // Counts primary-recipient availability DMs only (not the #75 subscriber fan-out copies, which
+  // are tagged {subscriber:true}), so a popular title with several subscribers isn't overcounted.
+  const titlesAdded = db.prepare(
+    "SELECT COUNT(*) AS c FROM audit_log WHERE action = 'media_available_notification_sent' AND created_at >= ? AND (metadata_json IS NULL OR metadata_json NOT LIKE '%\"subscriber\":true%')",
+  ).get(since).c;
+  const topRequesters = db.prepare(
+    "SELECT requested_by_discord_id AS id, COUNT(*) AS c FROM requests WHERE created_at >= ? AND status != 'cancelled' AND requested_by_discord_id IS NOT NULL GROUP BY requested_by_discord_id ORDER BY c DESC LIMIT 5",
+  ).all(since);
+
+  const embed = brandedEmbed(COLORS.SUCCESS).setTitle(`📊 Server Stats — ${periodLabel || 'This Month'}`)
+    .addFields({ name: 'Titles added', value: `${titlesAdded}`, inline: true });
+
+  if (topRequesters.length) {
+    embed.addFields({ name: 'Top requesters', value: topRequesters.map(r => `<@${r.id}> — ${r.c}`).join('\n'), inline: false });
+  }
+
+  if (tautulliConfigured()) {
+    try {
+      const days = Math.max(1, Math.ceil((Date.now() - Date.parse(since)) / 86400000));
+      const history = await fetchHistory(undefined, { afterDays: days, length: 5000 });
+      const mostWatched = [...history].sort((a, b) => b.plays - a.plays).slice(0, 5);
+      if (mostWatched.length) {
+        embed.addFields({ name: 'Most watched', value: mostWatched.map(h => `${h.title} — ${h.plays} play${h.plays === 1 ? '' : 's'}`).join('\n'), inline: false });
+      }
+    } catch (err) {
+      log.warn(`Server stats Tautulli lookup failed: ${err.message}`);
+    }
+  }
+  return embed;
+}
+
+async function handleStatsCommand(interaction) {
+  const wantsServer = interaction.options.getBoolean('server');
+  if (wantsServer && !isAdminInteraction(interaction)) {
+    return interaction.reply({ content: '❌ Server-wide stats are admin only — try `/stats` for your own.', ephemeral: true });
+  }
+  await interaction.deferReply({ ephemeral: !wantsServer });
+  const embed = wantsServer ? await buildServerStatsEmbed({}) : await buildPersonalStatsEmbed(interaction.user.id);
+  await interaction.editReply({ embeds: [embed] });
+}
+
 async function handleDownloadsCommand(interaction) {
   const rows = db.prepare('SELECT title, expires_at, one_time_use, created_at, revoked FROM download_tokens WHERE discord_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 20').all(interaction.user.id, Date.now());
   const active = rows.filter(r => !r.revoked);
@@ -4878,6 +4977,7 @@ async function handleHelpCommand(interaction) {
     '`/request-status` — Check why a request isn\'t ready yet',
     '`/request-cancel` — Withdraw one of your own pending or awaiting-download requests',
     '`/report` — Report a problem with something already on Plex (wrong subtitles, bad audio, etc.)',
+    '`/stats` — Your watch/request stats this month',
     '`/download` — Get a secure download link for a movie or episode',
     '`/me` — Show your linked profile and access status',
     '`/myrequests` — Show your recent Seerr requests',

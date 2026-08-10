@@ -290,6 +290,7 @@ const CONFIG = {
   WHATS_NEW_GROUP_WINDOW_HOURS: Number.parseInt(process.env.WHATS_NEW_GROUP_WINDOW_HOURS || '20', 10),
   // 0 = disabled (default), preserving today's behavior — every non-admin request is gated.
   AUTO_APPROVE_AFTER_N_APPROVED: Number.parseInt(process.env.AUTO_APPROVE_AFTER_N_APPROVED || '0', 10),
+  MONTHLY_RECAP_ENABLED: parseBool(process.env.MONTHLY_RECAP_ENABLED, false),
   NEVER_DELETE_MEDIA_IDS: process.env.NEVER_DELETE_MEDIA_IDS ? process.env.NEVER_DELETE_MEDIA_IDS.split(',').map(s => s.trim()) : [],
 };
 
