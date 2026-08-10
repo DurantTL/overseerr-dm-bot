@@ -17,6 +17,18 @@ The repository keeps its historical `overseerr-dm-bot` name, while new user-faci
 product **Durant Media Server** and the request service **Seerr**. API names and migration-oriented
 operator screens retain `Overseerr` where that compatibility context is useful.
 
+## Documentation
+This README covers what the bot does and how to set it up. Deep implementation detail for the
+advanced-infrastructure layer lives in `docs/`:
+- [AvistaZ pipeline](docs/avistaz-pipeline.md) — private-tracker fallback, season-pack-first search, direct grab
+- [Plex Home staging](docs/plex-home-staging.md) — remote cache box, server-aware webhook routing
+- [Regional tiering](docs/regional-tiering.md) — multi-node edge cache, the sync agent's safety model
+- [Edge playback architecture](docs/edge-playback-architecture.md) — mergerfs remote-fallback design
+- [mergerfs + Plex operational notes](docs/mergerfs-plex-operational.md)
+- [Episode recovery watchdog](docs/episode-recovery.md)
+- [Tier caching roadmap](docs/tier-caching-roadmap.md)
+- [Production readiness / rollout gate](docs/production-readiness.md)
+
 ## Features
 - Discord onboarding workflow with admin approval buttons.
 - Plex invite + access removal automation.
@@ -109,9 +121,9 @@ See `.env.example` for full values.
 - `TAUTULLI_URL`, `TAUTULLI_API_KEY` — enables `/watching` (live Plex sessions) and the heavy-transcode watchdog: every `PLAYBACK_CHECK_MINUTES` (default `5`, `0` disables) sessions that are **video**-transcoding trigger an alert to `PLAYBACK_CHANNEL_ID` (fallback admin channel), at most once per user+media per `TRANSCODE_ALERT_COOLDOWN_MINUTES` (default `60`)
 - `PREMIUMIZE_API_KEY` — enables `/debrid` (fair-use %, cloud storage, active/failed transfers, plus **Clear Stuck/0%** and **Clear Finished** buttons) and the **stuck-transfer watchdog**: every `PREMIUMIZE_CHECK_MINUTES` (default `15`, `0` disables) transfers that are errored or whose progress hasn't moved for `PREMIUMIZE_STUCK_AFTER_MINUTES` (default `45` — catches "0% forever") alert the downloads channel with **Retry / Clear Transfer / Ignore** buttons, at most once per transfer per `PREMIUMIZE_ALERT_COOLDOWN_HOURS` (default `6`)
 - `STUCK_CHECK_MINUTES` (default `10`), `STUCK_AFTER_MINUTES` (default `45`), `STUCK_ALERT_COOLDOWN_HOURS` (default `6`) — stuck-download watchdog: when a queue item makes no progress for `STUCK_AFTER_MINUTES` (e.g. no seeders), the admin channel gets an alert with **Remove & Try Another Release** (blocklist + auto re-search), **Remove Only**, and **Ignore** buttons. TV episodes are consolidated **per season** — a whole season stalling (from either download path, public indexers or the AvistaZ fallback) is one alert listing every stuck episode, and its buttons act on all of them at once, instead of one message per episode. Set `STUCK_CHECK_MINUTES=0` to disable.
-- `ESCALATION_ENABLED` (default `false`), `AVISTAZ_TAG` (default `avistaz`), `ESCALATION_DELAY_MINUTES` (default `45`; the legacy `ESCALATION_DELAY_HOURS` still works when the minutes key is unset), `ESCALATION_CHECK_MINUTES` (default `15`), `ESCALATION_MAX_AGE_DAYS` (default `14`), `ESCALATION_ARR_GRACE_MINUTES` (default `10`; the "request never landed" check), plus optional `RADARR_ROOT_FOLDER`/`SONARR_ROOT_FOLDER`/`RADARR_QUALITY_PROFILE`/`SONARR_QUALITY_PROFILE` for the direct-add rescue button — the AvistaZ private-tracker fallback; see the dedicated section below. Requires the one-time Radarr/Sonarr/Prowlarr setup described there.
-- `RTORRENT_URL`, `RTORRENT_LABEL_MOVIE`/`RTORRENT_LABEL_TV` (defaults `radarr`/`sonarr`), `AVISTAZ_INDEXER_NAME` (default `avistaz`), `AVISTAZ_DAILY_GRAB_LIMIT` (default `100`, `0` = unlimited), `GRAB_MODE` (`approve` default / `auto`), `GRAB_AUTO_CONFIDENCE` (default `92`), `GRAB_TV_COMPLETE` (default on — one-click whole-series grabs), `GRAB_TV_MAX_RELEASES` (default `6`), `GRAB_TV_COMPLETE_MIN_CONFIDENCE` (default `70`), `GRAB_RCLONE_REMOTE`, `GRAB_RCLONE_FLAGS`, `GRAB_STAGING_PATH`, `GRAB_IMPORT_PATH`, `GRAB_CHECK_MINUTES` (default `5`), `GRAB_COPY_TIMEOUT_MINUTES` (default `240`), `GRAB_MISSING_AFTER_MINUTES` (default `10`), `GRAB_DOWNLOAD_TIMEOUT_HOURS` (default `72`), `SONARR_AUTO_MANUAL_IMPORT` (default `false` — see "Sonarr series identity" below) — the AvistaZ **direct grab** pipeline (`/avistaz`, and the smarter escalation path); see the dedicated section below.
-- `RTORRENT_ADOPT_ENABLED` (default `false`), `RTORRENT_ADOPT_CHECK_MINUTES` (default `5`), `RTORRENT_ADOPT_LABELS` (default `sonarr,radarr`), `RTORRENT_ADOPT_AUTO` (default `false`), `RTORRENT_REMOTE_ROOT` (unset) — **adoption** of torrents that already exist in the seedbox rTorrent (`/rtorrent`); see "Adopting existing torrents" below. Manual `/rtorrent adopt` works whenever the direct-grab transfer pieces are configured; `RTORRENT_ADOPT_ENABLED` gates only the discovery sweep.
+- `ESCALATION_ENABLED` (default `false`), `AVISTAZ_TAG` (default `avistaz`), `ESCALATION_DELAY_MINUTES` (default `45`; the legacy `ESCALATION_DELAY_HOURS` still works when the minutes key is unset), `ESCALATION_CHECK_MINUTES` (default `15`), `ESCALATION_MAX_AGE_DAYS` (default `14`), `ESCALATION_ARR_GRACE_MINUTES` (default `10`; the "request never landed" check), plus optional `RADARR_ROOT_FOLDER`/`SONARR_ROOT_FOLDER`/`RADARR_QUALITY_PROFILE`/`SONARR_QUALITY_PROFILE` for the direct-add rescue button — the AvistaZ private-tracker fallback; see [docs/avistaz-pipeline.md](docs/avistaz-pipeline.md) for the one-time Radarr/Sonarr/Prowlarr setup and the full escalation rules.
+- `RTORRENT_URL`, `RTORRENT_LABEL_MOVIE`/`RTORRENT_LABEL_TV` (defaults `radarr`/`sonarr`), `AVISTAZ_INDEXER_NAME` (default `avistaz`), `AVISTAZ_DAILY_GRAB_LIMIT` (default `100`, `0` = unlimited), `GRAB_MODE` (`approve` default / `auto`), `GRAB_AUTO_CONFIDENCE` (default `92`), `GRAB_TV_COMPLETE` (default on — one-click whole-series grabs), `GRAB_TV_MAX_RELEASES` (default `6`), `GRAB_TV_COMPLETE_MIN_CONFIDENCE` (default `70`), `GRAB_RCLONE_REMOTE`, `GRAB_RCLONE_FLAGS`, `GRAB_STAGING_PATH`, `GRAB_IMPORT_PATH`, `GRAB_CHECK_MINUTES` (default `5`), `GRAB_COPY_TIMEOUT_MINUTES` (default `240`), `GRAB_MISSING_AFTER_MINUTES` (default `10`), `GRAB_DOWNLOAD_TIMEOUT_HOURS` (default `72`), `SONARR_AUTO_MANUAL_IMPORT` (default `false` — see "Sonarr series identity" in [docs/avistaz-pipeline.md](docs/avistaz-pipeline.md)) — the AvistaZ **direct grab** pipeline (`/avistaz`, and the smarter escalation path); see that doc for the full setup and flow.
+- `RTORRENT_ADOPT_ENABLED` (default `false`), `RTORRENT_ADOPT_CHECK_MINUTES` (default `5`), `RTORRENT_ADOPT_LABELS` (default `sonarr,radarr`), `RTORRENT_ADOPT_AUTO` (default `false`), `RTORRENT_REMOTE_ROOT` (unset) — **adoption** of torrents that already exist in the seedbox rTorrent (`/rtorrent`); see "Adopting existing torrents" in [docs/avistaz-pipeline.md](docs/avistaz-pipeline.md). Manual `/rtorrent adopt` works whenever the direct-grab transfer pieces are configured; `RTORRENT_ADOPT_ENABLED` gates only the discovery sweep.
 - `JANITOR_CHECK_MINUTES` (default `60`) — janitor sweep interval; `0` disables. The janitor:
   1. **Grace deletes** — enforces the "Finished Watching" prompt's auto-delete promise for an
      exact movie edition. 4K prompts retain `radarr-4k` identity through execution; ambiguous legacy
@@ -361,548 +373,39 @@ a distributed or highly available deployment.
 - Health test: `curl http://localhost:3000/health`.
 - Smoke test: `./scripts/smoke-test.sh`.
 
-## AvistaZ Private-Tracker Fallback
-Public indexers (→ Premiumize) always get first crack at every request. AvistaZ is only used as a
-per-title fallback, which conserves its download slots / ratio and keeps private grabs seeding on a
-seedbox instead of Premiumize.
+## AvistaZ Private-Tracker Fallback & Direct Grab
+For content public indexers can't find, the bot can escalate a title to the AvistaZ private
+tracker: automatic detection of Asian-content titles (AvistaZ's specialty), season-pack-first
+searching so an old show pulls one pack instead of 30 per-episode grabs, and a full direct-grab
+pipeline (Prowlarr search → score → seedbox rTorrent → rclone → arr import) instead of leaving
+Radarr/Sonarr to grab on their own judgement. Admin approval is required by default
+(`GRAB_MODE=approve`) with a daily grab limit, since this is real automated searching/downloading
+against a named private tracker.
 
-> When the **direct grab** pipeline (next section) is fully configured, escalation routes through
-> it instead — the tag mechanism below stays as the fallback for when the direct search fails or
-> finds nothing.
-
-**Why not Prowlarr priority?** Priority is only a tie-breaker — Radarr/Sonarr grab the
-best-scoring release regardless of which indexer returned it. The strict mechanism is **indexer
-tags**: an indexer with a tag only applies to movies/series that carry the same tag. The AvistaZ
-indexer is tagged, no title carries the tag by default, so nothing ever hits AvistaZ until the bot
-"escalates" a title by adding the tag to it and re-searching.
-
-### What escalates on its own, and what asks first
-AvistaZ is an **Asian-content tracker** — East, Southeast and South Asian movies and TV, plus
-anime. It has nothing else, so escalating a title it can't possibly carry burns a metered tracker
-search (and sometimes a download slot on a wrong match somebody then has to notice and delete).
-Auto-escalation is therefore narrower than pre-authorization:
-
-| Title | Pre-authorized | What happens after the delay |
-| --- | --- | --- |
-| TV, obviously Asian | yes | **escalates automatically** |
-| TV, obviously Asian | no | button alert |
-| TV, not obviously Asian | either | button alert |
-| Movie (any origin) | either | button alert |
-
-"Obviously Asian" is decided from the title's TMDB record, which Overseerr already serves: an
-Asian **original language**, an Asian **production/origin country**, or an **original title in an
-Asian script** (kana, hanzi, hangul, Thai, Devanagari, …). Any one of those is enough — AvistaZ
-carries English-language Asian productions too, and a Korean-language US co-production is still
-Korean. Central and West Asia (Turkey, Israel, the Gulf, the -stans) are deliberately out of scope
-because the tracker doesn't cover them.
-
-The verdict is three-valued, and only a decided one is cached on the watch row. If Overseerr is
-unreachable or the TMDB record is bare, the answer is **unknown** — which asks a human rather than
-guessing in either direction, and is re-checked on the next sweep.
-
-**Movies never auto-escalate, whatever their origin.** A film is one shot at one release, hard to
-tell apart from its same-titled cousins, and a wrong automatic grab is expensive to undo. Films
-always get the button.
-
-Being asked isn't a dead end — the **Escalate to AvistaZ** button does exactly what the automatic
-path would have done, and the alert embed carries an **AvistaZ fit** line explaining the verdict so
-the call is an informed one.
-
-### How the bot uses it
-- The approval embed gets a third button, **Approve + AvistaZ Fallback**, which pre-authorizes the
-  fallback: the `avistaz` tag goes onto the title in Radarr/Sonarr right at approval (it's
-  definitely AvistaZ-bound), and if nothing public has been grabbed within
-  `ESCALATION_DELAY_MINUTES` the bot escalates — automatically for an obviously-Asian show, via
-  the button for anything else (see the table above).
-- Plain **Approve** gets the watchdog flavor instead: after the delay, the downloads channel gets
-  a **⏳ Nothing Found Yet** embed with **Escalate to AvistaZ / Ignore** buttons.
-- Admin self-requests skip the gate entirely (no button to click), so they're pre-authorized
-  automatically — tagged at request time, and subject to the same auto-escalation rules as
-  **Approve + AvistaZ Fallback**.
-- A watch row resolves automatically the moment the media turns available, starts downloading, or
-  the request is declined; unresolved rows expire after `ESCALATION_MAX_AGE_DAYS`.
-- If an approved request never lands in Radarr/Sonarr at all — Seerr can accept a request and
-  lose it moments later (its log shows `Media data not found`, usually a broken TMDB↔TVDB
-  mapping) — the bot repairs it after `ESCALATION_ARR_GRACE_MINUTES` (default 10). A
-  **pre-authorized** request is fixed automatically: the title is added directly to the arr
-  (bypassing Seerr; AvistaZ tag included) and the downloads channel just gets told. Anything
-  else gets a **🕳️ Request Never Landed** alert with an **Add to Sonarr/Radarr & Search**
-  button that does the same add on click. Direct adds use `SONARR_ROOT_FOLDER` /
-  `SONARR_QUALITY_PROFILE` etc. when set, else the arr's first root folder / quality profile.
-  The escalation clock restarts from the add, so public indexers get the full delay before
-  any fallback.
-- 4K requests are never escalated (the fallback is for hard-to-find content, not 4K upgrades).
-- Clicking **Escalate to AvistaZ** by hand is never blocked by the origin check — it's an
-  override for exactly the cases the automation won't take on its own.
-
-### One-time arr/Prowlarr setup
-1. **Prowlarr**: add the AvistaZ indexer (needs your AvistaZ account; mind its seeding rules).
-2. **Get it into Radarr + Sonarr with a tag that sticks.** Caveat: Prowlarr *Full Sync* overwrites
-   manual indexer edits on every sync. Either set the Prowlarr application sync level to
-   *Add and Remove Only* and then tag the indexer inside Radarr/Sonarr, or add AvistaZ directly in
-   Radarr/Sonarr as a Torznab indexer pointed at Prowlarr's AvistaZ feed URL.
-3. **Tag the indexer** in Radarr → Settings → Indexers → AvistaZ → Tags → `avistaz` (must match
-   `AVISTAZ_TAG`), and the same in Sonarr. This tag gate is the entire strictness mechanism.
-4. **Do NOT tag it in the 4K Radarr instance** — 4K escalation is out of scope by design.
-5. **Route AvistaZ downloads to the seedbox**: add Deluge (or your seedbox client) as a download
-   client in Radarr/Sonarr, then on the AvistaZ indexer set *Download Client → Deluge*. Public
-   indexers keep using the Premiumize client. Disable completed-download removal / seeding-goal
-   teardown for the Deluge client so private grabs keep seeding.
-6. Set `ESCALATION_ENABLED=true` (plus any of the other `ESCALATION_*` keys) and restart the bot.
-7. Verify: the bot warns at startup (log + system channel) if the `avistaz` tag is missing in
-   Radarr or Sonarr, and `/indexers` shows AvistaZ health via Prowlarr.
-
-### Operational caveats
-- The tag is **never auto-removed** after an escalation — it marks which titles came from AvistaZ
-  (seeding traceability), and future upgrades of that title may search AvistaZ again. Remove the
-  tag from the movie/series manually if you want it back on public-only.
-- The stuck-download **Remove & Try Another Release** button blocklists the release; on an AvistaZ
-  grab that blocklists a private-tracker release.
-
-## Season-Pack-First Searching (old shows, every indexer)
-Sonarr looks for missing episodes **one at a time**. For a show that's still airing that's
-right — episode 8 aired last night and no season pack exists yet. For a drama that finished in
-2007 it's the expensive way to get something that exists as a single torrent: 30 searches, 30
-grabs, 30 release groups, and on a metered private tracker 30 download slots for what one pack
-would have cost.
-
-`SEASON_PACK_FIRST` (default on) sweeps Sonarr every `SEASON_PACK_CHECK_MINUTES` (default 180)
-and asks for a **SeasonSearch** on each incomplete season of each old show — one search for the
-whole season, so a pack can satisfy every gap at once. This runs against whatever indexers
-Sonarr already has; it is not AvistaZ-specific and needs none of the direct-grab pipeline.
-
-A show counts as **old** when Sonarr marks it `ended`, or when nothing has aired in
-`SEASON_PACK_DORMANT_DAYS` (default 365) and nothing is scheduled. A scheduled next airing always
-wins — a series returning next week is current whatever its status field says, and its latest
-season is still being released weekly.
-
-**Requested shows skip the age gate entirely** (`SEASON_PACK_REQUESTED`, default on). Most
-releases are an `S01` season pack whatever the show's age, and somebody is waiting on a show they
-asked for, so a current series with a request behind it gets the same treatment. A show counts as
-requested when it appears in the bot's `requests` or `escalations` tables under its TVDB id. This
-stays safe on a live season because only **aired** episodes count toward the missing threshold —
-a season halfway through its run has nothing to search for until episodes actually go missing,
-and a season that's already up to date is never searched at all. The downloads-channel summary
-says which reason applied per season (`series has ended` vs `requested`).
-
-A season is searched when:
-- it has **aired, monitored, file-less** episodes (unaired ones can't be downloaded; unmonitored
-  ones were excluded on purpose), **and**
-- the whole aired season is missing, **or** at least `SEASON_PACK_MIN_MISSING` (default 3)
-  episodes are. One or two gaps fall through to Sonarr's normal per-episode search on purpose —
-  pulling a 20 GB pack to fill a single hole wastes more bandwidth than it saves.
-
-Specials (season 0) are never packed. A season already downloading is skipped rather than raced,
-and each season honors `SEASON_PACK_COOLDOWN_HOURS` (default 24) so a season with nothing
-available isn't re-searched every sweep. `SEASON_PACK_MAX_PER_RUN` (default 5) keeps a first pass
-over a large library from firing hundreds of indexer searches at once. Searched seasons are
-posted to the downloads channel and audited as `season_pack_search`.
-
-Nothing in your Sonarr configuration is touched — no profiles, no custom formats, no release
-profiles. The bot only issues search commands, so turning `SEASON_PACK_FIRST=false` back off
-returns Sonarr to exactly its previous behavior. Whatever Sonarr grabs imports normally.
-
-The [episode recovery watchdog](docs/episode-recovery.md) stands down on any season this path
-owns: recovering an old season one episode at a time is the waste this exists to prevent, and on
-AvistaZ the two would race for the same download slots. Seasons that fall below the pack
-threshold go back to episode-level recovery.
-
-## AvistaZ Direct Grab (Prowlarr search → seedbox rTorrent → rclone → arr import)
-The next stage of the fallback above. Instead of handing the search to Radarr/Sonarr via the
-indexer tag (where the arrs grab whatever scores best and burn AvistaZ download slots on their
-own judgement), the bot runs the whole chain itself:
-
-```text
-Escalation fires (or /avistaz search)
-        ↓
-Bot searches AvistaZ through Prowlarr (never scrapes the website)
-        ↓
-Bot scores each release: title/year match, season pack vs episode,
-resolution/source, seeders, size sanity, freeleech, already-downloaded
-        ↓
-Auto-grab (GRAB_MODE=auto + high confidence) or Discord approval buttons
-        ↓
-.torrent pushed to seedbox rTorrent (raw bytes over XML-RPC) with the
-radarr/sonarr label — the seedbox can't reach Prowlarr, so the bot fetches
-the file and computes the info-hash locally for tracking
-        ↓
-Bot polls rTorrent until the download completes (seeding continues there —
-private-tracker ratio lives on the seedbox)
-        ↓
-rclone copy into GRAB_STAGING_PATH/.incoming, then renamed into place so the
-arr never sees a half-copied folder
-        ↓
-Radarr DownloadedMoviesScan / Sonarr DownloadedEpisodesScan (importMode Move)
-→ normal import, renaming, notifications; Bazarr picks up subtitles; Plex updates
-```
-
-### Modes
-- **Automatic** (`GRAB_MODE=auto`): escalations grab the top candidate themselves when its
-  confidence ≥ `GRAB_AUTO_CONFIDENCE`; anything less confident falls back to approval buttons.
-  For a series this grabs the whole available run, not just the top release (see below).
-- **Approval** (`GRAB_MODE=approve`, default): escalations post the top 3 scored candidates to
-  the downloads channel with **Download 1/2/3 / Cancel** buttons, plus **Grab Everything** for a
-  series.
-- **Manual**: `/avistaz search title:<...> type:movie|tv [season] [year]` any time;
-  `/avistaz status` shows the allowance, mode, seedbox reachability, and active grabs.
-
-### Whole-series grabs
-A **Download** button grabs exactly one release and consumes the offer — so a show whose best
-AvistaZ match is a single season (or a single episode) used to get that one release and never
-prompt again. `GRAB_TV_COMPLETE` (default on) fixes that: TV searches rank the full result set
-instead of just the podium, and the bot plans a set of releases whose episode-spaces **don't
-overlap** — a complete-series pack, or a pack per season, plus any loose episodes that fill the
-gaps. That plan sits behind one **Grab Everything (N)** button, and in `GRAB_MODE=auto` the
-escalation takes the whole plan by itself once the top match clears `GRAB_AUTO_CONFIDENCE`.
-
-Releases are picked **widest first** — complete series, then season packs, then loose episodes —
-and only then by confidence. Confidence alone gets this backwards on exactly the shows the
-feature exists for: an old drama's complete pack is typically a 2-seeder 720p rip (~80%) while
-someone's re-encode of episode 1 is a 12-seeder 1080p WEB-DL (~84%), so the lone episode would
-anchor the plan and the pack holding all thirty episodes would be dropped as "already covered".
-`GRAB_TV_COMPLETE_MIN_CONFIDENCE` still gates entry, so a dead or mislabelled pack can't ride
-breadth past the quality bar.
-
-**Same-titled shows are told apart by year.** "Full House" is both a 1987 US sitcom and a 2004
-Korean drama, and the TV scoring path never looked at the year — `Full House S01 1987` and
-`Full House S01 2004 1080p KOCOWA WEB-DL` scored identically, so the wrong show could win a plan
-outright. A release that *predates* the series now takes a 25-point penalty and says so in the
-candidate embed. It's a penalty rather than points because a TV release's year is usually the
-**season's** air year: `Show S03 2015` on a series that began in 2012 is correct and is left
-alone. Only a first season dated well after the series began (a remake) takes a smaller hit.
-
-Season-less episode runs (`E01-E30`, how single-season Asian dramas are usually uploaded) and the
-old `1x05` form are recognized as well — they used to parse as nothing at all, which made the
-only pack on offer invisible to the planner. A multi-episode file (`S01E01-E10`) claims its whole
-run, so a second release of `E02-E10` is caught as a duplicate.
-
-The plan is built from the same episode-space claims as the dedupe above, so it can never spend
-two download slots on the same episodes, and releases already in flight are excluded — re-running
-`/avistaz search` after a partial grab only offers the gaps. Only the search's top-scoring series
-is planned, so other shows in the result set are never swept in. Releases join a plan at
-`GRAB_TV_COMPLETE_MIN_CONFIDENCE` (default `70`) — below `GRAB_AUTO_CONFIDENCE` on purpose, since
-the top match must clear that bar on its own before any bulk grab starts.
-
-Size is bounded by `GRAB_TV_MAX_RELEASES` (default `6`) **and** by whatever is left of
-`AVISTAZ_DAILY_GRAB_LIMIT`, whichever is smaller; the allowance is re-checked between releases, so
-a plan that outgrows the day stops cleanly and says how many are left rather than overspending.
-Set `GRAB_TV_COMPLETE=false` to go back to one-release-per-click.
-
-Episodes that air *later* are a different problem — that's the
-[episode recovery watchdog](docs/episode-recovery.md), which watches monitored series for aired
-episodes that never landed. Whole-series grabs cover what AvistaZ has **now**, at request time.
-
-### Allowance
-Every grab (failed attempts included — the tracker may count the download the moment the
-`.torrent` is fetched) consumes one slot of `AVISTAZ_DAILY_GRAB_LIMIT` per UTC day, so
-automation can't drain a limited AvistaZ account. Scoring prefers season packs for exactly the
-reason the limit exists: one grab can deliver a whole season. Multi-season / complete-series
-releases (`S01-S05`, `Complete Series` — common for older shows that only exist as one big
-torrent) are recognized too: they score as covering any requested season in their range, show up
-labeled "complete series" in the candidate embeds, and Sonarr sorts the episodes into the right
-seasons at import (per-file `SxxEyy` parsing — Sonarr's own automatic search can't grab
-multi-season packs, which is why the direct pipeline handles them). Duplicate info-hashes are
-refused outright ("already grabbed as job #N").
-
-**Content-level dedupe** (`GRAB_CONTENT_DEDUPE`, default on) goes a step further than the info-hash
-check: it blocks a grab **or** an adoption when an active job already covers the same episode(s) —
-even a *different release, encoding, or size* of them, which the info-hash and exact-title checks
-can't see. The release name is reduced to the episode-space it claims (series + seasons/episodes,
-with a season pack or "complete series" covering everything in it) and compared against active
-jobs; an overlap is refused ("already grabbing S01E14 as job #N"). It's deliberately conservative —
-an unparseable name makes no claim and is never blocked, so a genuinely different episode is never
-lost. Movies dedupe by resolved media id. Set `GRAB_CONTENT_DEDUPE=false` to allow multiple
-releases of the same content through.
-
-### Setup
-1. Add the AvistaZ indexer in **Prowlarr** (the bot finds it by name via `AVISTAZ_INDEXER_NAME`).
-2. Set `RTORRENT_URL` to the seedbox's XML-RPC endpoint incl. credentials — RapidSeedbox
-   exposes it at `/plugins/rpc/rpc.php`, e.g.
-   `https://user:pass@server.rapidseedbox.com/plugins/rpc/rpc.php`.
-3. Configure an rclone remote that reaches the seedbox's rTorrent download folder (SFTP works
-   well) and set `GRAB_RCLONE_REMOTE` (e.g. `rapidseedbox:files`) plus
-   `GRAB_RCLONE_FLAGS=--config /app/data/rclone.conf` and any SFTP tuning.
-4. Mount a **writable** staging folder into the container (the media mount is `:ro` — see the
-   commented volume in `docker-compose.yml`) and set `GRAB_STAGING_PATH`; set
-   `GRAB_IMPORT_PATH` to the same folder as Radarr/Sonarr see it.
-5. Restart. When the pipeline is fully configured, escalations use it automatically and fall
-   back to the tag-based flow only when the AvistaZ search fails or finds nothing.
-
-Grab jobs are durable (`grab_jobs` in SQLite): a restart mid-download keeps watching, a restart
-mid-transfer re-queues the copy, and rclone skips already-transferred files. Transfer failures
-alert the downloads channel with a **Retry Transfer** button.
-
-### Guided import ("Map to a Series…")
-When Sonarr declines an import (`Unknown Series` — TVDB files the show under another title,
-common for Asian dramas whose sequels are listed as a season of the original; or fansub names
-with no `SxxEyy` to parse), the decline alert carries a **Map to a Series…** button that runs
-Sonarr's Manual Import as a short conversation in the downloads channel: pick the series
-(library fuzzy-matched, recently-added first, with a search-by-name modal), pick the season,
-review the file→episode mapping (episode numbers read from filenames when possible, natural
-order otherwise — mismatches are called out), confirm. The bot then pushes the exact mapping
-through Sonarr's ManualImport API (move mode). `/rtorrent import` in move mode gets the same
-post-scan verification, so silent declines there surface with the wizard too. Wizard state
-lives in SQLite, so a bot restart mid-conversation doesn't strand the message.
-
-### Adopting existing torrents (`/rtorrent adopt`)
-The pipeline above tracks torrents by the info-hash the bot computes when **it** submits the
-`.torrent` — anything added to rTorrent by hand, by another private tracker's automation, or
-before the bot existed has no `grab_jobs` row and is invisible. Adoption closes that gap,
-provider-independently:
-
-```text
-/rtorrent adopt search:"Blood Vs Duty" [target:sonarr|radarr]
-        ↓
-Bot queries every torrent in rTorrent (d.multicall2) and matches names
-        ↓
-Embed shows name, progress, size, and label, with Adopt buttons
-(target from the rTorrent label; blank/unknown labels get an explicit
-per-arr button — nothing is ever adopted on a guessed target)
-        ↓
-Admin clicks Adopt → a grab job is created for the EXISTING info-hash
-at 'downloading' (watched to 100%) or 'complete' (transfers immediately)
-        ↓
-The normal chain finishes it: rclone → .incoming → rename → arr import
-```
-
-Safety properties, by construction:
-- **Never** downloads a `.torrent` from AvistaZ (or anywhere) and **never** consumes an
-  `AVISTAZ_DAILY_GRAB_LIMIT` slot — adopted jobs (`origin` `adopt`/`adopt-auto`) are excluded
-  from the allowance count.
-- **Never** removes the torrent or its data from rTorrent — transfers are `rclone copy`, and
-  seeding continues on the seedbox.
-- An info-hash already in `grab_jobs` is refused ("already tracked as job #N").
-- The matching file/folder must exist under `GRAB_RCLONE_REMOTE` **before** the job is created.
-  The probe self-corrects the path mapping: it tries the `RTORRENT_REMOTE_ROOT`-derived subpath
-  (optional — the seedbox-side folder the remote points at), the bare torrent name, and every
-  trailing suffix of the torrent's `d.base_path` — so an SFTP remote rooted at the login home
-  dir (where files appear as `Downloads/…`) still resolves. If every probe misses, a one-off
-  recursive listing searches the whole remote by exact torrent name (unique matches only —
-  ambiguity is refused, never guessed), catching data that was sorted into folders behind
-  rTorrent's back. Failures report exactly which paths were probed, and `/rtorrent status`
-  previews what the remote root actually contains.
-- Adopted jobs are durable `grab_jobs` rows — restarts keep watching/transferring them, and the
-  `.incoming` rename guard applies unchanged.
-
-**Import verification**: a grab job is never marked done just because the arr's scan command
-was *fired* — it moves through `scanning` → (`importing` if a forced ManualImport runs) →
-`verified`, and only `verified` counts as actually imported. After every transfer's arr scan,
-the bot checks the video files actually left staging. A scan that never completes leaves the
-job at `scanning` and raises a "command queue may be wedged" alert; a scan that completes but
-silently skips cleanly-matched files gets them forced through the arr's ManualImport API only
-when `SONARR_AUTO_MANUAL_IMPORT=true` **and** the job is pinned to a single resolved Sonarr
-series (see "Sonarr series identity" below) — otherwise it goes to `needs_mapping` (TV) or
-`import_rejected` (movies) with the guided **Map to a Series…** wizard offered for TV;
-genuinely rejected files land there too, with one alert naming the rejection reasons.
-`/rtorrent staging` runs the same match/rejection analysis on demand, summarized per staging
-folder.
-
-### Sonarr series identity
-Both a normal request grab (when the request already carries a TVDB id) and adoption resolve
-the Sonarr `seriesId` **before** the job is created, instead of leaving Sonarr to guess from
-the release filename at import time — the guess is where foreign titles, alternate names,
-sequels filed as a season of the original, and complete-series packs go wrong. Resolution
-order: TVDB id (authoritative when known) → exact normalized-title match → alternate-title
-match → nothing (Sonarr still gets the files and guesses on its own, unchanged from before).
-A title matching **more than one** Sonarr series blocks adoption for one admin click (a
-**Which Series?** picker) instead of guessing; `/rtorrent adopt` surfaces those separately
-from outright failures, and re-adopting one at a time offers the picker. The resolved
-`target_arr_id`/`tvdb_id`/`match_type` on the `grab_jobs` row is what gates the auto-forced
-ManualImport above — `match_type` is never `'ambiguous'`, since an ambiguous match never
-reaches a job row unresolved.
-
-Commands: `/rtorrent status` (connectivity + adoption settings), `/rtorrent list [search]`,
-`/rtorrent adopt search:"..." [target:]`, `/rtorrent ignore search:"..."` (toggle — the sweep
-skips ignored torrents), `/rtorrent adopted` (adopted jobs + ignore list), and
-`/rtorrent import target: [folder:] [mode:move|copy]` — hand a staging folder straight to the
-arr's DownloadedScan, for files that got into staging outside the pipeline (manual rclone
-copies). `mode:copy` leaves the staging files in place; importing from `.incoming`, or the
-staging root while a transfer is mid-copy, is refused.
-
-**Bulk adoption**: when the search matches more than 3 untracked torrents (an
-episode-per-torrent series can be 80+), the offer collapses to a single **Adopt all N**
-button. One target applies to the whole batch (from `target:`, or from the labels when they
-all agree — mixed/blank labels get one button per arr). Existence checks are batched (one
-directory listing per unique seedbox folder instead of a stat per torrent), duplicates are
-skipped quietly so a re-run after a partial failure only adopts what's still missing, and a
-single summary reports adopted/skipped/failed counts. Completed torrents still transfer one
-at a time — the WAN link is the bottleneck — and each import triggers its own arr scan.
-Transfer progress for adopted batches is a single rolling embed in the downloads channel,
-edited in place per import (one notification per batch, not one per episode), replaced by a
-completion summary when the batch drains.
-
-With `RTORRENT_ADOPT_ENABLED=true`, a **discovery sweep** (every `RTORRENT_ADOPT_CHECK_MINUTES`)
-looks for torrents whose label is in `RTORRENT_ADOPT_LABELS` but which have no grab job, and
-posts **one** message to the downloads channel covering the whole cohort — a bulk Adopt-all
-offer when more than 3 are waiting, per-torrent buttons otherwise. Every posted candidate is
-marked offered (durably, per info-hash), so nothing is re-posted unless new torrents appear.
-`RTORRENT_ADOPT_AUTO=true` makes the sweep adopt label-resolved candidates outright; keep it
-`false` initially so the bot only discovers candidates instead of transferring every completed
-torrent on the seedbox.
+See **[docs/avistaz-pipeline.md](docs/avistaz-pipeline.md)** for the full escalation rules,
+one-time Radarr/Sonarr/Prowlarr setup, whole-series grabs, adoption of existing torrents, and the
+Sonarr series-identity resolver.
 
 ## Plex Home Staging (remote cache box)
-A second, small Plex server (e.g. a NUC abroad, behind CGNAT and a VPS tunnel) serves a local
-**cache** of the master library. The bot manages that cache from Discord:
+A second, small Plex server (e.g. behind CGNAT and a VPS tunnel) can serve a local **cache** of
+the master library — `/stage <title>` copies a title in on demand, play-triggered promotion warms
+a title the moment a viewer starts it, and a disk-pressure guard evicts least-recently-streamed
+titles when the cache runs low.
 
-- `/stage <title>` — the verb the rest of the stack doesn't have. Overseerr can't request a
-  title that's already Available, and Plex won't copy between servers. The bot resolves the
-  folder from Radarr/Sonarr and runs `rclone copy` into the cache; the requester gets a DM when
-  it's warm. Cold titles stop being mysterious buffering and become an announced wait.
-- **Durable queue** — stage jobs live in SQLite (`stage_jobs`). A restart mid-copy re-queues the
-  job; `rclone copy` skips files that already transferred, so resuming is cheap.
-- **Disk-pressure guard** — before each copy the bot checks free space (`rclone about`, falling
-  back to a `STAGE_CACHE_MAX_GB` budget). If space is short it evicts least-recently-streamed
-  unpinned titles (announced in the cleanup channel), or refuses with a clear message when even
-  that wouldn't be enough.
-- `/pin` / `/unpin` (admin) — exempt weekly-rewatch titles from eviction. `/staged` (admin) shows
-  the cache; `/stage-bulk` (admin) seeds it from a pasted list — do this on LAN at gigabit before
-  flying. All three can be granted to a specific role (e.g. PH users) in Server Settings →
-  Integrations without code changes.
-- **Auto-stage** — when a PH user's request finishes importing on the master
-  (`MEDIA_AVAILABLE`), the bot stages it automatically and DMs when it's ready to play.
-- **Play-triggered promotion** (`EDGE_PROMOTE_ON_PLAY`, off by default) — when a PH viewer
-  *starts* a title that isn't cached yet, the bot stages it so the next play is local. Needs a
-  Tautulli "Playback Start" webhook (event `play`) and/or Plex `media.play`/`media.resume`
-  carrying the PH server identity. `EDGE_PROMOTE_AUDIT_ONLY=true` logs the decision
-  (`edge_promote_would_stage`) without copying — run it that way first. Promotions have their own
-  per-watcher daily cap (`EDGE_PROMOTE_MAX_PER_USER_PER_DAY`, attributed to the linked Tautulli
-  email) and a per-title cooldown (`EDGE_PROMOTE_COOLDOWN_HOURS`) so a binge can't re-copy. This
-  is the bot half of the edge remote-fallback design (`docs/edge-playback-architecture.md`); the
-  mergerfs remote-fallback mount that lets the missing title play *while* it copies is the infra
-  half, done on the box.
-- **Tunnel watchdog** — `PH_TUNNEL_HEALTH_URL` is polled; state transitions alert the system
-  channel, and `/status` + `/staged` show tunnel state, cache free space, and active jobs.
-
-### Server-aware webhook routing (the footgun guard)
-Plex/Tautulli events now carry a server identity and every handler is gated on it:
-
-- Events matching `PH_SERVER_NAMES` route to the **eviction** flow: the familiar finished-watching
-  prompt, but "Free Up Space" only purges the *cache* copy — the master file is untouched.
-- Events matching `CA_EDGE_SERVER_NAMES` are recorded as California edge playback and never enter
-  either the Philippines staging flow or the full-Main deletion flow. Its tier agent owns storage.
-- Events matching `PRIMARY_SERVER_NAMES` route to the existing keep/delete flow. Put only the
-  three full Main storage servers here, not California.
-- Once either edge list is set, events with **no** recognizable identity are skipped (fail-safe):
-  a PH viewer finishing a movie must never reach a `delete_yes` that deletes the master.
-
-Setup:
-1. On the **PH box's Tautulli**, point the webhook at the same `POST /webhook/tautulli` endpoint
-   and include the server identity in the JSON payload:
-   `"server_name": "{server_name}", "machine_id": "{machine_id}"` (add the same two fields to the
-   master's Tautulli payload too, or set `PRIMARY_SERVER_NAMES` and keep them matching).
-2. Set `PH_SERVER_NAMES` to the PH box's server name and/or machine id, set
-   `CA_EDGE_SERVER_NAMES` to California's identity, and set `PRIMARY_SERVER_NAMES` to only the
-   full Main storage servers (all lowercase; no overlaps).
-3. Configure an rclone remote that reaches the PH cache (e.g. SFTP through the VPS tunnel), mount
-   the config into the container, and set `STAGE_RCLONE_REMOTE` (e.g. `phbox:/cache`) plus
-   `STAGE_RCLONE_FLAGS=--config /app/data/rclone.conf`.
-4. `STAGING_ENABLED=true`, and set `STAGE_CACHE_MAX_GB` if the remote can't answer `rclone about`.
-5. Run `npm run doctor:edge` on the bot host (or `/doctor` in Discord). Do not enable automatic
-   promotion until the Main source, Philippines cache read, tunnel, and free-space checks pass.
-
-### One server per person
-Plex does **not** sync watch state between servers — separate Continue Watching, separate watched
-marks, separate Tautulli history. So each person belongs to exactly one server:
-
-- `/assign-server user:@X server:ph` marks a PH user. Invites (`/link`, `/invite`, `/reinvite`,
-  access-request approvals) then go **only** to servers matching `PH_SERVER_NAMES`; everyone else
-  is invited to everything *except* the PH box. With `PH_SERVER_NAMES` unset, invites behave as
-  before (all servers).
-- Revocation (leave-server button, `/unlink`, sync-fix orphan cleanup) always sweeps **every**
-  server in the account — including ones in `PLEX_EXCLUDE_SERVERS` — so nobody keeps quiet access
-  to an "excluded" box after losing access.
+See **[docs/plex-home-staging.md](docs/plex-home-staging.md)** for the full command set, the
+server-aware webhook routing that keeps a cache-server "Free Up Space" click from ever reaching
+the master's delete flow, and the one-server-per-person invite/revocation model.
 
 ## Regional Tiering ("edge cache")
+Multiple nodes can each run their own Plex against a local Syncthing replica of the media tree,
+curated to each node's disk budget by a keep/drop manifest the bot publishes and a small sync
+agent (`agent/`) converges. Demand is scored per node (Tautulli history, direct Plex playback, or
+file atime), with a mount guard that refuses to prune anything if the node's real media drive
+isn't actually mounted.
 
-Multiple nodes each run their own Plex against a local Syncthing replica of the media tree
-(home is the sole sender; every other node is Receive Only). The tiering planner keeps each
-edge node's replica curated to its disk budget: a per-node keep/drop manifest, published by the
-bot and converged by a tiny standalone sync agent on each node (`agent/`).
-
-A node's library can span **several Syncthing folders** (e.g. California's `Movies`, `4k`,
-`TV Shows`, `Family Films`) while remaining **one budget pool with one eviction plan** — the
-manifest splits the drop set per folder (one `.stignore` per folder root) and the agent asserts
-Receive Only, writes ignores, rescans and prunes each folder every run. Manage a node's folders
-with `/tier-node folder add|remove|list`; the agent lists them in `TIER_FOLDERS`. Single-folder
-nodes (one `folder_root`, one `SYNCTHING_FOLDER_ID`) are unchanged.
-
-For this deployment, California is an edge node even though its viewers belong to **Main**. Its
-3 TB budget should be the tier node's usable media capacity. Philippines should count only the
-5 TB external media drive as usable capacity; the 1 TB system SSD is not part of the media pool.
-Both nodes must use the mount guard below so a missing external/real media mount cannot redirect
-sync writes onto a system disk or an empty fallback directory.
-
-How each node is curated:
-- **Tier 0 (floor, never evicted):** keep list ∪ `NEVER_DELETE_MEDIA_IDS` ∪ the universal core
-  (top-K titles by summed plays across every node's Tautulli). Any title with no copy on an
-  enabled `full` master is force-kept everywhere — edge pruning can never lose data.
-- **Tier 1 (node demand):** per `demand_source`:
-  - `tautulli` — the node's own Tautulli history
-    (`recencyDecay × log1p(plays) × log1p(distinctUsers)`).
-  - `plex` — the node's own PMS watch history **directly**
-    (`/status/sessions/history/all` with `plex_url`/`plex_token`), scored
-    `recencyDecay(lastViewedAt) × log1p(viewCount)`. Real playback is a true watch (no atime
-    pollution), and PMS history is per-server, so it's inherently node-local. Any title Plex has
-    no view record for **falls back to that title's `atime`**; a title with neither is coldest
-    (still protected by the fresh-added grace window). If the local PMS is unreachable the node
-    simply falls back to atime for everything — the plan never fails.
-  - `atime` — an LRU over file last-read times reported by the agent; atime only moves when
-    *that node's* Plex reads a file. The media filesystem must be mounted `relatime` (not
-    `noatime`), and Plex's nightly read-heavy tasks (extensive analysis, preview thumbnails,
-    intro/credit detection) should be disabled on that server or they count as watches. As a
-    backstop, set the node's `atime_mask` (`HH:MM-HH:MM`, UTC, may wrap midnight) to the
-    maintenance window: reads landing in that window are laundered at report ingest — the
-    previously stored atime (the last plausible human read) is carried forward instead.
-- **Tier 2 (member pins, `restricted` nodes only):** requests by the node's member set
-  (`/tier-member`) pin for `TIER_REQUEST_GRACE_DAYS` — cold-start before Tautulli has signal.
-  `open` nodes never pin (a requester could stream from any node), and on `restricted` nodes
-  the members' own history outranks the universal core when the budget is tight.
-
-The fill is an incremental watermark LRU: eviction happens **only to admit** something warmer
-(never a scheduled purge), recently-watched (`warm_days`) and recently-added (`fresh_days`)
-titles are never evicted, and a new title is admitted only if it outranks the coldest victim.
-`sticky` nodes (old drives — California) get a doubled warm window and a bigger headroom floor.
-If a node's budget covers the whole library, nothing is ever dropped.
-
-Safety model (§ the agent enforces this order every run):
-0. **Mount guard** — if `TIER_MOUNT_ROOT` is set, verify the external media drive is actually
-   mounted **before** anything else: a positive proof (matching `TIER_EXPECTED_UUID` or a present
-   `TIER_MOUNT_MARKER` sentinel — a bare mount-point check is not trusted since a container bind
-   mount fakes it) plus every folder root on that same filesystem. If the drive is absent — the
-   classic "`/mnt/media` reverted to an empty dir on the system disk after a reboot" — the agent
-   aborts, reports `driveMissing` **without** an inventory (so the bot keeps the node's last-known
-   contents instead of wiping them and re-seeding onto the wrong disk), and the bot alerts once on
-   the transition and once on recovery. See `agent/README.md`.
-1. Assert the Syncthing folder is still **Receive Only** — abort + report otherwise.
-2. Write the manifest's `.stignore` (drops, folder-relative; no delete-on-ignore directive).
-3. Rescan and **confirm the ignores loaded**.
-4. Only then delete local files that are dropped *and* ignored (ignored ⇒ never re-pulled).
-
-Commands: `/tier preview [node]` (dry-run, shows the delta vs the last applied plan),
-`/tier apply [node]` (publish manifests), `/tier-node add|list|enable|disable|token|folder`,
-`/tier-member add|remove|list`. Agents authenticate to `GET /agent/manifest/:node` /
-`POST /agent/report/:node` with the per-node bearer token from `/tier-node token` (hash-stored,
-shown once). Env knobs: `TIER_CORE_TOP_K`, `TIER_HALF_LIFE_DAYS`, `TIER_WARM_DAYS`,
-`TIER_FRESH_DAYS`, `TIER_REQUEST_GRACE_DAYS`, `TIER_HISTORY_DAYS`, `TIER_SOURCE_ROOT`,
-`TIER_NODES_SEED` (JSON seed applied only when the `tier_nodes` table is empty).
-
-**Apply is blocked on an incomplete inventory.** If any *arr fails to answer while the plan is
-being built, the titles it serves appear in neither `keep` nor `drop` — so their folder's
-`.stignore` renders **empty** and the node re-downloads everything the previous plan was holding
-back (potentially the whole library, over the edge uplink). The apply-impact caps cannot catch
-this, because those titles aren't in the keep set either, so no confirm code is demanded. `/tier
-apply` therefore refuses outright when a source failed, naming the source; there is no confirm
-code that overrides it. `/tier preview` still renders the plan with the same warning. Fix the
-source and re-run.
-
-A **per-file prune skip** on the agent (an entry that isn't in the loaded ignores, or whose path
-escapes the folder root) is reported in the report's `skipped` array, separately from `errors`.
-Skips do not block convergence: the file stays ignored either way, so the node is still on plan,
-and the agent advances its local plan hash after a skip and won't retry — counting a skip as an
-error would wedge the node at "published but not converged" with nothing able to clear it, and
-would also cost it the hysteresis keep-set that only carries forward from a converged state.
-
-See `agent/README.md` for deploying the node agent (systemd timer or Docker).
+See **[docs/regional-tiering.md](docs/regional-tiering.md)** for the full tier model (floor /
+node-demand / member-pin scoring), the agent's safety ordering, and the `/tier`/`/tier-node`
+command set.
 
 ## Slash Command List
 Admin (hidden from non-admin roles by default; grant per-role via Server Settings → Integrations if e.g. PH users should `/pin`):
