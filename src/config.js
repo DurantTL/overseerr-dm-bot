@@ -279,6 +279,9 @@ const CONFIG = {
   SHUTDOWN_DRAIN_SECONDS: Number.parseInt(process.env.SHUTDOWN_DRAIN_SECONDS || '8', 10),
   WEBHOOK_DEDUPE_WINDOW_MINUTES: Number.parseInt(process.env.WEBHOOK_DEDUPE_WINDOW_MINUTES || '5', 10),
   WEBHOOK_EVENT_RETENTION_DAYS: Number.parseInt(process.env.WEBHOOK_EVENT_RETENTION_DAYS || '3', 10),
+  BACKUP_INTERVAL_HOURS: Number.parseInt(process.env.BACKUP_INTERVAL_HOURS || '0', 10),
+  BACKUP_DIR: process.env.BACKUP_DIR || '/app/data/backups',
+  BACKUP_KEEP_COUNT: Number.parseInt(process.env.BACKUP_KEEP_COUNT || '14', 10),
   NEVER_DELETE_MEDIA_IDS: process.env.NEVER_DELETE_MEDIA_IDS ? process.env.NEVER_DELETE_MEDIA_IDS.split(',').map(s => s.trim()) : [],
 };
 

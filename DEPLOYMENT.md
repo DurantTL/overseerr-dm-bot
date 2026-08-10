@@ -238,7 +238,10 @@ docker run --rm -v durant_bot_data:/app/data -v "$PWD/backups:/restore:ro" \
 docker start durant-media-server-bot
 ```
 
-Schedule the backup command via cron on the host for regular snapshots.
+Schedule the backup command via cron on the host for regular snapshots, or set
+`BACKUP_INTERVAL_HOURS` (see `.env.example`) to have the bot run this in-process on its own
+schedule — it uses the same `runBackup()`/rotation logic and reports failures to the
+`system_alerts` channel instead of failing silently on a host cron.
 
 ## 7. Rollback
 
