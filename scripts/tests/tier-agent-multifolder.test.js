@@ -141,22 +141,20 @@ const { planTier, renderFolderStignore } = require('../../src/tier');
   const inv1 = reports[0].inventory;
   assert.ok(inv1.some(f => f.folderId === 'mov' && f.relPath === 'Keep Movie (2024)/keep.mkv'), 'Movies inventory folder-relative + tagged');
   assert.ok(inv1.some(f => f.folderId === 'tv' && f.relPath === 'Kept Show/S01/e1.mkv'), 'TV inventory tagged');
-  assert.ok(inv1.some(f => f.folderId === 'fourk'), 'inventory aggregates across all three folder roots');
-  // (Inventory is collected BEFORE pruning, so run 1 still lists the doomed files — the post-prune
-  // delta is what the next changed-inventory report would carry.)
+  // The inventory is walked BEFORE the prune loop runs, but the REPORT reconciles it against
+  // what actually got pruned this same run — the 4k root's only file was just dropped above, so
+  // it must already be gone from THIS report, not lingering until a later run catches up.
+  assert.ok(!inv1.some(f => f.folderId === 'fourk'), 'the just-pruned 4k folder is already empty in the same report — no stale pre-prune entries');
 
-  // --- run 2: plan unchanged, but the prune changed local inventory → report only, no Syncthing ---
+  // --- run 2: plan unchanged, and the inventory was already settled by run 1's own report →
+  // a true no-op heartbeat, not a second full report ---
   scanned.length = 0;
-  await runOnce(ctx);
+  const r2noop = await runOnce(ctx);
   assert.deepStrictEqual(scanned, [], 'unchanged plan → Syncthing untouched');
-  assert.strictEqual(reports.length, 2, 'post-prune inventory delta reported');
-
-  // --- run 3: nothing changed at all → skip the heavy work, but still heartbeat ---
-  const r3noop = await runOnce(ctx);
-  assert.strictEqual(r3noop.skipped, true, 'no-op skip on unchanged plan + inventory');
-  assert.strictEqual(r3noop.heartbeat, true, 'a no-op run still checks in');
-  assert.strictEqual(reports.length, 3, 'no-op run posts a lightweight heartbeat');
-  assert.strictEqual(reports[2].heartbeat, true, 'the no-op post is a heartbeat, not a full report');
+  assert.strictEqual(r2noop.skipped, true, 'no-op skip on unchanged plan + already-settled inventory');
+  assert.strictEqual(r2noop.heartbeat, true, 'a no-op run still checks in');
+  assert.strictEqual(reports.length, 2, 'no-op run posts a lightweight heartbeat');
+  assert.strictEqual(reports[1].heartbeat, true, 'the no-op post is a heartbeat, not a full report');
 
   // --- receive-only violation on ONE folder aborts that folder, still processes the safe ones ---
   folderType.fourk = 'sendreceive';

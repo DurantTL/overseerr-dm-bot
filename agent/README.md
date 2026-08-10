@@ -14,7 +14,9 @@ One run does, in order:
 2. **Asserts the Syncthing folder is Receive Only** via the Syncthing REST API. If someone
    flipped it to send-receive, the agent aborts and reports — that misconfiguration is the only
    way an edge node could ever push a delete back to the master.
-3. Writes the manifest's `.stignore` into the folder root.
+3. Writes the manifest's `.stignore` into the folder root — atomically (temp file in the same
+   directory, fsynced, then renamed into place), so a crash or a rescan racing the write can
+   never observe a truncated or empty ignore file.
 4. Triggers a rescan and **confirms Syncthing loaded the ignore patterns**.
 5. Prunes local files that are in `drop` *and* confirmed ignored (ignored files are never
    re-pulled). Every deletion is logged; paths are confined to the folder root. Deletion is
@@ -23,7 +25,10 @@ One run does, in order:
    inventory size instead of a synchronous recursive stat of the tree.
 6. `POST <bot>/agent/report/<node>` — bytes freed, errors, and (by default) the local media
    inventory `{relPath, sizeBytes, atime}`, which is the planner's demand signal for
-   `demand_source = atime` nodes.
+   `demand_source = atime` nodes. The inventory is walked before step 5 (reading metadata never
+   bumps atime), but whatever step 5 actually pruned is subtracted before it's sent — the report
+   reflects this run's real end state, not a stale pre-prune snapshot the bot would otherwise
+   have to wait a whole extra cycle to correct.
 
 Requires Node 18+ (uses global `fetch`). No other dependencies.
 
