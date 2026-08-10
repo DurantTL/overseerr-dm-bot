@@ -162,30 +162,47 @@ function subscriberKeyFor(tmdbId, is4k) {
 // each additional /request sees its predecessors as already spent, matching what would happen
 // once an admin actually approves them one by one. Returns an error string to show the user, or
 // null if the request is within quota.
-async function quotaBlockReason(seerrUserId, discordId, mediaType) {
+// `exclude` lets a caller that already has its own row counted in 'pending' status (the
+// approval-time recheck below) leave that one out — otherwise a request would count as its own
+// reservation and every quota=1 approval would look exhausted by itself.
+async function quotaBlockReason(seerrUserId, discordId, mediaType, exclude = null) {
   let quota = null;
   try { quota = await fetchUserQuota(seerrUserId); } catch (_e) {}
   const q = quota?.[mediaType];
   if (!q || !q.limit) return null;
   const liveRemaining = Number.isFinite(q.remaining) ? q.remaining : q.limit - (q.used || 0);
-  const reserved = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE requested_by_discord_id = ? AND media_type = ? AND status = 'pending'").get(discordId, mediaType).c;
+  let sql = "SELECT COUNT(*) AS c FROM requests WHERE requested_by_discord_id = ? AND media_type = ? AND status = 'pending'";
+  const params = [discordId, mediaType];
+  if (exclude) {
+    sql += ' AND NOT (media_id = ? AND is_4k = ?)';
+    params.push(`tmdb:${exclude.tmdbId}`, exclude.is4k ? 1 : 0);
+  }
+  const reserved = db.prepare(sql).get(...params).c;
   if (liveRemaining - reserved > 0) return null;
   return `❌ You're out of ${mediaType === 'tv' ? 'series' : 'movie'} request quota for now — ${quotaLine(quota, mediaType)}${reserved ? ` (${reserved} of your other requests are still awaiting approval)` : ''}. Check \`/me\` for your current standing.`;
 }
 
 // Resolves the real tmdbId for a requests row regardless of which form its media_id is
 // currently in. Rows start out tmdb:-keyed (the only identifier available at /request time), but
-// a TV row gets a second, tvdb:-keyed row once Seerr assigns a tvdbId (handleGateApprove keeps
-// both in sync under the same overseerr_request_id) — so a tvdb:-keyed row's own media_id is not
-// a tmdbId at all, and must never be treated as one (that mistake is what broke #75 handoff and
-// #74 /report for approved TV requests).
+// a TV row gets a second, tvdb:-keyed row once Seerr assigns a tvdbId — so a tvdb:-keyed row's
+// own media_id is not a tmdbId at all, and must never be treated as one (that mistake is what
+// broke #75 handoff for approved TV requests).
+//
+// The sibling tmdb:-keyed row can't be found via overseerr_request_id: handleGateApprove's
+// second upsertRequest call (the one that keeps that row in sync) deliberately passes a null
+// request id, because overseerr_request_id is UNIQUE and the tvdb:-keyed row already claims the
+// real one. Both rows are written back-to-back from the same `pending` object, so
+// (requested_by_discord_id, media_type, is_4k, title) is what's actually shared and reliable —
+// unlike a shared request id, which was never true in the first place.
 function resolveTmdbId(row) {
   if (row.media_id.startsWith('tmdb:')) return Number(row.media_id.split(':')[1]);
-  if (row.overseerr_request_id != null) {
-    const sibling = db.prepare("SELECT media_id FROM requests WHERE overseerr_request_id = ? AND media_id LIKE 'tmdb:%' LIMIT 1").get(row.overseerr_request_id);
-    if (sibling) return Number(sibling.media_id.split(':')[1]);
-  }
-  return null;
+  const sibling = db.prepare(`
+    SELECT media_id FROM requests
+    WHERE media_id LIKE 'tmdb:%' AND media_type = ? AND is_4k = ? AND title = ?
+      AND requested_by_discord_id IS ?
+    ORDER BY id DESC LIMIT 1
+  `).get(row.media_type, row.is_4k, row.title, row.requested_by_discord_id);
+  return sibling ? Number(sibling.media_id.split(':')[1]) : null;
 }
 
 // Pending onboarding is mirrored in app_settings (pending_email:<discordId>) so it survives
@@ -322,6 +339,11 @@ async function handleGateApprove(interaction, nonce, { azPreAuth }) {
   const pending = takePendingRequest(nonce);
   if (!pending) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
   await interaction.deferUpdate();
+  // Quota can drift between /request and this click — another of the requester's own gated
+  // requests may have been approved in the meantime, or the quota period may have reset. This
+  // doesn't block the click (an admin knowingly approving stays trivial, same as elsewhere in
+  // this gate), but it does make the drift visible instead of silently ignoring it.
+  const quotaWarning = await quotaBlockReason(pending.seerrUserId, pending.discordId, pending.mediaType, { tmdbId: pending.tmdbId, is4k: pending.is4k }).catch(() => null);
   try {
     const data = await createSeerrRequestAs(pending.seerrUserId, pending.mediaType, pending.tmdbId, pending.is4k);
     const mediaKey = pending.mediaType === 'tv' && data?.media?.tvdbId ? `tvdb:${data.media.tvdbId}` : `tmdb:${pending.tmdbId}`;
@@ -355,13 +377,13 @@ async function handleGateApprove(interaction, nonce, { azPreAuth }) {
       }
     }
     bumpTrustScore(pending.discordId, 1);
-    audit('request_approved_gate', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label, requestId: data?.id ?? null, azPreAuth });
+    audit('request_approved_gate', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label, requestId: data?.id ?? null, azPreAuth, overQuota: !!quotaWarning });
     await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Request Approved`)
       .setDescription(`**${pending.label}** was approved and is being grabbed now. You'll get a DM when it's on Plex! 🍿`)] });
     return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`✅ Approved — ${pending.label}`)
-      .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}> — sent to Seerr${data?.id != null ? ` (request #${data.id})` : ''}.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(pending.mediaType)}.` : ''}`)], components: [] });
+      .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}> — sent to Seerr${data?.id != null ? ` (request #${data.id})` : ''}.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(pending.mediaType)}.` : ''}${quotaWarning ? `\n⚠️ Note: <@${pending.discordId}> is over quota as of this approval — ${quotaWarning.replace(/^❌\s*/, '')}` : ''}`)], components: [] });
   } catch (err) {
     const status = err.response?.status;
     const seerrMessage = err.response?.data?.message;
@@ -3013,8 +3035,18 @@ async function reconcilePlexMemberRoles() {
   // invited/overseerr_created flags — those only record that an invite was *sent* at some point,
   // not whether it was ever accepted, and they don't move if access is later revoked outside the
   // bot's own flows (directly in Plex, say). This is the same friends fetch /sync uses.
-  const token = await getPlexToken();
-  const friendsData = await plexApiGet('/api/v2/friends', token).catch(() => []);
+  //
+  // A failed fetch must abort the whole reconciliation rather than fall back to an empty list —
+  // an empty friends list looks identical to "everyone lost access," which would revoke the role
+  // from every current holder on a transient Plex API outage.
+  let friendsData;
+  try {
+    const token = await getPlexToken();
+    friendsData = await plexApiGet('/api/v2/friends', token);
+  } catch (err) {
+    log.warn(`Role reconcile aborted — couldn't fetch the Plex friends list: ${err.message}`);
+    return { granted: 0, revoked: 0 };
+  }
   const friends = Array.isArray(friendsData) ? friendsData : (friendsData.data || []);
   const shouldHave = new Set();
   for (const friend of friends) {
