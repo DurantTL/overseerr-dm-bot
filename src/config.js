@@ -284,6 +284,10 @@ const CONFIG = {
   BACKUP_KEEP_COUNT: Number.parseInt(process.env.BACKUP_KEEP_COUNT || '14', 10),
   REQUEST_SUBSCRIBER_RETENTION_DAYS: Number.parseInt(process.env.REQUEST_SUBSCRIBER_RETENTION_DAYS || '180', 10),
   PLEX_MEMBER_ROLE_ID: process.env.PLEX_MEMBER_ROLE_ID || null,
+  WHATS_NEW_ENABLED: parseBool(process.env.WHATS_NEW_ENABLED, false),
+  WHATS_NEW_CHANNEL_ID: process.env.WHATS_NEW_CHANNEL_ID || null,
+  // Multiple seasons of the same show becoming available close together collapse into one post.
+  WHATS_NEW_GROUP_WINDOW_HOURS: Number.parseInt(process.env.WHATS_NEW_GROUP_WINDOW_HOURS || '20', 10),
   NEVER_DELETE_MEDIA_IDS: process.env.NEVER_DELETE_MEDIA_IDS ? process.env.NEVER_DELETE_MEDIA_IDS.split(',').map(s => s.trim()) : [],
 };
 

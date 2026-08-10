@@ -127,6 +127,7 @@ function channelFor(kind) {
     cleanup: CONFIG.CLEANUP_CHANNEL_ID,
     audit: CONFIG.AUDIT_CHANNEL_ID,
     deploy: CONFIG.DEPLOY_CHANNEL_ID || null,
+    whats_new: CONFIG.WHATS_NEW_CHANNEL_ID,
   };
   const configured = Object.prototype.hasOwnProperty.call(map, kind) ? map[kind] : undefined;
   if (kind === 'deploy') return configured;
@@ -2010,6 +2011,14 @@ async function janitorSweep() {
     if (pruned) log.info(`Pruned ${pruned} stale request-subscriber row(s) older than ${CONFIG.REQUEST_SUBSCRIBER_RETENTION_DAYS} days`);
   } catch (err) {
     log.warn(`Request-subscriber prune sweep failed: ${err.message}`);
+  }
+  if (CONFIG.WHATS_NEW_ENABLED) {
+    try {
+      const pruned = db.prepare("DELETE FROM app_settings WHERE key LIKE 'whats_new_posted:%' AND updated_at < datetime('now', '-30 days')").run().changes;
+      if (pruned) log.info(`Pruned ${pruned} old whats-new dedupe flag(s)`);
+    } catch (err) {
+      log.warn(`Whats-new flag prune sweep failed: ${err.message}`);
+    }
   }
 }
 
@@ -6801,6 +6810,24 @@ async function handleOverseerrWebhook(body) {
       }
     }
     clearRequestSubscribers(subscriberKey);
+  }
+
+  // "What's new" — the bot receives every MEDIA_AVAILABLE event already; post it somewhere the
+  // whole community sees it instead of only DMing the requester(s). Keyed by mediaId (stable
+  // across seasons) rather than title text, so a show that lands in a few separate season drops
+  // within WHATS_NEW_GROUP_WINDOW_HOURS collapses into one post instead of one per season.
+  if (CONFIG.WHATS_NEW_ENABLED && notification_type === 'MEDIA_AVAILABLE') {
+    const lastPostKey = `whats_new_posted:${mediaId}`;
+    const last = Number(getSetting(lastPostKey) || '0');
+    if (Date.now() - last >= CONFIG.WHATS_NEW_GROUP_WINDOW_HOURS * 3600000) {
+      setSetting(lastPostKey, String(Date.now()));
+      const embed = brandedEmbed(COLORS.SUCCESS)
+        .setTitle(`${mediaTypeEmoji(media.media_type, is4k)} New on Plex`)
+        .setDescription(`**${title}** just landed${is4k ? ' in 4K' : ''} — go watch it! 🍿`);
+      if (poster) embed.setImage(poster);
+      notifyChannel('whats_new', { embeds: [embed] });
+      audit('whats_new_posted', { mediaId, title, is4k });
+    }
   }
 }
 
