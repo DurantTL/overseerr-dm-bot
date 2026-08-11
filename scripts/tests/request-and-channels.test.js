@@ -9,7 +9,7 @@ const { loadSandbox } = require('./extract');
 
 const settingsStore = new Map();
 const sandbox = loadSandbox(
-  ['canonicalizeEmail', 'searchSeerr', 'checkExistingSeerrMedia', 'createSeerrRequestAs', 'verifySeerrRequestCreated', 'resolveSeerrUserId', 'fetchOverseerrUsers', 'channelFor', 'configWarnings', 'describeSession', 'stashPendingRequest', 'takePendingRequest', 'restashPendingRequest'],
+  ['canonicalizeEmail', 'searchSeerr', 'checkExistingSeerrMedia', 'createSeerrRequestAs', 'verifySeerrRequestCreated', 'resolveSeerrUserId', 'fetchOverseerrUsers', 'channelFor', 'configWarnings', 'describeSession', 'stashPendingRequest', 'takePendingRequest', 'restashPendingRequest', 'isPlaceholder', 'placeholderMarker', 'withoutPlaceholders'],
   {
     axios,
     crypto: require('crypto'),

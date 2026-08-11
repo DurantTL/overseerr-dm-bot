@@ -17,6 +17,41 @@ function parseId(v) {
   return String(v).trim().replace(/^['"]|['"]$/g, '').trim();
 }
 
+// Returns the marker name a value matched, or null. Blank values are not placeholders — they're
+// already handled as "unset" everywhere. Patterns are declared inline (rather than as a shared
+// module-level const) so this function stays self-contained for the vm-sandbox test harness,
+// which extracts individual functions by source text.
+//
+// Known shapes of "the .env.example placeholder was never edited" — distinctive enough that a
+// real value is very unlikely to collide with them by accident (see issue #122: several of these
+// don't fail loudly, they quietly change routing/alerting behavior instead). Deliberately excludes
+// anything that could plausibly be someone's real, if generic, server/remote name — bounded,
+// anchored patterns only, never a bare substring a real value could innocently contain.
+function placeholderMarker(value) {
+  const v = String(value == null ? '' : value).trim();
+  if (!v) return null;
+  const patterns = [
+    { marker: 'CHANGEME', test: s => /changeme/i.test(s) },
+    { marker: 'your-', test: s => /(^|[^a-z0-9])your-/i.test(s) },
+    { marker: '-name-or-machine-id', test: s => /-name-or-machine-id$/i.test(s) },
+    { marker: 'path-on-', test: s => /path-on-/i.test(s) },
+    { marker: 'example.com', test: s => /example\.com/i.test(s) },
+    { marker: '<...>', test: s => /^<.*>$/.test(s) },
+  ];
+  const hit = patterns.find(p => p.test(v));
+  return hit ? hit.marker : null;
+}
+
+function isPlaceholder(value) {
+  return placeholderMarker(value) !== null;
+}
+
+// Drops placeholder entries from an identity/routing list so a leftover example value can never
+// be obeyed as if it were real — the safe direction is to fail open to "unconfigured".
+function withoutPlaceholders(list) {
+  return (list || []).filter(v => !isPlaceholder(v));
+}
+
 const CONFIG = {
   // Logging: level filters what gets emitted (debug < info < warn < error); format switches
   // between the human-readable default and single-line JSON for log shippers (Loki/ELK/CloudWatch).
@@ -334,11 +369,14 @@ function validateConfig() {
   if (CONFIG.ENABLE_DELETION && !CONFIG.DELETION_DRY_RUN && (!CONFIG.WEBHOOK_SECRET || !CONFIG.TAUTULLI_WEBHOOK_SECRET)) {
     throw new Error('Live deletion requires both WEBHOOK_SECRET and TAUTULLI_WEBHOOK_SECRET; unauthenticated playback webhooks must never arm destructive actions');
   }
-  if (CONFIG.ENABLE_DELETION && !CONFIG.DELETION_DRY_RUN && (CONFIG.PH_SERVER_NAMES.length || CONFIG.CA_EDGE_SERVER_NAMES.length) && !CONFIG.PRIMARY_SERVER_NAMES.length) {
+  const realPhNames = withoutPlaceholders(CONFIG.PH_SERVER_NAMES);
+  const realCaEdgeNames = withoutPlaceholders(CONFIG.CA_EDGE_SERVER_NAMES);
+  const realPrimaryNames = withoutPlaceholders(CONFIG.PRIMARY_SERVER_NAMES);
+  if (CONFIG.ENABLE_DELETION && !CONFIG.DELETION_DRY_RUN && (realPhNames.length || realCaEdgeNames.length) && !realPrimaryNames.length) {
     throw new Error('Live deletion with edge servers requires PRIMARY_SERVER_NAMES so only explicitly identified full Main servers can arm deletion');
   }
   if (CONFIG.ENABLE_DELETION && !CONFIG.DELETION_DRY_RUN) {
-    const identities = [...CONFIG.PH_SERVER_NAMES, ...CONFIG.CA_EDGE_SERVER_NAMES, ...CONFIG.PRIMARY_SERVER_NAMES];
+    const identities = [...realPhNames, ...realCaEdgeNames, ...realPrimaryNames];
     const duplicate = identities.find((id, index) => identities.indexOf(id) !== index);
     if (duplicate) throw new Error(`Live deletion refuses overlapping server identity '${duplicate}'; PH_SERVER_NAMES, CA_EDGE_SERVER_NAMES, and PRIMARY_SERVER_NAMES must be disjoint`);
   }
@@ -400,19 +438,42 @@ function configWarnings() {
   if (!['approve', 'auto'].includes(CONFIG.GRAB_MODE)) {
     warnings.push(`\`GRAB_MODE=${CONFIG.GRAB_MODE}\` is not a valid mode (use \`approve\` or \`auto\`) — treating it as \`approve\`.`);
   }
+  // A placeholder left in a load-bearing key doesn't fail — it silently changes routing or fires
+  // alerts against a domain that doesn't exist (issue #122). Name the key, the value, and exactly
+  // what obeying it would have done, then treat it as unset everywhere below.
+  const realPhNames = withoutPlaceholders(CONFIG.PH_SERVER_NAMES);
+  const realCaEdgeNames = withoutPlaceholders(CONFIG.CA_EDGE_SERVER_NAMES);
+  const realPrimaryNames = withoutPlaceholders(CONFIG.PRIMARY_SERVER_NAMES);
+  const identityConsequence = {
+    PH_SERVER_NAMES: 'would have armed the identity fail-safe (webhooks with no server identity get dropped) without ever actually matching the Philippines box',
+    CA_EDGE_SERVER_NAMES: 'would have armed the identity fail-safe (webhooks with no server identity get dropped) without ever actually matching the California edge node',
+    PRIMARY_SERVER_NAMES: 'would have narrowed which servers count as full Main storage without ever actually matching one',
+  };
+  for (const [key, list] of [['PH_SERVER_NAMES', CONFIG.PH_SERVER_NAMES], ['CA_EDGE_SERVER_NAMES', CONFIG.CA_EDGE_SERVER_NAMES], ['PRIMARY_SERVER_NAMES', CONFIG.PRIMARY_SERVER_NAMES]]) {
+    for (const value of list) {
+      const marker = placeholderMarker(value);
+      if (marker) warnings.push(`\`${key}\` contains \`${value}\` — that looks like an unedited placeholder (matches \`${marker}\`), so it's being ignored as if unset: it ${identityConsequence[key]}.`);
+    }
+  }
+  if (isPlaceholder(CONFIG.PH_TUNNEL_HEALTH_URL)) {
+    warnings.push(`\`PH_TUNNEL_HEALTH_URL=${CONFIG.PH_TUNNEL_HEALTH_URL}\` looks like an unedited placeholder (matches \`${placeholderMarker(CONFIG.PH_TUNNEL_HEALTH_URL)}\`) — ignoring it: obeying it would poll a domain that doesn't exist every few minutes and eventually post a false "PH tunnel down" alert. The watchdog is disabled until a real URL is set.`);
+  }
+  if (isPlaceholder(CONFIG.STAGE_RCLONE_REMOTE)) {
+    warnings.push(`\`STAGE_RCLONE_REMOTE=${CONFIG.STAGE_RCLONE_REMOTE}\` looks like an unedited placeholder (matches \`${placeholderMarker(CONFIG.STAGE_RCLONE_REMOTE)}\`) — \`/stage\` will fail every copy until it's set to a real rclone remote.`);
+  }
   if (CONFIG.STAGING_ENABLED && !CONFIG.STAGE_RCLONE_REMOTE) {
     warnings.push('`STAGING_ENABLED=true` but `STAGE_RCLONE_REMOTE` is unset — `/stage` can never copy anything to the cache box.');
   }
-  if (CONFIG.STAGING_ENABLED && !CONFIG.PH_SERVER_NAMES.length) {
+  if (CONFIG.STAGING_ENABLED && !realPhNames.length) {
     warnings.push('`STAGING_ENABLED=true` but `PH_SERVER_NAMES` is unset — webhook events from the cache box are indistinguishable from the master, so a PH viewer finishing a movie could trigger a **delete prompt against the master library**. Set it before the box goes live.');
   }
-  if (CONFIG.PH_SERVER_NAMES.length || CONFIG.CA_EDGE_SERVER_NAMES.length) {
+  if (realPhNames.length || realCaEdgeNames.length) {
     warnings.push('An edge identity list is set: Tautulli/Plex webhook payloads that carry **no** server identity are now skipped as a fail-safe. Make sure every Tautulli notification payload includes `server_name`/`machine_id` or the finished-watching prompts stop firing.');
   }
   const lists = [
-    ['PH_SERVER_NAMES', CONFIG.PH_SERVER_NAMES],
-    ['CA_EDGE_SERVER_NAMES', CONFIG.CA_EDGE_SERVER_NAMES],
-    ['PRIMARY_SERVER_NAMES', CONFIG.PRIMARY_SERVER_NAMES],
+    ['PH_SERVER_NAMES', realPhNames],
+    ['CA_EDGE_SERVER_NAMES', realCaEdgeNames],
+    ['PRIMARY_SERVER_NAMES', realPrimaryNames],
   ];
   const overlaps = [];
   for (let i = 0; i < lists.length; i++) {
@@ -427,4 +488,4 @@ function configWarnings() {
   return warnings;
 }
 
-module.exports = { parseBool, parseId, CONFIG, REQUIRED_ENV, validateConfig, configWarnings };
+module.exports = { parseBool, parseId, isPlaceholder, placeholderMarker, withoutPlaceholders, CONFIG, REQUIRED_ENV, validateConfig, configWarnings };

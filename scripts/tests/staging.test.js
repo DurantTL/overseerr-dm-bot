@@ -10,7 +10,7 @@ const path = require('path');
 const { loadSandbox } = require('./extract');
 
 const GB = 1024 ** 3;
-const sb = loadSandbox(['classifyServerIdentity', 'evictionOrder', 'planCacheSpace', 'planPlayPromotion'], {});
+const sb = loadSandbox(['classifyServerIdentity', 'evictionOrder', 'planCacheSpace', 'planPlayPromotion', 'isPlaceholder', 'placeholderMarker'], {});
 
 test('staging: classifyServerIdentity', () => {
   const classify = (ids, cfg) => sb.run(`classifyServerIdentity(${JSON.stringify(ids)}, ${JSON.stringify(cfg)})`);
@@ -30,6 +30,15 @@ test('staging: classifyServerIdentity', () => {
   assert.strictEqual(classify({ machineId: 'california-cache' }, both), 'ca-edge', 'California machine id matches too');
   assert.strictEqual(classify({ serverName: 'neighbors-server' }, both), 'unknown', 'strict mode: unrecognized name → unknown');
   assert.strictEqual(classify({ serverName: 'ph-box', machineId: 'zzz' }, both), 'ph', 'PH wins when either id matches');
+
+  // Issue #122: an unedited .env.example placeholder left in an identity list must never arm the
+  // fail-safe — it's treated as if the list were empty, not as a real (never-matching) identity.
+  const placeholderOnly = { phNames: ['philippines-plex-name-or-machine-id'], caEdgeNames: [], primaryNames: [] };
+  assert.strictEqual(classify({ serverName: 'anything' }, placeholderOnly), 'primary', 'placeholder-only PH list behaves as unset, not as a fail-safe trigger');
+  assert.strictEqual(classify({}, placeholderOnly), 'primary', 'placeholder-only PH list: no identity in payload still resolves primary, not unknown');
+  const mixedList = { phNames: ['philippines-plex-name-or-machine-id', 'real-ph-box'], caEdgeNames: ['california-cache'], primaryNames: ['durant-master'] };
+  assert.strictEqual(classify({ serverName: 'real-ph-box' }, mixedList), 'ph', 'a real entry alongside a placeholder still matches');
+  assert.strictEqual(classify({ serverName: 'philippines-plex-name-or-machine-id' }, mixedList), 'unknown', 'the literal placeholder string is never treated as a matchable identity');
 });
 
 test('staging: evictionOrder (unpinned only, least-recently-streamed first)', () => {
@@ -96,7 +105,7 @@ test('staging: planPlayPromotion (play-triggered promotion decision, PH pilot)',
 });
 
 test('staging: serversForHomeServer (PH users get the PH box only, primary users everything else)', () => {
-  const plexSb = loadSandbox(['serversForHomeServer'], {
+  const plexSb = loadSandbox(['serversForHomeServer', 'isPlaceholder', 'placeholderMarker'], {
     CONFIG: { PH_SERVER_NAMES: ['ph-box'] },
   });
   const servers = [

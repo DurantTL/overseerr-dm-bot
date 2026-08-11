@@ -25,7 +25,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const { log } = require('./src/log');
-const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
+const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings, isPlaceholder } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
 const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, deleteSetting, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
@@ -2674,7 +2674,7 @@ client.once('ready', async () => {
     }
     log.ok(`Plex Home staging enabled → ${CONFIG.STAGE_RCLONE_REMOTE} (queue check every ${CONFIG.STAGE_CHECK_MINUTES} min, min free ${CONFIG.STAGE_MIN_FREE_GB} GB)`);
   }
-  if (CONFIG.PH_TUNNEL_HEALTH_URL && CONFIG.PH_TUNNEL_CHECK_MINUTES > 0) {
+  if (CONFIG.PH_TUNNEL_HEALTH_URL && !isPlaceholder(CONFIG.PH_TUNNEL_HEALTH_URL) && CONFIG.PH_TUNNEL_CHECK_MINUTES > 0) {
     setInterval(() => sweepTunnelHealth().catch(err => log.warn(`Tunnel health sweep failed: ${err.message}`)), CONFIG.PH_TUNNEL_CHECK_MINUTES * 60000).unref();
     log.ok(`PH tunnel watchdog running every ${CONFIG.PH_TUNNEL_CHECK_MINUTES} min (alert after ${CONFIG.PH_TUNNEL_FAILS_BEFORE_ALERT} failures)`);
   }
@@ -3538,7 +3538,7 @@ async function handleStatusCommand(interaction) {
       `🎞️ Staged: ${stagedItems.length} title(s) (${stagedItems.filter(i => i.pinned).length} pinned)`,
       copying ? `📥 Copying: **${copying.title}**${jobs.length > 1 ? ` (+${jobs.length - 1} queued)` : ''}` : `📥 Stage queue: ${jobs.length ? `${jobs.length} queued` : 'idle'}`,
     ];
-    if (CONFIG.PH_TUNNEL_HEALTH_URL) {
+    if (CONFIG.PH_TUNNEL_HEALTH_URL && !isPlaceholder(CONFIG.PH_TUNNEL_HEALTH_URL)) {
       const tState = getSetting('ph_tunnel_state') || 'unknown';
       const tSince = Number(getSetting('ph_tunnel_since') || '0');
       lines.push(`🛰️ Tunnel: ${tState === 'up' ? '✅ up' : tState === 'down' ? '❌ down' : '❔ not checked yet'}${tSince ? ` since ${discordTimestamp(tSince)}` : ''}`);
@@ -5073,7 +5073,7 @@ async function handleStagedCommand(interaction) {
       { name: `Warm (${items.length})`, value: items.length ? items.sort((a, b) => (b.pinned - a.pinned) || (b.staged_at || 0) - (a.staged_at || 0)).map(itemLine).join('\n').slice(0, 1024) : 'Nothing staged yet — `/stage` a title.', inline: false },
       { name: `Staging queue (${jobs.length})`, value: jobs.length ? jobs.map(jobLine).join('\n').slice(0, 1024) : 'Idle.', inline: false },
     );
-  if (CONFIG.PH_TUNNEL_HEALTH_URL) {
+  if (CONFIG.PH_TUNNEL_HEALTH_URL && !isPlaceholder(CONFIG.PH_TUNNEL_HEALTH_URL)) {
     const state = getSetting('ph_tunnel_state') || 'unknown';
     const since = Number(getSetting('ph_tunnel_since') || '0');
     embed.addFields({ name: 'Tunnel', value: `${state === 'up' ? '✅ up' : state === 'down' ? '❌ down' : '❔ not checked yet'}${since ? ` since ${discordTimestamp(since)}` : ''}`, inline: false });

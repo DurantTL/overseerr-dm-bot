@@ -3,7 +3,7 @@
 const fs = require('fs');
 const { spawn } = require('child_process');
 const axios = require('axios');
-const { CONFIG } = require('./config');
+const { CONFIG, isPlaceholder } = require('./config');
 
 function run(command, args, timeoutMs = 15000) {
   return new Promise(resolve => {
@@ -25,14 +25,19 @@ function check(name, status, detail) { return { name, status, detail }; }
 
 async function runEdgeDiagnostics({ live = true } = {}) {
   const checks = [];
+  // Placeholder identities count as empty here too — reporting them as "configured" would hide
+  // exactly the misconfiguration this command exists to catch (issue #122).
+  const phNames = CONFIG.PH_SERVER_NAMES.filter(v => !isPlaceholder(v));
+  const caEdgeNames = CONFIG.CA_EDGE_SERVER_NAMES.filter(v => !isPlaceholder(v));
+  const primaryNames = CONFIG.PRIMARY_SERVER_NAMES.filter(v => !isPlaceholder(v));
   checks.push(check('Staging switch', CONFIG.STAGING_ENABLED ? 'ok' : 'warn', CONFIG.STAGING_ENABLED ? 'enabled' : 'disabled'));
-  checks.push(check('Philippines identity', CONFIG.PH_SERVER_NAMES.length ? 'ok' : 'fail', CONFIG.PH_SERVER_NAMES.length ? `${CONFIG.PH_SERVER_NAMES.length} server identity value(s)` : 'PH_SERVER_NAMES is empty'));
-  checks.push(check('California edge identity', CONFIG.CA_EDGE_SERVER_NAMES.length ? 'ok' : 'warn', CONFIG.CA_EDGE_SERVER_NAMES.length ? `${CONFIG.CA_EDGE_SERVER_NAMES.length} server identity value(s)` : 'CA_EDGE_SERVER_NAMES is empty; California playback cannot be isolated from full Main storage'));
-  checks.push(check('Full Main identity', CONFIG.PRIMARY_SERVER_NAMES.length ? 'ok' : 'warn', CONFIG.PRIMARY_SERVER_NAMES.length ? `${CONFIG.PRIMARY_SERVER_NAMES.length} server identity value(s)` : 'PRIMARY_SERVER_NAMES is empty; any named non-edge server is treated as full Main storage'));
+  checks.push(check('Philippines identity', phNames.length ? 'ok' : 'fail', phNames.length ? `${phNames.length} server identity value(s)` : 'PH_SERVER_NAMES is empty (or only placeholder values)'));
+  checks.push(check('California edge identity', caEdgeNames.length ? 'ok' : 'warn', caEdgeNames.length ? `${caEdgeNames.length} server identity value(s)` : 'CA_EDGE_SERVER_NAMES is empty (or only placeholder values); California playback cannot be isolated from full Main storage'));
+  checks.push(check('Full Main identity', primaryNames.length ? 'ok' : 'warn', primaryNames.length ? `${primaryNames.length} server identity value(s)` : 'PRIMARY_SERVER_NAMES is empty (or only placeholder values); any named non-edge server is treated as full Main storage'));
   const all = [
-    ['Philippines', CONFIG.PH_SERVER_NAMES],
-    ['California edge', CONFIG.CA_EDGE_SERVER_NAMES],
-    ['full Main', CONFIG.PRIMARY_SERVER_NAMES],
+    ['Philippines', phNames],
+    ['California edge', caEdgeNames],
+    ['full Main', primaryNames],
   ];
   const overlap = [];
   for (let i = 0; i < all.length; i++) {
@@ -92,8 +97,8 @@ async function runEdgeDiagnostics({ live = true } = {}) {
     }
   }
 
-  if (!CONFIG.PH_TUNNEL_HEALTH_URL) {
-    checks.push(check('Philippines tunnel', 'warn', 'PH_TUNNEL_HEALTH_URL is empty'));
+  if (!CONFIG.PH_TUNNEL_HEALTH_URL || isPlaceholder(CONFIG.PH_TUNNEL_HEALTH_URL)) {
+    checks.push(check('Philippines tunnel', 'warn', isPlaceholder(CONFIG.PH_TUNNEL_HEALTH_URL) ? 'PH_TUNNEL_HEALTH_URL is an unedited placeholder value; treated as empty' : 'PH_TUNNEL_HEALTH_URL is empty'));
   } else {
     const tunnel = await axios.get(CONFIG.PH_TUNNEL_HEALTH_URL, { timeout: 10000, validateStatus: () => true })
       .then(res => ({ ok: true, status: res.status }))
