@@ -26,8 +26,9 @@ const crypto = require('crypto');
 
 const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
+const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, deleteSetting, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
@@ -40,7 +41,7 @@ const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = requi
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
-const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderTable } = require('./src/dashboard-render');
+const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable } = require('./src/dashboard-render');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, parseReleaseName, seriesToken, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
 const { runBackup, rotateBackups } = require('./scripts/backup-db');
@@ -118,6 +119,26 @@ function readCookie(req, name) {
 // isn't configured, so single-channel deployments behave exactly as before. Exception: 'deploy'
 // never falls back — a bot-online ping on every Watchtower restart would spam the admin channel.
 // 'playback' is reserved for future Tautulli now-playing alerts (nothing emits to it yet).
+// Automation knobs that the dashboard can override at runtime (see src/runtime-settings.js).
+// Read through this at the point of use, never cached at boot — a value captured in a closure
+// would ignore every override until the next restart.
+const settingsStore = { get: getSetting, set: setSetting, del: deleteSetting };
+const tunable = key => runtimeSettings.resolveRuntime(key, { config: CONFIG, store: settingsStore });
+
+// A sweep whose cadence and on/off state are runtime-tunable. setInterval is wrong for these:
+// its period is fixed when it is created, so a cadence changed from the dashboard would not take
+// effect until the process restarted, and a sweep whose env value was 0 at boot would never exist
+// to be re-enabled at all. This re-reads both on every tick instead. While paused (interval 0, or
+// `enabled` false) it keeps waking once a minute purely to notice being switched back on.
+function scheduleTunableSweep({ label, minutesKey, enabledKey, fn, firstRunDelayMs }) {
+  const paused = () => (enabledKey && !tunable(enabledKey)) || tunable(minutesKey) <= 0;
+  const tick = () => {
+    if (!paused()) Promise.resolve().then(fn).catch(err => log.warn(`${label} failed: ${err.message}`));
+    setTimeout(tick, (paused() ? 1 : tunable(minutesKey)) * 60000).unref();
+  };
+  setTimeout(tick, firstRunDelayMs ?? (paused() ? 60000 : tunable(minutesKey) * 60000)).unref();
+}
+
 function channelFor(kind) {
   const map = {
     requests: CONFIG.REQUESTS_CHANNEL_ID,
@@ -324,7 +345,7 @@ function markApprovalNoticePosted(requestId) {
 const plexGateInFlight = new Set();
 
 // "45m" / "1h 30m" — the escalation delay as shown in embeds and logs.
-const escalationDelayLabel = () => fmtDuration(CONFIG.ESCALATION_DELAY_MINUTES * 60000);
+const escalationDelayLabel = () => fmtDuration(tunable('ESCALATION_DELAY_MINUTES') * 60000);
 
 // What pre-authorization actually buys, per media type — auto-escalation is narrower than the
 // flag (see autoEscalateAllowed in src/escalation.js), so the approval embeds have to promise
@@ -336,7 +357,7 @@ const preAuthOutcomeLabel = mediaType => (mediaType === 'tv'
 // Whether this request could be escalated to AvistaZ (feature on, right media type, arr present).
 function canEscalate({ mediaType, is4k }) {
   return escalationEligible({ mediaType, is4k }, {
-    enabled: CONFIG.ESCALATION_ENABLED,
+    enabled: tunable('ESCALATION_ENABLED'),
     radarrConfigured: !!CONFIG.RADARR_URL,
     sonarrConfigured: !!CONFIG.SONARR_URL,
   });
@@ -539,7 +560,7 @@ function buildStuckAlert(group) {
 async function sweepStuckDownloads() {
   const items = await fetchArrQueues();
   const now = Date.now();
-  const stuck = detectStuckItems(items, stuckTracker, { stuckAfterMs: CONFIG.STUCK_AFTER_MINUTES * 60000, now });
+  const stuck = detectStuckItems(items, stuckTracker, { stuckAfterMs: tunable('STUCK_AFTER_MINUTES') * 60000, now });
   const groups = groupStuckItems(stuck);
 
   // Group keys for everything currently in the queue (not just the stuck ones) — used to prune
@@ -549,7 +570,7 @@ async function sweepStuckDownloads() {
 
   for (const [gk, group] of groups) {
     if (getSetting(`stuck_ignore:${gk}`)) continue;
-    if (now - (stuckAlerted.get(gk) || 0) < CONFIG.STUCK_ALERT_COOLDOWN_HOURS * 3600000) continue;
+    if (now - (stuckAlerted.get(gk) || 0) < tunable('STUCK_ALERT_COOLDOWN_HOURS') * 3600000) continue;
     stuckAlerted.set(gk, now);
     const { embed, row } = buildStuckAlert(group);
     notifyChannel('downloads', { embeds: [embed], components: [row] });
@@ -660,7 +681,7 @@ async function sweepEscalations() {
   const rows = getWatchingEscalations();
   if (!rows.length) return;
   const queue = await fetchArrQueues();
-  const cfg = { delayMinutes: CONFIG.ESCALATION_DELAY_MINUTES, maxAgeDays: CONFIG.ESCALATION_MAX_AGE_DAYS, arrGraceMinutes: CONFIG.ESCALATION_ARR_GRACE_MINUTES };
+  const cfg = { delayMinutes: tunable('ESCALATION_DELAY_MINUTES'), maxAgeDays: tunable('ESCALATION_MAX_AGE_DAYS'), arrGraceMinutes: CONFIG.ESCALATION_ARR_GRACE_MINUTES };
   for (const row of rows) {
     const facts = await gatherEscalationFacts(row, queue);
     // Whether AvistaZ could plausibly have this title gates auto-escalation (and colours the
@@ -769,10 +790,10 @@ async function sweepEscalations() {
 // airing are skipped entirely — no pack exists for a season that's still going out weekly.
 function seasonPackConfig() {
   return {
-    dormantDays: CONFIG.SEASON_PACK_DORMANT_DAYS,
-    minMissing: CONFIG.SEASON_PACK_MIN_MISSING,
+    dormantDays: tunable('SEASON_PACK_DORMANT_DAYS'),
+    minMissing: tunable('SEASON_PACK_MIN_MISSING'),
     cooldownHours: CONFIG.SEASON_PACK_COOLDOWN_HOURS,
-    includeRequested: CONFIG.SEASON_PACK_REQUESTED,
+    includeRequested: tunable('SEASON_PACK_REQUESTED'),
   };
 }
 
@@ -782,16 +803,16 @@ function queuedSeasons(queue, seriesId) {
 }
 
 async function sweepSeasonPacks() {
-  if (!CONFIG.SEASON_PACK_FIRST || !CONFIG.SONARR_URL) return;
+  if (!tunable('SEASON_PACK_FIRST') || !CONFIG.SONARR_URL) return;
   const cfg = seasonPackConfig();
   const now = Date.now();
   const [seriesList, queue] = await Promise.all([listSonarrSeries(), fetchArrQueues()]);
   // Shows somebody actually asked for get the pack treatment whatever their age — most releases
   // are "S01" packs regardless of how old the show is, and a requester is waiting on this one.
-  const requestedTvdbIds = CONFIG.SEASON_PACK_REQUESTED ? listRequestedTvdbIds() : new Set();
+  const requestedTvdbIds = tunable('SEASON_PACK_REQUESTED') ? listRequestedTvdbIds() : new Set();
   const searched = [];
   for (const series of seriesList) {
-    if (searched.length >= CONFIG.SEASON_PACK_MAX_PER_RUN) break;
+    if (searched.length >= tunable('SEASON_PACK_MAX_PER_RUN')) break;
     if (!series.monitored) continue;
     // Cheap pre-filters before spending an /episode call per series: a show that's complete has
     // no gaps to fill, and one that's neither old nor requested isn't eligible whatever its
@@ -812,7 +833,7 @@ async function sweepSeasonPacks() {
     }, now, cfg);
     if (!eligible) continue;
     for (const season of seasons) {
-      if (searched.length >= CONFIG.SEASON_PACK_MAX_PER_RUN) break;
+      if (searched.length >= tunable('SEASON_PACK_MAX_PER_RUN')) break;
       try {
         await triggerSeasonSearch(series.id, season.season);
       } catch (err) {
@@ -2555,13 +2576,15 @@ client.once('ready', async () => {
     setInterval(() => sweepRequestStatuses().catch(err => log.warn(`Request reconciliation failed: ${err.message}`)), CONFIG.REQUEST_RECONCILE_MINUTES * 60000).unref();
     log.ok(`Seerr request reconciliation running every ${CONFIG.REQUEST_RECONCILE_MINUTES} min`);
   }
-  if (CONFIG.STUCK_CHECK_MINUTES > 0 && arrSources().length) {
-    setInterval(() => sweepStuckDownloads().catch(err => log.warn(`Stuck-download sweep failed: ${err.message}`)), CONFIG.STUCK_CHECK_MINUTES * 60000).unref();
-    log.ok(`Stuck-download watchdog running every ${CONFIG.STUCK_CHECK_MINUTES} min (threshold ${CONFIG.STUCK_AFTER_MINUTES} min)`);
+  // The arr URLs are a static prerequisite (no arrs configured, nothing to watch); the cadence and
+  // thresholds are runtime-tunable, so the timer is armed either way and decides per tick.
+  if (arrSources().length) {
+    scheduleTunableSweep({ label: 'Stuck-download sweep', minutesKey: 'STUCK_CHECK_MINUTES', fn: sweepStuckDownloads });
+    log.ok(`Stuck-download watchdog every ${tunable('STUCK_CHECK_MINUTES')} min (threshold ${tunable('STUCK_AFTER_MINUTES')} min)`);
   }
-  if (CONFIG.ESCALATION_ENABLED && (CONFIG.RADARR_URL || CONFIG.SONARR_URL)) {
+  if (CONFIG.RADARR_URL || CONFIG.SONARR_URL) {
     // Non-fatal setup check: escalation fails with tag_missing until the AvistaZ tag exists.
-    verifyAvistazTags(CONFIG.AVISTAZ_TAG).then(missing => {
+    if (tunable('ESCALATION_ENABLED')) verifyAvistazTags(CONFIG.AVISTAZ_TAG).then(missing => {
       for (const w of missing) log.warn(`Config: ${w.replace(/`/g, '')}`);
       if (missing.length) {
         notifyChannel('system', { embeds: [brandedEmbed(COLORS.WARN)
@@ -2569,18 +2592,15 @@ client.once('ready', async () => {
           .setDescription(missing.map(w => `• ${w}`).join('\n').slice(0, 4000))] });
       }
     }).catch(err => log.warn(`AvistaZ tag check failed: ${err.message}`));
-    if (CONFIG.ESCALATION_CHECK_MINUTES > 0) {
-      setInterval(() => sweepEscalations().catch(err => log.warn(`Escalation sweep failed: ${err.message}`)), CONFIG.ESCALATION_CHECK_MINUTES * 60000).unref();
-      log.ok(`AvistaZ escalation watchdog running every ${CONFIG.ESCALATION_CHECK_MINUTES} min (delay ${escalationDelayLabel()}, tag '${CONFIG.AVISTAZ_TAG}')`);
-    }
+    scheduleTunableSweep({ label: 'Escalation sweep', minutesKey: 'ESCALATION_CHECK_MINUTES', enabledKey: 'ESCALATION_ENABLED', fn: sweepEscalations });
+    log.ok(`AvistaZ escalation watchdog every ${tunable('ESCALATION_CHECK_MINUTES')} min (delay ${escalationDelayLabel()}, tag '${CONFIG.AVISTAZ_TAG}')`);
   }
-  if (CONFIG.SEASON_PACK_FIRST && CONFIG.SONARR_URL && CONFIG.SEASON_PACK_CHECK_MINUTES > 0) {
-    const runSeasonPacks = () => sweepSeasonPacks().catch(err => log.warn(`Season-pack sweep failed: ${err.message}`));
+  if (CONFIG.SONARR_URL) {
     // A first pass shortly after boot, then on the interval — Sonarr needs a moment to settle
-    // after a restart, and the sweep is capped per run anyway.
-    setTimeout(runSeasonPacks, 120000).unref();
-    setInterval(runSeasonPacks, CONFIG.SEASON_PACK_CHECK_MINUTES * 60000).unref();
-    log.ok(`Season-pack-first search running every ${CONFIG.SEASON_PACK_CHECK_MINUTES} min (old = ended or ${CONFIG.SEASON_PACK_DORMANT_DAYS}d dormant, max ${CONFIG.SEASON_PACK_MAX_PER_RUN}/run)`);
+    // after a restart, and the sweep is capped per run anyway. sweepSeasonPacks() re-checks the
+    // SEASON_PACK_FIRST toggle itself, so a paused tick costs nothing.
+    scheduleTunableSweep({ label: 'Season-pack sweep', minutesKey: 'SEASON_PACK_CHECK_MINUTES', enabledKey: 'SEASON_PACK_FIRST', fn: sweepSeasonPacks, firstRunDelayMs: 120000 });
+    log.ok(`Season-pack-first search every ${tunable('SEASON_PACK_CHECK_MINUTES')} min (old = ended or ${tunable('SEASON_PACK_DORMANT_DAYS')}d dormant, max ${tunable('SEASON_PACK_MAX_PER_RUN')}/run)`);
   }
   if (grabConfigured()) {
     // A restart mid-transfer leaves 'transferring' rows behind; put them back in the queue
@@ -6943,7 +6963,9 @@ function startExpressServer() {
       const auditTableRows = auditRows.map(a => ({ when: fmtAgo(sqliteUtcMs(a.created_at)), action: a.action, details: String(a.metadata_json || '').slice(0, 160) }));
 
       const unavailable = which => `<p class="muted">${escapeHtml(which)} unreachable or not configured.</p>`;
-      const nav = [['now', 'Overview'], ['jobs', 'Operations'], ['tier', 'Edge'], ['disks', 'Storage'], ['users', 'People'], ['requests', 'Requests'], ['logs', 'Audit']];
+      const nav = [['overview', 'Overview'], ['operations', 'Operations'], ['automation', 'Automation'], ['edge', 'Edge'], ['people', 'People'], ['logs', 'Logs']];
+      const settingsGroups = runtimeSettings.describeRuntimeSettings({ config: CONFIG, store: settingsStore });
+      const overriddenCount = settingsGroups.reduce((n, g) => n + g.settings.filter(x => x.overridden).length, 0);
 
       const body = `
         <div class="overall ${health.overall === 'ok' ? 'ok' : 'warn'}">
@@ -6951,69 +6973,92 @@ function startExpressServer() {
           <span class="updated">updated ${new Date(now).toISOString().slice(11, 19)} UTC · auto-refreshes</span>
         </div>
         <div class="stats">${stats}</div>
-        <div class="card">
-          <h2>Integrations</h2>
-          <div class="badges">${renderHealthBadges(health)}</div>
-          ${Object.keys(health.errors || {}).length ? renderItemList(Object.entries(health.errors).map(([name, error]) => ({ state: 'down', title: name, sub: error })), '') : ''}
-        </div>
-        <div class="card" id="now">
-          <h2>▶️ Now Streaming</h2>
-          ${sessions === null ? unavailable('Tautulli') : renderItemList(nowPlayingItems, 'Nobody is streaming right now.')}
-        </div>
-        <div class="card">
-          <h2>⬇️ Downloading</h2>
-          ${queue === null ? unavailable('Radarr/Sonarr') : renderItemList(queueItems, 'Nothing in the download queues.')}
-        </div>
-        <div class="card" id="jobs">
-          <h2>⚙️ Active Jobs</h2>
-          ${renderItemList(jobItems, 'No seedbox grabs or staging copies running.')}
-        </div>
-        <div class="card">
-          <h2>👀 Watching / Scheduled</h2>
-          ${renderItemList(watchItems, 'No escalation watches or pending deletions.')}
-        </div>
-        <div class="card" id="tier">
-          <h2>📦 Tier Nodes</h2>
-          ${renderItemList(tierItems, 'No tier nodes registered — /tier-node add creates one.')}
-        </div>
-        <div class="card">
-          <h2>🩺 Edge Readiness</h2>
-          ${renderItemList(edgeChecks.map(c => ({ state: c.status === 'fail' ? 'down' : c.status, title: c.name, sub: c.detail })), 'No edge checks available.')}
-        </div>
-        <div class="card" id="disks">
-          <h2>💾 Disk Space</h2>
-          ${disks === null ? unavailable('*arr diskspace') : renderItemList(diskItems, 'No disks reported.')}
-        </div>
-        <div class="card">
-          <h2>Manual Actions</h2>
-          <div class="actions">
-            <a class="btn" href="/admin/health">Health JSON</a>
-            <a class="btn" href="/admin/doctor">Edge Doctor JSON</a>
-            <a class="btn" href="/admin/action/sync-preview">Sync Preview</a>
-            <a class="btn" href="/admin/action/cleanup-preview">Cleanup Preview</a>
-            <button class="btn danger" type="button" onclick="revokeAll()">Revoke All Download Links</button>
+
+        <section class="panel" data-panel="overview">
+          <div class="card">
+            <h2>Integrations</h2>
+            <div class="badges">${renderHealthBadges(health)}</div>
+            ${Object.keys(health.errors || {}).length ? renderItemList(Object.entries(health.errors).map(([name, error]) => ({ state: 'down', title: name, sub: error })), '') : ''}
           </div>
-        </div>
-        <div class="card" id="users">
-          <h2>Pending Plex Users</h2>
-          ${renderTable(plexUserRows)}
-        </div>
-        <div class="card">
-          <h2>Linked Users</h2>
-          ${renderTable(linkedRows)}
-        </div>
-        <div class="card" id="requests">
-          <h2>Recent Media Requests</h2>
-          ${renderTable(requestRows)}
-        </div>
-        <div class="card">
-          <h2>Recent Downloads</h2>
-          ${renderTable(downloadRows)}
-        </div>
-        <div class="card" id="logs">
-          <h2>Recent Audit Log</h2>
-          ${renderTable(auditTableRows)}
-        </div>
+          <div class="card">
+            <h2>▶️ Now Streaming</h2>
+            ${sessions === null ? unavailable('Tautulli') : renderItemList(nowPlayingItems, 'Nobody is streaming right now.')}
+          </div>
+          <div class="card">
+            <h2>⬇️ Downloading</h2>
+            ${queue === null ? unavailable('Radarr/Sonarr') : renderItemList(queueItems, 'Nothing in the download queues.')}
+          </div>
+          <div class="card">
+            <h2>💾 Disk Space</h2>
+            ${disks === null ? unavailable('*arr diskspace') : renderItemList(diskItems, 'No disks reported.')}
+          </div>
+        </section>
+
+        <section class="panel" data-panel="operations">
+          <div class="card">
+            <h2>⚙️ Active Jobs</h2>
+            ${renderItemList(jobItems, 'No seedbox grabs or staging copies running.')}
+          </div>
+          <div class="card">
+            <h2>👀 Watching / Scheduled</h2>
+            ${renderItemList(watchItems, 'No escalation watches or pending deletions.')}
+          </div>
+          <div class="card">
+            <h2>Recent Media Requests</h2>
+            ${renderTable(requestRows)}
+          </div>
+          <div class="card">
+            <h2>Manual Actions</h2>
+            <div class="actions">
+              <a class="btn" href="/admin/health">Health JSON</a>
+              <a class="btn" href="/admin/doctor">Edge Doctor JSON</a>
+              <a class="btn" href="/admin/action/sync-preview">Sync Preview</a>
+              <a class="btn" href="/admin/action/cleanup-preview">Cleanup Preview</a>
+              <button class="btn danger" type="button" onclick="revokeAll()">Revoke All Download Links</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" data-panel="automation">
+          <p class="panel-intro">These take effect on the next sweep — no redeploy. Compose stays the default:
+            <strong>Reset to compose</strong> drops the override and the stack file's value applies again.
+            ${overriddenCount ? `<strong>${overriddenCount}</strong> setting${overriddenCount === 1 ? ' is' : 's are'} currently overridden here.` : 'Nothing is overridden right now.'}</p>
+          ${settingsGroups.map(renderSettingsGroup).join('')}
+        </section>
+
+        <section class="panel" data-panel="edge">
+          <div class="card">
+            <h2>📦 Tier Nodes</h2>
+            ${renderItemList(tierItems, 'No tier nodes registered — /tier-node add creates one.')}
+          </div>
+          <div class="card">
+            <h2>🩺 Edge Readiness</h2>
+            ${renderItemList(edgeChecks.map(c => ({ state: c.status === 'fail' ? 'down' : c.status, title: c.name, sub: c.detail })), 'No edge checks available.')}
+          </div>
+        </section>
+
+        <section class="panel" data-panel="people">
+          <div class="card">
+            <h2>Pending Plex Users</h2>
+            ${renderTable(plexUserRows)}
+          </div>
+          <div class="card">
+            <h2>Linked Users</h2>
+            ${renderTable(linkedRows)}
+          </div>
+        </section>
+
+        <section class="panel" data-panel="logs">
+          <div class="card">
+            <h2>Recent Downloads</h2>
+            ${renderTable(downloadRows)}
+          </div>
+          <div class="card">
+            <h2>Recent Audit Log</h2>
+            ${renderTable(auditTableRows)}
+          </div>
+        </section>
+
         <script>
           async function revokeAll() {
             if (!confirm('Revoke ALL active download links? This cannot be undone.')) return;
@@ -7021,8 +7066,49 @@ function startExpressServer() {
             alert(r.ok ? 'All active download links revoked.' : 'Failed: ' + r.status);
             if (r.ok) location.reload();
           }
+          (function () {
+            var note = function (group, text, cls) {
+              var el = document.querySelector('[data-note="' + group + '"]');
+              if (el) { el.textContent = text; el.className = 'save-note' + (cls ? ' ' + cls : ''); }
+            };
+            var inputsFor = function (group) {
+              return [].slice.call(document.querySelectorAll('[data-group="' + group + '"] [data-key]'));
+            };
+            // Any edit blocks the auto-refresh until it is saved, so a pending change can't be
+            // silently thrown away by the 60s reload.
+            document.addEventListener('input', function (e) { if (e.target.dataset && e.target.dataset.key) window.__dirtySettings = true; });
+            document.addEventListener('change', function (e) { if (e.target.dataset && e.target.dataset.key) window.__dirtySettings = true; });
+            var post = async function (url, payload, group, okText) {
+              note(group, 'Saving…');
+              try {
+                var r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                var body = await r.json().catch(function () { return {}; });
+                if (!r.ok || body.ok === false) { note(group, (body.errors || ['Failed: ' + r.status]).join('; '), 'bad'); return; }
+                window.__dirtySettings = false;
+                note(group, okText, 'ok');
+                setTimeout(function () { location.reload(); }, 700);
+              } catch (err) { note(group, String(err && err.message || err), 'bad'); }
+            };
+            document.querySelectorAll('[data-save]').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                var group = btn.dataset.save;
+                var values = {};
+                inputsFor(group).forEach(function (el) {
+                  values[el.dataset.key] = el.dataset.type === 'bool' ? (el.checked ? '1' : '0') : el.value;
+                });
+                post('/admin/settings', { values: values }, group, 'Saved.');
+              });
+            });
+            document.querySelectorAll('[data-reset]').forEach(function (btn) {
+              btn.addEventListener('click', function () {
+                var group = btn.dataset.reset;
+                if (!confirm('Drop the overrides for this group and use the compose values again?')) return;
+                post('/admin/settings/reset', { keys: inputsFor(group).map(function (el) { return el.dataset.key; }) }, group, 'Reset to compose.');
+              });
+            });
+          })();
         </script>`;
-      res.type('html').send(renderPage('Dashboard', body, { showLogout: true, nav, autoRefresh: true }));
+      res.type('html').send(renderPage('Dashboard', body, { showLogout: true, nav, autoRefresh: true, tabs: true }));
     });
 
     app.get('/admin/health', dashboardAuth, async (_req, res) => res.json(await gatherHealth()));
@@ -7033,6 +7119,29 @@ function startExpressServer() {
       const toDelete = users.filter(u => u.userType !== 1 && ['displayName', 'email', 'username'].some(k => (u[k] || '').toLowerCase().startsWith('deleted_user')));
       res.json({ wouldRemove: toDelete.length, users: toDelete.map(u => ({ id: u.id, email: u.email, username: u.username })) });
     });
+    // Runtime overrides for the automation sweeps. Every write is validated against the setting's
+    // declared bounds (src/runtime-settings.js) and audited — an override that quietly changes what
+    // the bot does needs the same paper trail as any other admin action.
+    app.post('/admin/settings', dashboardAuth, (req, res) => {
+      const values = (req.body && req.body.values) || {};
+      const errors = [];
+      const applied = [];
+      for (const [key, raw] of Object.entries(values)) {
+        const result = runtimeSettings.setOverride(key, raw, { store: settingsStore });
+        if (result.ok) applied.push({ key, value: result.value });
+        else errors.push(result.error);
+      }
+      if (applied.length) audit('runtime_settings_changed', { applied });
+      res.status(errors.length ? 400 : 200).json({ ok: !errors.length, applied, errors });
+    });
+
+    app.post('/admin/settings/reset', dashboardAuth, (req, res) => {
+      const keys = Array.isArray(req.body && req.body.keys) ? req.body.keys : [];
+      const cleared = keys.filter(key => runtimeSettings.clearOverride(key, { store: settingsStore }).ok);
+      if (cleared.length) audit('runtime_settings_reset', { cleared });
+      res.json({ ok: true, cleared });
+    });
+
     app.post('/admin/action/revoke-all', dashboardAuth, (_req, res) => { revokeAllDownloadLinks(); res.json({ ok: true }); });
     app.post('/admin/action/revoke-user/:discordId', dashboardAuth, (req, res) => { revokeAllDownloadLinks(req.params.discordId); res.json({ ok: true, discordId: req.params.discordId }); });
   }

@@ -71,6 +71,30 @@ const DASHBOARD_CSS = `
   .login-card input { width:100%; padding:12px; border-radius:10px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:16px; margin-bottom:16px; }
   .login-card .btn.primary { width:100%; text-align:center; }
   .error { background:rgba(239,68,68,.12); border:1px solid var(--down); color:#fca5a5; padding:10px 12px; border-radius:10px; font-size:13px; margin-bottom:16px; }
+  .chip.tab { cursor:pointer; font:inherit; font-size:13px; }
+  .chip.tab[aria-selected="true"] { background:var(--accent); color:#131316; border-color:var(--accent); font-weight:650; }
+  .panel[hidden] { display:none; }
+  .panel-intro { color:var(--muted); font-size:13px; margin:0 0 14px; }
+  .card h2 .sub { display:block; text-transform:none; letter-spacing:0; font-weight:400; color:var(--muted); font-size:12px; margin-top:4px; }
+  .setting { display:flex; flex-wrap:wrap; gap:10px 14px; align-items:center; justify-content:space-between; padding:11px 0; border-bottom:1px solid var(--border); }
+  .setting:last-of-type { border-bottom:none; }
+  .setting-main { flex:1 1 240px; min-width:0; }
+  .setting-name { font-size:14px; }
+  .setting-help { font-size:12px; color:var(--muted); margin-top:3px; }
+  .setting-ctl { flex:0 0 auto; display:flex; align-items:center; gap:8px; }
+  .setting-ctl input[type=number] { width:96px; padding:9px 10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:15px; }
+  .setting-ctl .unit { font-size:12px; color:var(--muted); min-width:34px; }
+  .switch { position:relative; width:46px; height:26px; flex:0 0 auto; }
+  .switch input { opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
+  .switch .track { position:absolute; inset:0; border-radius:999px; background:var(--panel2); border:1px solid var(--border); pointer-events:none; transition:background .15s; }
+  .switch .track::after { content:''; position:absolute; top:3px; left:3px; width:18px; height:18px; border-radius:50%; background:var(--muted); transition:transform .15s, background .15s; }
+  .switch input:checked + .track { background:rgba(229,160,13,.25); border-color:var(--accent); }
+  .switch input:checked + .track::after { transform:translateX(20px); background:var(--accent); }
+  .tag { font-size:10.5px; text-transform:uppercase; letter-spacing:.04em; padding:3px 7px; border-radius:999px; border:1px solid var(--border); color:var(--muted); }
+  .tag.on { border-color:var(--accent); color:var(--accent); }
+  .setting-foot { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:14px; }
+  .save-note { font-size:12.5px; color:var(--muted); }
+  .save-note.ok { color:var(--ok); } .save-note.bad { color:#fca5a5; }
   @media (max-width:560px) {
     .item { flex-wrap:wrap; }
     .item-right { flex-basis:100%; max-width:none; text-align:left; margin-left:19px; margin-top:2px; }
@@ -86,16 +110,41 @@ const DASHBOARD_CSS = `
   }
 `;
 
-function renderPage(title, bodyHtml, { showLogout = false, nav = [], autoRefresh = false } = {}) {
+// `tabs: true` turns the nav into panel switches rather than scroll anchors. The panels are all
+// server-rendered and present in the DOM; the script only toggles which one is visible, so the
+// page still works as one long document if scripting is unavailable (nothing is hidden until the
+// script runs). The active tab lives in location.hash so the 60s auto-refresh comes back to it.
+function renderPage(title, bodyHtml, { showLogout = false, nav = [], autoRefresh = false, tabs = false } = {}) {
   const navHtml = nav.length
-    ? `<nav class="nav">${nav.map(([id, label]) => `<a class="chip" href="#${escapeHtml(id)}">${escapeHtml(label)}</a>`).join('')}</nav>`
+    ? `<nav class="nav" role="tablist">${nav.map(([id, label]) => (tabs
+      ? `<button class="chip tab" role="tab" type="button" data-tab="${escapeHtml(id)}" aria-selected="false">${escapeHtml(label)}</button>`
+      : `<a class="chip" href="#${escapeHtml(id)}">${escapeHtml(label)}</a>`)).join('')}</nav>`
     : '';
+  const tabScript = tabs ? `<script>
+    (function () {
+      var tabButtons = [].slice.call(document.querySelectorAll('.chip.tab'));
+      var panels = [].slice.call(document.querySelectorAll('.panel'));
+      function show(id) {
+        if (!panels.some(function (p) { return p.dataset.panel === id; })) id = panels[0] && panels[0].dataset.panel;
+        panels.forEach(function (p) { p.hidden = p.dataset.panel !== id; });
+        tabButtons.forEach(function (b) { b.setAttribute('aria-selected', String(b.dataset.tab === id)); });
+        if (id) history.replaceState(null, '', '#' + id);
+      }
+      tabButtons.forEach(function (b) { b.addEventListener('click', function () { show(b.dataset.tab); window.scrollTo(0, 0); }); });
+      show((location.hash || '').slice(1));
+    })();
+  </script>` : '';
   // Auto-refresh pauses while the tab is hidden so a backgrounded phone doesn't burn
   // battery/API calls re-checking every integration.
   const refreshScript = autoRefresh ? `<script>
     (function () {
       var t;
-      function arm() { t = setTimeout(function () { location.reload(); }, 60000); }
+      function editing() {
+        var el = document.activeElement;
+        return !!el && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(el.tagName);
+      }
+      // Never reload mid-edit — a refresh while someone is typing a threshold would discard it.
+      function arm() { t = setTimeout(function () { if (editing() || window.__dirtySettings) arm(); else location.reload(); }, 60000); }
       document.addEventListener('visibilitychange', function () { if (document.hidden) clearTimeout(t); else arm(); });
       if (!document.hidden) arm();
     })();
@@ -113,6 +162,7 @@ function renderPage(title, bodyHtml, { showLogout = false, nav = [], autoRefresh
     ${navHtml}
   </header>
   <div class="container">${bodyHtml}</div>
+  ${tabScript}
   ${refreshScript}
   </body></html>`;
 }
@@ -210,7 +260,40 @@ function renderSection(title, rows) {
   return `<div class="card"><h2>${escapeHtml(title)}</h2>${renderTable(rows)}</div>`;
 }
 
+// One card per automation group: every knob shows what is in force, and whether that value came
+// from compose or from an override made here. "Overridden" is called out explicitly — a value
+// silently diverging from the stack file is exactly the confusion this UI could otherwise cause.
+function renderSettingsGroup(group) {
+  const rows = group.settings.map(setting => {
+    const id = `set_${escapeHtml(setting.key)}`;
+    const control = setting.type === 'bool'
+      ? `<label class="switch"><input type="checkbox" id="${id}" data-key="${escapeHtml(setting.key)}" data-type="bool"${setting.value ? ' checked' : ''}><span class="track"></span></label>`
+      : `<input type="number" id="${id}" data-key="${escapeHtml(setting.key)}" data-type="int" value="${escapeHtml(setting.value)}" min="${setting.min}" max="${setting.max}" step="1" inputmode="numeric">
+         <span class="unit">${escapeHtml(setting.unit || '')}</span>`;
+    const origin = setting.overridden
+      ? `<span class="tag on" title="Compose says ${escapeHtml(setting.envValue)}">overridden</span>`
+      : '<span class="tag">compose</span>';
+    return `<div class="setting">
+      <div class="setting-main">
+        <div class="setting-name"><label for="${id}">${escapeHtml(setting.label)}</label></div>
+        ${setting.help ? `<div class="setting-help">${escapeHtml(setting.help)}</div>` : ''}
+      </div>
+      <div class="setting-ctl">${origin}${control}</div>
+    </div>`;
+  }).join('');
+  return `<div class="card" data-group="${escapeHtml(group.id)}">
+    <h2>${escapeHtml(group.title)}<span class="sub">${escapeHtml(group.blurb)}</span></h2>
+    ${rows}
+    <div class="setting-foot">
+      <button class="btn primary" type="button" data-save="${escapeHtml(group.id)}">Save changes</button>
+      <button class="btn" type="button" data-reset="${escapeHtml(group.id)}">Reset to compose</button>
+      <span class="save-note" data-note="${escapeHtml(group.id)}"></span>
+    </div>
+  </div>`;
+}
+
 module.exports = {
+  renderSettingsGroup,
   DASHBOARD_CSS,
   escapeHtml,
   renderPage,
