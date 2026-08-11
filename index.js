@@ -2362,6 +2362,20 @@ function resolveSafeMediaPath(requestedPath) {
   return realResolved;
 }
 
+// Shared-secret check for the inbound webhook routes. Returns true when the route is unsecured
+// (no secret configured) or the caller proved it knows the secret.
+//
+// `allowQuery` exists for exactly one caller: Plex's built-in webhooks take a URL and nothing else
+// — the server POSTs a bare multipart form with no way to attach a custom header, so a header-only
+// check is unsatisfiable there. Overseerr and Tautulli can both send headers and so are not given
+// the query-string option, because query strings are recorded in proxy/CDN access logs where
+// headers are not.
+function webhookSecretOk(req, expected, { header = 'x-webhook-secret', allowQuery = false } = {}) {
+  if (!expected) return true;
+  if (safeEqual(req.headers?.[header], expected)) return true;
+  return allowQuery ? safeEqual(req.query?.secret, expected) : false;
+}
+
 async function safeGetChannel(channelId) {
   try { return await client.channels.fetch(channelId); } catch (_e) { return null; }
 }
@@ -6496,7 +6510,7 @@ function startExpressServer() {
   });
 
   app.post('/webhook/overseerr', upload.any(), async (req, res) => {
-    if (CONFIG.WEBHOOK_SECRET && !safeEqual(req.headers['x-webhook-secret'], CONFIG.WEBHOOK_SECRET)) return res.status(401).json({ error: 'Unauthorized' });
+    if (!webhookSecretOk(req, CONFIG.WEBHOOK_SECRET)) return res.status(401).json({ error: 'Unauthorized' });
     res.sendStatus(200);
     let eventKey;
     try {
@@ -6517,8 +6531,13 @@ function startExpressServer() {
     }
   });
 
+  // Plex's built-in webhooks take a URL and nothing else — the server POSTs a bare multipart form
+  // and offers no way to attach a custom header, so a header-only check is unsatisfiable for that
+  // client. The shared secret is therefore also accepted as `?secret=` here. The header stays the
+  // preferred form (query strings land in proxy/CDN access logs), and this applies to the Plex
+  // route only: Overseerr and Tautulli can both send headers, so they still must.
   app.post('/webhook/plex', upload.any(), async (req, res) => {
-    if (CONFIG.WEBHOOK_SECRET && !safeEqual(req.headers['x-webhook-secret'], CONFIG.WEBHOOK_SECRET)) return res.status(401).json({ error: 'Unauthorized' });
+    if (!webhookSecretOk(req, CONFIG.WEBHOOK_SECRET, { allowQuery: true })) return res.status(401).json({ error: 'Unauthorized' });
     res.sendStatus(200);
     let eventKey;
     try {
@@ -6537,7 +6556,7 @@ function startExpressServer() {
   });
 
   app.post('/webhook/tautulli', async (req, res) => {
-    if (CONFIG.TAUTULLI_WEBHOOK_SECRET && !safeEqual(req.headers['x-tautulli-secret'], CONFIG.TAUTULLI_WEBHOOK_SECRET)) return res.status(401).json({ error: 'Unauthorized' });
+    if (!webhookSecretOk(req, CONFIG.TAUTULLI_WEBHOOK_SECRET, { header: 'x-tautulli-secret' })) return res.status(401).json({ error: 'Unauthorized' });
     res.sendStatus(200);
     let eventKey;
     try {

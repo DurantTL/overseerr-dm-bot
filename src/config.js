@@ -17,12 +17,6 @@ function parseId(v) {
   return String(v).trim().replace(/^['"]|['"]$/g, '').trim();
 }
 
-// Discord IDs are 17-20 digit snowflakes; anything else is a typo (a channel *name*, a partially
-// pasted ID) that would silently never resolve.
-function isSnowflake(v) {
-  return /^\d{17,20}$/.test(v);
-}
-
 const CONFIG = {
   // Logging: level filters what gets emitted (debug < info < warn < error); format switches
   // between the human-readable default and single-line JSON for log shippers (Loki/ELK/CloudWatch).
@@ -433,4 +427,4 @@ function configWarnings() {
   return warnings;
 }
 
-module.exports = { parseBool, parseId, isSnowflake, CONFIG, REQUIRED_ENV, validateConfig, configWarnings };
+module.exports = { parseBool, parseId, CONFIG, REQUIRED_ENV, validateConfig, configWarnings };

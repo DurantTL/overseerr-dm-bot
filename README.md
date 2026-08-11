@@ -184,9 +184,28 @@ Compose defaults:
 4. Point hostname (for downloads/webhooks) to bot service URL.
 
 ## Webhook Setup
-- Seerr: `POST /webhook/overseerr`
-- Plex: `POST /webhook/plex` (uses `WEBHOOK_SECRET` when set)
-- Tautulli (legacy): `POST /webhook/tautulli`
+- Seerr: `POST /webhook/overseerr` — header `x-webhook-secret: $WEBHOOK_SECRET`
+- Plex: `POST /webhook/plex` — header `x-webhook-secret`, **or** `?secret=$WEBHOOK_SECRET`
+- Tautulli: `POST /webhook/tautulli` — header `x-tautulli-secret: $TAUTULLI_WEBHOOK_SECRET`
+
+### Plex webhooks (Plex Pass required)
+
+Plex's webhook feature accepts a URL and nothing else — it cannot attach a custom header — so
+the Plex route is the one place the shared secret may travel in the query string instead:
+
+```
+https://<your-domain>/webhook/plex?secret=<WEBHOOK_SECRET>
+```
+
+Add it under **Plex → Settings → Webhooks → Add Webhook**. Query strings are recorded in
+proxy/CDN access logs where headers are not, so prefer the header for any client that can send
+one; Overseerr and Tautulli therefore do not accept `?secret=`.
+
+Plex sends one webhook per *account*, from every server that account owns, so a single entry
+covers a multi-server setup. Which server an event came from is read from `Server.title` /
+`Server.uuid` and routed through `PH_SERVER_NAMES` / `CA_EDGE_SERVER_NAMES` /
+`PRIMARY_SERVER_NAMES` — see [Plex Home staging](docs/plex-home-staging.md). Only
+`media.scrobble`, `media.play`, and `media.resume` are acted on; everything else is ignored.
 
 ### Seerr webhook JSON payload (important for correct requester attribution)
 The bot resolves who made a request from its own DB first (matching `requestedBy_email`
