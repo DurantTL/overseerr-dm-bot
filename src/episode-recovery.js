@@ -7,6 +7,7 @@
 
 const { assessSeriesAge, planSeasonSearches } = require('./season-pack');
 const runtimeSettings = require('./runtime-settings');
+const { priorityKey, orderByPriority } = require('./priority');
 
 const pad2 = n => String(n).padStart(2, '0');
 
@@ -126,7 +127,7 @@ function setEpisodeRecoveryState(db, key, fields) {
 
 async function createEpisodeRecoveryWorker(deps = {}) {
   const CONFIG = deps.CONFIG || require('./config').CONFIG;
-  const { db, audit, recordGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, countGrabJobsToday, listRequestedTvdbIds, getSetting } = deps.dbApi || require('./db');
+  const { db, audit, recordGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, countGrabJobsToday, listRequestedTvdbIds, getSetting, mediaPriorityMap } = deps.dbApi || require('./db');
   const { sonarrGet, fetchArrQueues, getArrTagId } = deps.arrApi || require('./arr');
   const { findAvistazIndexer, searchAvistaz, fetchTorrentFile, rankAvistazResults, grabAllowance, releaseContentClaim, contentClaimsOverlap } = deps.grabApi || require('./grab');
   const { addTorrentToRtorrent } = deps.rtorrentApi || require('./rtorrent');
@@ -164,7 +165,15 @@ async function createEpisodeRecoveryWorker(deps = {}) {
     const requestedTvdbIds = tunable('SEASON_PACK_REQUESTED') && listRequestedTvdbIds ? listRequestedTvdbIds() : new Set();
     let acted = 0;
 
-    for (const series of seriesList.filter(s => s.monitored && (s.tags || []).includes(tagId))) {
+    // maxPerRun caps how many episodes get actioned, so the order series are visited in decides
+    // who benefits. Pinned shows go first (src/priority.js); everything else keeps Sonarr's order.
+    const priority = typeof mediaPriorityMap === 'function' ? mediaPriorityMap() : new Map();
+    const candidates = orderByPriority(
+      seriesList.filter(s => s.monitored && (s.tags || []).includes(tagId)),
+      { keyFor: series => priorityKey({ tvdbId: series.tvdbId }), priority },
+    );
+
+    for (const series of candidates) {
       const episodes = await sonarrGet('/episode', { seriesId: series.id });
       // Seasons the season-pack path owns (old show, enough missing episodes to be worth a
       // pack). Recovering those one episode at a time is the exact waste season-pack-first
