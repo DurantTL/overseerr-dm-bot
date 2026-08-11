@@ -8,6 +8,26 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Builds the image without publishing it, purely as a pull request gate. build-image.yml only
+  # runs on pushes to main, so until this job existed a Dockerfile or dependency change that broke
+  # the image passed review green and only failed after merge — which is how main went four
+  # consecutive pushes with no publishable image. Keep this in step with build-image.yml's build
+  # step if that ever grows build-args or a different context.
+  docker:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Build image (no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+
   test:
     runs-on: ubuntu-latest
     permissions:
