@@ -7,6 +7,7 @@ const assert = require('node:assert');
 const { loadSandbox } = require('./extract');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch } = require('../../src/season-pack');
 const runtimeSettings = require('../../src/runtime-settings');
+const { priorityKey, orderByPriority, isPinned } = require('../../src/priority');
 
 const DAY = 86400000;
 const NOW = Date.now();
@@ -34,7 +35,7 @@ const EPISODES = {
   5: [ep(1, 1), ep(1, 2), ep(1, 3)],
 };
 
-function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = true, requestedTvdbIds = [], seasonPackRequested = true, overrides = {} } = {}) {
+function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = true, requestedTvdbIds = [], seasonPackRequested = true, overrides = {}, pinned = {} } = {}) {
   const calls = [];
   const recorded = [];
   const notices = [];
@@ -55,6 +56,11 @@ function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = t
   const sandbox = loadSandbox(['sweepSeasonPacks', 'seasonPackConfig', 'queuedSeasons'], {
     CONFIG,
     tunable: key => runtimeSettings.resolveRuntime(key, { config: CONFIG, store }),
+    // Pinning reorders the candidate list; `pinned` maps tvdbId → rank.
+    priorityKey,
+    orderByPriority,
+    isPinned,
+    mediaPriorityMap: () => new Map(Object.entries(pinned).map(([tvdbId, rank]) => [`tvdb:${tvdbId}`, rank])),
     assessSeriesAge,
     seasonSearchTargets,
     describeSeasonSearch,
@@ -164,4 +170,23 @@ test('season-pack-sweep: a runtime override beats the compose value without a re
   const invalid = build({ maxPerRun: 5, overrides: { SEASON_PACK_MAX_PER_RUN: 'banana' } });
   await invalid.sandbox.run('sweepSeasonPacks()');
   assert.ok(invalid.calls.length > 1, 'an unparseable override is ignored, not obeyed as 0');
+});
+
+test('season-pack-sweep: a pinned show is searched first when the per-run cap bites', async () => {
+  // Cap of 1. Without a pin, Sonarr's order puts 'Winter Sonata' (tvdb 101) first; pinning the
+  // dormant show (tvdb 102) promotes it instead. The cap is unchanged — position, not exemption.
+  const unpinned = build({ maxPerRun: 1 });
+  await unpinned.sandbox.run('sweepSeasonPacks()');
+  assert.deepStrictEqual(unpinned.recorded.map(r => r.seriesTitle), ['Winter Sonata'], 'default order');
+
+  const withPin = build({ maxPerRun: 1, pinned: { 102: 1 } });
+  await withPin.sandbox.run('sweepSeasonPacks()');
+  assert.deepStrictEqual(withPin.recorded.map(r => r.seriesTitle), ['Dormant Drama'], 'pinned show jumps the queue');
+  assert.strictEqual(withPin.calls.length, 1, 'and the cap still holds at 1');
+});
+
+test('season-pack-sweep: pinning marks the notification so the reason is visible', async () => {
+  const { sandbox, notices } = build({ maxPerRun: 1, pinned: { 102: 1 } });
+  await sandbox.run('sweepSeasonPacks()');
+  assert.match(notices[0].msg.embeds[0].description, /📌/, 'pinned rows are flagged in the summary');
 });
