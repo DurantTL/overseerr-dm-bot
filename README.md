@@ -161,7 +161,7 @@ docker compose up -d --build
 ```
 
 Compose defaults:
-- Service name + container: `durant-media-server-bot`
+- Service name + container: `overseerr-dm-bot`
 - SQLite persisted in named volume `durant_bot_data`
 - Media mounted read-only: `${MEDIA_HOST_PATH:-/mnt/raid}:/mnt/raid:ro`
 - Healthcheck endpoint: `http://127.0.0.1:3000/health`
@@ -253,7 +253,7 @@ Slash commands are registered automatically on bot startup using `DISCORD_CLIENT
 ---
 
 ## First-Deploy Checklist
-- [ ] Container `durant-media-server-bot` is running and healthy.
+- [ ] Container `overseerr-dm-bot` is running and healthy.
 - [ ] Discord bot appears online in your server.
 - [ ] Slash commands appear in the configured guild.
 - [ ] `GET /health` returns `overall: ok` or `degraded` only for expected unavailable services; optional integrations may show `skipped`.
@@ -317,7 +317,7 @@ atomically, and removes stale `-wal`/`-shm` sidecars from the old database.
 
 Recommended cron (host):
 ```cron
-0 */6 * * * cd /opt/durant-media-server-bot && ./scripts/backup-db.sh /app/data/plex_invites.db ./backups
+0 */6 * * * cd /opt/overseerr-dm-bot && ./scripts/backup-db.sh /app/data/plex_invites.db ./backups
 ```
 
 ## Health Checks

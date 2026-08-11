@@ -62,7 +62,7 @@ outright and the stack refuses to deploy.
    `build-image.yml` publishes the GHCR image, then make the package Public (or
    `docker login ghcr.io` on the host) — see section 5.
 2. In Portainer go to **Stacks → Add stack**.
-3. Name it (e.g. `durant-media-server-bot`).
+3. Name it (e.g. `plex-stack`). The stack name prefixes the volume, so keep it stable.
 4. Choose **Git Repository** as the build method (this only fetches the compose
    file; the bot itself runs the prebuilt GHCR image rather than being built by
    Portainer).
@@ -154,12 +154,27 @@ Pin a specific build by setting `BOT_IMAGE_TAG` (e.g. `sha-abc1234`) in your env
 and pulling, or just pull the latest:
 
 ```bash
-docker compose pull durant-media-server-bot && docker compose up -d
+docker compose pull overseerr-dm-bot && docker compose up -d
 ```
 
 In Portainer, **Pull and redeploy** on the stack does the same. The SQLite
 database lives in the `durant_bot_data` named volume, so it survives every
 update.
+
+> **Switching an existing stack over to this compose file?** Check which volume
+> your running container actually uses *before* redeploying — Compose prefixes
+> volume names with the stack name, and attaching a differently-named volume
+> gives the bot an empty database rather than an error:
+>
+> ```bash
+> docker inspect overseerr-dm-bot \
+>   --format '{{range .Mounts}}{{.Name}} -> {{.Destination}}{{"\n"}}{{end}}'
+> ```
+>
+> If the volume mounted at `/app/data` is not `<stack>_durant_bot_data`, rename
+> the `durant_bot_data` key in this file to match what you already have (in both
+> the service's `volumes:` list and the top-level `volumes:` block) instead of
+> letting Compose create a fresh one.
 
 ### Why a redeploy could silently run old code
 
@@ -268,18 +283,18 @@ container:
 
 ```bash
 # Back up the live DB to /app/data/backups inside the data volume
-docker exec durant-media-server-bot \
+docker exec overseerr-dm-bot \
   bash scripts/backup-db.sh /app/data/plex_invites.db /app/data/backups
 
 # Copy a backup off the host if desired
-docker cp durant-media-server-bot:/app/data/backups ./backups
+docker cp overseerr-dm-bot:/app/data/backups ./backups
 
 # Restore (stop the bot first; the verified restore removes stale WAL/SHM sidecars)
-docker stop durant-media-server-bot
+docker stop overseerr-dm-bot
 docker run --rm -v durant_bot_data:/app/data -v "$PWD/backups:/restore:ro" \
   ghcr.io/duranttl/overseerr-dm-bot:${BOT_IMAGE_TAG:-latest} \
   node scripts/restore-db.js /restore/plex_invites-YYYYMMDD-HHMMSS.db /app/data/plex_invites.db --force
-docker start durant-media-server-bot
+docker start overseerr-dm-bot
 ```
 
 Schedule the backup command via cron on the host for regular snapshots, or set
