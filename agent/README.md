@@ -32,6 +32,34 @@ One run does, in order:
 
 Requires Node 18+ (uses global `fetch`). No other dependencies.
 
+## Install (one command)
+
+`/tier-node token name:<node>` in Discord prints a ready-to-paste installer for that node. It looks
+like this — run it **on the edge node**, not on the bot host:
+
+```sh
+export TIER_AGENT_TOKEN=<the token it just showed you>
+curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" https://<bot-domain>/agent/install/<node> \
+  | sudo -E env TIER_FOLDER_ROOT=/mnt/media SYNCTHING_API_KEY=... SYNCTHING_FOLDER_ID=... sh
+```
+
+It installs `agent.js` to `/opt/tier-agent`, writes the token to root-only `/etc/tier-agent.env`,
+installs `tier-agent.service` + a 15-minute `tier-agent.timer`, and runs once so a failure shows up
+immediately rather than fifteen minutes later. Both endpoints require the node's own bearer token,
+so nothing new is exposed publicly.
+
+Config comes from the environment rather than prompts, because stdin is the script itself when
+piped — an interactive `read` would eat the rest of the file. Required in that `env` list:
+`TIER_FOLDER_ROOT`, `SYNCTHING_API_KEY`, `SYNCTHING_FOLDER_ID` (plus `TIER_AGENT_TOKEN`, exported
+above). Anything else from the table below can be added the same way; `TIER_MOUNT_ROOT` +
+`TIER_MOUNT_MARKER` in particular if the media sits on an external drive.
+
+`sudo -E` matters — without it your environment does not survive into the script, and it will stop
+and tell you what is missing rather than install something half-configured.
+
+Re-running the command is safe: it overwrites the agent and the env file, and the units are
+rewritten and reloaded. Rotating the token with `/tier-node token` again just means re-running it.
+
 ## Configuration (environment)
 
 | var | required | meaning |

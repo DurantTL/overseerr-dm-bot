@@ -188,6 +188,10 @@ Compose defaults:
 - Plex: `POST /webhook/plex` — header `x-webhook-secret`, **or** `?secret=$WEBHOOK_SECRET`
 - Tautulli: `POST /webhook/tautulli` — header `x-tautulli-secret: $TAUTULLI_WEBHOOK_SECRET`
 
+Agent endpoints (each requires that node's bearer token from `/tier-node token`):
+`GET /agent/install/:node` (one-command installer), `GET /agent/source/:node` (agent.js),
+`GET /agent/manifest/:node`, `POST /agent/report/:node`.
+
 ### Plex webhooks (Plex Pass required)
 
 Plex's webhook feature accepts a URL and nothing else — it cannot attach a custom header — so

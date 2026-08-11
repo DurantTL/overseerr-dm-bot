@@ -49,6 +49,7 @@ const { webhookEventKey } = require('./src/webhook-events');
 const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
+const { summarizeSeriesGaps, describeGaps, describeActivity, rankIncomplete } = require('./src/incomplete');
 
 // Centralized embed palette so every notification shares one consistent look.
 const COLORS = {
@@ -5577,7 +5578,14 @@ async function handleTierNodeCommand(interaction) {
     if (!getTierNode(name)) return interaction.reply({ content: `❌ Unknown node \`${name}\` — add it first.`, ephemeral: true });
     const raw = setTierAgentToken(name);
     audit('tier_agent_token_rotated', { actorDiscordId: interaction.user.id, node: name });
-    return interaction.reply({ content: `🔑 Agent token for \`${name}\` (shown once, replaces any previous token):\n\`\`\`\n${raw}\n\`\`\`\nSet it as \`TIER_AGENT_TOKEN\` on that node's sync agent.`, ephemeral: true });
+    const botUrl = CONFIG.TUNNEL_DOMAIN ? `https://${CONFIG.TUNNEL_DOMAIN}` : `http://127.0.0.1:${CONFIG.PORT}`;
+    // Shown once, so hand over the finished command rather than a token and a documentation hunt.
+    const install = [
+      `export TIER_AGENT_TOKEN=${raw}`,
+      `curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" ${botUrl}/agent/install/${name} \\`,
+      '  | sudo -E env TIER_FOLDER_ROOT=/mnt/media SYNCTHING_API_KEY=CHANGEME SYNCTHING_FOLDER_ID=CHANGEME sh',
+    ].join('\n');
+    return interaction.reply({ content: `🔑 Agent token for \`${name}\` — **shown once**, and it replaces any previous token.\n\nRun this **on that node** (fill in the three CHANGEME/media values first):\n\`\`\`sh\n${install}\n\`\`\`\nIt installs the agent to \`/opt/tier-agent\`, writes the token to root-only \`/etc/tier-agent.env\`, enables a 15-minute systemd timer, and runs once so you see immediately whether it worked. Add \`TIER_MOUNT_ROOT\`/\`TIER_MOUNT_MARKER\` to the \`env\` list if the media lives on an external drive.`, ephemeral: true });
   }
 
   // sub === 'add' (also edits an existing node — only supplied options change)
@@ -6492,6 +6500,76 @@ function dashboardAuth(req, res, next) {
 
 let httpServer = null;
 
+// Requests the requester still cannot watch in full. Two distinct kinds, deliberately in one list:
+// a request that never became available at all, and a series Seerr calls "available" that is in
+// fact missing aired episodes — the second is invisible everywhere else in the bot, because one
+// imported episode flips a whole show to ✅.
+//
+// Sonarr work is bounded: the series list is one call, and episodes are only fetched for series
+// whose own statistics already show a shortfall, capped per render. A dashboard page load must not
+// turn into a hundred API calls.
+const INCOMPLETE_SERIES_FETCH_CAP = 12;
+
+async function gatherIncompleteRequests({ queue = [], grabJobs = [], escalations = [], now = Date.now() } = {}) {
+  const openRequests = db.prepare(`
+    SELECT * FROM requests
+     WHERE status NOT IN ('available', 'declined', 'cancelled')
+     ORDER BY id DESC LIMIT 40`).all();
+  // episode_recovery is created by the worker's ensureSchema, which only runs when that worker
+  // starts — so the table may legitimately not exist yet.
+  const hasRecoveryTable = !!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'episode_recovery'").get();
+  const recoveryRows = hasRecoveryTable
+    ? db.prepare('SELECT * FROM episode_recovery WHERE resolved_at IS NULL AND ignored_at IS NULL LIMIT 200').all()
+    : [];
+  const ctx = { queue: queue || [], grabJobs, escalations, recoveryRows };
+  const rows = [];
+  const seenTvdb = new Set();
+
+  if (CONFIG.SONARR_URL) {
+    const requestedTvdbIds = listRequestedTvdbIds();
+    const series = await listSonarrSeries();
+    const candidates = (series || [])
+      .filter(entry => requestedTvdbIds.has(Number(entry.tvdbId)))
+      .filter(entry => {
+        const stats = entry.statistics || {};
+        return Number(stats.episodeFileCount || 0) < Number(stats.episodeCount || 0);
+      })
+      .slice(0, INCOMPLETE_SERIES_FETCH_CAP);
+    const episodeLists = await Promise.all(candidates.map(entry => getSeriesEpisodes(entry.id).catch(() => [])));
+    candidates.forEach((entry, index) => {
+      const summary = summarizeSeriesGaps({ series: entry, episodes: episodeLists[index], now });
+      if (!summary.airedMissing) return;
+      seenTvdb.add(Number(entry.tvdbId));
+      const activity = describeActivity(ctx, { tvdbId: entry.tvdbId, title: entry.title });
+      rows.push({
+        state: activity.state,
+        title: `📺 ${summary.title}`,
+        sub: `${describeGaps(summary)} — ${activity.note}`,
+        right: `${summary.airedMissing} missing`,
+        pct: summary.pct,
+        missing: summary.airedMissing,
+      });
+    });
+  }
+
+  for (const request of openRequests) {
+    const tvdbId = /^tvdb:(\d+)$/.exec(request.media_id || '')?.[1];
+    // A series already covered by the Sonarr pass above would otherwise appear twice.
+    if (tvdbId && seenTvdb.has(Number(tvdbId))) continue;
+    const tmdbId = /^tmdb:(\d+)$/.exec(request.media_id || '')?.[1];
+    const activity = describeActivity(ctx, { tvdbId: tvdbId ? Number(tvdbId) : null, tmdbId: tmdbId ? Number(tmdbId) : null, title: request.title });
+    const age = fmtAgo(sqliteUtcMs(request.created_at));
+    rows.push({
+      state: request.status === 'failed' ? 'down' : activity.state,
+      title: `${mediaTypeEmoji(request.media_type, request.is_4k)} ${request.title}`,
+      sub: `${requestStatusBadge(request.status)} · requested ${age} · ${activity.note}`,
+      right: request.requested_by_discord_id ? `by ${request.requested_by_discord_id}` : '',
+      missing: 0,
+    });
+  }
+  return rankIncomplete(rows);
+}
+
 function startExpressServer() {
   const app = express();
   app.disable('x-powered-by');
@@ -6692,6 +6770,22 @@ function startExpressServer() {
     next();
   };
 
+  // One-liner install for a node's sync agent. Both routes sit behind the node's own bearer token:
+  // no new public surface, and a token that can already read the manifest can hardly be harmed by
+  // also reading the agent source. The token itself is never embedded here — the bot only stores
+  // its hash — so the installer takes it from the environment of the shell running the pipe.
+  app.get('/agent/install/:node', tierAgentAuth, (req, res) => {
+    const node = String(req.params.node).toLowerCase();
+    const template = fs.readFileSync(path.join(__dirname, 'agent', 'install.sh.tmpl'), 'utf8');
+    const botUrl = CONFIG.TUNNEL_DOMAIN ? `https://${CONFIG.TUNNEL_DOMAIN}` : `http://127.0.0.1:${CONFIG.PORT}`;
+    audit('tier_agent_installer_fetched', { node, ip: req.ip || req.socket.remoteAddress || 'unknown' });
+    res.type('text/plain').send(template.split('__NODE__').join(node).split('__BOT_URL__').join(botUrl));
+  });
+
+  app.get('/agent/source/:node', tierAgentAuth, (_req, res) => {
+    res.type('text/plain').send(fs.readFileSync(path.join(__dirname, 'agent', 'agent.js'), 'utf8'));
+  });
+
   app.get('/agent/manifest/:node', tierAgentAuth, (req, res) => {
     const raw = getSetting(`tier_manifest:${String(req.params.node).toLowerCase()}`);
     if (!raw) return res.status(404).json({ error: 'No manifest published for this node — run /tier apply.' });
@@ -6848,6 +6942,9 @@ function startExpressServer() {
       const grabJobs = listActiveGrabJobs();
       const stageJobs = listActiveStageJobs();
       const escalations = getWatchingEscalations();
+      // Depends on the queue above, so it runs after rather than inside that Promise.all. Null on
+      // failure (Sonarr unreachable) so the card says so instead of claiming everything is fine.
+      const incomplete = await gatherIncompleteRequests({ queue: queue || [], grabJobs, escalations, now }).catch(() => null);
       const pendingDeletions = db.prepare("SELECT * FROM pending_deletions WHERE status = 'pending' ORDER BY delete_after LIMIT 25").all();
       const tierNodes = listTierNodes();
       // Latest agent report per tier node, from the audit log.
@@ -6873,6 +6970,7 @@ function startExpressServer() {
         renderStat('Downloading', queue === null ? '—' : queue.length),
         renderStat('Active jobs', grabJobs.length + stageJobs.length),
         renderStat('Watching', escalations.length),
+        renderStat('Incomplete', incomplete === null ? '—' : incomplete.length),
         renderStat('Tier nodes', `${tierNodes.filter(n => n.enabled).length}/${tierNodes.length}`),
         renderStat('Pending requests', pendingRequestCount),
         renderStat('Linked users', linkedTotal),
@@ -6995,6 +7093,10 @@ function startExpressServer() {
         </section>
 
         <section class="panel" data-panel="operations">
+          <div class="card">
+            <h2>🧩 Not Watchable Yet<span class="sub">Requests still missing content — including series Seerr already calls "available" but that are missing aired episodes. Worst first.</span></h2>
+            ${incomplete === null ? unavailable('Sonarr') : renderItemList(incomplete, 'Every request is complete — nothing missing.')}
+          </div>
           <div class="card">
             <h2>⚙️ Active Jobs</h2>
             ${renderItemList(jobItems, 'No seedbox grabs or staging copies running.')}
