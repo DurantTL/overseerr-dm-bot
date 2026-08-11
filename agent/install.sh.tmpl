@@ -38,10 +38,12 @@ command -v curl >/dev/null 2>&1 || die "curl not found"
 
 say "Installing the tier agent for node '$NODE_NAME' from $BOT_URL"
 
-id -u tier-agent >/dev/null 2>&1 || useradd --system --home-dir "$STATE_DIR" --shell /usr/sbin/nologin tier-agent 2>/dev/null || true
+# Runs as root rather than a dedicated user: the agent prunes files inside a media tree whose
+# ownership is set by Syncthing/Plex on each host, and a service account would need write access to
+# all of it anyway. The unit narrows that back down with ProtectSystem=strict plus an explicit
+# ReadWritePaths allowlist, which is the containment that actually holds here.
 install -d -m 755 "$INSTALL_DIR"
 install -d -m 750 "$STATE_DIR"
-chown tier-agent:tier-agent "$STATE_DIR" 2>/dev/null || true
 
 say "→ fetching agent.js"
 curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" "$BOT_URL/agent/source/$NODE_NAME" -o "$INSTALL_DIR/agent.js.new" \
