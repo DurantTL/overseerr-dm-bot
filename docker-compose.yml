@@ -1,5 +1,5 @@
 services:
-  durant-media-server-bot:
+  overseerr-dm-bot:
     # Prebuilt image published to GHCR by .github/workflows/build-image.yml.
     # Override the tag with BOT_IMAGE_TAG to pin a specific build
     # (e.g. sha-abc1234) instead of tracking latest.
@@ -16,7 +16,7 @@ services:
     # reconcile against GHCR. If the pull fails (private package, no `docker login ghcr.io`)
     # the deploy now fails loudly instead of quietly running yesterday's build.
     pull_policy: always
-    container_name: durant-media-server-bot
+    container_name: overseerr-dm-bot
     init: true
     labels:
       # Opt this container in to Watchtower auto-updates (required when
@@ -56,7 +56,7 @@ services:
 
   cloudflared:
     image: cloudflare/cloudflared:latest
-    container_name: durant-media-server-bot-tunnel
+    container_name: overseerr-dm-bot-tunnel
     command: tunnel --no-autoupdate run
     environment:
       - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:-}

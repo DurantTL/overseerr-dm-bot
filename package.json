@@ -1,5 +1,5 @@
 {
-  "name": "durant-media-server-bot",
+  "name": "overseerr-dm-bot",
   "version": "3.0.0",
   "main": "bootstrap.js",
   "scripts": {
