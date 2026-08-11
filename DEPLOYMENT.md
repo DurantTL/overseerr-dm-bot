@@ -48,6 +48,14 @@ one strategy:
 
 Do not split variables across both — you will get confusing partial config.
 
+### Compose version requirement
+
+`docker-compose.yml` uses the `env_file` **long syntax** (`path:` / `required:`),
+which needs **Docker Compose v2.24.0 or newer** — check with
+`docker compose version`, and in Portainer make sure it is not falling back to an
+older bundled binary. On anything older the two optional env files are rejected
+outright and the stack refuses to deploy.
+
 ## 3. One-time stack setup
 
 1. Make sure the image exists and is pullable first: push to `main` so
@@ -83,6 +91,25 @@ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/admin
 `/health` returning JSON and `/admin` returning `401` means the bot is up and
 the dashboard is correctly protected. Also check the container logs in
 Portainer for `Express server listening` and a successful Discord login.
+
+### The startup lines that actually prove it worked
+
+A clean-looking startup is not proof that Discord notifications work — logging
+in and *posting* are separate permissions. Every restart logs exactly one deploy
+ping line, and it tells you which:
+
+| Log line | Meaning |
+| --- | --- |
+| `Deploy ping posted to channel <id> (image sha-…)` | Working. The `sha-` is the CI build actually running — if it says `no GIT_SHA baked in`, this container is a locally built image, not the one from GHCR. |
+| `Deploy ping skipped: DEPLOY_CHANNEL_ID is unset` | Opt-in feature is off. Set `DEPLOY_CHANNEL_ID` to a channel ID. |
+| `Notification to 'deploy' channel <id> dropped: Unknown Channel (10003)` | Wrong/mistyped ID, or the bot isn't in that server. |
+| `… Missing Access (50001)` | The bot's role can't see the channel — grant **View Channel**. |
+| `… Missing Permissions (50013)` | It can see the channel but can't post — grant **Send Messages** and **Embed Links**. |
+
+The same warnings now cover *every* channel notification (requests, audit,
+cleanup, …), so a misrouted channel ID can no longer fail invisibly. Malformed
+IDs are also reported as config warnings at startup — a Discord ID is 17-20
+digits, copied via right-click → **Copy ID** with Developer Mode enabled.
 
 ## 5. Redeploying after a code change
 
@@ -133,6 +160,23 @@ docker compose pull durant-media-server-bot && docker compose up -d
 In Portainer, **Pull and redeploy** on the stack does the same. The SQLite
 database lives in the `durant_bot_data` named volume, so it survives every
 update.
+
+### Why a redeploy could silently run old code
+
+The compose service declares both `image:` (GHCR) and `build: .` (the local dev
+fallback). With that combination Compose's default pull policy (`missing`) never
+contacts the registry when a local image already carries the tag — and when it
+doesn't, it *builds* from the checkout rather than pulling. Either way the
+container comes up healthy while running code that isn't what CI published; an
+image built locally also has no `GIT_SHA`, so the "Bot Online" ping can't tell
+you what it is.
+
+`pull_policy: always` is set on the service to close that off: every
+`docker compose up -d` reconciles against GHCR. The trade-off is that a failed
+pull (private GHCR package with no `docker login ghcr.io` on the host) now fails
+the deploy loudly instead of quietly starting the old image — which is the point.
+Local development is unaffected: `docker compose build` and
+`docker compose up --build` still build from source.
 
 ### Upgrading to the non-root image (one-time)
 

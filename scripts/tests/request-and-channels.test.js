@@ -15,7 +15,7 @@ const sandbox = loadSandbox(
     crypto: require('crypto'),
     CONFIG: {
       LOG_LEVEL: 'info', LOG_FORMAT: 'text',
-      OVERSEERR_URL: '', OVERSEERR_API_KEY: 'k', ADMIN_CHANNEL_ID: 'ADMIN',
+      OVERSEERR_URL: '', OVERSEERR_API_KEY: 'k', ADMIN_CHANNEL_ID: '100000000000000001',
       TUNNEL_DOMAIN: 'x.example.com', WEBHOOK_SECRET: 's3cret', TAUTULLI_WEBHOOK_SECRET: 'tautulli-secret', ENABLE_DELETION: false, DELETION_DRY_RUN: true,
       DASHBOARD_ENABLED: false, DASHBOARD_ADMIN_PASSWORD: '', DASHBOARD_ADMIN_TOKEN: '',
       PLAYBACK_CHECK_MINUTES: 5, PLAYBACK_CHANNEL_ID: '', TAUTULLI_URL: '', TAUTULLI_API_KEY: '',
@@ -160,14 +160,14 @@ test('request: searchSeerr, createSeerrRequestAs, checkExistingSeerrMedia, verif
 test('request: channelFor fallback/override/deploy special case', () => {
   const cf = k => sandbox.run(`channelFor('${k}')`);
   for (const kind of ['requests', 'system', 'downloads', 'cleanup', 'audit', 'playback', 'admin']) {
-    assert.strictEqual(cf(kind), 'ADMIN', `${kind}: falls back to admin when unset`);
+    assert.strictEqual(cf(kind), '100000000000000001', `${kind}: falls back to admin when unset`);
   }
   assert.strictEqual(cf('deploy') || null, null, 'deploy: NO fallback when unset');
-  sandbox.CONFIG.REQUESTS_CHANNEL_ID = 'REQ';
-  sandbox.CONFIG.DEPLOY_CHANNEL_ID = 'DEP';
-  assert.strictEqual(cf('requests'), 'REQ', 'configured channel wins');
-  assert.strictEqual(cf('deploy'), 'DEP', 'deploy sends when configured');
-  assert.strictEqual(cf('cleanup'), 'ADMIN', 'other kinds still fall back');
+  sandbox.CONFIG.REQUESTS_CHANNEL_ID = '100000000000000002';
+  sandbox.CONFIG.DEPLOY_CHANNEL_ID = '100000000000000003';
+  assert.strictEqual(cf('requests'), '100000000000000002', 'configured channel wins');
+  assert.strictEqual(cf('deploy'), '100000000000000003', 'deploy sends when configured');
+  assert.strictEqual(cf('cleanup'), '100000000000000001', 'other kinds still fall back');
 });
 
 test('request: configWarnings quiet on a safe config, loud on risky combos', () => {
@@ -180,9 +180,49 @@ test('request: configWarnings quiet on a safe config, loud on risky combos', () 
   sandbox.CONFIG.DELETION_DRY_RUN = false;
   sandbox.CONFIG.DASHBOARD_ENABLED = true;
   sandbox.CONFIG.DASHBOARD_ADMIN_PASSWORD = 'short';
-  sandbox.CONFIG.PLAYBACK_CHANNEL_ID = 'PLAY';
+  sandbox.CONFIG.PLAYBACK_CHANNEL_ID = '100000000000000004';
   const warnings = sandbox.run('configWarnings()');
   assert.strictEqual(warnings.length, 3, `all three risky combos flagged, got: ${JSON.stringify(warnings)}`);
+});
+
+test('request: configWarnings flags a channel ID that is not a Discord snowflake', () => {
+  // A mistyped/pasted-as-name channel ID never resolves, so every notification routed there is
+  // dropped in silence — the failure mode that made a dead DEPLOY_CHANNEL_ID look like a healthy
+  // startup. Warn at boot instead.
+  sandbox.CONFIG.DEPLOY_CHANNEL_ID = '#media-admin-log';
+  const warnings = sandbox.run('configWarnings()');
+  assert.ok(warnings.some(w => w.includes('DEPLOY_CHANNEL_ID')), `malformed deploy ID flagged, got: ${JSON.stringify(warnings)}`);
+  sandbox.CONFIG.DEPLOY_CHANNEL_ID = '100000000000000003';
+  assert.ok(!sandbox.run('configWarnings()').some(w => w.includes('DEPLOY_CHANNEL_ID')), 'a real snowflake is accepted');
+});
+
+test('request: notifyChannel reports drops instead of swallowing them', async () => {
+  // The bug this guards: every failure path used to be `.catch(() => {})`, so a deploy ping into
+  // a channel the bot cannot post in looked identical to a successful one.
+  const logged = [];
+  const bed = loadSandbox(['channelFor', 'notifyChannel', 'describeChannelError'], {
+    CONFIG: { ADMIN_CHANNEL_ID: '100000000000000001', DEPLOY_CHANNEL_ID: '100000000000000003' },
+    log: { warn: m => logged.push(m), info: () => {}, ok: () => {} },
+    client: { channels: { fetch: async () => { throw Object.assign(new Error('Unknown Channel'), { code: 10003 }); } } },
+  });
+
+  assert.strictEqual(await bed.run("notifyChannel('deploy', 'hi')"), false, 'unknown channel reports failure');
+  assert.match(logged.at(-1), /10003/, 'and says why');
+
+  bed.CONFIG.DEPLOY_CHANNEL_ID = '';
+  assert.strictEqual(await bed.run("notifyChannel('deploy', 'hi')"), false, 'unset deploy channel is a no-op');
+  assert.strictEqual(logged.length, 1, 'opt-out is not an error');
+
+  bed.CONFIG.DEPLOY_CHANNEL_ID = '100000000000000003';
+  bed.client.channels.fetch = async () => ({ send: async () => { throw Object.assign(new Error('Missing Permissions'), { code: 50013 }); } });
+  assert.strictEqual(await bed.run("notifyChannel('deploy', 'hi')"), false, 'send failure reports failure');
+  assert.match(logged.at(-1), /50013/, 'permission error named');
+
+  const sent = [];
+  bed.client.channels.fetch = async () => ({ send: async m => sent.push(m) });
+  assert.strictEqual(await bed.run("notifyChannel('deploy', 'hi')"), true, 'happy path returns true');
+  assert.deepStrictEqual(sent, ['hi'], 'message delivered');
+  assert.strictEqual(logged.length, 2, 'no warning on success');
 });
 
 test('request: describeSession transcode vs direct play formatting', () => {

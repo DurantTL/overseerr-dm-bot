@@ -8,16 +8,31 @@ function parseBool(v, fallback = false) {
   return ['1', 'true', 'yes', 'on'].includes(String(v).toLowerCase());
 }
 
+// Discord snowflakes arrive as env values that people paste by hand (and that Portainer/compose
+// pass through verbatim), so they routinely carry a trailing CR from a Windows-edited env file,
+// stray spaces, or the quotes someone wrapped them in. Discord rejects those as "Unknown Channel"
+// with no hint about the invisible character, so scrub them here once instead.
+function parseId(v) {
+  if (v === undefined || v === null) return '';
+  return String(v).trim().replace(/^['"]|['"]$/g, '').trim();
+}
+
+// Discord IDs are 17-20 digit snowflakes; anything else is a typo (a channel *name*, a partially
+// pasted ID) that would silently never resolve.
+function isSnowflake(v) {
+  return /^\d{17,20}$/.test(v);
+}
+
 const CONFIG = {
   // Logging: level filters what gets emitted (debug < info < warn < error); format switches
   // between the human-readable default and single-line JSON for log shippers (Loki/ELK/CloudWatch).
   LOG_LEVEL: (process.env.LOG_LEVEL || 'info').toLowerCase(),
   LOG_FORMAT: (process.env.LOG_FORMAT || 'text').toLowerCase(),
   DISCORD_BOT_TOKEN: process.env.DISCORD_BOT_TOKEN,
-  DISCORD_CLIENT_ID: process.env.DISCORD_CLIENT_ID,
-  DISCORD_GUILD_ID: process.env.DISCORD_GUILD_ID,
-  ADMIN_CHANNEL_ID: process.env.ADMIN_CHANNEL_ID,
-  ADMIN_USER_ID: process.env.ADMIN_USER_ID,
+  DISCORD_CLIENT_ID: parseId(process.env.DISCORD_CLIENT_ID),
+  DISCORD_GUILD_ID: parseId(process.env.DISCORD_GUILD_ID),
+  ADMIN_CHANNEL_ID: parseId(process.env.ADMIN_CHANNEL_ID),
+  ADMIN_USER_ID: parseId(process.env.ADMIN_USER_ID),
   OVERSEERR_URL: (process.env.OVERSEERR_URL || '').replace(/\/$/, ''),
   OVERSEERR_API_KEY: process.env.OVERSEERR_API_KEY,
   REQUEST_RECONCILE_MINUTES: Number.parseInt(process.env.REQUEST_RECONCILE_MINUTES || '15', 10),
@@ -170,13 +185,13 @@ const CONFIG = {
   PATH_REMAP_TO: process.env.PATH_REMAP_TO || process.env.RAID_PATH || '/mnt/raid',
   TAUTULLI_WEBHOOK_SECRET: process.env.TAUTULLI_WEBHOOK_SECRET || '',
   // Optional per-topic notification channels; anything unset falls back to ADMIN_CHANNEL_ID.
-  REQUESTS_CHANNEL_ID: process.env.REQUESTS_CHANNEL_ID || '',
-  SYSTEM_ALERTS_CHANNEL_ID: process.env.SYSTEM_ALERTS_CHANNEL_ID || '',
-  DOWNLOADS_CHANNEL_ID: process.env.DOWNLOADS_CHANNEL_ID || '',
-  PLAYBACK_CHANNEL_ID: process.env.PLAYBACK_CHANNEL_ID || '',
-  CLEANUP_CHANNEL_ID: process.env.CLEANUP_CHANNEL_ID || '',
-  AUDIT_CHANNEL_ID: process.env.AUDIT_CHANNEL_ID || '',
-  DEPLOY_CHANNEL_ID: process.env.DEPLOY_CHANNEL_ID || '',
+  REQUESTS_CHANNEL_ID: parseId(process.env.REQUESTS_CHANNEL_ID),
+  SYSTEM_ALERTS_CHANNEL_ID: parseId(process.env.SYSTEM_ALERTS_CHANNEL_ID),
+  DOWNLOADS_CHANNEL_ID: parseId(process.env.DOWNLOADS_CHANNEL_ID),
+  PLAYBACK_CHANNEL_ID: parseId(process.env.PLAYBACK_CHANNEL_ID),
+  CLEANUP_CHANNEL_ID: parseId(process.env.CLEANUP_CHANNEL_ID),
+  AUDIT_CHANNEL_ID: parseId(process.env.AUDIT_CHANNEL_ID),
+  DEPLOY_CHANNEL_ID: parseId(process.env.DEPLOY_CHANNEL_ID),
   PORT: Number.parseInt(process.env.PORT || '3000', 10),
   TRUST_PROXY: parseBool(process.env.TRUST_PROXY, false),
   DASHBOARD_ENABLED: parseBool(process.env.DASHBOARD_ENABLED, true),
@@ -283,9 +298,9 @@ const CONFIG = {
   BACKUP_DIR: process.env.BACKUP_DIR || '/app/data/backups',
   BACKUP_KEEP_COUNT: Number.parseInt(process.env.BACKUP_KEEP_COUNT || '14', 10),
   REQUEST_SUBSCRIBER_RETENTION_DAYS: Number.parseInt(process.env.REQUEST_SUBSCRIBER_RETENTION_DAYS || '180', 10),
-  PLEX_MEMBER_ROLE_ID: process.env.PLEX_MEMBER_ROLE_ID || null,
+  PLEX_MEMBER_ROLE_ID: parseId(process.env.PLEX_MEMBER_ROLE_ID) || null,
   WHATS_NEW_ENABLED: parseBool(process.env.WHATS_NEW_ENABLED, false),
-  WHATS_NEW_CHANNEL_ID: process.env.WHATS_NEW_CHANNEL_ID || null,
+  WHATS_NEW_CHANNEL_ID: parseId(process.env.WHATS_NEW_CHANNEL_ID) || null,
   // Multiple seasons of the same show becoming available close together collapse into one post.
   WHATS_NEW_GROUP_WINDOW_HOURS: Number.parseInt(process.env.WHATS_NEW_GROUP_WINDOW_HOURS || '20', 10),
   // 0 = disabled (default), preserving today's behavior — every non-admin request is gated.
@@ -354,6 +369,22 @@ function configWarnings() {
   if (CONFIG.DASHBOARD_ENABLED && dashSecret && dashSecret.length < 12) {
     warnings.push('The dashboard password/token is under 12 characters — use a longer one (login is internet-reachable if your tunnel exposes it).');
   }
+  // A malformed ID is invisible at runtime: every notification to that channel just quietly
+  // fails to resolve, so the bot looks healthy while nothing is ever posted. (Key list is local
+  // rather than module-level so the vm-sandbox test harness, which extracts whole functions,
+  // can run this check standalone.)
+  const idKeys = [
+    'DISCORD_CLIENT_ID', 'DISCORD_GUILD_ID', 'ADMIN_CHANNEL_ID', 'ADMIN_USER_ID',
+    'REQUESTS_CHANNEL_ID', 'SYSTEM_ALERTS_CHANNEL_ID', 'DOWNLOADS_CHANNEL_ID', 'PLAYBACK_CHANNEL_ID',
+    'CLEANUP_CHANNEL_ID', 'AUDIT_CHANNEL_ID', 'DEPLOY_CHANNEL_ID', 'WHATS_NEW_CHANNEL_ID',
+    'PLEX_MEMBER_ROLE_ID',
+  ];
+  for (const key of idKeys) {
+    const value = CONFIG[key];
+    if (value && !/^\d{17,20}$/.test(value)) {
+      warnings.push(`\`${key}=${value}\` is not a Discord ID (17-20 digits) — right-click the channel/user in Discord with Developer Mode on and "Copy ID". Nothing routed there will ever be delivered.`);
+    }
+  }
   if (CONFIG.PLAYBACK_CHECK_MINUTES > 0 && CONFIG.PLAYBACK_CHANNEL_ID && !(CONFIG.TAUTULLI_URL && CONFIG.TAUTULLI_API_KEY)) {
     warnings.push('`PLAYBACK_CHANNEL_ID` is set but Tautulli isn\'t configured (`TAUTULLI_URL` + `TAUTULLI_API_KEY`) — no playback alerts will be sent.');
   }
@@ -402,4 +433,4 @@ function configWarnings() {
   return warnings;
 }
 
-module.exports = { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings };
+module.exports = { parseBool, parseId, isSnowflake, CONFIG, REQUIRED_ENV, validateConfig, configWarnings };

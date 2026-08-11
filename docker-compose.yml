@@ -4,9 +4,18 @@ services:
     # Override the tag with BOT_IMAGE_TAG to pin a specific build
     # (e.g. sha-abc1234) instead of tracking latest.
     image: ghcr.io/duranttl/overseerr-dm-bot:${BOT_IMAGE_TAG:-latest}
-    # `build` is kept as a local fallback: `docker compose build` still works
-    # for development, but normal deploys pull the image above.
+    # `build` is kept as a local fallback: `docker compose build` (or `up --build`)
+    # still works for development, but normal deploys pull the image above.
     build: .
+    # Load-bearing next to `build`. Compose's default policy ("missing") only pulls when no
+    # local image carries this tag — and when a `build` section exists it BUILDS instead of
+    # pulling. So a plain `docker compose up -d` on a host that already has an
+    # overseerr-dm-bot:latest (a stale pull, or one Portainer built from the Git checkout)
+    # silently re-runs that old image: the container comes up clean, the logs look healthy,
+    # and none of the code you just shipped is actually running. `always` makes every `up`
+    # reconcile against GHCR. If the pull fails (private package, no `docker login ghcr.io`)
+    # the deploy now fails loudly instead of quietly running yesterday's build.
+    pull_policy: always
     container_name: durant-media-server-bot
     init: true
     labels:
@@ -21,6 +30,9 @@ services:
       - path: stack.env
         required: false
     ports:
+      # Container side must match PORT (default 3000). Compose only interpolates from the shell
+      # and the project .env — never from env_file — so a PORT set in stack.env would not be
+      # visible here; change both sides by hand if you ever move off 3000.
       - "3000:3000"
     volumes:
       - durant_bot_data:/app/data
@@ -34,7 +46,9 @@ services:
       # - ${SEEDBOX_STAGING_HOST_PATH:-/mnt/raid/media/seedbox-staging}:/seedbox-staging
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      # Reads PORT from inside the container, so it follows env_file (which compose-level
+      # interpolation cannot see).
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3
