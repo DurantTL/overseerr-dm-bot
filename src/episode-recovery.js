@@ -6,6 +6,7 @@
 // AvistaZ match through the existing rTorrent -> rclone -> Sonarr import pipeline.
 
 const { assessSeriesAge, planSeasonSearches } = require('./season-pack');
+const runtimeSettings = require('./runtime-settings');
 
 const pad2 = n => String(n).padStart(2, '0');
 
@@ -61,6 +62,24 @@ function readEpisodeRecoveryConfig(env = process.env) {
   };
 }
 
+// Live view of the worker's settings: a dashboard override wins, the env value is the fallback
+// (see src/runtime-settings.js). Read per sweep rather than captured at construction, so a knob
+// turned in the UI takes effect on the next tick instead of the next restart.
+function resolveLiveRecoveryConfig({ env = process.env, store } = {}) {
+  const base = readEpisodeRecoveryConfig(env);
+  const v = key => runtimeSettings.resolveRuntime(key, { env, store });
+  return {
+    ...base,
+    enabled: v('EPISODE_RECOVERY_ENABLED'),
+    checkMinutes: Math.max(5, v('EPISODE_RECOVERY_CHECK_MINUTES')),
+    publicGraceHours: Math.max(0, v('EPISODE_RECOVERY_PUBLIC_GRACE_HOURS')),
+    avistazGraceHours: Math.max(0, v('EPISODE_RECOVERY_AVISTAZ_GRACE_HOURS')),
+    lookbackDays: Math.max(1, v('EPISODE_RECOVERY_LOOKBACK_DAYS')),
+    maxPerRun: Math.max(1, v('EPISODE_RECOVERY_MAX_PER_RUN')),
+    minConfidence: Math.max(0, Math.min(100, v('EPISODE_RECOVERY_MIN_CONFIDENCE'))),
+  };
+}
+
 function ensureSchema(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS episode_recovery (
@@ -107,17 +126,24 @@ function setEpisodeRecoveryState(db, key, fields) {
 
 async function createEpisodeRecoveryWorker(deps = {}) {
   const CONFIG = deps.CONFIG || require('./config').CONFIG;
-  const { db, audit, recordGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, countGrabJobsToday, listRequestedTvdbIds } = deps.dbApi || require('./db');
+  const { db, audit, recordGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, countGrabJobsToday, listRequestedTvdbIds, getSetting } = deps.dbApi || require('./db');
   const { sonarrGet, fetchArrQueues, getArrTagId } = deps.arrApi || require('./arr');
   const { findAvistazIndexer, searchAvistaz, fetchTorrentFile, rankAvistazResults, grabAllowance, releaseContentClaim, contentClaimsOverlap } = deps.grabApi || require('./grab');
   const { addTorrentToRtorrent } = deps.rtorrentApi || require('./rtorrent');
   const axios = deps.axios || require('axios');
   const log = deps.log || require('./log').log;
-  const cfg = deps.recoveryConfig || readEpisodeRecoveryConfig();
+  // A dbApi stub without getSetting (the tests) simply sees no overrides and falls back to env.
+  const store = { get: key => (typeof getSetting === 'function' ? getSetting(key) : null) };
+  const tunable = key => runtimeSettings.resolveRuntime(key, { config: CONFIG, store });
+  // An explicit recoveryConfig pins the worker (tests); otherwise settings are re-read every sweep.
+  const liveConfig = deps.resolveRecoveryConfig
+    || (deps.recoveryConfig ? () => deps.recoveryConfig : () => resolveLiveRecoveryConfig({ store }));
+  const bootCfg = liveConfig();
 
   ensureSchema(db);
 
   async function sweep() {
+    const cfg = liveConfig();
     if (!cfg.enabled || !CONFIG.SONARR_URL || !CONFIG.PROWLARR_URL || !CONFIG.RTORRENT_URL) return { skipped: true };
     const source = { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, label: 'sonarr' };
     const tagId = await getArrTagId(source, CONFIG.AVISTAZ_TAG).catch(() => null);
@@ -135,7 +161,7 @@ async function createEpisodeRecoveryWorker(deps = {}) {
     const activeJobs = listActiveGrabJobs();
     // Requested shows are season-pack eligible whatever their age, so the stand-down below has
     // to know about them too — otherwise both paths would chase the same requested season.
-    const requestedTvdbIds = CONFIG.SEASON_PACK_REQUESTED && listRequestedTvdbIds ? listRequestedTvdbIds() : new Set();
+    const requestedTvdbIds = tunable('SEASON_PACK_REQUESTED') && listRequestedTvdbIds ? listRequestedTvdbIds() : new Set();
     let acted = 0;
 
     for (const series of seriesList.filter(s => s.monitored && (s.tags || []).includes(tagId))) {
@@ -146,12 +172,12 @@ async function createEpisodeRecoveryWorker(deps = {}) {
       // slots. Left untouched here; they resume episode-level recovery if the season later
       // drops below the pack threshold.
       const packCfg = {
-        dormantDays: CONFIG.SEASON_PACK_DORMANT_DAYS,
-        minMissing: CONFIG.SEASON_PACK_MIN_MISSING,
+        dormantDays: tunable('SEASON_PACK_DORMANT_DAYS'),
+        minMissing: tunable('SEASON_PACK_MIN_MISSING'),
       };
       const packEligible = assessSeriesAge(series, now, packCfg).old || requestedTvdbIds.has(Number(series.tvdbId));
       const packSeasons = new Set(
-        CONFIG.SEASON_PACK_FIRST && packEligible
+        tunable('SEASON_PACK_FIRST') && packEligible
           ? planSeasonSearches(episodes, now, packCfg).map(s => s.season)
           : []);
       for (const episode of episodes) {
@@ -243,16 +269,30 @@ async function createEpisodeRecoveryWorker(deps = {}) {
   }
 
   function start() {
-    if (!cfg.enabled) return null;
     const run = () => sweep().catch(err => log.warn(`Episode recovery sweep failed: ${err.message}`));
-    setTimeout(run, 30000).unref();
-    const timer = setInterval(run, cfg.checkMinutes * 60000);
-    timer.unref();
-    log.info(`Episode recovery enabled (${cfg.checkMinutes}m check, ${cfg.publicGraceHours}h public grace, ${cfg.avistazGraceHours}h AvistaZ grace)`);
-    return timer;
+    // A pinned config (tests) keeps the original fixed-interval behavior, including returning null
+    // when disabled. A live config always arms the loop: the worker may be switched on from the
+    // dashboard later, and a timer that only exists when enabled at boot could never notice.
+    if (deps.recoveryConfig) {
+      if (!bootCfg.enabled) return null;
+      setTimeout(run, 30000).unref();
+      const timer = setInterval(run, bootCfg.checkMinutes * 60000);
+      timer.unref();
+      return timer;
+    }
+    const tick = () => {
+      const cfg = liveConfig();
+      if (cfg.enabled) run();
+      setTimeout(tick, (cfg.enabled ? cfg.checkMinutes : 1) * 60000).unref();
+    };
+    setTimeout(tick, 30000).unref();
+    log.info(bootCfg.enabled
+      ? `Episode recovery enabled (${bootCfg.checkMinutes}m check, ${bootCfg.publicGraceHours}h public grace, ${bootCfg.avistazGraceHours}h AvistaZ grace)`
+      : 'Episode recovery is off — enable it from the dashboard or set EPISODE_RECOVERY_ENABLED=true');
+    return null;
   }
 
-  return { cfg, sweep, start };
+  return { cfg: bootCfg, sweep, start };
 }
 
 async function startEpisodeRecovery(deps) {
@@ -267,6 +307,7 @@ module.exports = {
   decideEpisodeRecoveryAction,
   exactEpisodeCandidates,
   readEpisodeRecoveryConfig,
+  resolveLiveRecoveryConfig,
   ensureSchema,
   createEpisodeRecoveryWorker,
   startEpisodeRecovery,

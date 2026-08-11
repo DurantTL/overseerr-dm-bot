@@ -40,6 +40,8 @@ COPY index.js ./
 COPY bootstrap.js ./
 COPY src ./src
 COPY scripts ./scripts
+# Served to edge nodes by /agent/install/:node and /agent/source/:node.
+COPY agent ./agent
 
 # Image version, shown in the DEPLOY_CHANNEL_ID "Bot Online" ping. Set by CI.
 ARG GIT_SHA=

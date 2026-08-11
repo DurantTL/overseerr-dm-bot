@@ -6,6 +6,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { loadSandbox } = require('./extract');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch } = require('../../src/season-pack');
+const runtimeSettings = require('../../src/runtime-settings');
 
 const DAY = 86400000;
 const NOW = Date.now();
@@ -33,7 +34,7 @@ const EPISODES = {
   5: [ep(1, 1), ep(1, 2), ep(1, 3)],
 };
 
-function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = true, requestedTvdbIds = [], seasonPackRequested = true } = {}) {
+function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = true, requestedTvdbIds = [], seasonPackRequested = true, overrides = {} } = {}) {
   const calls = [];
   const recorded = [];
   const notices = [];
@@ -47,8 +48,13 @@ function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = t
     SEASON_PACK_MAX_PER_RUN: maxPerRun,
     SEASON_PACK_REQUESTED: seasonPackRequested,
   };
+  // The sweep reads its knobs through tunable() so dashboard overrides apply mid-flight. Wire the
+  // real resolver with no override store: every value comes straight from the CONFIG above, which
+  // is exactly the behavior when nothing has been overridden.
+  const store = { get: key => overrides[key.replace(runtimeSettings.OVERRIDE_PREFIX, '')] ?? null };
   const sandbox = loadSandbox(['sweepSeasonPacks', 'seasonPackConfig', 'queuedSeasons'], {
     CONFIG,
+    tunable: key => runtimeSettings.resolveRuntime(key, { config: CONFIG, store }),
     assessSeriesAge,
     seasonSearchTargets,
     describeSeasonSearch,
@@ -143,4 +149,19 @@ test('season-pack-sweep: a Sonarr failure on one series must not abort the rest 
   await h.sandbox.sweepSeasonPacks();
   assert.deepStrictEqual(h.calls.sort(), ['1:2', '2:1'], 'a failed season search is skipped, the rest continue');
   assert.strictEqual(h.recorded.length, 2, 'a failed search is not recorded, so it retries next sweep instead of sitting out the cooldown');
+});
+
+test('season-pack-sweep: a runtime override beats the compose value without a restart', async () => {
+  // CONFIG says the sweep is on and may search 5 seasons; the stored overrides say 1, then off.
+  const capped = build({ maxPerRun: 5, overrides: { SEASON_PACK_MAX_PER_RUN: '1' } });
+  await capped.sandbox.run('sweepSeasonPacks()');
+  assert.strictEqual(capped.calls.length, 1, `override caps the run, got: ${JSON.stringify(capped.calls)}`);
+
+  const disabled = build({ seasonPackFirst: true, overrides: { SEASON_PACK_FIRST: '0' } });
+  await disabled.sandbox.run('sweepSeasonPacks()');
+  assert.deepStrictEqual(disabled.calls, [], 'override switches the sweep off entirely');
+
+  const invalid = build({ maxPerRun: 5, overrides: { SEASON_PACK_MAX_PER_RUN: 'banana' } });
+  await invalid.sandbox.run('sweepSeasonPacks()');
+  assert.ok(invalid.calls.length > 1, 'an unparseable override is ignored, not obeyed as 0');
 });

@@ -1,0 +1,134 @@
+#!/bin/sh
+# Tier sync agent installer — served by the bot at /agent/install/<node>, with __NODE__ and
+# __BOT_URL__ filled in for the node whose token fetched it. Pipe it to sh as root:
+#
+#   export TIER_AGENT_TOKEN=<token from /tier-node token>
+#   curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" __BOT_URL__/agent/install/__NODE__ \
+#     | sudo -E env TIER_FOLDER_ROOT=/mnt/media SYNCTHING_API_KEY=... SYNCTHING_FOLDER_ID=... sh
+#
+# Config comes from the environment, never from prompts: stdin is the script itself when piped,
+# so an interactive `read` would silently consume the rest of this file instead of waiting.
+set -eu
+
+INSTALL_DIR=${INSTALL_DIR:-/opt/tier-agent}
+ENV_FILE=${ENV_FILE:-/etc/tier-agent.env}
+STATE_DIR=${TIER_STATE_DIR:-/var/lib/tier-agent}
+NODE_NAME='__NODE__'
+BOT_URL='__BOT_URL__'
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" = 0 ] || die "run as root (pipe to 'sudo -E sh', and keep -E so your env vars survive)"
+
+missing=''
+for var in TIER_AGENT_TOKEN TIER_FOLDER_ROOT SYNCTHING_API_KEY SYNCTHING_FOLDER_ID; do
+  eval "val=\${$var:-}"
+  [ -n "$val" ] || missing="$missing $var"
+done
+[ -z "$missing" ] || die "missing required environment:$missing
+Re-run with them set, e.g.
+  sudo -E env TIER_FOLDER_ROOT=/mnt/media SYNCTHING_API_KEY=abc SYNCTHING_FOLDER_ID=aaaaa-bbbbb sh"
+
+command -v node >/dev/null 2>&1 || die "node not found — the agent needs Node 18+ (it uses global fetch)"
+NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]')
+[ "$NODE_MAJOR" -ge 18 ] || die "node $NODE_MAJOR is too old — the agent needs Node 18+"
+command -v curl >/dev/null 2>&1 || die "curl not found"
+[ -d "$TIER_FOLDER_ROOT" ] || die "TIER_FOLDER_ROOT ($TIER_FOLDER_ROOT) does not exist on this host"
+
+say "Installing the tier agent for node '$NODE_NAME' from $BOT_URL"
+
+# Runs as root rather than a dedicated user: the agent prunes files inside a media tree whose
+# ownership is set by Syncthing/Plex on each host, and a service account would need write access to
+# all of it anyway. The unit narrows that back down with ProtectSystem=strict plus an explicit
+# ReadWritePaths allowlist, which is the containment that actually holds here.
+install -d -m 755 "$INSTALL_DIR"
+install -d -m 750 "$STATE_DIR"
+
+say "→ fetching agent.js"
+curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" "$BOT_URL/agent/source/$NODE_NAME" -o "$INSTALL_DIR/agent.js.new" \
+  || die "could not download the agent — check the token and that $BOT_URL is reachable from here"
+node --check "$INSTALL_DIR/agent.js.new" || die "downloaded agent.js is not valid JavaScript — aborting rather than installing it"
+mv "$INSTALL_DIR/agent.js.new" "$INSTALL_DIR/agent.js"
+chmod 755 "$INSTALL_DIR/agent.js"
+
+# The token lives here and nowhere else; 600 root-owned, written via a temp file so a reader can
+# never catch it half-written or world-readable.
+say "→ writing $ENV_FILE"
+umask 077
+cat > "$ENV_FILE.new" <<ENVEOF
+TIER_BOT_URL=$BOT_URL
+TIER_NODE=$NODE_NAME
+TIER_AGENT_TOKEN=$TIER_AGENT_TOKEN
+TIER_FOLDER_ROOT=$TIER_FOLDER_ROOT
+TIER_STATE_DIR=$STATE_DIR
+SYNCTHING_URL=${SYNCTHING_URL:-http://127.0.0.1:8384}
+SYNCTHING_API_KEY=$SYNCTHING_API_KEY
+SYNCTHING_FOLDER_ID=$SYNCTHING_FOLDER_ID
+ENVEOF
+[ -z "${TIER_MOUNT_ROOT:-}" ] || printf 'TIER_MOUNT_ROOT=%s\n' "$TIER_MOUNT_ROOT" >> "$ENV_FILE.new"
+[ -z "${TIER_MOUNT_MARKER:-}" ] || printf 'TIER_MOUNT_MARKER=%s\n' "$TIER_MOUNT_MARKER" >> "$ENV_FILE.new"
+[ -z "${TIER_EXPECTED_UUID:-}" ] || printf 'TIER_EXPECTED_UUID=%s\n' "$TIER_EXPECTED_UUID" >> "$ENV_FILE.new"
+[ -z "${TIER_REPORT_INVENTORY:-}" ] || printf 'TIER_REPORT_INVENTORY=%s\n' "$TIER_REPORT_INVENTORY" >> "$ENV_FILE.new"
+[ -z "${TIER_FOLDERS:-}" ] || printf 'TIER_FOLDERS=%s\n' "$TIER_FOLDERS" >> "$ENV_FILE.new"
+chmod 600 "$ENV_FILE.new"
+mv "$ENV_FILE.new" "$ENV_FILE"
+umask 022
+
+say "→ installing systemd units"
+cat > /etc/systemd/system/tier-agent.service <<'UNITEOF'
+[Unit]
+Description=Media tiering sync agent
+After=network-online.target syncthing.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/tier-agent.env
+ExecStart=/usr/bin/env node /opt/tier-agent/agent.js
+# The agent prunes files inside the media folder, so it needs write access there but nothing else.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/tier-agent
+PrivateTmp=true
+NoNewPrivileges=true
+UNITEOF
+
+# The folder root has to be writable for pruning; add it (and the mount root, if guarded) explicitly.
+{
+  printf 'ReadWritePaths=%s\n' "$TIER_FOLDER_ROOT"
+  [ -z "${TIER_MOUNT_ROOT:-}" ] || printf 'ReadWritePaths=%s\n' "$TIER_MOUNT_ROOT"
+} >> /etc/systemd/system/tier-agent.service
+
+cat > /etc/systemd/system/tier-agent.timer <<'TIMEREOF'
+[Unit]
+Description=Run the media tiering sync agent periodically
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMEREOF
+
+systemctl daemon-reload
+systemctl enable --now tier-agent.timer >/dev/null
+
+say "→ first run"
+if systemctl start tier-agent.service; then
+  say ""
+  say "Installed. The node should now show a recent check-in in /tier-node list and on the dashboard."
+else
+  say ""
+  say "Installed, but the first run failed. Logs:"
+  journalctl -u tier-agent.service -n 30 --no-pager || true
+  exit 1
+fi
+
+say ""
+say "  units:   tier-agent.service (oneshot) + tier-agent.timer (every 15min)"
+say "  config:  $ENV_FILE  (root-only; holds the agent token)"
+say "  logs:    journalctl -u tier-agent -f"
+say "  re-run:  systemctl start tier-agent"
