@@ -51,6 +51,7 @@ const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryT
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
 const { summarizeSeriesGaps, describeGaps, describeActivity, rankIncomplete } = require('./src/incomplete');
 const { priorityKey, orderByPriority, isPinned, nextRank } = require('./src/priority');
+const { summarizeImportRejections, renderRejectionLines, looksLikeMappingProblem } = require('./src/import-rejections');
 
 // Centralized embed palette so every notification shares one consistent look.
 const COLORS = {
@@ -1382,15 +1383,20 @@ async function verifyArrImport(job, arr, commandId, importPath, finalPath, sizeB
       .setDescription(`ManualImport was forced (status \`${forcedStatus}\`) but the files are still in staging. Check ${arr.label}'s Manual Import screen — this needs a human look.`)] });
     return;
   }
-  const reasons = [...new Set(preview.flatMap(f => (f.rejections || []).map(x => x.reason)))].slice(0, 5);
-  audit('grab_import_rejected', { jobId: job.id, title: job.title, reasons, cleanUnforced: clean.length && !reasons.length });
+  // Grouped per reason WITH the filenames: "3 files rejected" is actionable, a de-duplicated
+  // reason string against a 22-episode pack is not.
+  const rejectionGroups = summarizeImportRejections(preview);
+  const reasons = rejectionGroups.map(g => g.reason).slice(0, 5);
+  audit('grab_import_rejected', { jobId: job.id, title: job.title, reasons, rejectedFiles: rejectionGroups.reduce((n, g) => n + g.count, 0), cleanUnforced: clean.length && !reasons.length });
   setGrabJobState(job.id, job.media_type === 'movie' ? 'import_rejected' : 'needs_mapping', reasons.join('; ') || null);
   // TV declines get the guided-import wizard: pick series + season in Discord, the bot pushes
   // the mapping through ManualImport — covers TVDB filing the show under another title and
   // fansub names Sonarr can't parse, without touching the Sonarr UI.
   const components = [];
   let mapHint = `use ${arr.label}'s Manual Import screen for hand-mapping`;
-  if (job.media_type !== 'movie') {
+  // The wizard only helps a matching problem. Offering it for "destination already exists" or an
+  // unreadable file sends you round a loop that cannot possibly fix the cause.
+  if (job.media_type !== 'movie' && (!rejectionGroups.length || looksLikeMappingProblem(rejectionGroups))) {
     const nonce = stashMapOffer({ title: job.title, folder: path.basename(finalPath), importPath, finalPath, jobId: job.id });
     components.push(new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`mapimp_start:${nonce}`).setLabel('Map to a Series…').setStyle(ButtonStyle.Primary)));
@@ -1400,7 +1406,13 @@ async function verifyArrImport(job, arr, commandId, importPath, finalPath, sizeB
     : clean.length ? ' (matched cleanly, but not to the series this job is pinned to)' : '';
   notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
     .setTitle(`🚫 ${arr.label} Declined the Import — ${job.title}`.slice(0, 256))
-    .setDescription(`The files copied home fine but ${arr.label} won't take them${whyNotForced}:\n${reasons.length ? reasons.map(r => `• ${r}`).join('\n') : '• (no reason reported — the series may be missing or the names unparseable)'}\n\nThey're still in staging. Fix the cause and re-run \`/rtorrent import target:${job.media_type === 'movie' ? 'radarr' : 'sonarr'} folder:${String(path.basename(finalPath)).slice(0, 80)}\` — or ${mapHint}.`)], components });
+    .setDescription([
+      `The files copied home fine but ${arr.label} won't take them${whyNotForced}:`,
+      '',
+      ...(rejectionGroups.length ? renderRejectionLines(rejectionGroups) : ['• (no reason reported — the series may be missing or the names unparseable)']),
+      '',
+      `They're still in staging. Fix the cause and re-run \`/rtorrent import target:${job.media_type === 'movie' ? 'radarr' : 'sonarr'} folder:${String(path.basename(finalPath)).slice(0, 80)}\` — or ${mapHint}.`,
+    ].join('\n').slice(0, 4000))], components });
 }
 
 // ---- Guided manual import ("Map to a Series…") ----
