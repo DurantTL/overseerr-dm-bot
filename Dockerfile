@@ -1,7 +1,9 @@
 # Durant Media Server Bot
 # Uses node:24-slim (Debian/glibc) instead of node:24-alpine, because
-# better-sqlite3 is a native module: glibc installs a prebuilt binary with no
-# compiler; alpine/musl tries to compile it and fails (no toolchain).
+# better-sqlite3 is a native module: it ships prebuilt .node binaries for
+# linux-x64/arm64 (glibc) and loads one at require() time, so this image needs
+# no compiler. Musl has prebuilds too, but the rest of the toolchain here is
+# Debian-shaped, so stay on slim.
 FROM node:24-slim
 
 # rclone drives the Plex Home staging copies/evictions (see README "Plex Home staging").
@@ -18,7 +20,21 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 COPY package*.json ./
-RUN npm ci --omit=dev
+
+# --ignore-scripts is load-bearing, not hardening. better-sqlite3 ships a binding.gyp but no
+# install script, so npm synthesizes one and runs `node-gyp rebuild` for it. That rebuild does
+# nothing useful here — without --force_build=1 the gyp target only touches a stamp file, and the
+# addon we actually load is the prebuilt prebuilds/linux-x64.node from the tarball — but node-gyp
+# still needs Python and make just to reach that no-op, and this image ships neither. Without the
+# flag the install dies at "gyp ERR! find Python". better-sqlite3 is the only dependency in the
+# production tree with any install script or binding.gyp, so nothing else loses out; recheck that
+# if a native dependency is ever added.
+RUN npm ci --omit=dev --ignore-scripts
+
+# Fail the build here, loudly, rather than at container start, if the prebuilt addon ever stops
+# resolving — a better-sqlite3 upgrade that drops prebuilds would otherwise sail through the
+# --ignore-scripts install above and only surface when the bot opens its database.
+RUN node -e "new (require('better-sqlite3'))(':memory:').prepare('select 1').get()"
 
 COPY index.js ./
 COPY bootstrap.js ./
