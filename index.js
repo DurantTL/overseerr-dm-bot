@@ -134,12 +134,45 @@ function channelFor(kind) {
   return configured || CONFIG.ADMIN_CHANNEL_ID;
 }
 
-function notifyChannel(kind, msg) {
+// Returns a promise resolving true when the message actually reached Discord. Callers are free to
+// ignore it — but the failure is never silent: a bad channel ID, a channel in another guild, or a
+// missing Send Messages permission gets logged instead of being swallowed, which is what made a
+// dead DEPLOY_CHANNEL_ID look like a perfectly healthy startup.
+async function notifyChannel(kind, msg) {
   const channelId = channelFor(kind);
-  if (!channelId) return;
-  safeGetChannel(channelId)
-    .then(ch => ch && ch.send(msg).catch(() => {}))
-    .catch(() => {});
+  if (!channelId) return false;
+  let channel;
+  try {
+    channel = await client.channels.fetch(channelId);
+  } catch (err) {
+    log.warn(`Notification to '${kind}' channel ${channelId} dropped: ${describeChannelError(err)}`);
+    return false;
+  }
+  if (!channel) {
+    log.warn(`Notification to '${kind}' channel ${channelId} dropped: channel not found (wrong ID, or the bot isn't in that server)`);
+    return false;
+  }
+  if (typeof channel.send !== 'function') {
+    log.warn(`Notification to '${kind}' channel ${channelId} dropped: that channel type can't receive messages (category or forum parent?)`);
+    return false;
+  }
+  try {
+    await channel.send(msg);
+    return true;
+  } catch (err) {
+    log.warn(`Notification to '${kind}' channel ${channelId} failed to send: ${describeChannelError(err)}`);
+    return false;
+  }
+}
+
+// Discord's REST errors are numeric codes; the two that matter here are indistinguishable from
+// each other (and from a network blip) in a bare error message.
+function describeChannelError(err) {
+  const code = err?.code;
+  if (code === 10003) return 'Unknown Channel (10003) — the ID doesn\'t exist, or the bot isn\'t in that server';
+  if (code === 50001) return 'Missing Access (50001) — the bot can\'t see that channel; give its role View Channel';
+  if (code === 50013) return 'Missing Permissions (50013) — the bot can see the channel but lacks Send Messages / Embed Links';
+  return `${err?.message || err}${code ? ` (code ${code})` : ''}`;
 }
 
 function notifyAdmin(msg) {
@@ -2490,10 +2523,16 @@ client.once('ready', async () => {
       .setDescription(warnings.map(w => `• ${w}`).join('\n').slice(0, 4000))] });
   }
   // Deploy ping is opt-in only (channelFor('deploy') is null when unset) — with a fallback,
-  // every Watchtower restart would ping the admin channel.
-  notifyChannel('deploy', { embeds: [brandedEmbed(COLORS.SUCCESS)
-    .setTitle('🚀 Bot Online')
-    .setDescription(`Restarted and connected as **${client.user.tag}**${process.env.GIT_SHA ? ` — image \`${process.env.GIT_SHA}\`` : ''}.`)] });
+  // every Watchtower restart would ping the admin channel. Whichever way it goes, say so in the
+  // log: "connected" on its own used to read as success even when the ping never left the process.
+  if (!channelFor('deploy')) {
+    log.info('Deploy ping skipped: DEPLOY_CHANNEL_ID is unset (set it to a channel ID to get a "Bot Online" post after each restart)');
+  } else {
+    const sent = await notifyChannel('deploy', { embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle('🚀 Bot Online')
+      .setDescription(`Restarted and connected as **${client.user.tag}**${process.env.GIT_SHA ? ` — image \`${process.env.GIT_SHA}\`` : ''}.`)] });
+    if (sent) log.ok(`Deploy ping posted to channel ${channelFor('deploy')}${process.env.GIT_SHA ? ` (image ${process.env.GIT_SHA})` : ' (no GIT_SHA baked in — this image was not built by CI)'}`);
+  }
   rehydratePendingEmails();
   await registerSlashCommands();
   startExpressServer();
