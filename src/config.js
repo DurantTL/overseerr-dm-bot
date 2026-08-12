@@ -17,6 +17,43 @@ function parseId(v) {
   return String(v).trim().replace(/^['"]|['"]$/g, '').trim();
 }
 
+function isPlaceholderValue(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return false;
+  return /^changeme$/i.test(value)
+    || /^<[^<>]+>$/.test(value)
+    || /^(?:https?:\/\/)?your-[a-z0-9-]+(?:[\/:]|$)/i.test(value)
+    || /^[a-z0-9-]*-name-or-machine-id$/i.test(value)
+    || /^main-server-1$/i.test(value)
+    || /(?:^|[\/:])path-on-[a-z0-9-]+(?:[\/:]|$)/i.test(value)
+    || /^(?:https?:\/\/)?(?:[^./]+\.)*example\.com(?:[\/:]|$)/i.test(value);
+}
+
+function parseIdentityList(raw) {
+  return String(raw || '').split(',').map(s => s.trim().toLowerCase()).filter(value => value && !isPlaceholderValue(value));
+}
+
+function omitPlaceholder(raw) {
+  return isPlaceholderValue(raw) ? '' : (raw || '');
+}
+
+function placeholderConfigWarnings(config, env) {
+  const identityKeys = new Set(['PH_SERVER_NAMES', 'CA_EDGE_SERVER_NAMES', 'PRIMARY_SERVER_NAMES']);
+  const warnings = [];
+  for (const key of Object.keys(config)) {
+    const raw = env[key];
+    if (!raw || !String(raw).split(',').some(isPlaceholderValue)) continue;
+    if (identityKeys.has(key)) {
+      warnings.push(`\`${key}\` contains an example placeholder; it was ignored so it cannot enable strict webhook identity routing. Set the real Plex server name or machine ID.`);
+    } else if (key === 'PH_TUNNEL_HEALTH_URL') {
+      warnings.push('`PH_TUNNEL_HEALTH_URL` contains an example placeholder; it was ignored so the tunnel watchdog stays disabled instead of sending false outage alerts.');
+    } else {
+      warnings.push(`\`${key}\` contains an example placeholder. Replace it with a real value or unset it before relying on this setting.`);
+    }
+  }
+  return warnings;
+}
+
 const CONFIG = {
   // Logging: level filters what gets emitted (debug < info < warn < error); format switches
   // between the human-readable default and single-line JSON for log shippers (Loki/ELK/CloudWatch).
@@ -211,9 +248,9 @@ const CONFIG = {
   // payloads (Server.title/uuid), lowercased. PH_SERVER_NAMES marks the Philippines cache box,
   // CA_EDGE_SERVER_NAMES marks the California cache/fallback node, and PRIMARY_SERVER_NAMES
   // strictly identifies only full Main storage servers. Viewing groups remain Main/Philippines.
-  PH_SERVER_NAMES: (process.env.PH_SERVER_NAMES || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
-  CA_EDGE_SERVER_NAMES: (process.env.CA_EDGE_SERVER_NAMES || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
-  PRIMARY_SERVER_NAMES: (process.env.PRIMARY_SERVER_NAMES || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+  PH_SERVER_NAMES: parseIdentityList(process.env.PH_SERVER_NAMES),
+  CA_EDGE_SERVER_NAMES: parseIdentityList(process.env.CA_EDGE_SERVER_NAMES),
+  PRIMARY_SERVER_NAMES: parseIdentityList(process.env.PRIMARY_SERVER_NAMES),
   // rclone destination root for the cache, e.g. `phbox:/cache` or `phbox:cache`.
   STAGE_RCLONE_REMOTE: (process.env.STAGE_RCLONE_REMOTE || '').replace(/\/$/, ''),
   STAGE_RCLONE_BINARY: process.env.STAGE_RCLONE_BINARY || 'rclone',
@@ -248,7 +285,7 @@ const CONFIG = {
   EDGE_PROMOTE_MAX_PER_USER_PER_DAY: Number.parseInt(process.env.EDGE_PROMOTE_MAX_PER_USER_PER_DAY || '6', 10),
   // Tunnel watchdog: any HTTP response from this URL (e.g. the PH Plex /identity endpoint via
   // the VPS tunnel) counts as up; connect errors/timeouts count as down.
-  PH_TUNNEL_HEALTH_URL: process.env.PH_TUNNEL_HEALTH_URL || '',
+  PH_TUNNEL_HEALTH_URL: omitPlaceholder(process.env.PH_TUNNEL_HEALTH_URL),
   PH_TUNNEL_CHECK_MINUTES: Number.parseInt(process.env.PH_TUNNEL_CHECK_MINUTES || '5', 10),
   PH_TUNNEL_FAILS_BEFORE_ALERT: Number.parseInt(process.env.PH_TUNNEL_FAILS_BEFORE_ALERT || '3', 10),
   // ---- Regional tiering ("edge cache"): per-node curation of the replicated library ----
@@ -303,6 +340,8 @@ const CONFIG = {
   NEVER_DELETE_MEDIA_IDS: process.env.NEVER_DELETE_MEDIA_IDS ? process.env.NEVER_DELETE_MEDIA_IDS.split(',').map(s => s.trim()) : [],
 };
 
+CONFIG.PLACEHOLDER_WARNINGS = placeholderConfigWarnings(CONFIG, process.env);
+
 const REQUIRED_ENV = [
   'DISCORD_BOT_TOKEN', 'DISCORD_CLIENT_ID', 'DISCORD_GUILD_ID', 'ADMIN_CHANNEL_ID', 'ADMIN_USER_ID',
   'OVERSEERR_URL', 'OVERSEERR_API_KEY', 'TUNNEL_DOMAIN', 'RAID_PATH',
@@ -347,7 +386,7 @@ function validateConfig() {
 // Non-fatal sanity checks for risky-but-valid configurations. Logged at startup and posted once
 // to the system channel after connect, so a dangerous combo can't sit unnoticed.
 function configWarnings() {
-  const warnings = [];
+  const warnings = [...CONFIG.PLACEHOLDER_WARNINGS];
   if (!['debug', 'info', 'warn', 'error'].includes(CONFIG.LOG_LEVEL)) {
     warnings.push(`\`LOG_LEVEL=${CONFIG.LOG_LEVEL}\` is not a valid level (use \`debug\`, \`info\`, \`warn\`, or \`error\`) — treating it as \`info\`.`);
   }
@@ -427,4 +466,4 @@ function configWarnings() {
   return warnings;
 }
 
-module.exports = { parseBool, parseId, CONFIG, REQUIRED_ENV, validateConfig, configWarnings };
+module.exports = { parseBool, parseId, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings, CONFIG, REQUIRED_ENV, validateConfig, configWarnings };

@@ -3,7 +3,7 @@
 // routes internet-reachable, independent of whether live deletion is on (see issue #59).
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { CONFIG, validateConfig } = require('../../src/config');
+const { CONFIG, validateConfig, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings } = require('../../src/config');
 
 test('config: validateConfig requires webhook secrets whenever TUNNEL_DOMAIN is set', () => {
   // A minimal, otherwise-valid baseline so only the field under test trips validateConfig().
@@ -30,4 +30,45 @@ test('config: validateConfig requires webhook secrets whenever TUNNEL_DOMAIN is 
   CONFIG.TAUTULLI_WEBHOOK_SECRET = 'tautulli-secret';
 
   assert.doesNotThrow(() => validateConfig(), 'restored to a safe config: passes again');
+});
+
+test('config: known example placeholders are detected only at value boundaries', () => {
+  for (const value of [
+    'CHANGEME', '<node-tailscale-ip>', 'https://your-ph-tunnel/identity',
+    'philippines-plex-name-or-machine-id', 'main-server-1',
+    'phbox:/path-on-5tb-external-drive', 'https://files.example.com/download',
+  ]) {
+    assert.strictEqual(isPlaceholderValue(value), true, `${value} is a placeholder`);
+  }
+  for (const value of ['ph-prod', 'my-changeme-server', 'main-server-10', 'yourself-host', 'files.example.com.au']) {
+    assert.strictEqual(isPlaceholderValue(value), false, `${value} is a real-looking value`);
+  }
+});
+
+test('config: routing placeholders are treated as unset', () => {
+  assert.deepStrictEqual(parseIdentityList('philippines-plex-name-or-machine-id,ph-prod'), ['ph-prod'], 'PH placeholder is removed but a real identity remains');
+  assert.deepStrictEqual(parseIdentityList('california-plex-name-or-machine-id,ca-prod'), ['ca-prod'], 'CA placeholder is removed but a real identity remains');
+  assert.deepStrictEqual(parseIdentityList('main-server-1,durant-main'), ['durant-main'], 'primary placeholder is removed but a real identity remains');
+  assert.strictEqual(omitPlaceholder('https://your-ph-tunnel/identity'), '', 'placeholder tunnel URL disables the watchdog');
+  assert.strictEqual(omitPlaceholder('https://ph.example.net/identity'), 'https://ph.example.net/identity', 'real tunnel URL is preserved');
+});
+
+test('config: each placeholder key produces one warning with its consequence', () => {
+  const config = {
+    PH_SERVER_NAMES: [], CA_EDGE_SERVER_NAMES: [], PRIMARY_SERVER_NAMES: [],
+    PH_TUNNEL_HEALTH_URL: '', STAGE_RCLONE_REMOTE: 'phbox:/path-on-5tb-external-drive',
+  };
+  const env = {
+    PH_SERVER_NAMES: 'philippines-plex-name-or-machine-id',
+    CA_EDGE_SERVER_NAMES: 'california-plex-name-or-machine-id',
+    PRIMARY_SERVER_NAMES: 'main-server-1',
+    PH_TUNNEL_HEALTH_URL: 'https://your-ph-tunnel/identity',
+    STAGE_RCLONE_REMOTE: 'phbox:/path-on-5tb-external-drive',
+  };
+  const warnings = placeholderConfigWarnings(config, env);
+  for (const key of Object.keys(env)) {
+    assert.strictEqual(warnings.filter(warning => warning.includes(key)).length, 1, `${key} warns exactly once`);
+  }
+  assert.match(warnings.find(warning => warning.includes('PH_SERVER_NAMES')), /ignored.*strict webhook identity routing/, 'identity warning explains routing consequence');
+  assert.match(warnings.find(warning => warning.includes('PH_TUNNEL_HEALTH_URL')), /watchdog stays disabled.*false outage alerts/, 'tunnel warning explains alert consequence');
 });
