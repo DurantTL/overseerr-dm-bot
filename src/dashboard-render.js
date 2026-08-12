@@ -20,6 +20,8 @@ const DASHBOARD_CSS = `
   .topbar { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 16px 8px; }
   .topbar h1 { margin:0; font-size:16px; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .topbar .brand { color:var(--accent); }
+  .topbar-search { flex:1 1 280px; max-width:480px; display:flex; gap:8px; }
+  .topbar-search input { width:100%; min-width:100px; padding:9px 11px; border-radius:9px; border:1px solid var(--border); background:var(--panel); color:var(--text); font-size:14px; }
   .nav { display:flex; gap:8px; overflow-x:auto; padding:4px 16px 10px; scrollbar-width:none; }
   .nav::-webkit-scrollbar { display:none; }
   .chip { flex:0 0 auto; padding:7px 14px; border-radius:999px; background:var(--panel2); border:1px solid var(--border); color:var(--text); font-size:13px; text-decoration:none; }
@@ -96,6 +98,8 @@ const DASHBOARD_CSS = `
   .save-note { font-size:12.5px; color:var(--muted); }
   .save-note.ok { color:var(--ok); } .save-note.bad { color:#fca5a5; }
   @media (max-width:560px) {
+    .topbar { flex-wrap:wrap; }
+    .topbar-search { order:3; flex-basis:100%; max-width:none; }
     .item { flex-wrap:wrap; }
     .item-right { flex-basis:100%; max-width:none; text-align:left; margin-left:19px; margin-top:2px; }
     .actions .btn { flex:1 1 45%; }
@@ -114,7 +118,7 @@ const DASHBOARD_CSS = `
 // server-rendered and present in the DOM; the script only toggles which one is visible, so the
 // page still works as one long document if scripting is unavailable (nothing is hidden until the
 // script runs). The active tab lives in location.hash so the 60s auto-refresh comes back to it.
-function renderPage(title, bodyHtml, { showLogout = false, nav = [], autoRefresh = false, tabs = false } = {}) {
+function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, searchQuery = '', nav = [], autoRefresh = false, tabs = false } = {}) {
   const navHtml = nav.length
     ? `<nav class="nav" role="tablist">${nav.map(([id, label]) => (tabs
       ? `<button class="chip tab" role="tab" type="button" data-tab="${escapeHtml(id)}" aria-selected="false">${escapeHtml(label)}</button>`
@@ -157,6 +161,7 @@ function renderPage(title, bodyHtml, { showLogout = false, nav = [], autoRefresh
   <header class="hdr">
     <div class="topbar">
       <h1><span class="brand">Durant</span> Media Server</h1>
+      ${showSearch ? `<form class="topbar-search" method="get" action="/admin/search"><input type="search" name="q" value="${escapeHtml(searchQuery)}" minlength="2" placeholder="Search requests, users, library, audit" aria-label="Search dashboard"><button class="btn" type="submit">Search</button></form>` : ''}
       ${showLogout ? '<form class="logout" method="post" action="/admin/logout"><button class="btn" type="submit">Log out</button></form>' : ''}
     </div>
     ${navHtml}
