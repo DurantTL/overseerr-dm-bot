@@ -52,4 +52,3 @@ Season-pack search handles old, dormant, or explicitly requested series when eno
 Plex and Tautulli webhooks drive watched events, keep/delete prompts, requester updates, and optional play-triggered staging. Cross-source watched-event identity is still source-specific, so the same play can produce two prompts; [[Backlog#Member experience|#126]] addresses that.
 
 Regional tiering builds per-node manifests from universal popularity, node demand, member requests, keep lists, available capacity, and recent additions. The agent verifies the storage mount and Receive Only Syncthing mode before applying ignores or pruning files. Missing inventory blocks plan application rather than risking an uncontrolled re-download.
-

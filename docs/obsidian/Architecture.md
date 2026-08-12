@@ -59,4 +59,3 @@ The local SQLite database stores identity links, coordination state, audit histo
 ## Deployment path
 
 GitHub Actions runs lint, tests, and a Docker build. Pushes to `main` publish `latest` and commit-addressed images to GHCR. Docker Compose uses `pull_policy: always`; Watchtower can update the opted-in container. The runtime image is `node:24-slim`, runs as the unprivileged `node` user, and persists `/app/data` in a Docker volume.
-

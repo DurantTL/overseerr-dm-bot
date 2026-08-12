@@ -60,4 +60,3 @@ Deep operational sources:
 - [Regional tiering](../regional-tiering.md)
 - [AvistaZ pipeline](../avistaz-pipeline.md)
 - [Edge agent](../../agent/README.md)
-

@@ -40,4 +40,3 @@ This ordering follows the live umbrella issue while adding one architectural con
 ## Documentation note
 
 The existing roadmap documents contain useful historical status, but the live issue tracker is newer and should control current priorities. This vault therefore links to those documents for architectural detail and uses [[Backlog]] for current work status.
-

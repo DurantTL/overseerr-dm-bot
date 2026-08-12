@@ -53,4 +53,3 @@ This is a snapshot of the live issue tracker on 2026-08-11. GitHub remains autho
 `#122` -> `#125` -> `#116` -> `#117` -> `#127` -> `#133` for webhooks, followed by the remaining issues as demand requires.
 
 The only explicit hard dependency is `#118` blocking `#119`. Coordination edges worth preserving are `#116` with `#123`, `#117` with `#134`, and the pending-list work shared by `#119` and `#127`. See [[Project Graph#Delivery graph]].
-
