@@ -41,7 +41,7 @@ const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = requi
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
-const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable } = require('./src/dashboard-render');
+const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup } = require('./src/dashboard-render');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, parseReleaseName, seriesToken, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
 const { runBackup, rotateBackups } = require('./scripts/backup-db');
@@ -7100,19 +7100,13 @@ function startExpressServer() {
       const tierItems = tierNodes.map(n => {
         const plan = getTierPlan(n.name);
         const rep = lastReportByNode[n.name];
-        // Liveness from the heartbeat (bumped on every check-in incl. no-op runs) — a long-idle,
-        // fully-converged node has no recent tier_agent_report audit row but still heartbeats, so
-        // keying "agent last seen" off the report alone would falsely read as stale/stopped.
-        const beatAt = plan?.lastHeartbeatAt || (rep ? sqliteUtcMs(rep.at) : null);
-        const hasErr = !!(rep && rep.errors) || !!plan?.lastErrors?.length;
-        const repBits = beatAt
-          ? `agent ${fmtAgo(beatAt)}${rep && rep.bytesFreed ? ` · freed ${fmtSpace(rep.bytesFreed)}` : ''}${hasErr ? ' · ⚠️ errors' : ''}`
-          : 'no agent report yet';
+        const status = tierNodeStatus(plan, rep, now);
         return {
-          state: !n.enabled ? 'skip' : (hasErr ? 'warn' : 'ok'),
+          state: !n.enabled ? 'skip' : status.state,
           title: `${n.name}${n.full ? ' · full master' : ''}${n.sticky ? ' · sticky' : ''}`,
-          sub: `${n.access} · ${n.demand_source}${n.demand_source === 'atime' && n.atime_mask ? ` (mask ${n.atime_mask})` : ''} · ${n.transport} · ${fmtSpace(n.usable_bytes || 0)} @ ${n.headroom_pct}% headroom`,
-          right: `${plan?.converged ? `converged ${plan.converged.planHash} ${fmtAgo(plan.converged.convergedAt)}` : plan?.published ? `published ${plan.published.planHash} (pending) ${fmtAgo(plan.published.publishedAt)}` : 'no plan applied'} · ${repBits}`,
+          sub: `${n.access} · ${n.demand_source}${n.demand_source === 'atime' && n.atime_mask ? ` (mask ${n.atime_mask})` : ''} · ${n.transport} · ${fmtSpace(n.usable_bytes || 0)} @ ${n.headroom_pct}% headroom · ${status.details}`,
+          right: status.status,
+          actions: status.setup ? [{ label: 'Set up this node', setupNode: n.name }] : [],
         };
       });
 
@@ -7210,8 +7204,9 @@ function startExpressServer() {
         <section class="panel" data-panel="edge">
           <div class="card">
             <h2>📦 Tier Nodes</h2>
-            ${renderItemList(tierItems, 'No tier nodes registered — /tier-node add creates one.')}
+            ${renderItemList(tierItems, 'No tier nodes registered yet.')}
           </div>
+          ${renderTierNodeSetup(tierNodes)}
           <div class="card">
             <h2>🩺 Edge Readiness</h2>
             ${renderItemList(edgeChecks.map(c => ({ state: c.status === 'fail' ? 'down' : c.status, title: c.name, sub: c.detail })), 'No edge checks available.')}
@@ -7265,6 +7260,53 @@ function startExpressServer() {
               }
             });
           });
+          document.querySelectorAll('[data-setup-node]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              var form = document.getElementById('tier-install-form');
+              if (!form) return;
+              form.elements.node.value = btn.dataset.setupNode;
+              document.getElementById('tier-node-setup').scrollIntoView({ behavior: 'smooth' });
+              form.elements.folderRoot.focus();
+            });
+          });
+          (function () {
+            var registerForm = document.getElementById('tier-register-form');
+            var installForm = document.getElementById('tier-install-form');
+            [registerForm, installForm].filter(Boolean).forEach(function (form) {
+              form.addEventListener('input', function () { window.__dirtySettings = true; });
+            });
+            if (registerForm) registerForm.addEventListener('submit', async function (event) {
+              event.preventDefault();
+              var values = Object.fromEntries(new FormData(registerForm));
+              values.full = registerForm.elements.full.checked;
+              var note = document.getElementById('tier-register-note');
+              var r = await fetch('/admin/action/tier-node', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+              var result = await r.json().catch(function () { return {}; });
+              if (!r.ok || result.ok === false) { note.textContent = result.error || 'Registration failed.'; note.className = 'save-note bad'; return; }
+              window.__dirtySettings = false;
+              location.hash = 'edge';
+              location.reload();
+            });
+            if (installForm) installForm.addEventListener('submit', async function (event) {
+              event.preventDefault();
+              if (!confirm('Rotate this node token? The existing agent will stop working until this new command is installed.')) return;
+              var values = Object.fromEntries(new FormData(installForm));
+              values.confirmed = true;
+              var note = document.getElementById('tier-install-note');
+              var r = await fetch('/admin/action/tier-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+              var result = await r.json().catch(function () { return {}; });
+              if (!r.ok || result.ok === false) { note.textContent = result.error || 'Command generation failed.'; note.className = 'save-note bad'; return; }
+              document.getElementById('tier-install-command').textContent = result.command;
+              document.getElementById('tier-install-result').hidden = false;
+              note.textContent = 'Token rotated. Copy this command now.';
+              note.className = 'save-note ok';
+            });
+            var copy = document.getElementById('tier-copy-command');
+            if (copy) copy.addEventListener('click', async function () {
+              await navigator.clipboard.writeText(document.getElementById('tier-install-command').textContent);
+              copy.textContent = 'Copied';
+            });
+          })();
           (function () {
             var note = function (group, text, cls) {
               var el = document.querySelector('[data-note="' + group + '"]');
@@ -7354,6 +7396,40 @@ function startExpressServer() {
       const users = await fetchOverseerrUsers().catch(() => []);
       const toDelete = users.filter(u => u.userType !== 1 && ['displayName', 'email', 'username'].some(k => (u[k] || '').toLowerCase().startsWith('deleted_user')));
       res.json({ wouldRemove: toDelete.length, users: toDelete.map(u => ({ id: u.id, email: u.email, username: u.username })) });
+    });
+    app.post('/admin/action/tier-node', dashboardAuth, (req, res) => {
+      const name = String(req.body?.name || '').trim().toLowerCase();
+      const usableGb = Number(req.body?.usableGb);
+      const access = req.body?.access;
+      const demandSource = req.body?.demandSource;
+      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name) || !Number.isInteger(usableGb) || usableGb < 1
+        || !['open', 'restricted'].includes(access) || !['tautulli', 'plex', 'atime'].includes(demandSource)) {
+        audit('dashboard_tier_node_upserted', { ...dashboardActor(req), ok: false, node: name || null, reason: 'invalid_request' });
+        return res.status(400).json({ ok: false, error: 'Enter a valid node name, capacity, access, and demand source.' });
+      }
+      const { created, node } = upsertTierNode({ name, usable_bytes: usableGb * 1024 ** 3, access, demand_source: demandSource, full: req.body?.full === true });
+      audit('dashboard_tier_node_upserted', { ...dashboardActor(req), ok: true, node: name, created });
+      return res.json({ ok: true, node: { name: node.name }, message: created ? 'Node registered.' : 'Node updated.' });
+    });
+    app.post('/admin/action/tier-token', dashboardAuth, (req, res) => {
+      const node = String(req.body?.node || '').trim().toLowerCase();
+      const folderRoot = String(req.body?.folderRoot || '').trim();
+      const syncthingApiKey = String(req.body?.syncthingApiKey || '').trim();
+      const syncthingFolderId = String(req.body?.syncthingFolderId || '').trim();
+      const mountRoot = String(req.body?.mountRoot || '').trim();
+      const mountMarker = String(req.body?.mountMarker || '').trim();
+      if (req.body?.confirmed !== true) return res.status(400).json({ ok: false, error: 'Token rotation confirmation is required.' });
+      if (!getTierNode(node)) return res.status(404).json({ ok: false, error: 'Node not found.' });
+      if (!folderRoot || !syncthingApiKey || !syncthingFolderId || ((mountRoot || mountMarker) && !(mountRoot && mountMarker))) {
+        return res.status(400).json({ ok: false, error: 'Folder root, Syncthing API key, and folder ID are required. Mount root and marker must be supplied together.' });
+      }
+      upsertTierNode({ name: node, folder_root: folderRoot });
+      const token = setTierAgentToken(node);
+      const botUrl = CONFIG.TUNNEL_DOMAIN ? `https://${CONFIG.TUNNEL_DOMAIN}` : `http://127.0.0.1:${CONFIG.PORT}`;
+      const command = tierInstallCommand({ botUrl, node, token, folderRoot, syncthingApiKey, syncthingFolderId, mountRoot, mountMarker });
+      audit('dashboard_tier_agent_token_rotated', { ...dashboardActor(req), node });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ ok: true, command });
     });
     app.post('/admin/action/search', dashboardAuth, async (req, res) => {
       const kind = req.body?.kind;

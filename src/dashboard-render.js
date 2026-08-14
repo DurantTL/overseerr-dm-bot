@@ -1,6 +1,6 @@
 'use strict';
 
-const { fmtDuration } = require('./util');
+const { fmtDuration, fmtSpace } = require('./util');
 
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
@@ -99,6 +99,12 @@ const DASHBOARD_CSS = `
   .setting-foot { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:14px; }
   .save-note { font-size:12.5px; color:var(--muted); }
   .save-note.ok { color:var(--ok); } .save-note.bad { color:#fca5a5; }
+  .setup-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:10px; }
+  .setup-grid label { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:12px; }
+  .setup-grid input, .setup-grid select { width:100%; padding:10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:14px; }
+  .setup-check { display:flex; align-items:center; gap:8px; color:var(--text); font-size:13px; margin:12px 0; }
+  .setup-output { white-space:pre-wrap; overflow-wrap:anywhere; background:#131316; border:1px solid var(--border); border-radius:10px; padding:12px; font-size:12px; }
+  .setup-warning { color:#fca5a5; font-size:12.5px; }
   @media (max-width:560px) {
     .topbar { flex-wrap:wrap; }
     .topbar-search { order:3; flex-basis:100%; max-width:none; }
@@ -207,10 +213,83 @@ function renderItemList(items, emptyText = 'Nothing right now.') {
         <div class="item-title">${escapeHtml(i.title || '')}</div>
         ${i.sub ? `<div class="item-sub">${escapeHtml(i.sub)}</div>` : ''}
         ${typeof i.pct === 'number' ? renderBar(i.pct) : ''}
-        ${i.actions?.length ? `<div class="item-actions">${i.actions.map(action => `<button class="btn${action.danger ? ' danger' : ''}" type="button" data-post="${escapeHtml(action.url)}" data-body="${escapeHtml(JSON.stringify(action.body || {}))}"${action.confirm ? ` data-confirm="${escapeHtml(action.confirm)}"` : ''}${action.disabled ? ' disabled' : ''}${action.title ? ` title="${escapeHtml(action.title)}"` : ''}>${escapeHtml(action.label)}</button>`).join('')}</div>` : ''}
+        ${i.actions?.length ? `<div class="item-actions">${i.actions.map(action => `<button class="btn${action.danger ? ' danger' : ''}" type="button"${action.setupNode ? ` data-setup-node="${escapeHtml(action.setupNode)}"` : ` data-post="${escapeHtml(action.url)}" data-body="${escapeHtml(JSON.stringify(action.body || {}))}"`}${action.confirm ? ` data-confirm="${escapeHtml(action.confirm)}"` : ''}${action.disabled ? ' disabled' : ''}${action.title ? ` title="${escapeHtml(action.title)}"` : ''}>${escapeHtml(action.label)}</button>`).join('')}</div>` : ''}
       </div>
       ${i.right ? `<div class="item-right">${escapeHtml(i.right)}</div>` : ''}
     </div>`).join('')}</div>`;
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+}
+
+function tierInstallCommand({ botUrl, node, token, folderRoot, syncthingApiKey, syncthingFolderId, mountRoot, mountMarker }) {
+  const env = [
+    `TIER_AGENT_TOKEN="$TIER_AGENT_TOKEN"`,
+    `TIER_FOLDER_ROOT=${shellQuote(folderRoot)}`,
+    `SYNCTHING_API_KEY=${shellQuote(syncthingApiKey)}`,
+    `SYNCTHING_FOLDER_ID=${shellQuote(syncthingFolderId)}`,
+  ];
+  if (mountRoot) env.push(`TIER_MOUNT_ROOT=${shellQuote(mountRoot)}`);
+  if (mountMarker) env.push(`TIER_MOUNT_MARKER=${shellQuote(mountMarker)}`);
+  return [
+    `export TIER_AGENT_TOKEN=${shellQuote(token)}`,
+    `curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" ${shellQuote(`${botUrl}/agent/install/${node}`)} \\`,
+    `  | env ${env.join(' ')} sh`,
+    'unset TIER_AGENT_TOKEN',
+  ].join('\n');
+}
+
+function tierNodeStatus(plan, report, now = Date.now()) {
+  const checkIn = plan?.lastHeartbeatAt || (report ? sqliteUtcMs(report.at) : null);
+  const publishedHash = plan?.published?.planHash || null;
+  const convergedHash = plan?.converged?.planHash || null;
+  const matches = !!publishedHash && publishedHash === convergedHash;
+  const errors = plan?.lastErrors?.length ? plan.lastErrors.join('; ') : report?.errors;
+  const details = [
+    publishedHash ? `last plan ${publishedHash}` : 'no plan published',
+    checkIn ? `last check-in ${fmtDuration(Math.max(0, now - checkIn))} ago` : 'never checked in',
+    report?.bytesFreed ? `freed ${fmtSpace(report.bytesFreed)} last run` : 'freed 0 B last run',
+    publishedHash ? `published manifest ${matches ? 'matches' : 'does not match'} last confirmed plan` : null,
+    errors ? `errors: ${errors}` : null,
+  ].filter(Boolean).join(' · ');
+  if (!checkIn) return { state: 'warn', status: 'never reported', details, setup: true };
+  if (matches && now - checkIn > 45 * 60 * 1000) return { state: 'down', status: 'stale', details };
+  if (matches) return { state: errors ? 'warn' : 'ok', status: errors ? 'converged with errors' : 'converged', details };
+  return { state: 'warn', status: 'reported, not converged', details };
+}
+
+function renderTierNodeSetup(nodes) {
+  const options = nodes.map(node => `<option value="${escapeHtml(node.name)}">${escapeHtml(node.name)}</option>`).join('');
+  return `<div class="card" id="tier-node-setup">
+    <h2>Tier Node Setup<span class="sub">Register a node, then generate its complete one-time install command.</span></h2>
+    <form id="tier-register-form">
+      <div class="setup-grid">
+        <label>Node name<input name="name" pattern="[a-z0-9][a-z0-9_-]{0,63}" required></label>
+        <label>Usable capacity (GB)<input name="usableGb" type="number" min="1" step="1" required></label>
+        <label>Access<select name="access"><option value="open">Full</option><option value="restricted">Restricted</option></select></label>
+        <label>Demand source<select name="demandSource"><option value="tautulli">Tautulli</option><option value="plex">Plex</option><option value="atime">File access time</option></select></label>
+      </div>
+      <label class="setup-check"><input name="full" type="checkbox"> Keep a full master copy on this node</label>
+      <button class="btn primary" type="submit">Register node</button>
+      <span class="save-note" id="tier-register-note"></span>
+    </form>
+    ${nodes.length ? `<form id="tier-install-form">
+      <h2>Generate install command</h2>
+      <div class="setup-grid">
+        <label>Node<select name="node">${options}</select></label>
+        <label>TIER_FOLDER_ROOT<input name="folderRoot" placeholder="/mnt/media" required></label>
+        <label>SYNCTHING_API_KEY<input name="syncthingApiKey" type="password" autocomplete="off" required></label>
+        <label>SYNCTHING_FOLDER_ID<input name="syncthingFolderId" required></label>
+        <label>TIER_MOUNT_ROOT (optional)<input name="mountRoot" placeholder="/mnt/media"></label>
+        <label>TIER_MOUNT_MARKER (optional)<input name="mountMarker" placeholder=".tier-media-ok"></label>
+      </div>
+      <p class="setup-warning">Run the generated command in a root shell. Generating it rotates the node token immediately, so any existing agent using the old token will stop checking in.</p>
+      <button class="btn danger" type="submit">Rotate token and generate command</button>
+      <span class="save-note" id="tier-install-note"></span>
+      <div id="tier-install-result" hidden><p class="setup-warning">This command is shown once. Copy it before leaving or reloading this page.</p><pre class="setup-output" id="tier-install-command"></pre><button class="btn" type="button" id="tier-copy-command">Copy command</button></div>
+    </form>` : '<p class="muted">Register a node to generate its install command.</p>'}
+  </div>`;
 }
 
 function renderLogin(isError, message) {
@@ -315,4 +394,7 @@ module.exports = {
   renderHealthBadges,
   renderTable,
   renderSection,
+  tierInstallCommand,
+  tierNodeStatus,
+  renderTierNodeSetup,
 };
