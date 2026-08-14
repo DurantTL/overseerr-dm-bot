@@ -54,6 +54,7 @@ const { priorityKey, orderByPriority, isPinned, nextRank } = require('./src/prio
 const { summarizeImportRejections, renderRejectionLines, looksLikeMappingProblem } = require('./src/import-rejections');
 const { normalizeSearchQuery, searchDashboard } = require('./src/search');
 const { runEpisodeRecoverySweep } = require('./src/episode-recovery');
+const { createRequestGate } = require('./src/request-gate');
 
 // Centralized embed palette so every notification shares one consistent look.
 const COLORS = {
@@ -409,83 +410,54 @@ async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discord
   return true;
 }
 
-// Bot-side approval gate: create the stashed Seerr request an admin just approved. Shared by the
-// plain Approve button and Approve + AvistaZ Fallback (azPreAuth lets the escalation watchdog
-// auto-escalate instead of asking first).
+const { approveGatedRequest, denyGatedRequest } = createRequestGate({
+  takePendingRequest,
+  restashPendingRequest,
+  quotaBlockReason,
+  createSeerrRequestAs,
+  verifySeerrRequestCreated,
+  markApprovalNoticePosted,
+  upsertRequest,
+  canEscalate,
+  recordEscalationWatch,
+  tagPreAuthorizedMedia,
+  bumpTrustScore,
+  resetTrustScore,
+  addRequestSubscriber,
+  subscriberKeyFor,
+  audit,
+  log,
+  notifyApproved: pending => dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
+    .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Request Approved`)
+    .setDescription(`**${pending.label}** was approved and is being grabbed now. You'll get a DM when it's on Plex! 🍿`)] }),
+  notifyAlreadyRequested: (pending, subscribed) => dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.INFO)
+    .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Already Requested`)
+    .setDescription(`Good news — **${pending.label}** is already in the system (requested earlier or already available).${subscribed ? ' I\'ll DM you when it lands.' : ''} Check Plex, or track it with \`/request-status\`.`)] }),
+  notifyDenied: pending => dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.DANGER)
+    .setTitle('Request Declined')
+    .setDescription(`Sorry — **${pending.label}** was declined. Reach out to an admin if you think this was a mistake.`)] }),
+});
+
 async function handleGateApprove(interaction, nonce, { azPreAuth }) {
-  const pending = takePendingRequest(nonce);
-  if (!pending) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
   await interaction.deferUpdate();
-  // Quota can drift between /request and this click — another of the requester's own gated
-  // requests may have been approved in the meantime, or the quota period may have reset. This
-  // doesn't block the click (an admin knowingly approving stays trivial, same as elsewhere in
-  // this gate), but it does make the drift visible instead of silently ignoring it.
-  const quotaWarning = await quotaBlockReason(pending.seerrUserId, pending.discordId, pending.mediaType, { tmdbId: pending.tmdbId, is4k: pending.is4k }).catch(() => null);
-  try {
-    const data = await createSeerrRequestAs(pending.seerrUserId, pending.mediaType, pending.tmdbId, pending.is4k);
-    const mediaKey = pending.mediaType === 'tv' && data?.media?.tvdbId ? `tvdb:${data.media.tvdbId}` : `tmdb:${pending.tmdbId}`;
-    if (data?.id != null) markApprovalNoticePosted(data.id); // suppress the duplicate webhook embed
-    // Don't take Seerr's "accepted" at face value — it can lose the request moments later
-    // ('Media data not found' in its log). Restash and leave the buttons live (omitting
-    // `components` keeps them) so the admin can retry once the Seerr-side problem is fixed.
-    const verified = data?.id != null ? await verifySeerrRequestCreated(data.id, pending.mediaType) : { ok: true };
-    if (!verified.ok) {
-      restashPendingRequest(nonce, pending);
-      audit('external_api_error', { provider: 'overseerr', error: `request #${data.id} failed post-create verification: ${verified.reason}`, action: 'gate_approve_verify', targetDiscordId: pending.discordId });
-      return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
-        .setTitle(`⚠️ Seerr lost the request — ${pending.label}`)
-        .setDescription(`Seerr accepted request #${data.id} for <@${pending.discordId}>, but ${verified.reason}.\nNothing will download. Check the Seerr container logs from the last minute for the underlying error, then hit Approve again to retry.`)] });
-    }
-    // The gate stored the request under tmdb:<id>; keep that row in sync too when the webhook
-    // key differs (tv → tvdb).
-    upsertRequest(data?.id, mediaKey, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
-    if (mediaKey !== `tmdb:${pending.tmdbId}`) upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
-    // Only watch requests Seerr verifiably kept — recording earlier would make the escalation
-    // watchdog alert on requests that never reached the arrs at all.
-    if (canEscalate(pending)) {
-      recordEscalationWatch({ mediaType: pending.mediaType, tmdbId: pending.tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: pending.label, discordId: pending.discordId, preAuthorized: azPreAuth });
-      // Pre-authorized = this title is definitely AvistaZ-bound, so put the arr tag on right
-      // away instead of waiting for the watchdog — the tag-gated AvistaZ indexer then applies
-      // from the very first arr search. Background with retries: Seerr only adds the title to
-      // Radarr/Sonarr a few seconds after accepting the request.
-      if (azPreAuth) {
-        tagPreAuthorizedMedia({ mediaType: pending.mediaType, tmdbId: pending.tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: pending.label })
-          .catch(err => log.warn(`Approval-time AvistaZ tagging failed for ${pending.label}: ${err.message}`));
-      }
-    }
-    bumpTrustScore(pending.discordId, 1);
-    audit('request_approved_gate', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label, requestId: data?.id ?? null, azPreAuth, overQuota: !!quotaWarning });
-    await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
-      .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Request Approved`)
-      .setDescription(`**${pending.label}** was approved and is being grabbed now. You'll get a DM when it's on Plex! 🍿`)] });
-    return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
-      .setTitle(`✅ Approved — ${pending.label}`)
-      .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}> — sent to Seerr${data?.id != null ? ` (request #${data.id})` : ''}.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(pending.mediaType)}.` : ''}${quotaWarning ? `\n⚠️ Note: <@${pending.discordId}> is over quota as of this approval — ${quotaWarning.replace(/^❌\s*/, '')}` : ''}`)], components: [] });
-  } catch (err) {
-    const status = err.response?.status;
-    const seerrMessage = err.response?.data?.message;
-    audit('external_api_error', { provider: 'overseerr', error: seerrMessage || err.message, action: 'gate_approve', targetDiscordId: pending.discordId });
-    // 409 duplicate and 202 no-seasons-left (see createSeerrRequestAs) mean the title is
-    // already in Seerr's pipeline — retrying can never succeed, so resolve the gate instead of
-    // leaving live buttons the admin will click forever.
-    if (status === 202 || status === 409 || /already (exists|available|requested)/i.test(seerrMessage || '')) {
-      upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
-      // Another requester beat this one into Seerr between /request and this approval — subscribe
-      // them so the eventual MEDIA_AVAILABLE webhook DMs them too, instead of a dead-end DM that
-      // never promises a follow-up.
-      const added = addRequestSubscriber(subscriberKeyFor(pending.tmdbId, pending.is4k), pending.discordId);
-      audit('request_subscribed', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label, tmdbId: pending.tmdbId, is4k: pending.is4k, stage: 'gate_approve_collision' });
-      await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.INFO)
-        .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Already Requested`)
-        .setDescription(`Good news — **${pending.label}** is already in the system (requested earlier or already available).${added ? ' I\'ll DM you when it lands.' : ''} Check Plex, or track it with \`/request-status\`.`)] });
-      return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
-        .setTitle(`ℹ️ Already in Seerr — ${pending.label}`)
-        .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}>, but Seerr says: *${seerrMessage || err.message}*. Nothing new was created — it's already requested or available. <@${pending.discordId}> is now subscribed to the availability DM.`)], components: [] });
-    }
-    // Anything else (network, 5xx) is retryable: put the stash back so the button still works.
-    restashPendingRequest(nonce, pending);
-    return interaction.followUp({ content: `❌ Approving failed: ${seerrMessage || err.message}. The buttons still work — try again.`, ephemeral: true });
+  const actor = { kind: 'discord', id: interaction.user.id, label: interaction.user.tag || interaction.user.username || interaction.user.id };
+  const result = await approveGatedRequest({ nonce, actor, azPreAuth });
+  if (result.error === 'already_handled') return interaction.editReply({ content: 'ℹ️ Already handled (or expired).', components: [] });
+  const pending = result.pending;
+  if (!result.verified && result.restashed && result.requestId != null) {
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle(`⚠️ Seerr lost the request — ${pending.label}`)
+      .setDescription(`Seerr accepted request #${result.requestId} for <@${pending.discordId}>, but ${result.error}.\nNothing will download. Check the Seerr container logs from the last minute for the underlying error, then hit Approve again to retry.`)] });
   }
+  if (result.collision) {
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle(`ℹ️ Already in Seerr — ${pending.label}`)
+      .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}>, but Seerr says: *${result.error}*. Nothing new was created — it's already requested or available. <@${pending.discordId}> is now subscribed to the availability DM.`)], components: [] });
+  }
+  if (!result.ok) return interaction.followUp({ content: `❌ Approving failed: ${result.error}. The buttons still work — try again.`, ephemeral: true });
+  return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+    .setTitle(`✅ Approved — ${pending.label}`)
+    .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}> — sent to Seerr${result.requestId != null ? ` (request #${result.requestId})` : ''}.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(pending.mediaType)}.` : ''}${result.quotaWarning ? `\n⚠️ Note: <@${pending.discordId}> is over quota as of this approval — ${result.quotaWarning.replace(/^❌\s*/, '')}` : ''}`)], components: [] });
 }
 
 // Put the AvistaZ tag on a just-approved, pre-authorized title. Seerr adds the title to
@@ -5864,14 +5836,10 @@ async function handleButton(interaction) {
   if (action === 'request_approve') return handleGateApprove(interaction, parts[0], { azPreAuth: false });
   if (action === 'request_approve_az') return handleGateApprove(interaction, parts[0], { azPreAuth: true });
   if (action === 'request_deny') {
-    const pending = takePendingRequest(parts[0]);
-    if (!pending) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
-    upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'declined');
-    resetTrustScore(pending.discordId);
-    audit('request_denied_gate', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label });
-    await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.DANGER)
-      .setTitle('Request Declined')
-      .setDescription(`Sorry — **${pending.label}** was declined. Reach out to an admin if you think this was a mistake.`)] });
+    const actor = { kind: 'discord', id: interaction.user.id, label: interaction.user.tag || interaction.user.username || interaction.user.id };
+    const result = await denyGatedRequest({ nonce: parts[0], actor });
+    if (!result.ok) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
+    const pending = result.pending;
     return interaction.update({ embeds: [brandedEmbed(COLORS.DANGER)
       .setTitle(`🚫 Denied — ${pending.label}`)
       .setDescription(`Denied by <@${interaction.user.id}> (requested by <@${pending.discordId}>). Nothing was sent to Seerr.`)], components: [] });
