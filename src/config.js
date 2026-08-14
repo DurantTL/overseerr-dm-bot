@@ -22,11 +22,11 @@ function isPlaceholderValue(raw) {
   if (!value) return false;
   return /^changeme$/i.test(value)
     || /^<[^<>]+>$/.test(value)
-    || /^(?:https?:\/\/)?your-[a-z0-9-]+(?:[\/:]|$)/i.test(value)
+    || /^(?:https?:\/\/)?your-[a-z0-9-]+(?:[/:]|$)/i.test(value)
     || /^[a-z0-9-]*-name-or-machine-id$/i.test(value)
     || /^main-server-1$/i.test(value)
-    || /(?:^|[\/:])path-on-[a-z0-9-]+(?:[\/:]|$)/i.test(value)
-    || /^(?:https?:\/\/)?(?:[^./]+\.)*example\.com(?:[\/:]|$)/i.test(value);
+    || /(?:^|[/:])path-on-[a-z0-9-]+(?:[/:]|$)/i.test(value)
+    || /^(?:https?:\/\/)?(?:[^./]+\.)*example\.com(?:[/:]|$)/i.test(value);
 }
 
 function parseIdentityList(raw) {
@@ -442,7 +442,7 @@ function configWarnings() {
   if (CONFIG.STAGING_ENABLED && !CONFIG.STAGE_RCLONE_REMOTE) {
     warnings.push('`STAGING_ENABLED=true` but `STAGE_RCLONE_REMOTE` is unset — `/stage` can never copy anything to the cache box.');
   }
-  if (CONFIG.STAGING_ENABLED && !CONFIG.PH_SERVER_NAMES.length) {
+  if (CONFIG.STAGING_ENABLED && !CONFIG.PH_SERVER_NAMES.length && !CONFIG.PLACEHOLDER_WARNINGS.some(warning => warning.includes('`PH_SERVER_NAMES`'))) {
     warnings.push('`STAGING_ENABLED=true` but `PH_SERVER_NAMES` is unset — webhook events from the cache box are indistinguishable from the master, so a PH viewer finishing a movie could trigger a **delete prompt against the master library**. Set it before the box goes live.');
   }
   if (CONFIG.PH_SERVER_NAMES.length || CONFIG.CA_EDGE_SERVER_NAMES.length) {
