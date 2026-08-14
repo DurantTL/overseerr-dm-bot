@@ -190,3 +190,24 @@ test('season-pack-sweep: pinning marks the notification so the reason is visible
   await sandbox.run('sweepSeasonPacks()');
   assert.match(notices[0].msg.embeds[0].description, /📌/, 'pinned rows are flagged in the summary');
 });
+
+test('sweep guard: concurrent runs are refused and the guard clears after failure', async () => {
+  const sandbox = loadSandbox(['runGuardedSweep'], { runningSweeps: new Set() });
+  const first = sandbox.run(`runGuardedSweep('season-pack', () => new Promise(resolve => { release = resolve; }))`);
+  await Promise.resolve();
+  assert.strictEqual((await sandbox.run(`runGuardedSweep('season-pack', () => Promise.resolve())`)).busy, true);
+  sandbox.release('done');
+  assert.strictEqual((await first).result, 'done');
+  await assert.rejects(sandbox.run(`runGuardedSweep('season-pack', () => Promise.reject(new Error('failed')))`), /failed/);
+  assert.strictEqual((await sandbox.run(`runGuardedSweep('season-pack', () => Promise.resolve('retried'))`)).result, 'retried');
+});
+
+test('season search cooldown: reports the next eligible time and expires on the boundary', () => {
+  const sandbox = loadSandbox(['seasonSearchCooldown'], { CONFIG: { SEASON_PACK_COOLDOWN_HOURS: 24 } });
+  const last = NOW - 2 * 3600000;
+  const cooling = sandbox.seasonSearchCooldown(last, NOW);
+  assert.strictEqual(cooling.cooling, true);
+  assert.strictEqual(cooling.nextEligible, last + 24 * 3600000);
+  assert.strictEqual(sandbox.seasonSearchCooldown(last, last + 24 * 3600000).cooling, false);
+  assert.strictEqual(sandbox.seasonSearchCooldown(undefined, NOW).cooling, false);
+});
