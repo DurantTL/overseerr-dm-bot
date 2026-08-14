@@ -8,6 +8,7 @@ const {
   decideEpisodeRecoveryAction,
   exactEpisodeCandidates,
   readEpisodeRecoveryConfig,
+  createEpisodeRecoveryWorker,
 } = require('../../src/episode-recovery');
 
 test('episode-recovery: key/label/aired helpers, recovery decision, exact candidates, config parsing', () => {
@@ -46,4 +47,24 @@ test('episode-recovery: key/label/aired helpers, recovery decision, exact candid
   assert.strictEqual(parsed.enabled, true);
   assert.strictEqual(parsed.checkMinutes, 5, 'minimum check interval enforced');
   assert.strictEqual(parsed.minConfidence, 100, 'confidence clamped');
+});
+
+test('episode-recovery: concurrent sweeps are refused', async () => {
+  let release;
+  const tag = new Promise(resolve => { release = resolve; });
+  const worker = await createEpisodeRecoveryWorker({
+    CONFIG: { SONARR_URL: 'http://sonarr', PROWLARR_URL: 'http://prowlarr', RTORRENT_URL: 'http://rtorrent', AVISTAZ_TAG: 'avistaz' },
+    recoveryConfig: { enabled: true, checkMinutes: 30, publicGraceHours: 6, avistazGraceHours: 12, lookbackDays: 14, maxPerRun: 3, minConfidence: 88 },
+    dbApi: { db: { exec() {} }, getSetting: () => null },
+    arrApi: { getArrTagId: () => tag },
+    grabApi: {},
+    rtorrentApi: {},
+    axios: {},
+    log: { info() {}, warn() {} },
+  });
+  const first = worker.sweep();
+  await Promise.resolve();
+  assert.deepStrictEqual(await worker.sweep(), { busy: true });
+  release(null);
+  assert.deepStrictEqual(await first, { skipped: true, reason: 'tag_missing' });
 });

@@ -53,6 +53,7 @@ const { summarizeSeriesGaps, describeGaps, describeActivity, rankIncomplete } = 
 const { priorityKey, orderByPriority, isPinned, nextRank } = require('./src/priority');
 const { summarizeImportRejections, renderRejectionLines, looksLikeMappingProblem } = require('./src/import-rejections');
 const { normalizeSearchQuery, searchDashboard } = require('./src/search');
+const { runEpisodeRecoverySweep } = require('./src/episode-recovery');
 
 // Centralized embed palette so every notification shares one consistent look.
 const COLORS = {
@@ -141,6 +142,17 @@ function scheduleTunableSweep({ label, minutesKey, enabledKey, fn, firstRunDelay
     setTimeout(tick, (paused() ? 1 : tunable(minutesKey)) * 60000).unref();
   };
   setTimeout(tick, firstRunDelayMs ?? (paused() ? 60000 : tunable(minutesKey) * 60000)).unref();
+}
+
+const runningSweeps = new Set();
+async function runGuardedSweep(name, fn) {
+  if (runningSweeps.has(name)) return { ok: false, busy: true };
+  runningSweeps.add(name);
+  try {
+    return { ok: true, result: await fn() };
+  } finally {
+    runningSweeps.delete(name);
+  }
 }
 
 function channelFor(kind) {
@@ -572,6 +584,7 @@ async function sweepStuckDownloads() {
   const activeGroups = new Set(items.map(stuckGroupKey));
   for (const gk of stuckAlerted.keys()) if (!activeGroups.has(gk)) stuckAlerted.delete(gk);
 
+  let alerted = 0;
   for (const [gk, group] of groups) {
     if (getSetting(`stuck_ignore:${gk}`)) continue;
     if (now - (stuckAlerted.get(gk) || 0) < tunable('STUCK_ALERT_COOLDOWN_HOURS') * 3600000) continue;
@@ -579,6 +592,7 @@ async function sweepStuckDownloads() {
     const { embed, row } = buildStuckAlert(group);
     notifyChannel('downloads', { embeds: [embed], components: [row] });
     audit('stuck_download_detected', { groupKey: gk, label: group.source.label, count: group.members.length, frozenMinutes: Math.round(group.maxFrozenMs / 60000) });
+    alerted++;
   }
 
   // Clear ignore flags whose group has fully left the queue, so a future download reusing the
@@ -587,6 +601,7 @@ async function sweepStuckDownloads() {
   for (const r of ignoreRows) {
     if (!activeGroups.has(r.key.slice('stuck_ignore:'.length))) db.prepare('DELETE FROM app_settings WHERE key = ?').run(r.key);
   }
+  return { detected: groups.size, alerted };
 }
 
 // ---- AvistaZ escalation watchdog ----
@@ -683,9 +698,10 @@ async function runEscalation(row) {
 
 async function sweepEscalations() {
   const rows = getWatchingEscalations();
-  if (!rows.length) return;
+  if (!rows.length) return { acted: 0 };
   const queue = await fetchArrQueues();
   const cfg = { delayMinutes: tunable('ESCALATION_DELAY_MINUTES'), maxAgeDays: tunable('ESCALATION_MAX_AGE_DAYS'), arrGraceMinutes: CONFIG.ESCALATION_ARR_GRACE_MINUTES };
+  let acted = 0;
   for (const row of rows) {
     const facts = await gatherEscalationFacts(row, queue);
     // Whether AvistaZ could plausibly have this title gates auto-escalation (and colours the
@@ -696,6 +712,7 @@ async function sweepEscalations() {
     }
     const action = decideEscalationAction(row, facts, Date.now(), cfg);
     if (action === 'wait') continue;
+    acted++;
     if (action === 'resolve') {
       setEscalationState(row.id, 'resolved');
       audit('escalation_resolved', { mediaId: row.media_id, title: row.title, facts });
@@ -785,6 +802,7 @@ async function sweepEscalations() {
         new ButtonBuilder().setCustomId(`escalate_ignore:${row.id}`).setLabel('Ignore').setStyle(ButtonStyle.Secondary),
       )] });
   }
+  return { acted };
 }
 
 // ---- Season-pack-first searching (all indexers) ----
@@ -799,6 +817,14 @@ function seasonPackConfig() {
     cooldownHours: CONFIG.SEASON_PACK_COOLDOWN_HOURS,
     includeRequested: tunable('SEASON_PACK_REQUESTED'),
   };
+}
+
+function seasonSearchCooldown(lastSearchedAt, now = Date.now()) {
+  const last = Number(lastSearchedAt);
+  const nextEligible = last + CONFIG.SEASON_PACK_COOLDOWN_HOURS * 3600000;
+  return Number.isFinite(last) && nextEligible > now
+    ? { cooling: true, nextEligible }
+    : { cooling: false, nextEligible: null };
 }
 
 // Season numbers already downloading for a series, so a season mid-grab is never re-searched.
@@ -2598,7 +2624,7 @@ client.once('ready', async () => {
   // The arr URLs are a static prerequisite (no arrs configured, nothing to watch); the cadence and
   // thresholds are runtime-tunable, so the timer is armed either way and decides per tick.
   if (arrSources().length) {
-    scheduleTunableSweep({ label: 'Stuck-download sweep', minutesKey: 'STUCK_CHECK_MINUTES', fn: sweepStuckDownloads });
+    scheduleTunableSweep({ label: 'Stuck-download sweep', minutesKey: 'STUCK_CHECK_MINUTES', fn: () => runGuardedSweep('stuck', sweepStuckDownloads) });
     log.ok(`Stuck-download watchdog every ${tunable('STUCK_CHECK_MINUTES')} min (threshold ${tunable('STUCK_AFTER_MINUTES')} min)`);
   }
   if (CONFIG.RADARR_URL || CONFIG.SONARR_URL) {
@@ -2611,14 +2637,14 @@ client.once('ready', async () => {
           .setDescription(missing.map(w => `• ${w}`).join('\n').slice(0, 4000))] });
       }
     }).catch(err => log.warn(`AvistaZ tag check failed: ${err.message}`));
-    scheduleTunableSweep({ label: 'Escalation sweep', minutesKey: 'ESCALATION_CHECK_MINUTES', enabledKey: 'ESCALATION_ENABLED', fn: sweepEscalations });
+    scheduleTunableSweep({ label: 'Escalation sweep', minutesKey: 'ESCALATION_CHECK_MINUTES', enabledKey: 'ESCALATION_ENABLED', fn: () => runGuardedSweep('escalation', sweepEscalations) });
     log.ok(`AvistaZ escalation watchdog every ${tunable('ESCALATION_CHECK_MINUTES')} min (delay ${escalationDelayLabel()}, tag '${CONFIG.AVISTAZ_TAG}')`);
   }
   if (CONFIG.SONARR_URL) {
     // A first pass shortly after boot, then on the interval — Sonarr needs a moment to settle
     // after a restart, and the sweep is capped per run anyway. sweepSeasonPacks() re-checks the
     // SEASON_PACK_FIRST toggle itself, so a paused tick costs nothing.
-    scheduleTunableSweep({ label: 'Season-pack sweep', minutesKey: 'SEASON_PACK_CHECK_MINUTES', enabledKey: 'SEASON_PACK_FIRST', fn: sweepSeasonPacks, firstRunDelayMs: 120000 });
+    scheduleTunableSweep({ label: 'Season-pack sweep', minutesKey: 'SEASON_PACK_CHECK_MINUTES', enabledKey: 'SEASON_PACK_FIRST', fn: () => runGuardedSweep('season-pack', sweepSeasonPacks), firstRunDelayMs: 120000 });
     log.ok(`Season-pack-first search every ${tunable('SEASON_PACK_CHECK_MINUTES')} min (old = ended or ${tunable('SEASON_PACK_DORMANT_DAYS')}d dormant, max ${tunable('SEASON_PACK_MAX_PER_RUN')}/run)`);
   }
   if (grabConfigured()) {
@@ -6516,6 +6542,18 @@ function dashboardAuth(req, res, next) {
   return next();
 }
 
+function dashboardActor(req) {
+  return { actor: 'dashboard', actorIp: req.ip || req.socket.remoteAddress || 'unknown' };
+}
+
+function dashboardActionError(err) {
+  const data = err?.response?.data;
+  if (typeof data === 'string') return data;
+  if (data?.message) return data.message;
+  if (data != null) return JSON.stringify(data);
+  return err?.message || String(err);
+}
+
 let httpServer = null;
 
 // Requests the requester still cannot watch in full. Two distinct kinds, deliberately in one list:
@@ -6542,6 +6580,7 @@ async function gatherIncompleteRequests({ queue = [], grabJobs = [], escalations
   const ctx = { queue: queue || [], grabJobs, escalations, recoveryRows };
   const rows = [];
   const seenTvdb = new Set();
+  const priority = mediaPriorityMap();
 
   if (CONFIG.SONARR_URL) {
     const requestedTvdbIds = listRequestedTvdbIds();
@@ -6555,17 +6594,37 @@ async function gatherIncompleteRequests({ queue = [], grabJobs = [], escalations
       .slice(0, INCOMPLETE_SERIES_FETCH_CAP);
     const episodeLists = await Promise.all(candidates.map(entry => getSeriesEpisodes(entry.id).catch(() => [])));
     candidates.forEach((entry, index) => {
-      const summary = summarizeSeriesGaps({ series: entry, episodes: episodeLists[index], now });
+      const episodes = episodeLists[index];
+      const summary = summarizeSeriesGaps({ series: entry, episodes, now });
       if (!summary.airedMissing) return;
       seenTvdb.add(Number(entry.tvdbId));
       const activity = describeActivity(ctx, { tvdbId: entry.tvdbId, title: entry.title });
+      const key = priorityKey({ tvdbId: entry.tvdbId });
+      const rank = priority.get(key);
+      const searchedAt = getSeasonSearchTimes(entry.id);
+      const searchActions = summary.seasons.map(season => {
+        const missingEpisodes = episodes.filter(ep => Number(ep.seasonNumber) === season.season && !ep.hasFile && ep.monitored
+          && Date.parse(ep.airDateUtc || ep.airDate || '') <= now);
+        if (missingEpisodes.length === 1) {
+          return { label: `Search S${pad(season.season)}E${pad(missingEpisodes[0].episodeNumber)} now`, url: '/admin/action/search', body: { kind: 'episode', seriesId: entry.id, episodeId: missingEpisodes[0].id } };
+        }
+        const { cooling, nextEligible } = seasonSearchCooldown(searchedAt[season.season], now);
+        return {
+          label: cooling ? `S${pad(season.season)} eligible ${fmtAgo(nextEligible)}` : `Search S${pad(season.season)} now`,
+          url: '/admin/action/search',
+          body: { kind: 'season', seriesId: entry.id, seasonNumber: season.season },
+          disabled: cooling,
+          title: cooling ? `Season search cooldown ends ${new Date(nextEligible).toISOString()}` : '',
+        };
+      });
       rows.push({
         state: activity.state,
         title: `📺 ${summary.title}`,
-        sub: `${describeGaps(summary)} — ${activity.note}`,
+        sub: `${describeGaps(summary)} — ${activity.note}${rank != null ? ` — pinned #${rank}` : ''}`,
         right: `${summary.airedMissing} missing`,
         pct: summary.pct,
         missing: summary.airedMissing,
+        actions: [...searchActions, { label: rank != null ? 'Unpin' : 'Pin', url: '/admin/action/priority', body: { operation: rank != null ? 'unpin' : 'pin', key, mediaType: 'tv', title: summary.title } }],
       });
     });
   }
@@ -6583,6 +6642,7 @@ async function gatherIncompleteRequests({ queue = [], grabJobs = [], escalations
       sub: `${requestStatusBadge(request.status)} · requested ${age} · ${activity.note}`,
       right: request.requested_by_discord_id ? `by ${request.requested_by_discord_id}` : '',
       missing: 0,
+      actions: request.media_id ? [{ label: priority.has(request.media_id) ? 'Unpin' : 'Pin', url: '/admin/action/priority', body: { operation: priority.has(request.media_id) ? 'unpin' : 'pin', key: request.media_id, mediaType: request.media_type, title: request.title } }] : [],
     });
   }
   return rankIncomplete(rows);
@@ -6959,7 +7019,7 @@ function startExpressServer() {
       ]);
       const grabJobs = listActiveGrabJobs();
       const stageJobs = listActiveStageJobs();
-      const escalations = getWatchingEscalations();
+      const escalations = db.prepare("SELECT * FROM escalations WHERE state IN ('watching','alerted','error') ORDER BY approved_at").all();
       // Depends on the queue above, so it runs after rather than inside that Promise.all. Null on
       // failure (Sonarr unreachable) so the card says so instead of claiming everything is fine.
       const incomplete = await gatherIncompleteRequests({ queue: queue || [], grabJobs, escalations, now }).catch(() => null);
@@ -7026,12 +7086,23 @@ function startExpressServer() {
           right: `${fmtSpace(j.size_bytes || 0)}${j.started_at ? ` · started ${fmtAgo(j.started_at)}` : ''}`,
         })),
       ];
+      const allowance = grabDailyAllowance();
       const watchItems = [
         ...escalations.map(e => ({
           state: 'warn',
           title: e.title,
           sub: `escalation watch · ${e.state}${e.pre_authorized ? ' · pre-authorized' : ''}`,
           right: `approved ${fmtAgo(e.approved_at)}`,
+          actions: [{
+            label: allowance.limited ? `Escalate now (${allowance.remaining} left)` : 'Escalate now',
+            url: '/admin/action/escalate',
+            body: { id: e.id },
+            confirm: allowance.limited
+              ? `Escalate ${e.title} now? This can spend one of ${allowance.remaining} remaining AvistaZ downloads today.`
+              : `Escalate ${e.title} to AvistaZ now?`,
+            danger: true,
+            disabled: allowance.exhausted,
+          }],
         })),
         ...pendingDeletions.map(p => ({
           state: 'skip',
@@ -7040,6 +7111,23 @@ function startExpressServer() {
           right: `deletes ${fmtAgo(p.delete_after)}`,
         })),
       ];
+      const priorityItems = listMediaPriority().map((item, index, all) => ({
+        state: 'ok',
+        title: item.title,
+        sub: `${mediaTypeLabel(item.media_type, false)} · ${item.key}`,
+        right: `rank ${item.rank}`,
+        actions: [
+          { label: 'Up', url: '/admin/action/priority', body: { operation: 'move', key: item.key, direction: -1 }, disabled: index === 0 },
+          { label: 'Down', url: '/admin/action/priority', body: { operation: 'move', key: item.key, direction: 1 }, disabled: index === all.length - 1 },
+          { label: 'Unpin', url: '/admin/action/priority', body: { operation: 'unpin', key: item.key } },
+        ],
+      }));
+      const sweepItems = [
+        ['stuck', 'Stuck-download sweep'],
+        ['escalation', 'Escalation sweep'],
+        ['season-pack', 'Season-pack sweep'],
+        ['episode-recovery', 'Episode-recovery sweep'],
+      ].map(([name, title]) => ({ state: 'skip', title, actions: [{ label: 'Run now', url: '/admin/action/sweep', body: { name } }] }));
 
       const tierItems = tierNodes.map(n => {
         const plan = getTierPlan(n.name);
@@ -7124,11 +7212,16 @@ function startExpressServer() {
             ${renderItemList(watchItems, 'No escalation watches or pending deletions.')}
           </div>
           <div class="card">
+            <h2>Pinned Media<span class="sub">Pinned titles run first in capped Sonarr sweeps. Reorder them here.</span></h2>
+            ${renderItemList(priorityItems, 'No titles are pinned.')}
+          </div>
+          <div class="card">
             <h2>Recent Media Requests</h2>
             ${renderTable(requestRows)}
           </div>
           <div class="card">
             <h2>Manual Actions</h2>
+            ${renderItemList(sweepItems, '')}
             <div class="actions">
               <a class="btn" href="/admin/health">Health JSON</a>
               <a class="btn" href="/admin/doctor">Edge Doctor JSON</a>
@@ -7186,6 +7279,24 @@ function startExpressServer() {
             alert(r.ok ? 'All active download links revoked.' : 'Failed: ' + r.status);
             if (r.ok) location.reload();
           }
+          document.querySelectorAll('[data-post]').forEach(function (btn) {
+            btn.addEventListener('click', async function () {
+              var prompt = btn.dataset.confirm;
+              if (prompt && !confirm(prompt)) return;
+              var body = JSON.parse(btn.dataset.body || '{}');
+              if (prompt) body.confirmed = true;
+              btn.disabled = true;
+              try {
+                var r = await fetch(btn.dataset.post, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                var result = await r.json().catch(function () { return {}; });
+                alert(r.ok && result.ok !== false ? (result.message || 'Action completed.') : (result.error || 'Request failed: ' + r.status));
+                if (r.ok && result.ok !== false) location.reload();
+              } catch (err) {
+                alert(String(err && err.message || err));
+                btn.disabled = false;
+              }
+            });
+          });
           (function () {
             var note = function (group, text, cls) {
               var el = document.querySelector('[data-note="' + group + '"]');
@@ -7275,6 +7386,140 @@ function startExpressServer() {
       const users = await fetchOverseerrUsers().catch(() => []);
       const toDelete = users.filter(u => u.userType !== 1 && ['displayName', 'email', 'username'].some(k => (u[k] || '').toLowerCase().startsWith('deleted_user')));
       res.json({ wouldRemove: toDelete.length, users: toDelete.map(u => ({ id: u.id, email: u.email, username: u.username })) });
+    });
+    app.post('/admin/action/search', dashboardAuth, async (req, res) => {
+      const kind = req.body?.kind;
+      const seriesId = Number(req.body?.seriesId);
+      const seasonNumber = Number(req.body?.seasonNumber);
+      const episodeId = Number(req.body?.episodeId);
+      if (!['season', 'episode'].includes(kind) || !Number.isInteger(seriesId)) {
+        audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'invalid_request' });
+        return res.status(400).json({ ok: false, error: 'Invalid search request.' });
+      }
+      try {
+        const series = (await listSonarrSeries()).find(row => Number(row.id) === seriesId);
+        if (!series) throw new Error(`Sonarr series ${seriesId} was not found`);
+        const episodes = await getSeriesEpisodes(seriesId);
+        if (kind === 'season') {
+          const missing = episodes.filter(ep => Number(ep.seasonNumber) === seasonNumber && ep.monitored && !ep.hasFile
+            && Date.parse(ep.airDateUtc || ep.airDate || '') <= Date.now());
+          if (!Number.isInteger(seasonNumber) || !missing.length) throw new Error(`Sonarr season ${seasonNumber} has no aired missing episodes`);
+          const { cooling, nextEligible } = seasonSearchCooldown(getSeasonSearchTimes(seriesId)[seasonNumber]);
+          if (cooling) {
+            const error = `Season search is cooling down until ${new Date(nextEligible).toISOString()}`;
+            audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'cooldown', seriesId, seasonNumber, nextEligible });
+            return res.status(409).json({ ok: false, error, nextEligible });
+          }
+          await triggerSeasonSearch(seriesId, seasonNumber);
+          recordSeasonSearch({ seriesId, seasonNumber, seriesTitle: series.title, missing: missing.length });
+          audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, seasonNumber, title: series.title });
+          return res.json({ ok: true, message: `Sonarr accepted the S${pad(seasonNumber)} season search for ${series.title}.` });
+        }
+        const episode = episodes.find(ep => Number(ep.id) === episodeId && ep.monitored && !ep.hasFile
+          && Date.parse(ep.airDateUtc || ep.airDate || '') <= Date.now());
+        if (!Number.isInteger(episodeId) || !episode) throw new Error(`Sonarr episode ${episodeId} is not an aired missing episode in this series`);
+        await axios.post(`${CONFIG.SONARR_URL}/api/v3/command`, { name: 'EpisodeSearch', episodeIds: [episodeId] },
+          { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 15000 });
+        audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, episodeId, title: series.title, seasonNumber: episode.seasonNumber, episodeNumber: episode.episodeNumber });
+        return res.json({ ok: true, message: `Sonarr accepted the S${pad(episode.seasonNumber)}E${pad(episode.episodeNumber)} search for ${series.title}.` });
+      } catch (err) {
+        const error = dashboardActionError(err);
+        audit('dashboard_search', { ...dashboardActor(req), ok: false, kind, seriesId, seasonNumber: Number.isInteger(seasonNumber) ? seasonNumber : null, episodeId: Number.isInteger(episodeId) ? episodeId : null, error });
+        return res.status(err?.response ? 502 : 400).json({ ok: false, error });
+      }
+    });
+
+    app.post('/admin/action/priority', dashboardAuth, (req, res) => {
+      const operation = req.body?.operation;
+      const key = String(req.body?.key || '');
+      if (!['pin', 'unpin', 'move'].includes(operation) || !/^(tvdb|tmdb):\d+$/.test(key)) {
+        audit('dashboard_priority', { ...dashboardActor(req), ok: false, operation, key, reason: 'invalid_request' });
+        return res.status(400).json({ ok: false, error: 'Invalid priority request.' });
+      }
+      const rows = listMediaPriority();
+      if (operation === 'pin') {
+        const mediaType = req.body?.mediaType;
+        const title = String(req.body?.title || '').trim();
+        if (!['tv', 'movie'].includes(mediaType) || !title) {
+          audit('dashboard_priority', { ...dashboardActor(req), ok: false, operation, key, reason: 'missing_media' });
+          return res.status(400).json({ ok: false, error: 'Media type and title are required.' });
+        }
+        setMediaPriority({ key, mediaType, title, rank: nextRank(rows), pinnedBy: 'dashboard' });
+      } else if (operation === 'unpin') {
+        clearMediaPriority(key);
+      } else {
+        const index = rows.findIndex(row => row.key === key);
+        const direction = Number(req.body?.direction);
+        if (index < 0 || ![-1, 1].includes(direction)) {
+          audit('dashboard_priority', { ...dashboardActor(req), ok: false, operation, key, reason: 'invalid_move' });
+          return res.status(400).json({ ok: false, error: 'Pinned title or direction is invalid.' });
+        }
+        const target = Math.max(0, Math.min(rows.length - 1, index + direction));
+        const [moved] = rows.splice(index, 1);
+        rows.splice(target, 0, moved);
+        const update = db.prepare('UPDATE media_priority SET rank = ? WHERE key = ?');
+        db.transaction(() => rows.forEach((row, rank) => update.run(rank + 1, row.key)))();
+      }
+      audit('dashboard_priority', { ...dashboardActor(req), ok: true, operation, key });
+      return res.json({ ok: true, message: operation === 'pin' ? 'Title pinned.' : operation === 'unpin' ? 'Title unpinned.' : 'Pinned order updated.' });
+    });
+
+    app.post('/admin/action/sweep', dashboardAuth, async (req, res) => {
+      const name = req.body?.name;
+      const sweeps = {
+        stuck: sweepStuckDownloads,
+        escalation: sweepEscalations,
+        'season-pack': sweepSeasonPacks,
+        'episode-recovery': runEpisodeRecoverySweep,
+      };
+      if (!sweeps[name]) {
+        audit('dashboard_sweep', { ...dashboardActor(req), ok: false, name, reason: 'invalid_sweep' });
+        return res.status(400).json({ ok: false, error: 'Unknown sweep.' });
+      }
+      try {
+        const outcome = await runGuardedSweep(name, sweeps[name]);
+        if (!outcome.ok || outcome.result?.busy) {
+          audit('dashboard_sweep', { ...dashboardActor(req), ok: false, name, reason: 'already_running' });
+          return res.status(409).json({ ok: false, error: `${name} sweep is already running.` });
+        }
+        const result = outcome.result || {};
+        const count = result.searched ?? result.acted ?? result.alerted ?? 0;
+        audit('dashboard_sweep', { ...dashboardActor(req), ok: true, name, count, result });
+        return res.json({ ok: true, message: `${name} sweep finished with ${count} action(s).`, result });
+      } catch (err) {
+        const error = dashboardActionError(err);
+        audit('dashboard_sweep', { ...dashboardActor(req), ok: false, name, error });
+        return res.status(502).json({ ok: false, error });
+      }
+    });
+
+    app.post('/admin/action/escalate', dashboardAuth, async (req, res) => {
+      const id = Number(req.body?.id);
+      const row = getEscalationById(id);
+      if (req.body?.confirmed !== true) {
+        audit('dashboard_escalation', { ...dashboardActor(req), ok: false, id, reason: 'confirmation_required' });
+        return res.status(400).json({ ok: false, error: 'Confirmation is required.' });
+      }
+      if (!row || !['watching', 'alerted', 'error'].includes(row.state)) {
+        audit('dashboard_escalation', { ...dashboardActor(req), ok: false, id, reason: 'already_handled' });
+        return res.status(409).json({ ok: false, error: 'This escalation was already handled.' });
+      }
+      const before = grabDailyAllowance();
+      if (before.exhausted) {
+        audit('dashboard_escalation', { ...dashboardActor(req), ok: false, id, reason: 'allowance_exhausted', remaining: before.remaining });
+        return res.status(409).json({ ok: false, error: 'The daily AvistaZ allowance is exhausted.', remaining: before.remaining });
+      }
+      try {
+        const result = await runEscalation(row);
+        const after = grabDailyAllowance();
+        audit('dashboard_escalation', { ...dashboardActor(req), ok: result.ok, id, mediaId: row.media_id, title: row.title, remainingBefore: before.remaining, remainingAfter: after.remaining, reason: result.reason || result.why || null });
+        if (!result.ok) return res.status(result.deferred ? 409 : 502).json({ ok: false, error: result.why || result.reason, remaining: after.remaining });
+        return res.json({ ok: true, message: result.detail, remaining: after.remaining });
+      } catch (err) {
+        const error = dashboardActionError(err);
+        audit('dashboard_escalation', { ...dashboardActor(req), ok: false, id, mediaId: row.media_id, title: row.title, error });
+        return res.status(502).json({ ok: false, error });
+      }
     });
     // Runtime overrides for the automation sweeps. Every write is validated against the setting's
     // declared bounds (src/runtime-settings.js) and audited — an override that quietly changes what

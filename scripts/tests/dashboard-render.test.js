@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const { test } = require('node:test');
 const assert = require('node:assert');
+const { loadSandbox } = require('./extract');
 const {
   escapeHtml,
   renderPage,
@@ -42,6 +43,11 @@ test('dashboard-render: renderBar', () => {
 test('dashboard-render: renderItemList', () => {
   assert.strictEqual(renderItemList([]).includes('Nothing right now.'), true);
   assert.match(renderItemList([{ title: 'x<y', state: 'ok', pct: 50 }]), /item-title">x&lt;y</);
+  const actions = renderItemList([{ title: 'Title', state: 'warn', actions: [{ label: 'Search <now>', url: '/admin/action/search', body: { title: 'x"y' }, confirm: 'Use allowance?' }] }]);
+  assert.match(actions, /data-post="\/admin\/action\/search"/);
+  assert.match(actions, /Search &lt;now&gt;/);
+  assert.match(actions, /&quot;x\\&quot;y&quot;/);
+  assert.match(actions, /data-confirm="Use allowance\?"/);
 });
 
 test('dashboard-render: renderLogin', () => {
@@ -84,4 +90,10 @@ test('dashboard-render: renderPage', () => {
   const searchable = renderPage('Home', '<p>body</p>', { showSearch: true, searchQuery: '<matrix>' });
   assert.match(searchable, /action="\/admin\/search"/);
   assert.match(searchable, /value="&lt;matrix&gt;"/);
+});
+
+test('dashboard actions: arr response details are returned', () => {
+  const sandbox = loadSandbox(['dashboardActionError']);
+  assert.strictEqual(sandbox.dashboardActionError({ response: { data: { message: 'Sonarr rejected the command' } } }), 'Sonarr rejected the command');
+  assert.strictEqual(sandbox.dashboardActionError(new Error('socket closed')), 'socket closed');
 });

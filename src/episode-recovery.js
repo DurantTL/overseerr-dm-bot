@@ -143,7 +143,8 @@ async function createEpisodeRecoveryWorker(deps = {}) {
 
   ensureSchema(db);
 
-  async function sweep() {
+  let running = false;
+  async function performSweep() {
     const cfg = liveConfig();
     if (!cfg.enabled || !CONFIG.SONARR_URL || !CONFIG.PROWLARR_URL || !CONFIG.RTORRENT_URL) return { skipped: true };
     const source = { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, label: 'sonarr' };
@@ -277,6 +278,16 @@ async function createEpisodeRecoveryWorker(deps = {}) {
     return { acted };
   }
 
+  async function sweep() {
+    if (running) return { busy: true };
+    running = true;
+    try {
+      return await performSweep();
+    } finally {
+      running = false;
+    }
+  }
+
   function start() {
     const run = () => sweep().catch(err => log.warn(`Episode recovery sweep failed: ${err.message}`));
     // A pinned config (tests) keeps the original fixed-interval behavior, including returning null
@@ -306,8 +317,15 @@ async function createEpisodeRecoveryWorker(deps = {}) {
 
 async function startEpisodeRecovery(deps) {
   const worker = await createEpisodeRecoveryWorker(deps);
+  activeWorker = worker;
   return worker.start();
 }
+
+let activeWorker = null;
+const runEpisodeRecoverySweep = () => {
+  if (!activeWorker) throw new Error('Episode recovery worker is not ready');
+  return activeWorker.sweep();
+};
 
 module.exports = {
   episodeKey,
@@ -319,5 +337,6 @@ module.exports = {
   resolveLiveRecoveryConfig,
   ensureSchema,
   createEpisodeRecoveryWorker,
+  runEpisodeRecoverySweep,
   startEpisodeRecovery,
 };

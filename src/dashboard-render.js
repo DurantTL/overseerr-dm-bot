@@ -48,6 +48,8 @@ const DASHBOARD_CSS = `
   .item-main { flex:1 1 auto; min-width:0; }
   .item-title { font-size:14px; font-weight:600; overflow-wrap:anywhere; }
   .item-sub { font-size:12.5px; color:var(--muted); margin-top:2px; overflow-wrap:anywhere; }
+  .item-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .item-actions .btn { min-height:34px; padding:7px 10px; font-size:12px; }
   .item-right { flex:0 0 auto; font-size:12px; color:var(--muted); text-align:right; max-width:42%; overflow-wrap:anywhere; }
   .bar { height:6px; background:var(--panel2); border-radius:999px; margin-top:7px; overflow:hidden; }
   .bar-fill { height:100%; background:var(--accent); border-radius:999px; }
@@ -205,6 +207,7 @@ function renderItemList(items, emptyText = 'Nothing right now.') {
         <div class="item-title">${escapeHtml(i.title || '')}</div>
         ${i.sub ? `<div class="item-sub">${escapeHtml(i.sub)}</div>` : ''}
         ${typeof i.pct === 'number' ? renderBar(i.pct) : ''}
+        ${i.actions?.length ? `<div class="item-actions">${i.actions.map(action => `<button class="btn${action.danger ? ' danger' : ''}" type="button" data-post="${escapeHtml(action.url)}" data-body="${escapeHtml(JSON.stringify(action.body || {}))}"${action.confirm ? ` data-confirm="${escapeHtml(action.confirm)}"` : ''}${action.disabled ? ' disabled' : ''}${action.title ? ` title="${escapeHtml(action.title)}"` : ''}>${escapeHtml(action.label)}</button>`).join('')}</div>` : ''}
       </div>
       ${i.right ? `<div class="item-right">${escapeHtml(i.right)}</div>` : ''}
     </div>`).join('')}</div>`;
