@@ -22,11 +22,11 @@ function isPlaceholderValue(raw) {
   if (!value) return false;
   return /^changeme$/i.test(value)
     || /^<[^<>]+>$/.test(value)
-    || /^(?:https?:\/\/)?your-[a-z0-9-]+(?:[\/:]|$)/i.test(value)
+    || /^(?:https?:\/\/)?your-[a-z0-9-]+(?:[/:]|$)/i.test(value)
     || /^[a-z0-9-]*-name-or-machine-id$/i.test(value)
     || /^main-server-1$/i.test(value)
-    || /(?:^|[\/:])path-on-[a-z0-9-]+(?:[\/:]|$)/i.test(value)
-    || /^(?:https?:\/\/)?(?:[^./]+\.)*example\.com(?:[\/:]|$)/i.test(value);
+    || /(?:^|[/:])path-on-[a-z0-9-]+(?:[/:]|$)/i.test(value)
+    || /^(?:https?:\/\/)?(?:[^./]+\.)*example\.com(?:[/:]|$)/i.test(value);
 }
 
 function parseIdentityList(raw) {
