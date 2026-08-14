@@ -3,7 +3,7 @@
 // routes internet-reachable, independent of whether live deletion is on (see issue #59).
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { CONFIG, validateConfig, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings } = require('../../src/config');
+const { CONFIG, validateConfig, configWarnings, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings } = require('../../src/config');
 
 test('config: validateConfig requires webhook secrets whenever TUNNEL_DOMAIN is set', () => {
   // A minimal, otherwise-valid baseline so only the field under test trips validateConfig().
@@ -40,7 +40,7 @@ test('config: known example placeholders are detected only at value boundaries',
   ]) {
     assert.strictEqual(isPlaceholderValue(value), true, `${value} is a placeholder`);
   }
-  for (const value of ['ph-prod', 'my-changeme-server', 'main-server-10', 'yourself-host', 'files.example.com.au']) {
+  for (const value of ['ph-prod', 'my-changeme-server', 'main-server-10', 'yourself-host', 'files.example.com.au', 'https://notexample.com/identity']) {
     assert.strictEqual(isPlaceholderValue(value), false, `${value} is a real-looking value`);
   }
 });
@@ -71,4 +71,14 @@ test('config: each placeholder key produces one warning with its consequence', (
   }
   assert.match(warnings.find(warning => warning.includes('PH_SERVER_NAMES')), /ignored.*strict webhook identity routing/, 'identity warning explains routing consequence');
   assert.match(warnings.find(warning => warning.includes('PH_TUNNEL_HEALTH_URL')), /watchdog stays disabled.*false outage alerts/, 'tunnel warning explains alert consequence');
+});
+
+test('config: a placeholder PH identity does not also produce the generic missing warning', () => {
+  CONFIG.STAGING_ENABLED = true;
+  CONFIG.PH_SERVER_NAMES = [];
+  CONFIG.PLACEHOLDER_WARNINGS = ['`PH_SERVER_NAMES` contains an example placeholder; it was ignored.'];
+  const warnings = configWarnings();
+  assert.strictEqual(warnings.filter(warning => warning.includes('PH_SERVER_NAMES')).length, 1);
+  CONFIG.STAGING_ENABLED = false;
+  CONFIG.PLACEHOLDER_WARNINGS = [];
 });
