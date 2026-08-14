@@ -25,7 +25,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const { log } = require('./src/log');
-const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings, isPlaceholder } = require('./src/config');
+const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
 const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, deleteSetting, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
@@ -33,7 +33,7 @@ const { reconcileRequestStatuses } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
-const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
+const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('./src/escalation');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch } = require('./src/season-pack');
 const { assessAsianOrigin, describeAvistazFit } = require('./src/asian');
@@ -52,6 +52,9 @@ const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = requ
 const { summarizeSeriesGaps, describeGaps, describeActivity, rankIncomplete } = require('./src/incomplete');
 const { priorityKey, orderByPriority, isPinned, nextRank } = require('./src/priority');
 const { summarizeImportRejections, renderRejectionLines, looksLikeMappingProblem } = require('./src/import-rejections');
+const { normalizeSearchQuery, searchDashboard } = require('./src/search');
+const { runEpisodeRecoverySweep } = require('./src/episode-recovery');
+const { createRequestGate } = require('./src/request-gate');
 
 // Centralized embed palette so every notification shares one consistent look.
 const COLORS = {
@@ -140,6 +143,17 @@ function scheduleTunableSweep({ label, minutesKey, enabledKey, fn, firstRunDelay
     setTimeout(tick, (paused() ? 1 : tunable(minutesKey)) * 60000).unref();
   };
   setTimeout(tick, firstRunDelayMs ?? (paused() ? 60000 : tunable(minutesKey) * 60000)).unref();
+}
+
+const runningSweeps = new Set();
+async function runGuardedSweep(name, fn) {
+  if (runningSweeps.has(name)) return { ok: false, busy: true };
+  runningSweeps.add(name);
+  try {
+    return { ok: true, result: await fn() };
+  } finally {
+    runningSweeps.delete(name);
+  }
 }
 
 function channelFor(kind) {
@@ -396,83 +410,54 @@ async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discord
   return true;
 }
 
-// Bot-side approval gate: create the stashed Seerr request an admin just approved. Shared by the
-// plain Approve button and Approve + AvistaZ Fallback (azPreAuth lets the escalation watchdog
-// auto-escalate instead of asking first).
+const { approveGatedRequest, denyGatedRequest } = createRequestGate({
+  takePendingRequest,
+  restashPendingRequest,
+  quotaBlockReason,
+  createSeerrRequestAs,
+  verifySeerrRequestCreated,
+  markApprovalNoticePosted,
+  upsertRequest,
+  canEscalate,
+  recordEscalationWatch,
+  tagPreAuthorizedMedia,
+  bumpTrustScore,
+  resetTrustScore,
+  addRequestSubscriber,
+  subscriberKeyFor,
+  audit,
+  log,
+  notifyApproved: pending => dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
+    .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Request Approved`)
+    .setDescription(`**${pending.label}** was approved and is being grabbed now. You'll get a DM when it's on Plex! 🍿`)] }),
+  notifyAlreadyRequested: (pending, subscribed) => dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.INFO)
+    .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Already Requested`)
+    .setDescription(`Good news — **${pending.label}** is already in the system (requested earlier or already available).${subscribed ? ' I\'ll DM you when it lands.' : ''} Check Plex, or track it with \`/request-status\`.`)] }),
+  notifyDenied: pending => dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.DANGER)
+    .setTitle('Request Declined')
+    .setDescription(`Sorry — **${pending.label}** was declined. Reach out to an admin if you think this was a mistake.`)] }),
+});
+
 async function handleGateApprove(interaction, nonce, { azPreAuth }) {
-  const pending = takePendingRequest(nonce);
-  if (!pending) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
   await interaction.deferUpdate();
-  // Quota can drift between /request and this click — another of the requester's own gated
-  // requests may have been approved in the meantime, or the quota period may have reset. This
-  // doesn't block the click (an admin knowingly approving stays trivial, same as elsewhere in
-  // this gate), but it does make the drift visible instead of silently ignoring it.
-  const quotaWarning = await quotaBlockReason(pending.seerrUserId, pending.discordId, pending.mediaType, { tmdbId: pending.tmdbId, is4k: pending.is4k }).catch(() => null);
-  try {
-    const data = await createSeerrRequestAs(pending.seerrUserId, pending.mediaType, pending.tmdbId, pending.is4k);
-    const mediaKey = pending.mediaType === 'tv' && data?.media?.tvdbId ? `tvdb:${data.media.tvdbId}` : `tmdb:${pending.tmdbId}`;
-    if (data?.id != null) markApprovalNoticePosted(data.id); // suppress the duplicate webhook embed
-    // Don't take Seerr's "accepted" at face value — it can lose the request moments later
-    // ('Media data not found' in its log). Restash and leave the buttons live (omitting
-    // `components` keeps them) so the admin can retry once the Seerr-side problem is fixed.
-    const verified = data?.id != null ? await verifySeerrRequestCreated(data.id, pending.mediaType) : { ok: true };
-    if (!verified.ok) {
-      restashPendingRequest(nonce, pending);
-      audit('external_api_error', { provider: 'overseerr', error: `request #${data.id} failed post-create verification: ${verified.reason}`, action: 'gate_approve_verify', targetDiscordId: pending.discordId });
-      return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
-        .setTitle(`⚠️ Seerr lost the request — ${pending.label}`)
-        .setDescription(`Seerr accepted request #${data.id} for <@${pending.discordId}>, but ${verified.reason}.\nNothing will download. Check the Seerr container logs from the last minute for the underlying error, then hit Approve again to retry.`)] });
-    }
-    // The gate stored the request under tmdb:<id>; keep that row in sync too when the webhook
-    // key differs (tv → tvdb).
-    upsertRequest(data?.id, mediaKey, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
-    if (mediaKey !== `tmdb:${pending.tmdbId}`) upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
-    // Only watch requests Seerr verifiably kept — recording earlier would make the escalation
-    // watchdog alert on requests that never reached the arrs at all.
-    if (canEscalate(pending)) {
-      recordEscalationWatch({ mediaType: pending.mediaType, tmdbId: pending.tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: pending.label, discordId: pending.discordId, preAuthorized: azPreAuth });
-      // Pre-authorized = this title is definitely AvistaZ-bound, so put the arr tag on right
-      // away instead of waiting for the watchdog — the tag-gated AvistaZ indexer then applies
-      // from the very first arr search. Background with retries: Seerr only adds the title to
-      // Radarr/Sonarr a few seconds after accepting the request.
-      if (azPreAuth) {
-        tagPreAuthorizedMedia({ mediaType: pending.mediaType, tmdbId: pending.tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: pending.label })
-          .catch(err => log.warn(`Approval-time AvistaZ tagging failed for ${pending.label}: ${err.message}`));
-      }
-    }
-    bumpTrustScore(pending.discordId, 1);
-    audit('request_approved_gate', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label, requestId: data?.id ?? null, azPreAuth, overQuota: !!quotaWarning });
-    await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
-      .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Request Approved`)
-      .setDescription(`**${pending.label}** was approved and is being grabbed now. You'll get a DM when it's on Plex! 🍿`)] });
-    return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
-      .setTitle(`✅ Approved — ${pending.label}`)
-      .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}> — sent to Seerr${data?.id != null ? ` (request #${data.id})` : ''}.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(pending.mediaType)}.` : ''}${quotaWarning ? `\n⚠️ Note: <@${pending.discordId}> is over quota as of this approval — ${quotaWarning.replace(/^❌\s*/, '')}` : ''}`)], components: [] });
-  } catch (err) {
-    const status = err.response?.status;
-    const seerrMessage = err.response?.data?.message;
-    audit('external_api_error', { provider: 'overseerr', error: seerrMessage || err.message, action: 'gate_approve', targetDiscordId: pending.discordId });
-    // 409 duplicate and 202 no-seasons-left (see createSeerrRequestAs) mean the title is
-    // already in Seerr's pipeline — retrying can never succeed, so resolve the gate instead of
-    // leaving live buttons the admin will click forever.
-    if (status === 202 || status === 409 || /already (exists|available|requested)/i.test(seerrMessage || '')) {
-      upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
-      // Another requester beat this one into Seerr between /request and this approval — subscribe
-      // them so the eventual MEDIA_AVAILABLE webhook DMs them too, instead of a dead-end DM that
-      // never promises a follow-up.
-      const added = addRequestSubscriber(subscriberKeyFor(pending.tmdbId, pending.is4k), pending.discordId);
-      audit('request_subscribed', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label, tmdbId: pending.tmdbId, is4k: pending.is4k, stage: 'gate_approve_collision' });
-      await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.INFO)
-        .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Already Requested`)
-        .setDescription(`Good news — **${pending.label}** is already in the system (requested earlier or already available).${added ? ' I\'ll DM you when it lands.' : ''} Check Plex, or track it with \`/request-status\`.`)] });
-      return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
-        .setTitle(`ℹ️ Already in Seerr — ${pending.label}`)
-        .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}>, but Seerr says: *${seerrMessage || err.message}*. Nothing new was created — it's already requested or available. <@${pending.discordId}> is now subscribed to the availability DM.`)], components: [] });
-    }
-    // Anything else (network, 5xx) is retryable: put the stash back so the button still works.
-    restashPendingRequest(nonce, pending);
-    return interaction.followUp({ content: `❌ Approving failed: ${seerrMessage || err.message}. The buttons still work — try again.`, ephemeral: true });
+  const actor = { kind: 'discord', id: interaction.user.id, label: interaction.user.tag || interaction.user.username || interaction.user.id };
+  const result = await approveGatedRequest({ nonce, actor, azPreAuth });
+  if (result.error === 'already_handled') return interaction.editReply({ content: 'ℹ️ Already handled (or expired).', components: [] });
+  const pending = result.pending;
+  if (!result.verified && result.restashed && result.requestId != null) {
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle(`⚠️ Seerr lost the request — ${pending.label}`)
+      .setDescription(`Seerr accepted request #${result.requestId} for <@${pending.discordId}>, but ${result.error}.\nNothing will download. Check the Seerr container logs from the last minute for the underlying error, then hit Approve again to retry.`)] });
   }
+  if (result.collision) {
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle(`ℹ️ Already in Seerr — ${pending.label}`)
+      .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}>, but Seerr says: *${result.error}*. Nothing new was created — it's already requested or available. <@${pending.discordId}> is now subscribed to the availability DM.`)], components: [] });
+  }
+  if (!result.ok) return interaction.followUp({ content: `❌ Approving failed: ${result.error}. The buttons still work — try again.`, ephemeral: true });
+  return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+    .setTitle(`✅ Approved — ${pending.label}`)
+    .setDescription(`Approved by <@${interaction.user.id}> for <@${pending.discordId}> — sent to Seerr${result.requestId != null ? ` (request #${result.requestId})` : ''}.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(pending.mediaType)}.` : ''}${result.quotaWarning ? `\n⚠️ Note: <@${pending.discordId}> is over quota as of this approval — ${result.quotaWarning.replace(/^❌\s*/, '')}` : ''}`)], components: [] });
 }
 
 // Put the AvistaZ tag on a just-approved, pre-authorized title. Seerr adds the title to
@@ -571,6 +556,7 @@ async function sweepStuckDownloads() {
   const activeGroups = new Set(items.map(stuckGroupKey));
   for (const gk of stuckAlerted.keys()) if (!activeGroups.has(gk)) stuckAlerted.delete(gk);
 
+  let alerted = 0;
   for (const [gk, group] of groups) {
     if (getSetting(`stuck_ignore:${gk}`)) continue;
     if (now - (stuckAlerted.get(gk) || 0) < tunable('STUCK_ALERT_COOLDOWN_HOURS') * 3600000) continue;
@@ -578,6 +564,7 @@ async function sweepStuckDownloads() {
     const { embed, row } = buildStuckAlert(group);
     notifyChannel('downloads', { embeds: [embed], components: [row] });
     audit('stuck_download_detected', { groupKey: gk, label: group.source.label, count: group.members.length, frozenMinutes: Math.round(group.maxFrozenMs / 60000) });
+    alerted++;
   }
 
   // Clear ignore flags whose group has fully left the queue, so a future download reusing the
@@ -586,6 +573,7 @@ async function sweepStuckDownloads() {
   for (const r of ignoreRows) {
     if (!activeGroups.has(r.key.slice('stuck_ignore:'.length))) db.prepare('DELETE FROM app_settings WHERE key = ?').run(r.key);
   }
+  return { detected: groups.size, alerted };
 }
 
 // ---- AvistaZ escalation watchdog ----
@@ -682,9 +670,10 @@ async function runEscalation(row) {
 
 async function sweepEscalations() {
   const rows = getWatchingEscalations();
-  if (!rows.length) return;
+  if (!rows.length) return { acted: 0 };
   const queue = await fetchArrQueues();
   const cfg = { delayMinutes: tunable('ESCALATION_DELAY_MINUTES'), maxAgeDays: tunable('ESCALATION_MAX_AGE_DAYS'), arrGraceMinutes: CONFIG.ESCALATION_ARR_GRACE_MINUTES };
+  let acted = 0;
   for (const row of rows) {
     const facts = await gatherEscalationFacts(row, queue);
     // Whether AvistaZ could plausibly have this title gates auto-escalation (and colours the
@@ -695,6 +684,7 @@ async function sweepEscalations() {
     }
     const action = decideEscalationAction(row, facts, Date.now(), cfg);
     if (action === 'wait') continue;
+    acted++;
     if (action === 'resolve') {
       setEscalationState(row.id, 'resolved');
       audit('escalation_resolved', { mediaId: row.media_id, title: row.title, facts });
@@ -784,6 +774,7 @@ async function sweepEscalations() {
         new ButtonBuilder().setCustomId(`escalate_ignore:${row.id}`).setLabel('Ignore').setStyle(ButtonStyle.Secondary),
       )] });
   }
+  return { acted };
 }
 
 // ---- Season-pack-first searching (all indexers) ----
@@ -798,6 +789,14 @@ function seasonPackConfig() {
     cooldownHours: CONFIG.SEASON_PACK_COOLDOWN_HOURS,
     includeRequested: tunable('SEASON_PACK_REQUESTED'),
   };
+}
+
+function seasonSearchCooldown(lastSearchedAt, now = Date.now()) {
+  const last = Number(lastSearchedAt);
+  const nextEligible = last + CONFIG.SEASON_PACK_COOLDOWN_HOURS * 3600000;
+  return Number.isFinite(last) && nextEligible > now
+    ? { cooling: true, nextEligible }
+    : { cooling: false, nextEligible: null };
 }
 
 // Season numbers already downloading for a series, so a season mid-grab is never re-searched.
@@ -2597,7 +2596,7 @@ client.once('ready', async () => {
   // The arr URLs are a static prerequisite (no arrs configured, nothing to watch); the cadence and
   // thresholds are runtime-tunable, so the timer is armed either way and decides per tick.
   if (arrSources().length) {
-    scheduleTunableSweep({ label: 'Stuck-download sweep', minutesKey: 'STUCK_CHECK_MINUTES', fn: sweepStuckDownloads });
+    scheduleTunableSweep({ label: 'Stuck-download sweep', minutesKey: 'STUCK_CHECK_MINUTES', fn: () => runGuardedSweep('stuck', sweepStuckDownloads) });
     log.ok(`Stuck-download watchdog every ${tunable('STUCK_CHECK_MINUTES')} min (threshold ${tunable('STUCK_AFTER_MINUTES')} min)`);
   }
   if (CONFIG.RADARR_URL || CONFIG.SONARR_URL) {
@@ -2610,14 +2609,14 @@ client.once('ready', async () => {
           .setDescription(missing.map(w => `• ${w}`).join('\n').slice(0, 4000))] });
       }
     }).catch(err => log.warn(`AvistaZ tag check failed: ${err.message}`));
-    scheduleTunableSweep({ label: 'Escalation sweep', minutesKey: 'ESCALATION_CHECK_MINUTES', enabledKey: 'ESCALATION_ENABLED', fn: sweepEscalations });
+    scheduleTunableSweep({ label: 'Escalation sweep', minutesKey: 'ESCALATION_CHECK_MINUTES', enabledKey: 'ESCALATION_ENABLED', fn: () => runGuardedSweep('escalation', sweepEscalations) });
     log.ok(`AvistaZ escalation watchdog every ${tunable('ESCALATION_CHECK_MINUTES')} min (delay ${escalationDelayLabel()}, tag '${CONFIG.AVISTAZ_TAG}')`);
   }
   if (CONFIG.SONARR_URL) {
     // A first pass shortly after boot, then on the interval — Sonarr needs a moment to settle
     // after a restart, and the sweep is capped per run anyway. sweepSeasonPacks() re-checks the
     // SEASON_PACK_FIRST toggle itself, so a paused tick costs nothing.
-    scheduleTunableSweep({ label: 'Season-pack sweep', minutesKey: 'SEASON_PACK_CHECK_MINUTES', enabledKey: 'SEASON_PACK_FIRST', fn: sweepSeasonPacks, firstRunDelayMs: 120000 });
+    scheduleTunableSweep({ label: 'Season-pack sweep', minutesKey: 'SEASON_PACK_CHECK_MINUTES', enabledKey: 'SEASON_PACK_FIRST', fn: () => runGuardedSweep('season-pack', sweepSeasonPacks), firstRunDelayMs: 120000 });
     log.ok(`Season-pack-first search every ${tunable('SEASON_PACK_CHECK_MINUTES')} min (old = ended or ${tunable('SEASON_PACK_DORMANT_DAYS')}d dormant, max ${tunable('SEASON_PACK_MAX_PER_RUN')}/run)`);
   }
   if (grabConfigured()) {
@@ -2674,7 +2673,7 @@ client.once('ready', async () => {
     }
     log.ok(`Plex Home staging enabled → ${CONFIG.STAGE_RCLONE_REMOTE} (queue check every ${CONFIG.STAGE_CHECK_MINUTES} min, min free ${CONFIG.STAGE_MIN_FREE_GB} GB)`);
   }
-  if (CONFIG.PH_TUNNEL_HEALTH_URL && !isPlaceholder(CONFIG.PH_TUNNEL_HEALTH_URL) && CONFIG.PH_TUNNEL_CHECK_MINUTES > 0) {
+  if (CONFIG.PH_TUNNEL_HEALTH_URL && CONFIG.PH_TUNNEL_CHECK_MINUTES > 0) {
     setInterval(() => sweepTunnelHealth().catch(err => log.warn(`Tunnel health sweep failed: ${err.message}`)), CONFIG.PH_TUNNEL_CHECK_MINUTES * 60000).unref();
     log.ok(`PH tunnel watchdog running every ${CONFIG.PH_TUNNEL_CHECK_MINUTES} min (alert after ${CONFIG.PH_TUNNEL_FAILS_BEFORE_ALERT} failures)`);
   }
@@ -3538,7 +3537,7 @@ async function handleStatusCommand(interaction) {
       `🎞️ Staged: ${stagedItems.length} title(s) (${stagedItems.filter(i => i.pinned).length} pinned)`,
       copying ? `📥 Copying: **${copying.title}**${jobs.length > 1 ? ` (+${jobs.length - 1} queued)` : ''}` : `📥 Stage queue: ${jobs.length ? `${jobs.length} queued` : 'idle'}`,
     ];
-    if (CONFIG.PH_TUNNEL_HEALTH_URL && !isPlaceholder(CONFIG.PH_TUNNEL_HEALTH_URL)) {
+    if (CONFIG.PH_TUNNEL_HEALTH_URL) {
       const tState = getSetting('ph_tunnel_state') || 'unknown';
       const tSince = Number(getSetting('ph_tunnel_since') || '0');
       lines.push(`🛰️ Tunnel: ${tState === 'up' ? '✅ up' : tState === 'down' ? '❌ down' : '❔ not checked yet'}${tSince ? ` since ${discordTimestamp(tSince)}` : ''}`);
@@ -5073,7 +5072,7 @@ async function handleStagedCommand(interaction) {
       { name: `Warm (${items.length})`, value: items.length ? items.sort((a, b) => (b.pinned - a.pinned) || (b.staged_at || 0) - (a.staged_at || 0)).map(itemLine).join('\n').slice(0, 1024) : 'Nothing staged yet — `/stage` a title.', inline: false },
       { name: `Staging queue (${jobs.length})`, value: jobs.length ? jobs.map(jobLine).join('\n').slice(0, 1024) : 'Idle.', inline: false },
     );
-  if (CONFIG.PH_TUNNEL_HEALTH_URL && !isPlaceholder(CONFIG.PH_TUNNEL_HEALTH_URL)) {
+  if (CONFIG.PH_TUNNEL_HEALTH_URL) {
     const state = getSetting('ph_tunnel_state') || 'unknown';
     const since = Number(getSetting('ph_tunnel_since') || '0');
     embed.addFields({ name: 'Tunnel', value: `${state === 'up' ? '✅ up' : state === 'down' ? '❌ down' : '❔ not checked yet'}${since ? ` since ${discordTimestamp(since)}` : ''}`, inline: false });
@@ -5837,14 +5836,10 @@ async function handleButton(interaction) {
   if (action === 'request_approve') return handleGateApprove(interaction, parts[0], { azPreAuth: false });
   if (action === 'request_approve_az') return handleGateApprove(interaction, parts[0], { azPreAuth: true });
   if (action === 'request_deny') {
-    const pending = takePendingRequest(parts[0]);
-    if (!pending) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
-    upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'declined');
-    resetTrustScore(pending.discordId);
-    audit('request_denied_gate', { actorDiscordId: interaction.user.id, targetDiscordId: pending.discordId, title: pending.label });
-    await dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.DANGER)
-      .setTitle('Request Declined')
-      .setDescription(`Sorry — **${pending.label}** was declined. Reach out to an admin if you think this was a mistake.`)] });
+    const actor = { kind: 'discord', id: interaction.user.id, label: interaction.user.tag || interaction.user.username || interaction.user.id };
+    const result = await denyGatedRequest({ nonce: parts[0], actor });
+    if (!result.ok) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
+    const pending = result.pending;
     return interaction.update({ embeds: [brandedEmbed(COLORS.DANGER)
       .setTitle(`🚫 Denied — ${pending.label}`)
       .setDescription(`Denied by <@${interaction.user.id}> (requested by <@${pending.discordId}>). Nothing was sent to Seerr.`)], components: [] });
@@ -6515,6 +6510,18 @@ function dashboardAuth(req, res, next) {
   return next();
 }
 
+function dashboardActor(req) {
+  return { actor: 'dashboard', actorIp: req.ip || req.socket.remoteAddress || 'unknown' };
+}
+
+function dashboardActionError(err) {
+  const data = err?.response?.data;
+  if (typeof data === 'string') return data;
+  if (data?.message) return data.message;
+  if (data != null) return JSON.stringify(data);
+  return err?.message || String(err);
+}
+
 let httpServer = null;
 
 // Requests the requester still cannot watch in full. Two distinct kinds, deliberately in one list:
@@ -6541,6 +6548,7 @@ async function gatherIncompleteRequests({ queue = [], grabJobs = [], escalations
   const ctx = { queue: queue || [], grabJobs, escalations, recoveryRows };
   const rows = [];
   const seenTvdb = new Set();
+  const priority = mediaPriorityMap();
 
   if (CONFIG.SONARR_URL) {
     const requestedTvdbIds = listRequestedTvdbIds();
@@ -6554,17 +6562,37 @@ async function gatherIncompleteRequests({ queue = [], grabJobs = [], escalations
       .slice(0, INCOMPLETE_SERIES_FETCH_CAP);
     const episodeLists = await Promise.all(candidates.map(entry => getSeriesEpisodes(entry.id).catch(() => [])));
     candidates.forEach((entry, index) => {
-      const summary = summarizeSeriesGaps({ series: entry, episodes: episodeLists[index], now });
+      const episodes = episodeLists[index];
+      const summary = summarizeSeriesGaps({ series: entry, episodes, now });
       if (!summary.airedMissing) return;
       seenTvdb.add(Number(entry.tvdbId));
       const activity = describeActivity(ctx, { tvdbId: entry.tvdbId, title: entry.title });
+      const key = priorityKey({ tvdbId: entry.tvdbId });
+      const rank = priority.get(key);
+      const searchedAt = getSeasonSearchTimes(entry.id);
+      const searchActions = summary.seasons.map(season => {
+        const missingEpisodes = episodes.filter(ep => Number(ep.seasonNumber) === season.season && !ep.hasFile && ep.monitored
+          && Date.parse(ep.airDateUtc || ep.airDate || '') <= now);
+        if (missingEpisodes.length === 1) {
+          return { label: `Search S${pad(season.season)}E${pad(missingEpisodes[0].episodeNumber)} now`, url: '/admin/action/search', body: { kind: 'episode', seriesId: entry.id, episodeId: missingEpisodes[0].id } };
+        }
+        const { cooling, nextEligible } = seasonSearchCooldown(searchedAt[season.season], now);
+        return {
+          label: cooling ? `S${pad(season.season)} eligible ${fmtAgo(nextEligible)}` : `Search S${pad(season.season)} now`,
+          url: '/admin/action/search',
+          body: { kind: 'season', seriesId: entry.id, seasonNumber: season.season },
+          disabled: cooling,
+          title: cooling ? `Season search cooldown ends ${new Date(nextEligible).toISOString()}` : '',
+        };
+      });
       rows.push({
         state: activity.state,
         title: `📺 ${summary.title}`,
-        sub: `${describeGaps(summary)} — ${activity.note}`,
+        sub: `${describeGaps(summary)} — ${activity.note}${rank != null ? ` — pinned #${rank}` : ''}`,
         right: `${summary.airedMissing} missing`,
         pct: summary.pct,
         missing: summary.airedMissing,
+        actions: [...searchActions, { label: rank != null ? 'Unpin' : 'Pin', url: '/admin/action/priority', body: { operation: rank != null ? 'unpin' : 'pin', key, mediaType: 'tv', title: summary.title } }],
       });
     });
   }
@@ -6582,6 +6610,7 @@ async function gatherIncompleteRequests({ queue = [], grabJobs = [], escalations
       sub: `${requestStatusBadge(request.status)} · requested ${age} · ${activity.note}`,
       right: request.requested_by_discord_id ? `by ${request.requested_by_discord_id}` : '',
       missing: 0,
+      actions: request.media_id ? [{ label: priority.has(request.media_id) ? 'Unpin' : 'Pin', url: '/admin/action/priority', body: { operation: priority.has(request.media_id) ? 'unpin' : 'pin', key: request.media_id, mediaType: request.media_type, title: request.title } }] : [],
     });
   }
   return rankIncomplete(rows);
@@ -6958,7 +6987,7 @@ function startExpressServer() {
       ]);
       const grabJobs = listActiveGrabJobs();
       const stageJobs = listActiveStageJobs();
-      const escalations = getWatchingEscalations();
+      const escalations = db.prepare("SELECT * FROM escalations WHERE state IN ('watching','alerted','error') ORDER BY approved_at").all();
       // Depends on the queue above, so it runs after rather than inside that Promise.all. Null on
       // failure (Sonarr unreachable) so the card says so instead of claiming everything is fine.
       const incomplete = await gatherIncompleteRequests({ queue: queue || [], grabJobs, escalations, now }).catch(() => null);
@@ -7025,12 +7054,23 @@ function startExpressServer() {
           right: `${fmtSpace(j.size_bytes || 0)}${j.started_at ? ` · started ${fmtAgo(j.started_at)}` : ''}`,
         })),
       ];
+      const allowance = grabDailyAllowance();
       const watchItems = [
         ...escalations.map(e => ({
           state: 'warn',
           title: e.title,
           sub: `escalation watch · ${e.state}${e.pre_authorized ? ' · pre-authorized' : ''}`,
           right: `approved ${fmtAgo(e.approved_at)}`,
+          actions: [{
+            label: allowance.limited ? `Escalate now (${allowance.remaining} left)` : 'Escalate now',
+            url: '/admin/action/escalate',
+            body: { id: e.id },
+            confirm: allowance.limited
+              ? `Escalate ${e.title} now? This can spend one of ${allowance.remaining} remaining AvistaZ downloads today.`
+              : `Escalate ${e.title} to AvistaZ now?`,
+            danger: true,
+            disabled: allowance.exhausted,
+          }],
         })),
         ...pendingDeletions.map(p => ({
           state: 'skip',
@@ -7039,6 +7079,23 @@ function startExpressServer() {
           right: `deletes ${fmtAgo(p.delete_after)}`,
         })),
       ];
+      const priorityItems = listMediaPriority().map((item, index, all) => ({
+        state: 'ok',
+        title: item.title,
+        sub: `${mediaTypeLabel(item.media_type, false)} · ${item.key}`,
+        right: `rank ${item.rank}`,
+        actions: [
+          { label: 'Up', url: '/admin/action/priority', body: { operation: 'move', key: item.key, direction: -1 }, disabled: index === 0 },
+          { label: 'Down', url: '/admin/action/priority', body: { operation: 'move', key: item.key, direction: 1 }, disabled: index === all.length - 1 },
+          { label: 'Unpin', url: '/admin/action/priority', body: { operation: 'unpin', key: item.key } },
+        ],
+      }));
+      const sweepItems = [
+        ['stuck', 'Stuck-download sweep'],
+        ['escalation', 'Escalation sweep'],
+        ['season-pack', 'Season-pack sweep'],
+        ['episode-recovery', 'Episode-recovery sweep'],
+      ].map(([name, title]) => ({ state: 'skip', title, actions: [{ label: 'Run now', url: '/admin/action/sweep', body: { name } }] }));
 
       const tierItems = tierNodes.map(n => {
         const plan = getTierPlan(n.name);
@@ -7123,11 +7180,16 @@ function startExpressServer() {
             ${renderItemList(watchItems, 'No escalation watches or pending deletions.')}
           </div>
           <div class="card">
+            <h2>Pinned Media<span class="sub">Pinned titles run first in capped Sonarr sweeps. Reorder them here.</span></h2>
+            ${renderItemList(priorityItems, 'No titles are pinned.')}
+          </div>
+          <div class="card">
             <h2>Recent Media Requests</h2>
             ${renderTable(requestRows)}
           </div>
           <div class="card">
             <h2>Manual Actions</h2>
+            ${renderItemList(sweepItems, '')}
             <div class="actions">
               <a class="btn" href="/admin/health">Health JSON</a>
               <a class="btn" href="/admin/doctor">Edge Doctor JSON</a>
@@ -7185,6 +7247,24 @@ function startExpressServer() {
             alert(r.ok ? 'All active download links revoked.' : 'Failed: ' + r.status);
             if (r.ok) location.reload();
           }
+          document.querySelectorAll('[data-post]').forEach(function (btn) {
+            btn.addEventListener('click', async function () {
+              var prompt = btn.dataset.confirm;
+              if (prompt && !confirm(prompt)) return;
+              var body = JSON.parse(btn.dataset.body || '{}');
+              if (prompt) body.confirmed = true;
+              btn.disabled = true;
+              try {
+                var r = await fetch(btn.dataset.post, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                var result = await r.json().catch(function () { return {}; });
+                alert(r.ok && result.ok !== false ? (result.message || 'Action completed.') : (result.error || 'Request failed: ' + r.status));
+                if (r.ok && result.ok !== false) location.reload();
+              } catch (err) {
+                alert(String(err && err.message || err));
+                btn.disabled = false;
+              }
+            });
+          });
           (function () {
             var note = function (group, text, cls) {
               var el = document.querySelector('[data-note="' + group + '"]');
@@ -7227,7 +7307,44 @@ function startExpressServer() {
             });
           })();
         </script>`;
-      res.type('html').send(renderPage('Dashboard', body, { showLogout: true, nav, autoRefresh: true, tabs: true }));
+      res.type('html').send(renderPage('Dashboard', body, { showLogout: true, showSearch: true, nav, autoRefresh: true, tabs: true }));
+    });
+
+    app.get('/admin/search', dashboardAuth, async (req, res) => {
+      const normalized = normalizeSearchQuery(req.query.q);
+      if (!normalized.query) {
+        return res.type('html').send(renderPage('Search', '<div class="card"><h2>Search</h2><p class="muted">Enter at least 2 characters.</p></div>', { showLogout: true, showSearch: true }));
+      }
+      if (normalized.error) {
+        return res.status(400).type('html').send(renderPage('Search', `<div class="card"><h2>Search</h2><div class="error">${escapeHtml(normalized.error)}</div></div>`, { showLogout: true, showSearch: true, searchQuery: normalized.query }));
+      }
+      const [members, queues, series, missingEpisodes, movies] = await Promise.all([
+        getGuildMembers().catch(() => []),
+        arrSources().length ? fetchArrQueues().catch(() => []) : Promise.resolve([]),
+        CONFIG.SONARR_URL ? listSonarrSeries().catch(() => []) : Promise.resolve([]),
+        CONFIG.SONARR_URL ? listSonarrMissingEpisodes().catch(() => []) : Promise.resolve([]),
+        (CONFIG.RADARR_URL || CONFIG.RADARR_4K_URL) ? listRadarrMovies().catch(() => []) : Promise.resolve([]),
+      ]);
+      const now = Date.now();
+      const results = searchDashboard({
+        query: normalized.query,
+        requests: db.prepare('SELECT * FROM requests ORDER BY id DESC').all(),
+        users: db.prepare('SELECT * FROM users ORDER BY requested_at DESC').all(),
+        auditRows: db.prepare('SELECT created_at, action, metadata_json FROM audit_log ORDER BY id DESC').all(),
+        downloadTokens: db.prepare('SELECT discord_id, revoked, expires_at FROM download_tokens').all(),
+        members: members.filter(member => !member.user?.bot).map(member => ({ discordId: member.user.id, name: member.displayName || member.user.globalName || member.user.username || member.user.tag })),
+        queues, series, missingEpisodes, movies, now,
+      });
+      const requestRows = results.requests.map(row => ({ title: row.title, status: row.status, type: row.type, requester: row.requestedBy, when: fmtAgo(sqliteUtcMs(row.requestedAt)), progress: row.progress }));
+      const userRows = results.users.map(row => ({ discord: row.discord, name: row.name, email: row.email, linked: row.linked, server: row.homeServer, invited: row.invited, requests: row.requests, links: row.activeLinks }));
+      const libraryRows = results.library.map(row => ({ title: row.title, type: row.type, status: row.status, complete: row.completeness, gaps: row.gaps, source: row.source }));
+      const auditRows = results.audit.map(row => ({ when: fmtAgo(sqliteUtcMs(row.when)), action: row.action, matched: row.match }));
+      const body = `<div class="actions"><a class="btn" href="/admin">Back to dashboard</a></div>
+        <div class="card"><h2>Requests <span class="sub">${requestRows.length} result${requestRows.length === 1 ? '' : 's'}</span></h2>${renderTable(requestRows)}</div>
+        <div class="card"><h2>Users <span class="sub">${userRows.length} result${userRows.length === 1 ? '' : 's'}</span></h2>${renderTable(userRows)}</div>
+        <div class="card"><h2>Library <span class="sub">${libraryRows.length} result${libraryRows.length === 1 ? '' : 's'}</span></h2>${renderTable(libraryRows)}</div>
+        <div class="card"><h2>Audit <span class="sub">${auditRows.length} result${auditRows.length === 1 ? '' : 's'} · metadata is searchable but hidden</span></h2>${renderTable(auditRows)}</div>`;
+      res.type('html').send(renderPage(`Search: ${normalized.query}`, body, { showLogout: true, showSearch: true, searchQuery: normalized.query }));
     });
 
     app.get('/admin/health', dashboardAuth, async (_req, res) => res.json(await gatherHealth()));
@@ -7237,6 +7354,140 @@ function startExpressServer() {
       const users = await fetchOverseerrUsers().catch(() => []);
       const toDelete = users.filter(u => u.userType !== 1 && ['displayName', 'email', 'username'].some(k => (u[k] || '').toLowerCase().startsWith('deleted_user')));
       res.json({ wouldRemove: toDelete.length, users: toDelete.map(u => ({ id: u.id, email: u.email, username: u.username })) });
+    });
+    app.post('/admin/action/search', dashboardAuth, async (req, res) => {
+      const kind = req.body?.kind;
+      const seriesId = Number(req.body?.seriesId);
+      const seasonNumber = Number(req.body?.seasonNumber);
+      const episodeId = Number(req.body?.episodeId);
+      if (!['season', 'episode'].includes(kind) || !Number.isInteger(seriesId)) {
+        audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'invalid_request' });
+        return res.status(400).json({ ok: false, error: 'Invalid search request.' });
+      }
+      try {
+        const series = (await listSonarrSeries()).find(row => Number(row.id) === seriesId);
+        if (!series) throw new Error(`Sonarr series ${seriesId} was not found`);
+        const episodes = await getSeriesEpisodes(seriesId);
+        if (kind === 'season') {
+          const missing = episodes.filter(ep => Number(ep.seasonNumber) === seasonNumber && ep.monitored && !ep.hasFile
+            && Date.parse(ep.airDateUtc || ep.airDate || '') <= Date.now());
+          if (!Number.isInteger(seasonNumber) || !missing.length) throw new Error(`Sonarr season ${seasonNumber} has no aired missing episodes`);
+          const { cooling, nextEligible } = seasonSearchCooldown(getSeasonSearchTimes(seriesId)[seasonNumber]);
+          if (cooling) {
+            const error = `Season search is cooling down until ${new Date(nextEligible).toISOString()}`;
+            audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'cooldown', seriesId, seasonNumber, nextEligible });
+            return res.status(409).json({ ok: false, error, nextEligible });
+          }
+          await triggerSeasonSearch(seriesId, seasonNumber);
+          recordSeasonSearch({ seriesId, seasonNumber, seriesTitle: series.title, missing: missing.length });
+          audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, seasonNumber, title: series.title });
+          return res.json({ ok: true, message: `Sonarr accepted the S${pad(seasonNumber)} season search for ${series.title}.` });
+        }
+        const episode = episodes.find(ep => Number(ep.id) === episodeId && ep.monitored && !ep.hasFile
+          && Date.parse(ep.airDateUtc || ep.airDate || '') <= Date.now());
+        if (!Number.isInteger(episodeId) || !episode) throw new Error(`Sonarr episode ${episodeId} is not an aired missing episode in this series`);
+        await axios.post(`${CONFIG.SONARR_URL}/api/v3/command`, { name: 'EpisodeSearch', episodeIds: [episodeId] },
+          { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 15000 });
+        audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, episodeId, title: series.title, seasonNumber: episode.seasonNumber, episodeNumber: episode.episodeNumber });
+        return res.json({ ok: true, message: `Sonarr accepted the S${pad(episode.seasonNumber)}E${pad(episode.episodeNumber)} search for ${series.title}.` });
+      } catch (err) {
+        const error = dashboardActionError(err);
+        audit('dashboard_search', { ...dashboardActor(req), ok: false, kind, seriesId, seasonNumber: Number.isInteger(seasonNumber) ? seasonNumber : null, episodeId: Number.isInteger(episodeId) ? episodeId : null, error });
+        return res.status(err?.response ? 502 : 400).json({ ok: false, error });
+      }
+    });
+
+    app.post('/admin/action/priority', dashboardAuth, (req, res) => {
+      const operation = req.body?.operation;
+      const key = String(req.body?.key || '');
+      if (!['pin', 'unpin', 'move'].includes(operation) || !/^(tvdb|tmdb):\d+$/.test(key)) {
+        audit('dashboard_priority', { ...dashboardActor(req), ok: false, operation, key, reason: 'invalid_request' });
+        return res.status(400).json({ ok: false, error: 'Invalid priority request.' });
+      }
+      const rows = listMediaPriority();
+      if (operation === 'pin') {
+        const mediaType = req.body?.mediaType;
+        const title = String(req.body?.title || '').trim();
+        if (!['tv', 'movie'].includes(mediaType) || !title) {
+          audit('dashboard_priority', { ...dashboardActor(req), ok: false, operation, key, reason: 'missing_media' });
+          return res.status(400).json({ ok: false, error: 'Media type and title are required.' });
+        }
+        setMediaPriority({ key, mediaType, title, rank: nextRank(rows), pinnedBy: 'dashboard' });
+      } else if (operation === 'unpin') {
+        clearMediaPriority(key);
+      } else {
+        const index = rows.findIndex(row => row.key === key);
+        const direction = Number(req.body?.direction);
+        if (index < 0 || ![-1, 1].includes(direction)) {
+          audit('dashboard_priority', { ...dashboardActor(req), ok: false, operation, key, reason: 'invalid_move' });
+          return res.status(400).json({ ok: false, error: 'Pinned title or direction is invalid.' });
+        }
+        const target = Math.max(0, Math.min(rows.length - 1, index + direction));
+        const [moved] = rows.splice(index, 1);
+        rows.splice(target, 0, moved);
+        const update = db.prepare('UPDATE media_priority SET rank = ? WHERE key = ?');
+        db.transaction(() => rows.forEach((row, rank) => update.run(rank + 1, row.key)))();
+      }
+      audit('dashboard_priority', { ...dashboardActor(req), ok: true, operation, key });
+      return res.json({ ok: true, message: operation === 'pin' ? 'Title pinned.' : operation === 'unpin' ? 'Title unpinned.' : 'Pinned order updated.' });
+    });
+
+    app.post('/admin/action/sweep', dashboardAuth, async (req, res) => {
+      const name = req.body?.name;
+      const sweeps = {
+        stuck: sweepStuckDownloads,
+        escalation: sweepEscalations,
+        'season-pack': sweepSeasonPacks,
+        'episode-recovery': runEpisodeRecoverySweep,
+      };
+      if (!sweeps[name]) {
+        audit('dashboard_sweep', { ...dashboardActor(req), ok: false, name, reason: 'invalid_sweep' });
+        return res.status(400).json({ ok: false, error: 'Unknown sweep.' });
+      }
+      try {
+        const outcome = await runGuardedSweep(name, sweeps[name]);
+        if (!outcome.ok || outcome.result?.busy) {
+          audit('dashboard_sweep', { ...dashboardActor(req), ok: false, name, reason: 'already_running' });
+          return res.status(409).json({ ok: false, error: `${name} sweep is already running.` });
+        }
+        const result = outcome.result || {};
+        const count = result.searched ?? result.acted ?? result.alerted ?? 0;
+        audit('dashboard_sweep', { ...dashboardActor(req), ok: true, name, count, result });
+        return res.json({ ok: true, message: `${name} sweep finished with ${count} action(s).`, result });
+      } catch (err) {
+        const error = dashboardActionError(err);
+        audit('dashboard_sweep', { ...dashboardActor(req), ok: false, name, error });
+        return res.status(502).json({ ok: false, error });
+      }
+    });
+
+    app.post('/admin/action/escalate', dashboardAuth, async (req, res) => {
+      const id = Number(req.body?.id);
+      const row = getEscalationById(id);
+      if (req.body?.confirmed !== true) {
+        audit('dashboard_escalation', { ...dashboardActor(req), ok: false, id, reason: 'confirmation_required' });
+        return res.status(400).json({ ok: false, error: 'Confirmation is required.' });
+      }
+      if (!row || !['watching', 'alerted', 'error'].includes(row.state)) {
+        audit('dashboard_escalation', { ...dashboardActor(req), ok: false, id, reason: 'already_handled' });
+        return res.status(409).json({ ok: false, error: 'This escalation was already handled.' });
+      }
+      const before = grabDailyAllowance();
+      if (before.exhausted) {
+        audit('dashboard_escalation', { ...dashboardActor(req), ok: false, id, reason: 'allowance_exhausted', remaining: before.remaining });
+        return res.status(409).json({ ok: false, error: 'The daily AvistaZ allowance is exhausted.', remaining: before.remaining });
+      }
+      try {
+        const result = await runEscalation(row);
+        const after = grabDailyAllowance();
+        audit('dashboard_escalation', { ...dashboardActor(req), ok: result.ok, id, mediaId: row.media_id, title: row.title, remainingBefore: before.remaining, remainingAfter: after.remaining, reason: result.reason || result.why || null });
+        if (!result.ok) return res.status(result.deferred ? 409 : 502).json({ ok: false, error: result.why || result.reason, remaining: after.remaining });
+        return res.json({ ok: true, message: result.detail, remaining: after.remaining });
+      } catch (err) {
+        const error = dashboardActionError(err);
+        audit('dashboard_escalation', { ...dashboardActor(req), ok: false, id, mediaId: row.media_id, title: row.title, error });
+        return res.status(502).json({ ok: false, error });
+      }
     });
     // Runtime overrides for the automation sweeps. Every write is validated against the setting's
     // declared bounds (src/runtime-settings.js) and audited — an override that quietly changes what

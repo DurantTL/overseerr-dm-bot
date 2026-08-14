@@ -3,7 +3,7 @@
 // rclone copy/purge/about wrappers, and the pure cache-pressure math (eviction order + space
 // planning) the tests exercise directly.
 const { spawn } = require('child_process');
-const { CONFIG, isPlaceholder } = require('./config');
+const { CONFIG } = require('./config');
 const { radarrGetFrom, sonarrGet, remapPath } = require('./arr');
 const path = require('path');
 
@@ -21,11 +21,9 @@ const stagingConfigured = () => !!(CONFIG.STAGING_ENABLED && CONFIG.STAGE_RCLONE
 //   - PRIMARY_SERVER_NAMES unset       → any named non-edge server counts as 'primary'
 // cfg is injectable for tests; callers use the CONFIG-backed default.
 function classifyServerIdentity({ serverName, machineId } = {}, cfg = undefined) {
-  // Placeholder identities (an unedited .env.example value) must never arm the fail-safe below —
-  // obeying one would drop every real webhook that doesn't happen to match it (issue #122).
-  const phNames = (cfg ? cfg.phNames : CONFIG.PH_SERVER_NAMES).filter(v => !isPlaceholder(v));
-  const caEdgeNames = (cfg ? (cfg.caEdgeNames || []) : CONFIG.CA_EDGE_SERVER_NAMES).filter(v => !isPlaceholder(v));
-  const primaryNames = (cfg ? cfg.primaryNames : CONFIG.PRIMARY_SERVER_NAMES).filter(v => !isPlaceholder(v));
+  const phNames = cfg ? cfg.phNames : CONFIG.PH_SERVER_NAMES;
+  const caEdgeNames = cfg ? (cfg.caEdgeNames || []) : CONFIG.CA_EDGE_SERVER_NAMES;
+  const primaryNames = cfg ? cfg.primaryNames : CONFIG.PRIMARY_SERVER_NAMES;
   if (!phNames.length && !caEdgeNames.length) return 'primary';
   const ids = [serverName, machineId].map(v => String(v || '').trim().toLowerCase()).filter(Boolean);
   if (!ids.length) return 'unknown';

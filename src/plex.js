@@ -1,6 +1,6 @@
 // plex.tv API: auth, server discovery, invites, access removal.
 const axios = require('axios');
-const { CONFIG, isPlaceholder } = require('./config');
+const { CONFIG } = require('./config');
 const { audit } = require('./db');
 const { log } = require('./log');
 
@@ -33,10 +33,9 @@ async function getPlexServers(token, { includeExcluded = false } = {}) {
 // cache box only, everyone else gets everything except it. With PH_SERVER_NAMES unset this is a
 // no-op and invites go to every server, exactly as before.
 function serversForHomeServer(servers, homeServer) {
-  const phNames = CONFIG.PH_SERVER_NAMES.filter(v => !isPlaceholder(v));
-  if (!phNames.length) return servers;
-  const isPh = s => phNames.includes(String(s.name || '').toLowerCase())
-    || phNames.includes(String(s.clientIdentifier || '').toLowerCase());
+  if (!CONFIG.PH_SERVER_NAMES.length) return servers;
+  const isPh = s => CONFIG.PH_SERVER_NAMES.includes(String(s.name || '').toLowerCase())
+    || CONFIG.PH_SERVER_NAMES.includes(String(s.clientIdentifier || '').toLowerCase());
   return homeServer === 'ph' ? servers.filter(isPh) : servers.filter(s => !isPh(s));
 }
 
