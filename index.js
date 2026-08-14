@@ -28,7 +28,7 @@ const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, deleteSetting, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
@@ -41,7 +41,7 @@ const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = requi
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
-const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup } = require('./src/dashboard-render');
+const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, parseReleaseName, seriesToken, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
 const { runBackup, rotateBackups } = require('./scripts/backup-db');
@@ -55,6 +55,7 @@ const { summarizeImportRejections, renderRejectionLines, looksLikeMappingProblem
 const { normalizeSearchQuery, searchDashboard } = require('./src/search');
 const { runEpisodeRecoverySweep } = require('./src/episode-recovery');
 const { createRequestGate } = require('./src/request-gate');
+const { passkeyRp, createPasskeyService } = require('./src/passkeys');
 
 // Centralized embed palette so every notification shares one consistent look.
 const COLORS = {
@@ -109,6 +110,12 @@ function verifySession(token) {
   }
 }
 
+function setDashboardSessionCookie(req, res) {
+  const ttlMs = CONFIG.SESSION_TTL_HOURS * 3600000;
+  const secure = req.secure || (req.headers['x-forwarded-proto'] || '').includes('https');
+  res.setHeader('Set-Cookie', `dm_session=${signSession(ttlMs)}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=${Math.floor(ttlMs / 1000)}${secure ? '; Secure' : ''}`);
+}
+
 // Minimal cookie parser — pulls a single named cookie from the request header.
 function readCookie(req, name) {
   const header = req.headers.cookie;
@@ -130,6 +137,11 @@ function readCookie(req, name) {
 // would ignore every override until the next restart.
 const settingsStore = { get: getSetting, set: setSetting, del: deleteSetting };
 const tunable = key => runtimeSettings.resolveRuntime(key, { config: CONFIG, store: settingsStore });
+const PASSKEY_RP = passkeyRp(CONFIG.TUNNEL_DOMAIN);
+const passkeyService = createPasskeyService({
+  store: { listPasskeys, getPasskey, savePasskey, updatePasskeyUse },
+  ...PASSKEY_RP,
+});
 
 // A sweep whose cadence and on/off state are runtime-tunable. setInterval is wrong for these:
 // its period is fixed when it is created, so a cadence changed from the dashboard would not take
@@ -6944,16 +6956,50 @@ function startExpressServer() {
     const loginLimits = new Map();
     RATE_LIMIT_MAPS.push(loginLimits);
     const adminForm = express.urlencoded({ extended: false, limit: '16kb' });
+    const webauthnBrowserPath = path.join(path.dirname(require.resolve('@simplewebauthn/browser')), '..', 'dist', 'bundle', 'index.es5.umd.min.js');
+
+    app.get('/admin/webauthn-browser.js', (_req, res) => res.sendFile(webauthnBrowserPath, { headers: { 'Cache-Control': 'public, max-age=31536000, immutable' } }));
 
     app.get('/admin/login', (req, res) => {
       if (verifySession(readCookie(req, 'dm_session'))) return res.redirect('/admin');
-      res.type('html').send(renderLogin(!!req.query.error));
+      res.type('html').send(renderLogin(!!req.query.error, null, { passkeyEnabled: listPasskeys().length > 0 }));
+    });
+
+    app.get('/admin/passkey/authentication-options', async (req, res) => {
+      const ip = req.ip || req.socket.remoteAddress || 'unknown';
+      if (!takeRateLimit(loginLimits, `passkey:${ip}`, 10, 15 * 60000)) return res.status(429).json({ error: 'Too many attempts. Try again in a few minutes.' });
+      if (!listPasskeys().length) return res.status(404).json({ error: 'No passkeys are enrolled.' });
+      const binding = crypto.randomBytes(32).toString('base64url');
+      const secure = req.secure || (req.headers['x-forwarded-proto'] || '').includes('https');
+      try {
+        const options = await passkeyService.authenticationOptions(binding);
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Set-Cookie', `dm_webauthn=${binding}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=300${secure ? '; Secure' : ''}`);
+        return res.json(options);
+      } catch (_err) {
+        audit('dashboard_passkey_login_failed', { ip, reason: 'options_failed' });
+        return res.status(400).json({ error: 'Could not start passkey sign-in.' });
+      }
+    });
+
+    app.post('/admin/passkey/authenticate', async (req, res) => {
+      const ip = req.ip || req.socket.remoteAddress || 'unknown';
+      try {
+        await passkeyService.finishAuthentication(readCookie(req, 'dm_webauthn'), req.body);
+        setDashboardSessionCookie(req, res);
+        res.append('Set-Cookie', 'dm_webauthn=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0');
+        audit('dashboard_login_success', { ip, method: 'passkey' });
+        return res.json({ verified: true });
+      } catch (_err) {
+        audit('dashboard_passkey_login_failed', { ip, reason: 'verification_failed' });
+        return res.status(401).json({ verified: false, error: 'Passkey sign-in failed.' });
+      }
     });
 
     app.post('/admin/login', adminForm, (req, res) => {
       const ip = req.ip || req.socket.remoteAddress || 'unknown';
       if (!takeRateLimit(loginLimits, ip, 5, 15 * 60000)) {
-        return res.status(429).type('html').send(renderLogin(false, 'Too many attempts. Try again in a few minutes.'));
+        return res.status(429).type('html').send(renderLogin(false, 'Too many attempts. Try again in a few minutes.', { passkeyEnabled: listPasskeys().length > 0 }));
       }
       const pwd = req.body?.password || '';
       const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && safeEqual(pwd, CONFIG.DASHBOARD_ADMIN_PASSWORD);
@@ -6962,10 +7008,8 @@ function startExpressServer() {
         audit('dashboard_login_failed', { ip });
         return res.redirect('/admin/login?error=1');
       }
-      const ttlMs = CONFIG.SESSION_TTL_HOURS * 3600000;
-      const secure = req.secure || (req.headers['x-forwarded-proto'] || '').includes('https');
-      res.setHeader('Set-Cookie', `dm_session=${signSession(ttlMs)}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=${Math.floor(ttlMs / 1000)}${secure ? '; Secure' : ''}`);
-      audit('dashboard_login_success', { ip });
+      setDashboardSessionCookie(req, res);
+      audit('dashboard_login_success', { ip, method: 'password' });
       res.redirect('/admin');
     });
 
@@ -6976,6 +7020,7 @@ function startExpressServer() {
 
     app.get('/admin', dashboardAuth, async (_req, res) => {
       const now = Date.now();
+      const passkeys = listPasskeys();
       // Live activity: every external read is failure-tolerant so one dead integration never
       // takes the dashboard down — null means "couldn't reach it", rendered as such.
       const [health, sessions, queue, disks, edgeChecks] = await Promise.all([
@@ -7141,6 +7186,7 @@ function startExpressServer() {
         <div class="stats">${stats}</div>
 
         <section class="panel" data-panel="overview">
+          ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID)}
           <div class="card">
             <h2>Integrations</h2>
             <div class="badges">${renderHealthBadges(health)}</div>
@@ -7235,6 +7281,7 @@ function startExpressServer() {
           </div>
         </section>
 
+        <script src="/admin/webauthn-browser.js"></script>
         <script>
           async function revokeAll() {
             if (!confirm('Revoke ALL active download links? This cannot be undone.')) return;
@@ -7260,6 +7307,47 @@ function startExpressServer() {
               }
             });
           });
+          (function () {
+            var enroll = document.getElementById('passkey-enroll');
+            var note = document.getElementById('passkey-note');
+            var post = async function (url, body) {
+              var response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+              var result = await response.json().catch(function () { return {}; });
+              if (!response.ok) throw new Error(result.error || 'Passkey request failed.');
+              return result;
+            };
+            if (enroll) enroll.addEventListener('click', async function () {
+              var label = document.getElementById('passkey-label').value.trim();
+              if (!label) { note.textContent = 'Enter a device label.'; note.className = 'save-note bad'; return; }
+              enroll.disabled = true;
+              try {
+                var optionsJSON = await post('/admin/passkey/registration-options', { label: label });
+                var response = await SimpleWebAuthnBrowser.startRegistration({ optionsJSON: optionsJSON });
+                await post('/admin/passkey/register', response);
+                location.hash = 'overview';
+                location.reload();
+              } catch (error) {
+                note.textContent = error.message || String(error);
+                note.className = 'save-note bad';
+                enroll.disabled = false;
+              }
+            });
+            document.querySelectorAll('[data-passkey-rename]').forEach(function (button) {
+              button.addEventListener('click', async function () {
+                var row = button.closest('[data-passkey]');
+                try { await post('/admin/passkey/rename', { credentialId: row.dataset.passkey, label: row.querySelector('input').value }); location.reload(); }
+                catch (error) { note.textContent = error.message || String(error); note.className = 'save-note bad'; }
+              });
+            });
+            document.querySelectorAll('[data-passkey-revoke]').forEach(function (button) {
+              button.addEventListener('click', async function () {
+                if (!confirm('Revoke this passkey? That device will no longer be able to sign in.')) return;
+                var row = button.closest('[data-passkey]');
+                try { await post('/admin/passkey/revoke', { credentialId: row.dataset.passkey }); location.reload(); }
+                catch (error) { note.textContent = error.message || String(error); note.className = 'save-note bad'; }
+              });
+            });
+          })();
           document.querySelectorAll('[data-setup-node]').forEach(function (btn) {
             btn.addEventListener('click', function () {
               var form = document.getElementById('tier-install-form');
@@ -7396,6 +7484,42 @@ function startExpressServer() {
       const users = await fetchOverseerrUsers().catch(() => []);
       const toDelete = users.filter(u => u.userType !== 1 && ['displayName', 'email', 'username'].some(k => (u[k] || '').toLowerCase().startsWith('deleted_user')));
       res.json({ wouldRemove: toDelete.length, users: toDelete.map(u => ({ id: u.id, email: u.email, username: u.username })) });
+    });
+    app.post('/admin/passkey/registration-options', dashboardAuth, async (req, res) => {
+      try {
+        const options = await passkeyService.registrationOptions(readCookie(req, 'dm_session'), req.body?.label);
+        res.setHeader('Cache-Control', 'no-store');
+        return res.json(options);
+      } catch (err) {
+        return res.status(400).json({ error: err.message });
+      }
+    });
+    app.post('/admin/passkey/register', dashboardAuth, async (req, res) => {
+      try {
+        const passkey = await passkeyService.finishRegistration(readCookie(req, 'dm_session'), req.body);
+        audit('dashboard_passkey_enrolled', dashboardActor(req));
+        return res.json({ ok: true, label: passkey.label });
+      } catch (_err) {
+        audit('dashboard_passkey_enrollment_failed', { ...dashboardActor(req), reason: 'verification_failed' });
+        return res.status(400).json({ error: 'Passkey enrollment failed.' });
+      }
+    });
+    app.post('/admin/passkey/rename', dashboardAuth, (req, res) => {
+      const credentialId = String(req.body?.credentialId || '');
+      const label = String(req.body?.label || '').trim();
+      if (!credentialId || !label || label.length > 64) return res.status(400).json({ error: 'Credential and a label of 1 to 64 characters are required.' });
+      if (!renamePasskey(credentialId, label)) return res.status(404).json({ error: 'Passkey not found.' });
+      audit('dashboard_passkey_renamed', dashboardActor(req));
+      return res.json({ ok: true });
+    });
+    app.post('/admin/passkey/revoke', dashboardAuth, (req, res) => {
+      const credentialId = String(req.body?.credentialId || '');
+      if (listPasskeys().length === 1 && !CONFIG.DASHBOARD_ADMIN_PASSWORD && !CONFIG.DASHBOARD_ADMIN_TOKEN) {
+        return res.status(409).json({ error: 'Configure the password fallback before revoking the last passkey.' });
+      }
+      if (!revokePasskey(credentialId)) return res.status(404).json({ error: 'Passkey not found.' });
+      audit('dashboard_passkey_revoked', dashboardActor(req));
+      return res.json({ ok: true });
     });
     app.post('/admin/action/tier-node', dashboardAuth, (req, res) => {
       const name = String(req.body?.name || '').trim().toLowerCase();

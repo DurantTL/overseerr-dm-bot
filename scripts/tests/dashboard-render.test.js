@@ -18,6 +18,7 @@ const {
   tierInstallCommand,
   tierNodeStatus,
   renderTierNodeSetup,
+  renderPasskeyManagement,
 } = require('../../src/dashboard-render');
 
 test('dashboard-render: escapeHtml', () => {
@@ -57,6 +58,18 @@ test('dashboard-render: renderLogin', () => {
   assert.match(renderLogin(false, null), /Admin dashboard login/);
   assert.match(renderLogin(true, null), /Incorrect password/);
   assert.match(renderLogin(false, 'custom msg'), /custom msg/);
+  const passkey = renderLogin(false, null, { passkeyEnabled: true });
+  assert.match(passkey, /Sign in with a passkey/);
+  assert.match(passkey, /startAuthentication/);
+  assert.match(passkey, /password fallback/);
+});
+
+test('dashboard-render: passkey management escapes credential metadata', () => {
+  const html = renderPasskeyManagement([{ credential_id: 'id<1', label: 'Phone <script>', created_at: 1000, last_used_at: null }], 'admin.example.com');
+  assert.match(html, /Phone &lt;script&gt;/);
+  assert.match(html, /data-passkey="id&lt;1"/);
+  assert.match(html, /never used/);
+  assert.match(html, /admin\.example\.com/);
 });
 
 test('dashboard-render: renderStat', () => {

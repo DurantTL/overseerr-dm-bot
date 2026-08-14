@@ -74,6 +74,9 @@ const DASHBOARD_CSS = `
   .login-card label { display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
   .login-card input { width:100%; padding:12px; border-radius:10px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:16px; margin-bottom:16px; }
   .login-card .btn.primary { width:100%; text-align:center; }
+  .login-card .btn.passkey { width:100%; margin-bottom:14px; }
+  .login-divider { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:11px; margin:0 0 14px; }
+  .login-divider::before, .login-divider::after { content:''; flex:1; border-top:1px solid var(--border); }
   .error { background:rgba(239,68,68,.12); border:1px solid var(--down); color:#fca5a5; padding:10px 12px; border-radius:10px; font-size:13px; margin-bottom:16px; }
   .chip.tab { cursor:pointer; font:inherit; font-size:13px; }
   .chip.tab[aria-selected="true"] { background:var(--accent); color:#131316; border-color:var(--accent); font-weight:650; }
@@ -85,8 +88,9 @@ const DASHBOARD_CSS = `
   .setting-main { flex:1 1 240px; min-width:0; }
   .setting-name { font-size:14px; }
   .setting-help { font-size:12px; color:var(--muted); margin-top:3px; }
-  .setting-ctl { flex:0 0 auto; display:flex; align-items:center; gap:8px; }
+  .setting-ctl { flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
   .setting-ctl input[type=number] { width:96px; padding:9px 10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:15px; }
+  .setting-ctl input[type=text], .setting-foot input[type=text] { min-width:180px; padding:9px 10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:14px; }
   .setting-ctl .unit { font-size:12px; color:var(--muted); min-width:34px; }
   .switch { position:relative; width:46px; height:26px; flex:0 0 auto; }
   .switch input { opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
@@ -292,23 +296,56 @@ function renderTierNodeSetup(nodes) {
   </div>`;
 }
 
-function renderLogin(isError, message) {
+function renderLogin(isError, message, { passkeyEnabled = false } = {}) {
   const banner = message ? `<div class="error">${escapeHtml(message)}</div>`
     : (isError ? '<div class="error">Incorrect password. Please try again.</div>' : '');
   const body = `<div class="login-wrap"><div class="login-card">
     <h1><span class="brand">Durant</span> Media Server</h1>
     <p>Admin dashboard login</p>
     ${banner}
+    ${passkeyEnabled ? '<button class="btn primary passkey" type="button" id="passkey-login">Sign in with a passkey</button><div class="login-divider">password fallback</div>' : ''}
     <form method="post" action="/admin/login">
       <label for="password">Password</label>
-      <input type="password" id="password" name="password" autofocus autocomplete="current-password" required>
+      <input type="password" id="password" name="password"${passkeyEnabled ? '' : ' autofocus'} autocomplete="current-password webauthn" required>
       <button class="btn primary" type="submit">Log in</button>
     </form>
-  </div></div>`;
+  </div></div>${passkeyEnabled ? `<script src="/admin/webauthn-browser.js"></script><script>
+    document.getElementById('passkey-login').addEventListener('click', async function () {
+      var button = this;
+      var banner = document.querySelector('.error');
+      button.disabled = true;
+      try {
+        var optionsResponse = await fetch('/admin/passkey/authentication-options', { cache: 'no-store' });
+        var optionsJSON = await optionsResponse.json();
+        if (!optionsResponse.ok) throw new Error(optionsJSON.error || 'Could not start passkey sign-in.');
+        var response = await SimpleWebAuthnBrowser.startAuthentication({ optionsJSON: optionsJSON });
+        var verificationResponse = await fetch('/admin/passkey/authenticate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(response) });
+        var result = await verificationResponse.json();
+        if (!verificationResponse.ok || !result.verified) throw new Error(result.error || 'Passkey sign-in failed.');
+        location.assign('/admin');
+      } catch (error) {
+        if (!banner) { banner = document.createElement('div'); banner.className = 'error'; document.querySelector('.login-card p').after(banner); }
+        banner.textContent = error.message || String(error);
+        button.disabled = false;
+      }
+    });
+  </script>` : ''}`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Login — Durant Media Server</title><style>${DASHBOARD_CSS}</style></head>
   <body>${body}</body></html>`;
+}
+
+function renderPasskeyManagement(passkeys, rpID) {
+  const rows = passkeys.length ? passkeys.map(passkey => `<div class="setting" data-passkey="${escapeHtml(passkey.credential_id)}">
+    <div class="setting-main"><div class="setting-name">${escapeHtml(passkey.label)}</div><div class="setting-help">Created ${escapeHtml(new Date(passkey.created_at).toISOString())}${passkey.last_used_at ? ` · last used ${escapeHtml(new Date(passkey.last_used_at).toISOString())}` : ' · never used'}</div></div>
+    <div class="setting-ctl"><input type="text" value="${escapeHtml(passkey.label)}" maxlength="64" aria-label="Passkey label"><button class="btn" type="button" data-passkey-rename>Rename</button><button class="btn danger" type="button" data-passkey-revoke>Revoke</button></div>
+  </div>`).join('') : '<p class="muted">No passkeys enrolled.</p>';
+  return `<div class="card" id="passkeys">
+    <h2>Passkeys<span class="sub">Platform passkeys for ${escapeHtml(rpID)}. The tunnel hostname is the relying-party ID and cannot be changed without enrolling again.</span></h2>
+    ${rows}
+    <div class="setting-foot"><input type="text" id="passkey-label" maxlength="64" placeholder="Device label, e.g. Caleb's iPhone" aria-label="New passkey label"><button class="btn primary" type="button" id="passkey-enroll">Enroll passkey</button><span class="save-note" id="passkey-note"></span></div>
+  </div>`;
 }
 
 function renderStat(label, value) {
@@ -397,4 +434,5 @@ module.exports = {
   tierInstallCommand,
   tierNodeStatus,
   renderTierNodeSetup,
+  renderPasskeyManagement,
 };

@@ -351,11 +351,13 @@ Checks include Discord, SQLite, Plex, Seerr/Overseerr, Radarr, Radarr-4K, Sonarr
 
 ## Admin Dashboard
 - Route: `GET /admin` (themed, dark UI).
-- Login: visit `/admin/login` and enter `DASHBOARD_ADMIN_PASSWORD` (or `DASHBOARD_ADMIN_TOKEN`). A signed, HttpOnly session cookie is set so the password never appears in the URL; sessions last `SESSION_TTL_HOURS` (default 12). A **Log out** button is in the top bar.
+- Login: visit `/admin/login` and use an enrolled passkey, or enter `DASHBOARD_ADMIN_PASSWORD` (or `DASHBOARD_ADMIN_TOKEN`) as the rate-limited fallback. A signed, HttpOnly session cookie is set for either method; sessions last `SESSION_TTL_HOURS` (default 12). A **Log out** button is in the top bar.
+- Enrol, rename, and revoke passkeys from the authenticated dashboard. The first passkey must be enrolled after a password login. Passkeys are discoverable platform credentials for Touch ID, Face ID, Windows Hello, and Android; multiple devices can be enrolled with separate labels.
+- Passkeys use `TUNNEL_DOMAIN` as their exact relying-party ID and `https://TUNNEL_DOMAIN` as their only accepted origin. Enrol them through the public Cloudflare tunnel URL. Credentials enrolled on `localhost`, another hostname, or an HTTP origin will not work through the tunnel.
 - Login is rate limited (5 attempts / 15 min per IP) to slow brute-force guessing.
 - The old `?password=` / `?token=` query-string auth has been **removed** (it leaked credentials into history and logs). For scripts/automation, use the `x-admin-password` or `x-admin-token` request headers — these still work.
 - Shows overall status, summary stat cards, color-coded integration health badges, and readable tables for pending users/requests, linked users, recent downloads, keep/delete decisions, and audit logs, plus safe action buttons (revoke-all asks for confirmation).
-- Configure the cookie signing secret with `SESSION_SECRET` (optional; derived from your admin credentials if unset).
+- Configure the cookie signing secret with `SESSION_SECRET` (optional; derived from your admin credentials if unset). Changing `TUNNEL_DOMAIN` requires enrolling new passkeys for the new hostname.
 
 ## Security Notes
 - Raw download tokens are never stored in SQLite.
