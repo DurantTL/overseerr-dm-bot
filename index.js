@@ -33,7 +33,7 @@ const { reconcileRequestStatuses } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
-const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
+const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('./src/escalation');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch } = require('./src/season-pack');
 const { assessAsianOrigin, describeAvistazFit } = require('./src/asian');
@@ -52,6 +52,7 @@ const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = requ
 const { summarizeSeriesGaps, describeGaps, describeActivity, rankIncomplete } = require('./src/incomplete');
 const { priorityKey, orderByPriority, isPinned, nextRank } = require('./src/priority');
 const { summarizeImportRejections, renderRejectionLines, looksLikeMappingProblem } = require('./src/import-rejections');
+const { normalizeSearchQuery, searchDashboard } = require('./src/search');
 
 // Centralized embed palette so every notification shares one consistent look.
 const COLORS = {
@@ -7227,7 +7228,44 @@ function startExpressServer() {
             });
           })();
         </script>`;
-      res.type('html').send(renderPage('Dashboard', body, { showLogout: true, nav, autoRefresh: true, tabs: true }));
+      res.type('html').send(renderPage('Dashboard', body, { showLogout: true, showSearch: true, nav, autoRefresh: true, tabs: true }));
+    });
+
+    app.get('/admin/search', dashboardAuth, async (req, res) => {
+      const normalized = normalizeSearchQuery(req.query.q);
+      if (!normalized.query) {
+        return res.type('html').send(renderPage('Search', '<div class="card"><h2>Search</h2><p class="muted">Enter at least 2 characters.</p></div>', { showLogout: true, showSearch: true }));
+      }
+      if (normalized.error) {
+        return res.status(400).type('html').send(renderPage('Search', `<div class="card"><h2>Search</h2><div class="error">${escapeHtml(normalized.error)}</div></div>`, { showLogout: true, showSearch: true, searchQuery: normalized.query }));
+      }
+      const [members, queues, series, missingEpisodes, movies] = await Promise.all([
+        getGuildMembers().catch(() => []),
+        arrSources().length ? fetchArrQueues().catch(() => []) : Promise.resolve([]),
+        CONFIG.SONARR_URL ? listSonarrSeries().catch(() => []) : Promise.resolve([]),
+        CONFIG.SONARR_URL ? listSonarrMissingEpisodes().catch(() => []) : Promise.resolve([]),
+        (CONFIG.RADARR_URL || CONFIG.RADARR_4K_URL) ? listRadarrMovies().catch(() => []) : Promise.resolve([]),
+      ]);
+      const now = Date.now();
+      const results = searchDashboard({
+        query: normalized.query,
+        requests: db.prepare('SELECT * FROM requests ORDER BY id DESC').all(),
+        users: db.prepare('SELECT * FROM users ORDER BY requested_at DESC').all(),
+        auditRows: db.prepare('SELECT created_at, action, metadata_json FROM audit_log ORDER BY id DESC').all(),
+        downloadTokens: db.prepare('SELECT discord_id, revoked, expires_at FROM download_tokens').all(),
+        members: members.filter(member => !member.user?.bot).map(member => ({ discordId: member.user.id, name: member.displayName || member.user.globalName || member.user.username || member.user.tag })),
+        queues, series, missingEpisodes, movies, now,
+      });
+      const requestRows = results.requests.map(row => ({ title: row.title, status: row.status, type: row.type, requester: row.requestedBy, when: fmtAgo(sqliteUtcMs(row.requestedAt)), progress: row.progress }));
+      const userRows = results.users.map(row => ({ discord: row.discord, name: row.name, email: row.email, linked: row.linked, server: row.homeServer, invited: row.invited, requests: row.requests, links: row.activeLinks }));
+      const libraryRows = results.library.map(row => ({ title: row.title, type: row.type, status: row.status, complete: row.completeness, gaps: row.gaps, source: row.source }));
+      const auditRows = results.audit.map(row => ({ when: fmtAgo(sqliteUtcMs(row.when)), action: row.action, matched: row.match }));
+      const body = `<div class="actions"><a class="btn" href="/admin">Back to dashboard</a></div>
+        <div class="card"><h2>Requests <span class="sub">${requestRows.length} result${requestRows.length === 1 ? '' : 's'}</span></h2>${renderTable(requestRows)}</div>
+        <div class="card"><h2>Users <span class="sub">${userRows.length} result${userRows.length === 1 ? '' : 's'}</span></h2>${renderTable(userRows)}</div>
+        <div class="card"><h2>Library <span class="sub">${libraryRows.length} result${libraryRows.length === 1 ? '' : 's'}</span></h2>${renderTable(libraryRows)}</div>
+        <div class="card"><h2>Audit <span class="sub">${auditRows.length} result${auditRows.length === 1 ? '' : 's'} · metadata is searchable but hidden</span></h2>${renderTable(auditRows)}</div>`;
+      res.type('html').send(renderPage(`Search: ${normalized.query}`, body, { showLogout: true, showSearch: true, searchQuery: normalized.query }));
     });
 
     app.get('/admin/health', dashboardAuth, async (_req, res) => res.json(await gatherHealth()));

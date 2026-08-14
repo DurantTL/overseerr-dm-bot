@@ -81,4 +81,7 @@ test('dashboard-render: renderPage', () => {
   assert.match(renderPage('Home', '<p>body</p>'), /<title>Home — Durant Media Server<\/title>/);
   assert.strictEqual(renderPage('Home', '<p>body</p>').includes('Log out'), false);
   assert.strictEqual(renderPage('Home', '<p>body</p>', { showLogout: true }).includes('Log out'), true);
+  const searchable = renderPage('Home', '<p>body</p>', { showSearch: true, searchQuery: '<matrix>' });
+  assert.match(searchable, /action="\/admin\/search"/);
+  assert.match(searchable, /value="&lt;matrix&gt;"/);
 });

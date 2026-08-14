@@ -120,6 +120,24 @@ async function searchSeries(title) {
   return all.filter(s => s.title.toLowerCase().includes(title.toLowerCase()));
 }
 
+async function listRadarrMovies() {
+  const sources = [
+    { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, source: 'Radarr', is4k: false },
+    { url: CONFIG.RADARR_4K_URL, key: CONFIG.RADARR_4K_API_KEY, source: 'Radarr 4K', is4k: true },
+  ].filter(source => source.url);
+  const lists = await Promise.all(sources.map(async source => {
+    const movies = await radarrGetFrom(source.url, source.key, '/movie');
+    return movies.map(movie => ({ ...movie, source: source.source, is4k: source.is4k }));
+  }));
+  return lists.flat();
+}
+
+async function listSonarrMissingEpisodes() {
+  if (!CONFIG.SONARR_URL) return [];
+  const data = await sonarrGet('/wanted/missing', { page: 1, pageSize: 10000, sortKey: 'airDateUtc', sortDirection: 'descending' });
+  return data.records || [];
+}
+
 async function getEpisodeFiles(seriesId) {
   return sonarrGet('/episodefile', { seriesId });
 }
@@ -531,4 +549,4 @@ function remapPath(hostPath) {
   return hostPath;
 }
 
-module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries, resolveSonarrSeriesIdentity, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };
+module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries, resolveSonarrSeriesIdentity, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };
