@@ -15,6 +15,9 @@ const {
   renderHealthBadges,
   renderTable,
   renderSection,
+  tierInstallCommand,
+  tierNodeStatus,
+  renderTierNodeSetup,
 } = require('../../src/dashboard-render');
 
 test('dashboard-render: escapeHtml', () => {
@@ -90,6 +93,42 @@ test('dashboard-render: renderPage', () => {
   const searchable = renderPage('Home', '<p>body</p>', { showSearch: true, searchQuery: '<matrix>' });
   assert.match(searchable, /action="\/admin\/search"/);
   assert.match(searchable, /value="&lt;matrix&gt;"/);
+});
+
+test('dashboard-render: tier install command is complete and shell quoted', () => {
+  const command = tierInstallCommand({
+    botUrl: 'https://bot.example',
+    node: 'edge-one',
+    token: 'secret-token',
+    folderRoot: "/mnt/media's",
+    syncthingApiKey: 'api-key',
+    syncthingFolderId: 'media',
+    mountRoot: '/mnt',
+    mountMarker: '.mounted',
+  });
+  assert.match(command, /export TIER_AGENT_TOKEN='secret-token'/);
+  assert.strictEqual(command.match(/secret-token/g).length, 1);
+  assert.match(command, /TIER_FOLDER_ROOT='\/mnt\/media'"'"'s'/);
+  assert.match(command, /SYNCTHING_API_KEY='api-key'/);
+  assert.match(command, /SYNCTHING_FOLDER_ID='media'/);
+  assert.match(command, /TIER_MOUNT_ROOT='\/mnt'/);
+  assert.match(command, /TIER_MOUNT_MARKER='\.mounted'/);
+  assert.doesNotMatch(command, /CHANGEME/);
+});
+
+test('dashboard-render: tier node status distinguishes lifecycle states', () => {
+  const now = Date.now();
+  assert.strictEqual(tierNodeStatus(null, null, now).status, 'never reported');
+  assert.strictEqual(tierNodeStatus({ lastHeartbeatAt: now - 46 * 60000, published: { planHash: 'same' }, converged: { planHash: 'same' } }, null, now).status, 'stale');
+  assert.strictEqual(tierNodeStatus({ lastHeartbeatAt: now, published: { planHash: 'new' }, converged: { planHash: 'old' } }, null, now).status, 'reported, not converged');
+  assert.strictEqual(tierNodeStatus({ lastHeartbeatAt: now, published: { planHash: 'same' }, converged: { planHash: 'same' } }, null, now).status, 'converged');
+});
+
+test('dashboard-render: tier setup contains no agent token', () => {
+  const html = renderTierNodeSetup([{ name: 'edge-one' }]);
+  assert.match(html, /tier-install-form/);
+  assert.match(html, /Set up|Generate install command/);
+  assert.doesNotMatch(html, /secret-token/);
 });
 
 test('dashboard actions: arr response details are returned', () => {
