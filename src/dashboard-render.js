@@ -393,6 +393,7 @@ function renderSection(title, rows) {
 // from compose or from an override made here. "Overridden" is called out explicitly — a value
 // silently diverging from the stack file is exactly the confusion this UI could otherwise cause.
 function renderSettingsGroup(group) {
+  const previewable = ['stuck', 'escalation', 'season_pack', 'episode_recovery'].includes(group.id);
   const rows = group.settings.map(setting => {
     const id = `set_${escapeHtml(setting.key)}`;
     const control = setting.type === 'bool'
@@ -415,9 +416,11 @@ function renderSettingsGroup(group) {
     ${rows}
     <div class="setting-foot">
       <button class="btn primary" type="button" data-save="${escapeHtml(group.id)}">Save changes</button>
+      ${previewable ? `<button class="btn" type="button" data-preview="${escapeHtml(group.id)}">Preview</button>` : ''}
       <button class="btn" type="button" data-reset="${escapeHtml(group.id)}">Reset to compose</button>
       <span class="save-note" data-note="${escapeHtml(group.id)}"></span>
     </div>
+    ${previewable ? `<div class="setting-preview" data-preview-result="${escapeHtml(group.id)}" aria-live="polite"></div>` : ''}
   </div>`;
 }
 

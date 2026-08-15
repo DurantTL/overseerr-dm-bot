@@ -19,6 +19,7 @@ const {
   tierNodeStatus,
   renderTierNodeSetup,
   renderPasskeyManagement,
+  renderSettingsGroup,
 } = require('../../src/dashboard-render');
 
 test('dashboard-render: escapeHtml', () => {
@@ -93,6 +94,12 @@ test('dashboard-render: renderHealthBadges', () => {
   assert.match(renderHealthBadges({ discord: 'ok', plex: 'down' }), /discord: ok/);
   assert.match(renderHealthBadges({ discord: 'ok', plex: 'down' }), /plex: down/);
   assert.match(renderHealthBadges({ backup: 'ok', backupLastSuccessfulAt: Date.now() - 60000 }), /backup: ok · 1m ago/);
+});
+
+test('dashboard-render: sweep settings expose preview without changing other groups', () => {
+  const setting = { key: 'STUCK_AFTER_MINUTES', type: 'int', value: 45, min: 5, max: 10080 };
+  assert.match(renderSettingsGroup({ id: 'stuck', title: 'Stuck', blurb: '', settings: [setting] }), /data-preview="stuck"/);
+  assert.doesNotMatch(renderSettingsGroup({ id: 'capacity', title: 'Capacity', blurb: '', settings: [setting] }), /data-preview=/);
 });
 
 test('dashboard-render: renderTable', () => {

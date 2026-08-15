@@ -96,12 +96,18 @@ function seasonSearchTargets({ series, episodes, inQueue = [], searchedAt = {}, 
   const reason = age.old ? age.reason : 'requested';
   const cooldownMs = (cfg.cooldownHours ?? 24) * 3600000;
   const queued = new Set((inQueue || []).map(Number));
-  const seasons = planSeasonSearches(episodes, now, cfg).filter(s => {
-    if (queued.has(s.season)) return false;
-    const last = Number(searchedAt[s.season]);
-    return !Number.isFinite(last) || now - last >= cooldownMs;
-  });
-  return { ...age, eligible, reason, seasons };
+  const seasons = [];
+  const held = [];
+  for (const season of planSeasonSearches(episodes, now, cfg)) {
+    if (queued.has(season.season)) continue;
+    const last = Number(searchedAt[season.season]);
+    if (Number.isFinite(last) && now - last < cooldownMs) {
+      held.push({ ...season, nextEligible: last + cooldownMs });
+    } else {
+      seasons.push(season);
+    }
+  }
+  return { ...age, eligible, reason, seasons, held };
 }
 
 // One line per searched season for the Discord summary.

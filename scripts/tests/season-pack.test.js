@@ -77,6 +77,8 @@ test('season-pack: seasonSearchTargets composed decision (age gate + queue + coo
 
   t = seasonSearchTargets({ series: ended, episodes, searchedAt: { 1: NOW - 2 * 3600000 } }, NOW, cfg);
   assert.deepStrictEqual(seasonsOf(t.seasons), [2], 'a season inside its cooldown is skipped');
+  assert.deepStrictEqual(seasonsOf(t.held), [1], 'a cooldown-held season remains visible to previews');
+  assert.strictEqual(t.held[0].nextEligible, NOW + 22 * 3600000, 'the held season reports its exact next eligible time');
 
   t = seasonSearchTargets({ series: ended, episodes, searchedAt: { 1: NOW - 30 * 3600000 } }, NOW, cfg);
   assert.deepStrictEqual(seasonsOf(t.seasons), [1, 2], 'a season past its cooldown is retried');
