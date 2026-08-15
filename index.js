@@ -1159,6 +1159,11 @@ async function sweepSeasonPacks() {
   return { searched: searched.length };
 }
 
+// How far past the per-run cap a preview keeps looking. The sweep stops at the cap; the preview
+// has to go further — "which seasons the cap is holding back" is half the point of previewing —
+// but it must not walk an entire library one /episode call at a time on every button click.
+const PREVIEW_ITEM_LIMIT = 60;
+
 async function previewSeasonPacks(values = {}) {
   if (!previewRuntimeValue(values, 'SEASON_PACK_FIRST') || !CONFIG.SONARR_URL) return [];
   const cfg = {
@@ -1176,12 +1181,21 @@ async function previewSeasonPacks(values = {}) {
   const items = [];
   let eligibleCount = 0;
   for (const series of ordered) {
+    if (items.length >= PREVIEW_ITEM_LIMIT) break;
     if (!series.monitored) continue;
     const stats = series.statistics || {};
     if (stats.episodeCount != null && stats.episodeFileCount != null && stats.episodeFileCount >= stats.episodeCount) continue;
     const requested = requestedTvdbIds.has(Number(series.tvdbId));
     if (!requested && !assessSeriesAge(series, now, cfg).old) continue;
-    const episodes = await getSeriesEpisodes(series.id);
+    let episodes;
+    try {
+      episodes = await getSeriesEpisodes(series.id);
+    } catch (err) {
+      // The sweep skips a series whose episodes won't load and carries on; a preview that threw
+      // instead would report nothing at all because one series in the library is unreadable.
+      items.push({ title: series.title, reason: `episodes could not be read: ${err.message}`, stage: 'unknown' });
+      continue;
+    }
     const { eligible, reason, seasons, held } = seasonSearchTargets({
       series, episodes, requested, inQueue: queuedSeasons(queue, series.id), searchedAt: getSeasonSearchTimes(series.id),
     }, now, cfg);

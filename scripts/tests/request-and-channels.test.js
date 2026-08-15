@@ -10,6 +10,8 @@ const express = require('express');
 const Database = require('better-sqlite3');
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { loadSandbox } = require('./extract');
+const runtimeSettings = require('../../src/runtime-settings');
+const { detectStuckItems, groupStuckItems, isSeasonGroup } = require('../../src/stuck');
 
 const settingsStore = new Map();
 const sandbox = loadSandbox(
@@ -519,4 +521,50 @@ test('whorequested: reports requester, subscribers, and live pipeline state', as
   bed.queueItemLooksUnhealthy = () => true;
   await bed.run('handleWhoRequestedCommand(interaction)');
   assert.match(Object.fromEntries(reply.embeds[0].fields.map(field => [field.name, field.value])).Pipeline, /^Stalled — No seeders/);
+});
+
+test('stuck preview: evaluates the unsaved threshold without disturbing the live tracker', async () => {
+  const database = new Database(':memory:');
+  database.exec(`CREATE TABLE alert_cooldowns (
+    scope TEXT NOT NULL, alert_key TEXT NOT NULL, last_alerted_at INTEGER NOT NULL,
+    PRIMARY KEY (scope, alert_key)
+  ); CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT);`);
+  const now = Date.now();
+  const item = {
+    source: { label: 'sonarr', kind: 'tv' }, queueId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1,
+    title: 'Winter Sonata S01E01', sizeleft: 500, status: 'downloading', trackedState: 'downloading',
+    messages: [], trackedStatus: '',
+  };
+  // The tracker says this item has not moved a byte in 30 minutes.
+  const stuckTracker = new Map([['sonarr:1', { sizeleft: 500, since: now - 30 * 60000 }]]);
+  const snapshot = JSON.stringify([...stuckTracker]);
+
+  const bed = loadSandbox(
+    ['getAlertedAt', 'setAlertedAt', 'planStuckDownloads', 'previewStuckDownloads', 'previewRuntimeValue'],
+    {
+      db: database,
+      stuckTracker,
+      runtimeSettings,
+      fetchArrQueues: async () => [item],
+      detectStuckItems, groupStuckItems, isSeasonGroup,
+      getSetting: () => null,
+      tunable: key => (key === 'STUCK_AFTER_MINUTES' ? 45 : 6),
+    },
+  );
+
+  // At the saved 45-minute threshold a 30-minute freeze is not yet stuck.
+  assert.strictEqual((await bed.run('previewStuckDownloads({})')).length, 0);
+
+  // Dropping the threshold to 15 without saving must surface it — that is the point of preview.
+  const items = [...await bed.run("previewStuckDownloads({ STUCK_AFTER_MINUTES: '15' })")];
+  assert.strictEqual(items.length, 1);
+  assert.strictEqual(items[0].title, 'Winter Sonata Season 1', 'a stuck season reports as one consolidated group');
+  assert.strictEqual(items[0].stage, 'alert');
+  assert.match(items[0].reason, /frozen for 30 minutes at the 15-minute threshold/);
+
+  // detectStuckItems re-arms clocks and prunes departed entries in the map it is handed. The
+  // preview must be doing that to a copy, or previewing would silently reset the real sweep's
+  // freeze timers and delay every genuine alert.
+  assert.strictEqual(JSON.stringify([...stuckTracker]), snapshot, 'the live tracker is untouched by a preview');
+  database.close();
 });

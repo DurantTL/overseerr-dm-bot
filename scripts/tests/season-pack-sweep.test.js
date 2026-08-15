@@ -273,3 +273,115 @@ test('season search verification: distinguishes queued, verified, failed, and we
   assert.match(h.notices[0].msg.embeds[0].description, /task queue may be wedged/);
   assert.match(h.notices[0].msg.embeds[0].fields.at(-1).value, /System → Tasks/);
 });
+
+// ---- Preview (#134) ----
+// The preview must reach a verdict for every season the sweep would consider without spending a
+// single search, write, or notification — that is the whole reason it exists. These build on the
+// same SERIES/EPISODES fixtures so a drift between preview and sweep shows up as a test failure
+// rather than as a threshold someone tuned against a lie.
+
+function previewBed({ values = {}, searchedAt = {}, queue = [], maxPerRun = 5, episodeError = null, itemLimit = 60, episodes = EPISODES } = {}) {
+  const sideEffects = [];
+  const CONFIG = {
+    SEASON_PACK_FIRST: true,
+    SONARR_URL: 'http://sonarr',
+    SEASON_PACK_DORMANT_DAYS: 365,
+    SEASON_PACK_MIN_MISSING: 3,
+    SEASON_PACK_COOLDOWN_HOURS: 24,
+    SEASON_PACK_MAX_PER_RUN: maxPerRun,
+    SEASON_PACK_REQUESTED: true,
+  };
+  const store = { get: () => null };
+  const sandbox = loadSandbox(['previewSeasonPacks', 'previewRuntimeValue', 'seasonPackConfig', 'queuedSeasons'], {
+    CONFIG,
+    runtimeSettings,
+    tunable: key => runtimeSettings.resolveRuntime(key, { config: CONFIG, store }),
+    PREVIEW_ITEM_LIMIT: itemLimit,
+    priorityKey,
+    orderByPriority,
+    mediaPriorityMap: () => new Map(),
+    assessSeriesAge,
+    seasonSearchTargets,
+    pad: n => String(n).padStart(2, '0'),
+    listSonarrSeries: async () => SERIES,
+    fetchArrQueues: async () => queue,
+    getSeriesEpisodes: async id => {
+      if (episodeError && id === episodeError) throw new Error('Sonarr timed out');
+      return episodes[id] || [];
+    },
+    getSeasonSearchTimes: id => searchedAt[id] || {},
+    listRequestedTvdbIds: () => new Set(),
+    // Anything that changes the world. A preview touching one of these is the bug.
+    triggerSeasonSearch: async () => { sideEffects.push('search'); },
+    recordSeasonSearch: () => sideEffects.push('record'),
+    monitorSeasonSearch: () => sideEffects.push('monitor'),
+    notifyChannel: () => sideEffects.push('notify'),
+    audit: () => sideEffects.push('audit'),
+  });
+  return { sandbox, sideEffects, values };
+}
+
+test('season-pack preview: reports the same seasons the sweep would search, and changes nothing', async () => {
+  const bed = previewBed();
+  const items = await bed.sandbox.previewSeasonPacks({});
+  assert.strictEqual(bed.sideEffects.length, 0, 'a preview spends no search, write, audit, or notification');
+  // Spread into a host array first: objects built inside the vm carry the sandbox's own
+  // prototypes, which deepStrictEqual counts as a difference (same reason as the JSON compare
+  // in the sweep tests above).
+  assert.deepStrictEqual(
+    [...items].map(item => item.title).sort(),
+    ['Dormant Drama S01', 'Winter Sonata S01', 'Winter Sonata S02'],
+    'the preview names exactly the seasons the sweep searches',
+  );
+  assert.ok([...items].every(item => item.stage === 'search'), 'nothing is capped at the default per-run cap');
+  assert.match([...items].find(item => item.title === 'Winter Sonata S01').reason, /series has ended; 3 of 3 aired episode\(s\) missing/);
+});
+
+test('season-pack preview: unsaved values are what gets evaluated', async () => {
+  // A partially-missing season is the only case min-missing governs — a season missing every
+  // aired episode is the clean pack case and qualifies whatever the threshold says. So this
+  // needs a season with a file in it: 3 of 4 missing passes at 3 and must drop at 4.
+  const partial = { ...EPISODES, 2: [ep(1, 1, { hasFile: true }), ep(1, 2), ep(1, 3), ep(1, 4)] };
+  const bed = previewBed({ episodes: partial });
+  assert.ok([...await bed.sandbox.previewSeasonPacks({})].some(item => item.title === 'Dormant Drama S01'),
+    'the partially-missing season qualifies at the saved threshold of 3');
+
+  const items = await bed.sandbox.previewSeasonPacks({ SEASON_PACK_MIN_MISSING: '4' });
+  assert.ok(![...items].some(item => item.title.startsWith('Dormant Drama')), 'the unsaved threshold applies to the preview');
+  assert.strictEqual(bed.sideEffects.length, 0, 'evaluating a threshold still writes nothing');
+
+  // And an invalid value is refused rather than silently falling back to the saved one.
+  await assert.rejects(() => bed.sandbox.previewSeasonPacks({ SEASON_PACK_MIN_MISSING: 'nonsense' }));
+});
+
+test('season-pack preview: cooldown-held seasons stay visible with their next-eligible time', async () => {
+  const heldAt = NOW - 3600000; // searched an hour ago, 24h cooldown
+  const bed = previewBed({ searchedAt: { 1: { 1: heldAt } } });
+  const items = await bed.sandbox.previewSeasonPacks({});
+  const held = [...items].find(item => item.title === 'Winter Sonata S01');
+  assert.strictEqual(held.stage, 'cooldown', 'a cooled-down season is reported, not omitted');
+  assert.match(held.reason, new RegExp(new Date(heldAt + 24 * 3600000).toISOString()), 'it carries the time it becomes eligible again');
+  assert.strictEqual([...items].find(item => item.title === 'Winter Sonata S02').stage, 'search', 'its sibling season is unaffected');
+});
+
+test('season-pack preview: the per-run cap is shown as placement, not as truncation', async () => {
+  const bed = previewBed({ maxPerRun: 2 });
+  const items = await bed.sandbox.previewSeasonPacks({});
+  assert.strictEqual(items.length, 3, 'seasons past the cap are still listed');
+  assert.deepStrictEqual([...items].map(item => item.stage), ['search', 'search', 'held by per-run cap 2']);
+});
+
+test('season-pack preview: one unreadable series does not sink the whole preview', async () => {
+  // The sweep audits and moves on; a preview that threw would report nothing at all because a
+  // single series in the library is unreachable.
+  const bed = previewBed({ episodeError: 1 });
+  const items = await bed.sandbox.previewSeasonPacks({});
+  assert.match([...items].find(item => item.title === 'Winter Sonata').reason, /episodes could not be read: Sonarr timed out/);
+  assert.ok([...items].some(item => item.title === 'Dormant Drama S01'), 'the rest of the library is still evaluated');
+});
+
+test('season-pack preview: a large library is bounded rather than walked end to end', async () => {
+  const bed = previewBed({ itemLimit: 2 });
+  const items = await bed.sandbox.previewSeasonPacks({});
+  assert.strictEqual(items.length, 2, 'the preview stops once it has enough to judge a threshold by');
+});

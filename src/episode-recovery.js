@@ -11,6 +11,11 @@ const { priorityKey, orderByPriority } = require('./priority');
 
 const pad2 = n => String(n).padStart(2, '0');
 
+// A preview reports every episode it evaluates, not just the ones it would action, so on a large
+// tagged library the list would run to thousands of rows — enough to stall the dashboard render
+// and the Discord reply. Tuning a grace period needs a representative sample, not an inventory.
+const PREVIEW_ITEM_LIMIT = 60;
+
 function episodeKey(episode) {
   return `${episode.seriesId}:${episode.id}`;
 }
@@ -237,6 +242,7 @@ async function createEpisodeRecoveryWorker(deps = {}) {
           else if (action === 'wait' && row.public_searched_at) reason = `waiting for AvistaZ grace until ${new Date(Number(row.public_searched_at) + cfg.avistazGraceHours * 3600000).toISOString()}`;
           previewItems.push({ title: label, reason, stage });
           if (actioned && acted < cfg.maxPerRun) acted++;
+          if (previewItems.length >= PREVIEW_ITEM_LIMIT) return { acted, items: previewItems };
           continue;
         }
         if (action === 'resolve' || action === 'ignore') {
