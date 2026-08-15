@@ -68,3 +68,51 @@ test('episode-recovery: concurrent sweeps are refused', async () => {
   release(null);
   assert.deepStrictEqual(await first, { skipped: true, reason: 'tag_missing' });
 });
+
+test('episode-recovery: preview applies unsaved grace without writes or searches', async () => {
+  let writes = 0;
+  let searches = 0;
+  const now = Date.now();
+  const db = {
+    exec() { writes++; },
+    prepare() {
+      return {
+        get() { return undefined; },
+        run() { writes++; },
+      };
+    },
+  };
+  const worker = await createEpisodeRecoveryWorker({
+    CONFIG: {
+      SONARR_URL: 'http://sonarr', SONARR_API_KEY: 'key', PROWLARR_URL: 'http://prowlarr',
+      RTORRENT_URL: 'http://rtorrent', AVISTAZ_TAG: 'avistaz', AVISTAZ_DAILY_GRAB_LIMIT: 10,
+    },
+    recoveryConfig: { enabled: true, checkMinutes: 30, publicGraceHours: 6, avistazGraceHours: 12, lookbackDays: 14, maxPerRun: 3, minConfidence: 88 },
+    dbApi: {
+      db, getSetting: () => null, listActiveGrabJobs: () => [], listRequestedTvdbIds: () => new Set(),
+      mediaPriorityMap: () => new Map(),
+    },
+    arrApi: {
+      getArrTagId: async () => 7,
+      fetchArrQueues: async () => [],
+      sonarrGet: async path => path === '/series'
+        ? [{ id: 1, tvdbId: 2, title: 'Example', monitored: true, tags: [7] }]
+        : [{ id: 3, seriesId: 1, seasonNumber: 1, episodeNumber: 2, monitored: true, hasFile: false, airDateUtc: new Date(now - 3600000).toISOString() }],
+    },
+    grabApi: {
+      findAvistazIndexer: async () => ({ id: 9 }),
+      releaseContentClaim: () => null,
+      searchAvistaz: async () => { searches++; return []; },
+    },
+    rtorrentApi: {},
+    axios: { post: async () => { searches++; } },
+    log: { info() {}, warn() {} },
+  });
+  writes = 0;
+
+  const result = await worker.preview({ EPISODE_RECOVERY_PUBLIC_GRACE_HOURS: '0' });
+
+  assert.strictEqual(result.items[0].stage, 'search_public');
+  assert.strictEqual(writes, 0);
+  assert.strictEqual(searches, 0);
+});

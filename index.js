@@ -56,7 +56,7 @@ const { summarizeSeriesGaps, describeGaps, describeActivity, rankIncomplete } = 
 const { priorityKey, orderByPriority, isPinned, nextRank } = require('./src/priority');
 const { summarizeImportRejections, renderRejectionLines, looksLikeMappingProblem } = require('./src/import-rejections');
 const { normalizeSearchQuery, searchDashboard } = require('./src/search');
-const { runEpisodeRecoverySweep } = require('./src/episode-recovery');
+const { runEpisodeRecoverySweep, previewEpisodeRecoverySweep } = require('./src/episode-recovery');
 const { createRequestGate } = require('./src/request-gate');
 const { passkeyRp, createPasskeyService } = require('./src/passkeys');
 
@@ -682,8 +682,7 @@ function buildStuckAlert(group) {
 async function sweepStuckDownloads() {
   const items = await fetchArrQueues();
   const now = Date.now();
-  const stuck = detectStuckItems(items, stuckTracker, { stuckAfterMs: tunable('STUCK_AFTER_MINUTES') * 60000, now });
-  const groups = groupStuckItems(stuck);
+  const groups = planStuckDownloads(items, stuckTracker, tunable('STUCK_AFTER_MINUTES'), now);
 
   // Group keys for everything currently in the queue (not just the stuck ones) — used to prune
   // alert-cooldown rows and stale ignore flags once a group leaves the queue entirely.
@@ -710,6 +709,42 @@ async function sweepStuckDownloads() {
   return { detected: groups.size, alerted };
 }
 
+function planStuckDownloads(items, tracker, afterMinutes, now = Date.now()) {
+  return groupStuckItems(detectStuckItems(items, tracker, { stuckAfterMs: afterMinutes * 60000, now }));
+}
+
+function previewRuntimeValue(values, key) {
+  if (!Object.prototype.hasOwnProperty.call(values || {}, key)) return tunable(key);
+  const setting = runtimeSettings.settingByKey(key);
+  const parsed = runtimeSettings.validate(setting, values[key]);
+  if (!parsed.ok) throw new Error(parsed.error);
+  return parsed.value;
+}
+
+async function previewStuckDownloads(values = {}) {
+  const items = await fetchArrQueues();
+  const now = Date.now();
+  const afterMinutes = previewRuntimeValue(values, 'STUCK_AFTER_MINUTES');
+  const cooldownHours = previewRuntimeValue(values, 'STUCK_ALERT_COOLDOWN_HOURS');
+  const groups = planStuckDownloads(items, new Map(stuckTracker), afterMinutes, now);
+  return [...groups.entries()].map(([key, group]) => {
+    const lastAlerted = getAlertedAt('stuck', key);
+    const ignored = !!getSetting(`stuck_ignore:${key}`);
+    const cooling = !ignored && now - lastAlerted < cooldownHours * 3600000;
+    return {
+      title: isSeasonGroup(group)
+        ? `${group.members[0].item.seriesTitle} Season ${group.members[0].item.seasonNumber}`
+        : group.members[0].item.title,
+      reason: ignored
+        ? 'ignored by administrator'
+        : cooling
+          ? `alert cooldown until ${new Date(lastAlerted + cooldownHours * 3600000).toISOString()}`
+          : `${group.members.length} queue item(s) frozen for ${Math.round(group.maxFrozenMs / 60000)} minutes at the ${afterMinutes}-minute threshold`,
+      stage: ignored ? 'ignored' : cooling ? 'cooldown' : 'alert',
+    };
+  });
+}
+
 // ---- AvistaZ escalation watchdog ----
 // Public indexers get first crack at every approved request. When nothing has been grabbed after
 // ESCALATION_DELAY_MINUTES, the request either auto-escalates to AvistaZ (admin pre-authorized it
@@ -717,7 +752,7 @@ async function sweepStuckDownloads() {
 // tags the movie/series so the tag-gated AvistaZ indexer applies to it, then re-searches.
 
 // The facts decideEscalationAction needs: did the public pipeline already deliver?
-async function gatherEscalationFacts(row, queue) {
+async function gatherEscalationFacts(row, queue, { persist = true } = {}) {
   const keys = [`tmdb:${row.tmdb_id}`, row.tvdb_id ? `tvdb:${row.tvdb_id}` : null].filter(Boolean);
   const isAvailable = keys.some(k => db.prepare("SELECT 1 FROM requests WHERE media_id = ? AND status = 'available'").get(k));
   if (isAvailable) return { isAvailable: true, hasQueueItem: false, hasFile: false, inArr: true };
@@ -734,7 +769,10 @@ async function gatherEscalationFacts(row, queue) {
   // didn't carry it (Seerr sometimes only knows it after the arr add completes).
   if (!row.tvdb_id) {
     const tvdbId = await fetchSeerrTvdbId(row.tmdb_id);
-    if (tvdbId) { setEscalationTvdbId(row.id, tvdbId); row.tvdb_id = tvdbId; }
+    if (tvdbId) {
+      if (persist) setEscalationTvdbId(row.id, tvdbId);
+      row.tvdb_id = tvdbId;
+    }
   }
   const hasQueueItem = !!row.tvdb_id && queue.some(q => q.source.kind === 'tv' && q.seriesTvdbId === row.tvdb_id);
   if (hasQueueItem) return { isAvailable: false, hasQueueItem: true, hasFile: false, inArr: true };
@@ -749,17 +787,55 @@ async function gatherEscalationFacts(row, queue) {
 // decided, otherwise one Seerr origin lookup. Only a decided verdict is cached — 'unknown'
 // (Seerr unreachable, bare TMDB record) is left NULL so a blip can't permanently strand a show
 // on the "ask a human" path. The reasons ride along on the row for this sweep's embed only.
-async function resolveAvistazFit(row) {
+async function resolveAvistazFit(row, { persist = true } = {}) {
   if (row.avistaz_fit) return row.avistaz_fit;
   const meta = await fetchSeerrMediaOrigin(row.media_type, row.tmdb_id);
   const { verdict, reasons } = meta ? assessAsianOrigin(meta) : { verdict: 'unknown', reasons: [] };
   row.avistazFitReasons = reasons;
-  if (verdict !== 'unknown') {
+  if (persist && verdict !== 'unknown') {
     setEscalationAvistazFit(row.id, verdict);
     row.avistaz_fit = verdict;
     audit('avistaz_fit_assessed', { mediaId: row.media_id, title: row.title, verdict, reasons });
   }
   return verdict;
+}
+
+async function previewEscalations(values = {}) {
+  if (!previewRuntimeValue(values, 'ESCALATION_ENABLED')) return [];
+  const rows = getWatchingEscalations().map(row => ({ ...row }));
+  if (!rows.length) return [];
+  const queue = await fetchArrQueues();
+  const now = Date.now();
+  const cfg = {
+    delayMinutes: previewRuntimeValue(values, 'ESCALATION_DELAY_MINUTES'),
+    maxAgeDays: previewRuntimeValue(values, 'ESCALATION_MAX_AGE_DAYS'),
+    arrGraceMinutes: CONFIG.ESCALATION_ARR_GRACE_MINUTES,
+  };
+  const items = [];
+  for (const row of rows) {
+    const facts = await gatherEscalationFacts(row, queue, { persist: false });
+    const age = now - row.approved_at;
+    if (!facts.isAvailable && !facts.hasQueueItem && !facts.hasFile && age >= cfg.delayMinutes * 60000) {
+      facts.avistazFit = await resolveAvistazFit(row, { persist: false });
+    }
+    const action = decideEscalationAction(row, facts, now, cfg);
+    let reason = action;
+    if (action === 'wait' && age < cfg.delayMinutes * 60000) {
+      reason = `waiting on delay until ${new Date(row.approved_at + cfg.delayMinutes * 60000).toISOString()}`;
+    } else if (action === 'escalate') {
+      reason = 'pre-authorized and eligible for AvistaZ now';
+    } else if (action === 'alert') {
+      reason = 'ready for administrator approval now';
+    } else if (action === 'resolve') {
+      reason = 'public pipeline already has the title';
+    } else if (action === 'expire') {
+      reason = `older than ${cfg.maxAgeDays} days`;
+    } else if (action === 'alert_missing') {
+      reason = `missing from ${row.media_type === 'movie' ? 'Radarr' : 'Sonarr'}`;
+    }
+    items.push({ title: row.title, reason, stage: action });
+  }
+  return items;
 }
 
 async function runEscalation(row) {
@@ -1081,6 +1157,74 @@ async function sweepSeasonPacks() {
       ].join('\n').slice(0, 4000))] });
   }
   return { searched: searched.length };
+}
+
+// How far past the per-run cap a preview keeps looking. The sweep stops at the cap; the preview
+// has to go further — "which seasons the cap is holding back" is half the point of previewing —
+// but it must not walk an entire library one /episode call at a time on every button click.
+const PREVIEW_ITEM_LIMIT = 60;
+
+async function previewSeasonPacks(values = {}) {
+  if (!previewRuntimeValue(values, 'SEASON_PACK_FIRST') || !CONFIG.SONARR_URL) return [];
+  const cfg = {
+    ...seasonPackConfig(),
+    dormantDays: previewRuntimeValue(values, 'SEASON_PACK_DORMANT_DAYS'),
+    minMissing: previewRuntimeValue(values, 'SEASON_PACK_MIN_MISSING'),
+    includeRequested: previewRuntimeValue(values, 'SEASON_PACK_REQUESTED'),
+  };
+  const maxPerRun = previewRuntimeValue(values, 'SEASON_PACK_MAX_PER_RUN');
+  const now = Date.now();
+  const [seriesList, queue] = await Promise.all([listSonarrSeries(), fetchArrQueues()]);
+  const requestedTvdbIds = cfg.includeRequested ? listRequestedTvdbIds() : new Set();
+  const priority = mediaPriorityMap();
+  const ordered = orderByPriority(seriesList || [], { keyFor: series => priorityKey({ tvdbId: series.tvdbId }), priority });
+  const items = [];
+  let eligibleCount = 0;
+  for (const series of ordered) {
+    if (items.length >= PREVIEW_ITEM_LIMIT) break;
+    if (!series.monitored) continue;
+    const stats = series.statistics || {};
+    if (stats.episodeCount != null && stats.episodeFileCount != null && stats.episodeFileCount >= stats.episodeCount) continue;
+    const requested = requestedTvdbIds.has(Number(series.tvdbId));
+    if (!requested && !assessSeriesAge(series, now, cfg).old) continue;
+    let episodes;
+    try {
+      episodes = await getSeriesEpisodes(series.id);
+    } catch (err) {
+      // The sweep skips a series whose episodes won't load and carries on; a preview that threw
+      // instead would report nothing at all because one series in the library is unreadable.
+      items.push({ title: series.title, reason: `episodes could not be read: ${err.message}`, stage: 'unknown' });
+      continue;
+    }
+    const { eligible, reason, seasons, held } = seasonSearchTargets({
+      series, episodes, requested, inQueue: queuedSeasons(queue, series.id), searchedAt: getSeasonSearchTimes(series.id),
+    }, now, cfg);
+    if (!eligible) continue;
+    for (const season of held || []) {
+      items.push({
+        title: `${series.title} S${pad(season.season)}`,
+        reason: `${reason}; cooldown until ${new Date(season.nextEligible).toISOString()}`,
+        stage: 'cooldown',
+      });
+    }
+    for (const season of seasons) {
+      eligibleCount++;
+      items.push({
+        title: `${series.title} S${pad(season.season)}`,
+        reason: `${reason}; ${season.missing} of ${season.aired} aired episode(s) missing`,
+        stage: eligibleCount <= maxPerRun ? 'search' : `held by per-run cap ${maxPerRun}`,
+      });
+    }
+  }
+  return items;
+}
+
+async function previewAutomation(name, values = {}) {
+  if (name === 'stuck') return previewStuckDownloads(values);
+  if (name === 'escalation') return previewEscalations(values);
+  if (name === 'season-pack') return previewSeasonPacks(values);
+  if (name === 'episode-recovery') return (await previewEpisodeRecoverySweep(values)).items || [];
+  throw new Error('Unknown sweep.');
 }
 
 // ---- AvistaZ direct-grab pipeline ----
@@ -2656,6 +2800,17 @@ const slashCommands = [
   new SlashCommandBuilder().setName('unlink').setDescription('Unlink a user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)),
   new SlashCommandBuilder().setName('users').setDescription('List linked users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('status').setDescription('Show status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('automation').setDescription('Preview or run an automation sweep').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption(o => o.setName('sweep').setDescription('Automation sweep').setRequired(true).addChoices(
+      { name: 'stuck downloads', value: 'stuck' },
+      { name: 'AvistaZ escalation', value: 'escalation' },
+      { name: 'season packs', value: 'season-pack' },
+      { name: 'episode recovery', value: 'episode-recovery' },
+    ))
+    .addStringOption(o => o.setName('mode').setDescription('Preview makes no changes').setRequired(true).addChoices(
+      { name: 'preview', value: 'preview' },
+      { name: 'run', value: 'run' },
+    )),
   new SlashCommandBuilder().setName('backup-rehearse').setDescription('Verify the newest backup without changing the live database').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('doctor').setDescription('Read-only setup and Main → Philippines transfer checks').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('seerr-test').setDescription('Self-test Seerr Discord linking with a throwaway user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addBooleanOption(o => o.setName('keep').setDescription('Keep the test user in Seerr so you can inspect its Discord settings')),
@@ -3347,6 +3502,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'unlink') return handleUnlinkCommand(interaction);
   if (n === 'users') return handleUsersCommand(interaction);
   if (n === 'status') return handleStatusCommand(interaction);
+  if (n === 'automation') return handleAutomationCommand(interaction);
   if (n === 'backup-rehearse') return handleBackupRehearseCommand(interaction);
   if (n === 'doctor') return handleDoctorCommand(interaction);
   if (n === 'seerr-test') return handleSeerrTestCommand(interaction);
@@ -3795,6 +3951,31 @@ async function handleUsersCommand(interaction) {
   if (ghostCount) embed.addFields({ name: 'Email-only links', value: `👻 ${ghostCount} linked to a Discord ID that isn't in the server (mention won't resolve).`, inline: false });
   if (rows.length > shown.length) embed.setFooter({ text: `Durant Media Server · Showing ${shown.length} of ${rows.length}` });
   await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleAutomationCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  const name = interaction.options.getString('sweep');
+  const mode = interaction.options.getString('mode');
+  await interaction.deferReply({ ephemeral: true });
+  if (mode === 'preview') {
+    const items = await previewAutomation(name);
+    const lines = items.length
+      ? items.map(item => `- ${item.title}: ${item.stage} — ${item.reason}`)
+      : ['No items would be actioned.'];
+    return interaction.editReply([`**${name} preview**`, ...lines].join('\n').slice(0, 2000));
+  }
+  const sweeps = {
+    stuck: sweepStuckDownloads,
+    escalation: sweepEscalations,
+    'season-pack': sweepSeasonPacks,
+    'episode-recovery': runEpisodeRecoverySweep,
+  };
+  const outcome = await runGuardedSweep(name, sweeps[name]);
+  if (!outcome.ok || outcome.result?.busy) return interaction.editReply(`${name} is already running.`);
+  const result = outcome.result || {};
+  const count = result.searched ?? result.acted ?? result.alerted ?? 0;
+  return interaction.editReply(`${name} sweep finished with ${count} action(s).`);
 }
 
 async function handleBackupRehearseCommand(interaction) {
@@ -7472,6 +7653,11 @@ function startExpressServer() {
   if (CONFIG.DASHBOARD_ENABLED) {
     const loginLimits = new Map();
     RATE_LIMIT_MAPS.push(loginLimits);
+    // A preview is authenticated but expensive: it reads the whole Sonarr series list and then
+    // walks episodes series by series. Held-down Enter on the Preview button, or a stuck bit of
+    // dashboard JS, would hammer Sonarr harder than the sweep it is previewing ever does.
+    const previewLimits = new Map();
+    RATE_LIMIT_MAPS.push(previewLimits);
     const adminForm = express.urlencoded({ extended: false, limit: '16kb' });
     const webauthnBrowserPath = path.join(path.dirname(require.resolve('@simplewebauthn/browser')), '..', 'dist', 'bundle', 'index.es5.umd.min.js');
 
@@ -7978,6 +8164,37 @@ function startExpressServer() {
                 setTimeout(function () { location.reload(); }, 700);
               } catch (err) { note(group, String(err && err.message || err), 'bad'); }
             };
+            document.querySelectorAll('[data-preview]').forEach(function (btn) {
+              btn.addEventListener('click', async function () {
+                var group = btn.dataset.preview;
+                var values = {};
+                inputsFor(group).forEach(function (el) {
+                  values[el.dataset.key] = el.dataset.type === 'bool' ? (el.checked ? '1' : '0') : el.value;
+                });
+                note(group, 'Calculating preview...');
+                try {
+                  var sweep = group.replace(/_/g, '-');
+                  var r = await fetch('/admin/action/sweep-preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: sweep, values: values }) });
+                  var body = await r.json().catch(function () { return {}; });
+                  if (!r.ok || body.ok === false) { note(group, body.error || 'Preview failed.', 'bad'); return; }
+                  var result = document.querySelector('[data-preview-result="' + group + '"]');
+                  result.replaceChildren();
+                  var heading = document.createElement('p');
+                  heading.textContent = body.items.length ? body.items.length + ' item(s) evaluated:' : 'No items would be actioned.';
+                  result.appendChild(heading);
+                  if (body.items.length) {
+                    var list = document.createElement('ul');
+                    body.items.forEach(function (item) {
+                      var row = document.createElement('li');
+                      row.textContent = item.title + ': ' + item.stage + ' — ' + item.reason;
+                      list.appendChild(row);
+                    });
+                    result.appendChild(list);
+                  }
+                  note(group, 'Preview uses the unsaved values above.', 'ok');
+                } catch (err) { note(group, String(err && err.message || err), 'bad'); }
+              });
+            });
             document.querySelectorAll('[data-save]').forEach(function (btn) {
               btn.addEventListener('click', function () {
                 var group = btn.dataset.save;
@@ -8209,6 +8426,18 @@ function startExpressServer() {
       }
       audit('dashboard_priority', { ...dashboardActor(req), ok: true, operation, key });
       return res.json({ ok: true, message: operation === 'pin' ? 'Title pinned.' : operation === 'unpin' ? 'Title unpinned.' : 'Pinned order updated.' });
+    });
+
+    app.post('/admin/action/sweep-preview', dashboardAuth, async (req, res) => {
+      if (!takeRateLimit(previewLimits, dashboardActor(req).actorIp, 20, 60000)) {
+        return res.status(429).json({ ok: false, error: 'Too many previews. Wait a moment and try again.' });
+      }
+      try {
+        const items = await previewAutomation(req.body?.name, req.body?.values || {});
+        return res.json({ ok: true, items });
+      } catch (err) {
+        return res.status(400).json({ ok: false, error: dashboardActionError(err) });
+      }
     });
 
     app.post('/admin/action/sweep', dashboardAuth, async (req, res) => {

@@ -253,6 +253,7 @@ Ordered so each step de-risks the next. Items 1 and 2 are worth doing even if 3�
    and `partial`, replacing the "go do it yourself in Sonarr" dead end.
 5. **Phase 2 `Grab this pack` button**, admin-gated and audited.
 6. **Phase 3 `SEASON_PACK_FORCE_GRAB`**, default off, behind a confidence bar.
-7. **#134** — side-effect-free sweep previews. Unchanged from the existing roadmap, and it composes
-   well with 4–6: a dry-run that shows which pack *would* be forced is the natural way to trust
-   Phase 3.
+7. ~~**#134** — side-effect-free sweep previews.~~ **Shipped.** Previews for season-pack,
+   escalation, episode-recovery, and stuck-download sweeps, evaluating unsaved dashboard values.
+   It composes well with 4–6: a dry-run showing which pack *would* be forced is the natural way to
+   trust Phase 3, and `previewSeasonPacks` is where that line belongs when it exists.
