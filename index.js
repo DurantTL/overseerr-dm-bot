@@ -46,6 +46,7 @@ const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, parseReleaseName, seriesToken, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
 const { runBackup, rotateBackups, backupState, rehearseLatestBackup } = require('./scripts/backup-db');
+const { recordDiskSamples, pruneDiskSamples, forecastDisks, pathIsOnRoot, forecastLabel } = require('./src/capacity');
 const { webhookEventKey } = require('./src/webhook-events');
 const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
@@ -2285,17 +2286,29 @@ async function sweepRetentionRules() {
 }
 
 async function sweepDiskSpace() {
-  if (CONFIG.DISK_SPACE_WARN_GB <= 0) return;
   const disks = await fetchDiskSpace();
-  const low = disks.filter(d => gb(d.freeSpace || 0) < CONFIG.DISK_SPACE_WARN_GB);
-  if (!low.length) { db.prepare('DELETE FROM app_settings WHERE key = ?').run('disk_alert_last'); return; }
+  const now = Date.now();
+  recordDiskSamples(db, disks, now);
+  pruneDiskSamples(db, now);
+  const forecasts = forecastDisks(db, disks, now);
+  const freeGbThreshold = tunable('DISK_SPACE_WARN_GB');
+  const forecastDaysThreshold = tunable('DISK_FORECAST_WARN_DAYS');
+  const low = forecasts.filter(d => freeGbThreshold > 0 && gb(d.freeSpace || 0) < freeGbThreshold);
+  const projected = forecasts.filter(d => forecastDaysThreshold > 0 && d.forecast.status === 'projected' && d.forecast.daysRemaining <= forecastDaysThreshold);
+  if (!low.length && !projected.length) { db.prepare('DELETE FROM app_settings WHERE key = ?').run('disk_alert_last'); return; }
   const last = Number(getSetting('disk_alert_last') || '0');
-  if (Date.now() - last < 24 * 3600000) return;
-  setSetting('disk_alert_last', String(Date.now()));
+  if (now - last < 24 * 3600000) return;
+  setSetting('disk_alert_last', String(now));
+  const details = [];
+  if (low.length) details.push(low.map(d => `**${d.root}** — ${fmtSpace(d.freeSpace)} free of ${fmtSpace(d.totalSpace)}`).join('\n'));
+  if (projected.length) details.push(projected.map(d => `**${d.root}** — ${forecastLabel(d.forecast)}`).join('\n'));
   notifyChannel('system', { embeds: [brandedEmbed(COLORS.DANGER)
-    .setTitle('💾 Low Disk Space')
-    .setDescription(low.map(d => `**${d.displayPath || d.path}** — ${fmtSpace(d.freeSpace)} free of ${fmtSpace(d.totalSpace)}`).join('\n') + `\n\nThreshold: ${CONFIG.DISK_SPACE_WARN_GB} GB. Consider \`/queue\`, retention rules, or manual cleanup.`)] });
-  audit('disk_space_alert', { disks: low.map(d => ({ path: d.path, freeGb: Math.round(gb(d.freeSpace)) })) });
+    .setTitle('Storage Capacity Warning')
+    .setDescription(`${details.join('\n\n')}\n\nThresholds: ${freeGbThreshold} GB free or ${forecastDaysThreshold} projected days. Run \`/cleanup-suggestions\` for read-only options.`)] });
+  audit('disk_space_alert', {
+    disks: low.map(d => ({ path: d.path, freeGb: Math.round(gb(d.freeSpace)) })),
+    projected: projected.map(d => ({ path: d.path, daysRemaining: Math.ceil(d.forecast.daysRemaining), confidence: d.forecast.confidence })),
+  });
 }
 
 async function janitorSweep() {
@@ -3888,11 +3901,11 @@ async function handleStatusCommand(interaction) {
     `**Placeholder:** ${placeholderCount}${placeholderCount ? ` (${placeholderAcked} acknowledged)` : ''}`,
   ].join('\n');
 
-  const disks = await fetchDiskSpace().catch(() => []);
+  const disks = forecastDisks(db, await fetchDiskSpace().catch(() => []), Date.now());
   const storageLines = disks.map(d => {
-    const lowFlag = gb(d.freeSpace || 0) < CONFIG.DISK_SPACE_WARN_GB ? ' ⚠️' : '';
+    const lowFlag = tunable('DISK_SPACE_WARN_GB') > 0 && gb(d.freeSpace || 0) < tunable('DISK_SPACE_WARN_GB') ? ' ⚠️' : '';
     const pctUsed = d.totalSpace ? Math.round(((d.totalSpace - d.freeSpace) / d.totalSpace) * 100) : 0;
-    return `\`${d.displayPath || d.path}\` — ${fmtSpace(d.freeSpace)} free of ${fmtSpace(d.totalSpace)} (${pctUsed}% used)${lowFlag}`;
+    return `\`${d.root}\` — ${fmtSpace(d.freeSpace)} free of ${fmtSpace(d.totalSpace)} (${pctUsed}% used)${lowFlag} · ${forecastLabel(d.forecast)}`;
   });
 
   const overall = health.overall === 'ok' && !warnings.length && !deploymentChecks.some(line => line.startsWith('❌')) ? 'ok' : 'degraded';
@@ -5286,7 +5299,7 @@ async function handleCleanupSuggestionsCommand(interaction) {
         for (const m of movies) {
           if (!m.sizeOnDisk) continue;
           const addedMs = Date.parse(m.movieFile?.dateAdded || m.added || '') || now;
-          candidates.push({ mediaId: `tmdb:${m.tmdbId}`, title: `${m.title}${s.label === 'radarr-4k' ? ' (4K)' : ''}`, sizeBytes: m.sizeOnDisk, ageDays: (now - addedMs) / 86400000 });
+          candidates.push({ mediaId: `tmdb:${m.tmdbId}`, title: `${m.title}${s.label === 'radarr-4k' ? ' (4K)' : ''}`, path: m.path, sizeBytes: m.sizeOnDisk, ageDays: (now - addedMs) / 86400000 });
         }
       } else {
         const series = await axios.get(`${s.url}/api/v3/series`, { headers: { 'X-Api-Key': s.key }, timeout: 20000 }).then(r => r.data || []);
@@ -5294,22 +5307,34 @@ async function handleCleanupSuggestionsCommand(interaction) {
           const size = t.statistics?.sizeOnDisk || 0;
           if (!size) continue;
           const addedMs = Date.parse(t.added || '') || now;
-          candidates.push({ mediaId: `tvdb:${t.tvdbId}`, title: t.title, sizeBytes: size, ageDays: (now - addedMs) / 86400000 });
+          candidates.push({ mediaId: `tvdb:${t.tvdbId}`, title: t.title, path: t.path, sizeBytes: size, ageDays: (now - addedMs) / 86400000 });
         }
       }
     } catch (err) {
       audit('external_api_error', { provider: s.label, error: err.message, action: 'cleanup_suggestions' });
     }
   }
-  const eligible = candidates
+  const allEligible = candidates
     .filter(c => !isInKeepList(c.mediaId) && !CONFIG.NEVER_DELETE_MEDIA_IDS.includes(c.mediaId))
-    .sort((a, b) => b.sizeBytes - a.sizeBytes)
-    .slice(0, 12);
+    .sort((a, b) => b.sizeBytes - a.sizeBytes);
+  const eligible = allEligible.slice(0, 12);
   if (!eligible.length) return interaction.editReply('Nothing sizable to suggest — everything is either small, keep-listed, or never-delete.');
   const total = fmtSpace(eligible.reduce((a, c) => a + c.sizeBytes, 0));
+  const forecasts = forecastDisks(db, await fetchDiskSpace().catch(() => []), now)
+    .filter(d => d.forecast.status === 'projected')
+    .sort((a, b) => a.forecast.daysRemaining - b.forecast.daysRemaining);
+  let timeEstimate = 'Capacity estimate unavailable until enough disk history has been collected.';
+  for (const disk of forecasts) {
+    const suggestions = allEligible.filter(candidate => pathIsOnRoot(candidate.path, disk.path)).slice(0, 5);
+    if (!suggestions.length) continue;
+    const freed = suggestions.reduce((sum, candidate) => sum + candidate.sizeBytes, 0);
+    const days = freed / disk.forecast.consumptionBytesPerDay;
+    timeEstimate = `On ${disk.root}, freeing its top ${suggestions.length} suggestion(s) (${fmtSpace(freed)}) would buy approximately ${Math.max(1, Math.round(days))} days at the current estimated rate.`;
+    break;
+  }
   await interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
     .setTitle(`🧹 Cleanup Suggestions (top ${eligible.length} ≈ ${total})`)
-    .setDescription(eligible.map(c => `• **${c.title}** — ${fmtSpace(c.sizeBytes)} — ${Math.round(c.ageDays)}d old`).join('\n').slice(0, 4000))
+    .setDescription(`${eligible.map(c => `• **${c.title}** — ${fmtSpace(c.sizeBytes)} — ${Math.round(c.ageDays)}d old`).join('\n')}\n\n${timeEstimate}`.slice(0, 4000))
     .setFooter({ text: 'Durant Media Server · Suggestions only — nothing is deleted. Keep list & never-delete already excluded.' })] });
 }
 
@@ -7701,13 +7726,14 @@ function startExpressServer() {
         };
       });
 
-      const diskItems = (disks || []).map(d => {
+      const diskItems = forecastDisks(db, disks || [], now).map(d => {
         const used = (d.totalSpace || 0) - (d.freeSpace || 0);
         const pct = d.totalSpace ? Math.round((used / d.totalSpace) * 100) : 0;
         return {
-          state: (d.freeSpace || 0) < CONFIG.DISK_SPACE_WARN_GB * 1024 ** 3 ? 'warn' : 'ok',
-          title: d.displayPath || d.path,
-          sub: `${fmtSpace(d.freeSpace || 0)} free of ${fmtSpace(d.totalSpace || 0)}`,
+          state: (tunable('DISK_SPACE_WARN_GB') > 0 && (d.freeSpace || 0) < tunable('DISK_SPACE_WARN_GB') * 1024 ** 3)
+            || (tunable('DISK_FORECAST_WARN_DAYS') > 0 && d.forecast.status === 'projected' && d.forecast.daysRemaining <= tunable('DISK_FORECAST_WARN_DAYS')) ? 'warn' : 'ok',
+          title: d.root,
+          sub: `${fmtSpace(d.freeSpace || 0)} free of ${fmtSpace(d.totalSpace || 0)} · ${forecastLabel(d.forecast)}`,
           right: `${pct}% used`,
           pct,
         };
