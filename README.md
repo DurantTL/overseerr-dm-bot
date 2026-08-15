@@ -78,6 +78,7 @@ Discord events + slash commands are handled in the bot process, which also runs 
 ### Code layout
 - `index.js` — composition root: the Discord client, notification routing, slash/button handlers, webhooks, dashboard/express routes, and the periodic sweeps.
 - `src/` — service modules with **no Discord dependencies** (they never import discord.js or reach back into index.js): `config.js` (env + validation + warnings), `log.js`, `util.js` (pure helpers), `db.js` (SQLite schema + every row helper), `seerr.js`, `plex.js`, `arr.js` (Radarr/Sonarr), `tautulli.js`, `premiumize.js`.
+- `src/routes/` — named Express handler factories with explicit dependencies; `index.js` supplies those dependencies and registers middleware and route paths.
 - `scripts/tests/` — the `npm test` suite; service modules are imported directly, index.js-resident functions are exercised via source extraction.
 
 ## Discord Bot Permissions / Intents

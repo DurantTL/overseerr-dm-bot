@@ -48,6 +48,7 @@ const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentSt
 const { runBackup, rotateBackups, backupState, rehearseLatestBackup } = require('./scripts/backup-db');
 const { recordDiskSamples, pruneDiskSamples, forecastDisks, pathIsOnRoot, forecastLabel } = require('./src/capacity');
 const { webhookEventKey } = require('./src/webhook-events');
+const { createWebhookHandlers } = require('./src/routes/webhooks');
 const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
@@ -2613,20 +2614,6 @@ function resolveSafeMediaPath(requestedPath) {
     throw new Error('Resolved file path escapes configured RAID_PATH');
   }
   return realResolved;
-}
-
-// Shared-secret check for the inbound webhook routes. Returns true when the route is unsecured
-// (no secret configured) or the caller proved it knows the secret.
-//
-// `allowQuery` exists for exactly one caller: Plex's built-in webhooks take a URL and nothing else
-// — the server POSTs a bare multipart form with no way to attach a custom header, so a header-only
-// check is unsatisfiable there. Overseerr and Tautulli can both send headers and so are not given
-// the query-string option, because query strings are recorded in proxy/CDN access logs where
-// headers are not.
-function webhookSecretOk(req, expected, { header = 'x-webhook-secret', allowQuery = false } = {}) {
-  if (!expected) return true;
-  if (safeEqual(req.headers?.[header], expected)) return true;
-  return allowQuery ? safeEqual(req.query?.secret, expected) : false;
 }
 
 async function safeGetChannel(channelId) {
@@ -7202,81 +7189,24 @@ function startExpressServer() {
     }
   });
 
-  app.post('/webhook/overseerr', upload.any(), async (req, res) => {
-    if (!webhookSecretOk(req, CONFIG.WEBHOOK_SECRET)) return res.status(401).json({ error: 'Unauthorized' });
-    res.sendStatus(200);
-    let eventKey;
-    try {
-      let body = req.body;
-      if (typeof body.payload === 'string') body = JSON.parse(body.payload);
-      eventKey = webhookEventKey('overseerr', body);
-      if (!recordWebhookEvent(eventKey, 'overseerr')) {
-        audit('webhook_duplicate', { source: 'overseerr', type: body.notification_type });
-        return;
-      }
-      audit('webhook_received', { source: 'overseerr', type: body.notification_type });
-      await handleOverseerrWebhook(body);
-    } catch (err) {
-      // Un-claim on failure so a genuine redelivery isn't silently swallowed for the rest of the
-      // dedupe window — only a successfully processed event should stay deduped.
-      if (eventKey) forgetWebhookEvent(eventKey);
-      audit('external_api_error', { provider: 'overseerr_webhook', error: err.message });
-    }
+  const webhookHandlers = createWebhookHandlers({
+    config: CONFIG,
+    audit,
+    webhookEventKey,
+    recordWebhookEvent,
+    forgetWebhookEvent,
+    webhookUserKey,
+    resolvePlexWebhookEmail,
+    handleOverseerrWebhook,
+    handlePlexWebhook,
+    handleTautulliWebhook,
+    log,
   });
+  app.post('/webhook/overseerr', upload.any(), webhookHandlers.overseerr);
 
-  // Plex's built-in webhooks take a URL and nothing else — the server POSTs a bare multipart form
-  // and offers no way to attach a custom header, so a header-only check is unsatisfiable for that
-  // client. The shared secret is therefore also accepted as `?secret=` here. The header stays the
-  // preferred form (query strings land in proxy/CDN access logs), and this applies to the Plex
-  // route only: Overseerr and Tautulli can both send headers, so they still must.
-  app.post('/webhook/plex', upload.any(), async (req, res) => {
-    if (!webhookSecretOk(req, CONFIG.WEBHOOK_SECRET, { allowQuery: true })) return res.status(401).json({ error: 'Unauthorized' });
-    res.sendStatus(200);
-    let eventKey;
-    try {
-      const payload = JSON.parse(req.body.payload || '{}');
-      let userKey = null;
-      if (payload.event === 'media.scrobble') {
-        const email = await resolvePlexWebhookEmail(payload.Account?.id).catch(err => {
-          log.warn(`Could not resolve Plex webhook account ${payload.Account?.id || 'unknown'}: ${err.message}`);
-          return null;
-        });
-        userKey = webhookUserKey(email);
-        if (!userKey) audit('webhook_identity_unresolved', { source: 'plex', accountId: payload.Account?.id || null });
-      }
-      eventKey = webhookEventKey('plex', payload, userKey);
-      if (!recordWebhookEvent(eventKey, 'plex')) {
-        audit('webhook_duplicate', { source: 'plex', event: payload.event });
-        return;
-      }
-      audit('webhook_received', { source: 'plex', event: payload.event });
-      await handlePlexWebhook(payload);
-    } catch (err) {
-      if (eventKey) forgetWebhookEvent(eventKey);
-      audit('external_api_error', { provider: 'plex_webhook', error: err.message });
-    }
-  });
+  app.post('/webhook/plex', upload.any(), webhookHandlers.plex);
 
-  app.post('/webhook/tautulli', async (req, res) => {
-    if (!webhookSecretOk(req, CONFIG.TAUTULLI_WEBHOOK_SECRET, { header: 'x-tautulli-secret' })) return res.status(401).json({ error: 'Unauthorized' });
-    res.sendStatus(200);
-    let eventKey;
-    try {
-      const body = req.body || {};
-      const userKey = body.event === 'watched' ? webhookUserKey(body.user_email) : null;
-      if (body.event === 'watched' && !userKey) audit('webhook_identity_unresolved', { source: 'tautulli' });
-      eventKey = webhookEventKey('tautulli', body, userKey);
-      if (!recordWebhookEvent(eventKey, 'tautulli')) {
-        audit('webhook_duplicate', { source: 'tautulli', event: body.event });
-        return;
-      }
-      audit('webhook_received', { source: 'tautulli', event: body.event });
-      await handleTautulliWebhook(body);
-    } catch (err) {
-      if (eventKey) forgetWebhookEvent(eventKey);
-      audit('external_api_error', { provider: 'tautulli_webhook', error: err.message });
-    }
-  });
+  app.post('/webhook/tautulli', webhookHandlers.tautulli);
 
   app.get('/download/:token', async (req, res) => {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
