@@ -302,6 +302,27 @@ function resolveTmdbId(row) {
   return sibling ? Number(sibling.media_id.split(':')[1]) : null;
 }
 
+function findRequestQueueItem(row, items, tvdbId = null) {
+  const sourceMatches = item => row.media_type === 'tv'
+    ? item.source.kind === 'tv'
+    : item.source.kind === 'movie' && (row.is_4k ? item.source.label === 'radarr-4k' : item.source.label !== 'radarr-4k');
+  const mediaId = row.media_id.startsWith('tvdb:') ? Number(row.media_id.split(':')[1]) : tvdbId;
+  const tmdbId = row.media_type === 'movie' ? resolveTmdbId(row) : null;
+  const byId = items.find(item => sourceMatches(item)
+    && (row.media_type === 'movie' ? Number(item.movieTmdbId) === tmdbId : Number(item.seriesTvdbId) === mediaId));
+  if (byId) return byId;
+  const norm = value => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const title = norm(row.title);
+  return items.find(item => {
+    const candidate = norm(item.title);
+    return sourceMatches(item) && title && candidate && (candidate.includes(title) || title.includes(candidate));
+  }) || null;
+}
+
+function requestProgressDmEnabled(discordId) {
+  return getSetting(`request_progress_dm:${discordId}`) !== '0';
+}
+
 // Pending onboarding is mirrored in app_settings (pending_email:<discordId>) so it survives
 // restarts — including Watchtower's nightly update — mid-onboarding. The Map is a hot cache,
 // rehydrated from the DB at startup.
@@ -807,7 +828,7 @@ async function sweepEscalations() {
     if (action === 'expire') {
       setEscalationState(row.id, 'expired');
       audit('escalation_expired', { mediaId: row.media_id, title: row.title });
-      if (row.requested_by_discord_id) {
+      if (row.requested_by_discord_id && requestProgressDmEnabled(row.requested_by_discord_id)) {
         await dmUser(row.requested_by_discord_id, `⚠️ **${row.title}** could not be found by any configured source within ${cfg.maxAgeDays} days. It is no longer being escalated automatically; ask an admin if you want it retried.`);
         audit('request_exhausted_notified', { targetDiscordId: row.requested_by_discord_id, mediaId: row.media_id, title: row.title });
       }
@@ -2629,6 +2650,7 @@ const slashCommands = [
     .addSubcommand(s => s.setName('action').setDescription('Entries by action').addStringOption(o => o.setName('action').setDescription('Action name').setRequired(true)).addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100))),
   new SlashCommandBuilder().setName('queue').setDescription('Show what is downloading right now'),
   new SlashCommandBuilder().setName('request-status').setDescription('Check why a requested movie or show is not ready yet').addStringOption(o => o.setName('title').setDescription('Start typing — matches your recent requests').setRequired(true).setAutocomplete(true)),
+  new SlashCommandBuilder().setName('notifications').setDescription('Choose which request progress DMs you receive').addBooleanOption(o => o.setName('request_updates').setDescription('Future release, stalled, failed, and exhausted request DMs').setRequired(true)),
   new SlashCommandBuilder().setName('request-cancel').setDescription('Withdraw one of your own pending or awaiting-download requests').addStringOption(o => o.setName('title').setDescription('Start typing — matches your cancelable requests').setRequired(true).setAutocomplete(true)),
   new SlashCommandBuilder().setName('report').setDescription('Report a problem with something already on Plex (wrong subtitles, bad audio, etc.)')
     .addStringOption(o => o.setName('title').setDescription('Start typing — matches available media').setRequired(true).setAutocomplete(true))
@@ -2746,7 +2768,7 @@ async function sweepRequestStatuses() {
   const result = reconcileRequestStatuses(remoteRequests);
   for (const change of result.changed.filter(row => row.to === 'failed')) {
     const request = db.prepare('SELECT * FROM requests WHERE id = ?').get(change.id);
-    if (!request?.requested_by_discord_id || getSetting(`request_failure_notified:${change.id}`)) continue;
+    if (!request?.requested_by_discord_id || !requestProgressDmEnabled(request.requested_by_discord_id) || getSetting(`request_failure_notified:${change.id}`)) continue;
     await dmUser(request.requested_by_discord_id, `❌ **${request.title}** failed in Seerr. It is no longer downloading; an admin can inspect Seerr and the arr queue before retrying it.`);
     setSetting(`request_failure_notified:${change.id}`, String(Date.now()));
     audit('request_failure_notified', { targetDiscordId: request.requested_by_discord_id, requestId: request.overseerr_request_id, title: request.title });
@@ -2754,7 +2776,47 @@ async function sweepRequestStatuses() {
   if (result.changed.length || result.repaired.length) {
     log.info(`Reconciled request tracking: ${result.changed.length} status update(s), ${result.repaired.length} stale pending row(s) removed`);
   }
-  return result;
+  const notifications = await sweepRequestProgressNotifications(remoteRequests);
+  return { ...result, notifications };
+}
+
+async function sweepRequestProgressNotifications(remoteRequests) {
+  const rows = db.prepare(`SELECT * FROM requests
+    WHERE status = 'approved' AND overseerr_request_id IS NOT NULL AND requested_by_discord_id IS NOT NULL
+    ORDER BY id`).all();
+  if (!rows.length) return { eta: 0, stalled: 0 };
+  const queue = await fetchArrQueues();
+  const remoteById = new Map((remoteRequests || []).filter(row => row?.id != null).map(row => [String(row.id), row]));
+  const counts = { eta: 0, stalled: 0 };
+  for (const row of rows) {
+    if (!isSnowflake(row.requested_by_discord_id) || !requestProgressDmEnabled(row.requested_by_discord_id)) continue;
+    const tmdbId = resolveTmdbId(row);
+    const remote = remoteById.get(String(row.overseerr_request_id));
+    let tvdbId = row.media_id.startsWith('tvdb:') ? Number(row.media_id.split(':')[1]) : Number(remote?.media?.tvdbId) || null;
+    if (row.media_type === 'tv' && !tvdbId && tmdbId) tvdbId = await fetchSeerrTvdbId(tmdbId).catch(() => null);
+    if (findRequestQueueItem(row, queue, tvdbId)) continue;
+
+    const eta = releaseEtaInfo(await fetchReleaseEta({ mediaType: row.media_type, tmdbId, tvdbId }));
+    if (eta?.waiting) {
+      const key = `request_eta_notified:${row.id}`;
+      if (getSetting(key)) continue;
+      await dmUser(row.requested_by_discord_id, `**${row.title}** is approved, but it is not available to download yet.\n${eta.line}\nThe bot will keep checking automatically.`);
+      setSetting(key, String(Date.now()));
+      audit('request_eta_notified', { targetDiscordId: row.requested_by_discord_id, requestId: row.overseerr_request_id, title: row.title });
+      counts.eta++;
+      continue;
+    }
+
+    const ageMs = Date.now() - sqliteUtcMs(row.created_at);
+    if (ageMs < tunable('REQUEST_STALLED_HOURS') * 3600000) continue;
+    const key = `request_stalled_notified:${row.id}`;
+    if (getSetting(key)) continue;
+    await dmUser(row.requested_by_discord_id, `**${row.title}** has been approved for ${fmtDuration(ageMs)}, but I cannot confirm an active download or a future release date. Searches may still be running; an admin can check Seerr and the arr queue or retry it.`);
+    setSetting(key, String(Date.now()));
+    audit('request_stalled_notified', { targetDiscordId: row.requested_by_discord_id, requestId: row.overseerr_request_id, title: row.title });
+    counts.stalled++;
+  }
+  return counts;
 }
 
 client.once('ready', async () => {
@@ -3255,6 +3317,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'audit') return handleAuditCommand(interaction);
   if (n === 'queue') return handleQueueCommand(interaction);
   if (n === 'request-status') return handleRequestStatusCommand(interaction);
+  if (n === 'notifications') return handleNotificationsCommand(interaction);
   if (n === 'request-cancel') return handleRequestCancelCommand(interaction);
   if (n === 'report') return handleReportCommand(interaction);
   if (n === 'watching') return handleWatchingCommand(interaction);
@@ -4520,9 +4583,7 @@ async function handleWhoRequestedCommand(interaction) {
   else if (current.status === 'approved') {
     const queue = await fetchArrQueues().catch(() => null);
     if (queue) {
-      const norm = value => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-      const title = norm(current.title);
-      const match = queue.find(item => { const candidate = norm(item.title); return title && candidate && (candidate.includes(title) || title.includes(candidate)); });
+      const match = findRequestQueueItem(current, queue);
       if (match && queueItemLooksUnhealthy(match)) pipeline = `Stalled — ${String(match.messages?.[0] || match.trackedStatus || match.status).slice(0, 180)}`;
       else if (match) pipeline = `Downloading — ${match.source.label}, ${queuePercent(match)}%`;
     }
@@ -4628,9 +4689,7 @@ async function handleRequestStatusCommand(interaction) {
   } else {
     lines.push('**2 · Approved**  ✅');
     const items = await fetchArrQueues().catch(() => []);
-    const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-    const target = norm(row.title);
-    const match = items.find(i => { const n = norm(i.title); return target && n && (n.includes(target) || target.includes(n)); });
+    const match = findRequestQueueItem(row, items);
     if (match) {
       const pct = queuePercent(match);
       lines.push(`**3 · Download**  ⬇️ ${match.source.label}: ${progressBar(pct)} ${pct}%${match.timeleft ? ` · ETA \`${match.timeleft}\`` : ''}`);
@@ -5547,10 +5606,25 @@ async function handleAssignServerCommand(interaction) {
   return interaction.reply({ content: notes.join('\n'), ephemeral: true });
 }
 
+async function handleNotificationsCommand(interaction) {
+  const enabled = interaction.options.getBoolean('request_updates', true);
+  const key = `request_progress_dm:${interaction.user.id}`;
+  if (enabled) deleteSetting(key);
+  else setSetting(key, '0');
+  audit('notification_preference_changed', { actorDiscordId: interaction.user.id, requestUpdates: enabled });
+  return interaction.reply({
+    content: enabled
+      ? 'Request progress DMs are enabled.'
+      : 'Request progress DMs are muted. Approval and availability messages are unchanged.',
+    ephemeral: true,
+  });
+}
+
 async function handleHelpCommand(interaction) {
   const userCommands = [
     '`/request` — Search and request a movie or show; an admin approves it in Discord',
     '`/request-status` — Check why a request isn\'t ready yet',
+    '`/notifications` — Enable or mute request progress DMs',
     '`/request-cancel` — Withdraw one of your own pending or awaiting-download requests',
     '`/report` — Report a problem with something already on Plex (wrong subtitles, bad audio, etc.)',
     '`/stats` — Your watch/request stats this month',
