@@ -246,3 +246,72 @@ test('request: approval-gate stash/take/restash round-trip', () => {
   assert.strictEqual(sandbox.run(`takePendingRequest('${nonce}')`).label, 'The Matrix', 'restash revives the entry for retry');
   assert.strictEqual(sandbox.run(`takePendingRequest('zzzz')`), null, 'malformed nonce rejected');
 });
+
+test('whorequested: autocomplete searches all tracked requests and folds sibling rows', async () => {
+  const rows = [
+    { id: 3, media_id: 'tmdb:1396', title: 'Breaking Bad', media_type: 'tv', is_4k: 1, requested_by_discord_id: '123456789012345678', status: 'approved' },
+    { id: 2, media_id: 'tmdb:1396', title: 'Breaking Bad', media_type: 'tv', is_4k: 0, requested_by_discord_id: '123456789012345678', status: 'approved' },
+    { id: 1, media_id: 'tvdb:81189', title: 'Breaking Bad', media_type: 'tv', is_4k: 0, requested_by_discord_id: '123456789012345678', status: 'available' },
+  ];
+  const bed = loadSandbox(['handleAutocomplete'], {
+    db: { prepare: () => ({ all: () => rows }) },
+  });
+  let choices;
+  bed.interaction = {
+    commandName: 'whorequested',
+    options: { getFocused: () => ({ name: 'title', value: 'breaking' }) },
+    respond: async value => { choices = value; },
+  };
+  await bed.run('handleAutocomplete(interaction)');
+  assert.strictEqual(choices.length, 2);
+  assert.deepStrictEqual(Array.from(choices, choice => choice.value), ['request:3', 'request:2']);
+  assert.match(choices[1].name, /available/);
+});
+
+test('whorequested: reports requester, subscribers, and live pipeline state', async () => {
+  const rows = [
+    { id: 2, overseerr_request_id: '77', media_id: 'tvdb:81189', media_type: 'tv', is_4k: 0, title: 'Breaking Bad', requested_by_discord_id: '123456789012345678', status: 'approved', created_at: '2026-08-10 12:00:00' },
+    { id: 1, overseerr_request_id: null, media_id: 'tmdb:1396', media_type: 'tv', is_4k: 0, title: 'Breaking Bad', requested_by_discord_id: '123456789012345678', status: 'approved', created_at: '2026-08-10 12:00:00' },
+  ];
+  const util = require('../../src/util');
+  const { sqliteUtcMs } = require('../../src/dashboard-render');
+  const bed = loadSandbox(['handleWhoRequestedCommand'], {
+    requireAdmin: async () => true,
+    db: { prepare: _sql => ({
+      get: () => rows[0],
+      all: () => rows,
+    }) },
+    sqliteUtcMs,
+    discordTimestamp: util.discordTimestamp,
+    isSnowflake: util.isSnowflake,
+    requestStatusBadge: util.requestStatusBadge,
+    mediaTypeEmoji: util.mediaTypeEmoji,
+    subscriberKeyFor: (tmdbId, is4k) => `tmdb:${tmdbId}${is4k ? ':4k' : ''}`,
+    listRequestSubscribers: () => ['123456789012345678', '987654321098765432'],
+    resolveTmdbId: () => null,
+    fetchArrQueues: async () => [{ title: 'Breaking Bad', source: { label: 'Sonarr' }, messages: [], status: 'downloading' }],
+    queueItemLooksUnhealthy: () => false,
+    queuePercent: () => 42,
+    COLORS: { INFO: 1 },
+    brandedEmbed: () => ({ setTitle(value) { this.title = value; return this; }, addFields(...value) { this.fields = value; return this; } }),
+    audit: () => {},
+  });
+  let reply;
+  bed.interaction = {
+    user: { id: '999999999999999999' },
+    options: { getString: () => 'request:2' },
+    deferReply: async value => { assert.strictEqual(value.ephemeral, true); },
+    editReply: async value => { reply = value; },
+  };
+  await bed.run('handleWhoRequestedCommand(interaction)');
+  const fields = Object.fromEntries(reply.embeds[0].fields.map(field => [field.name, field.value]));
+  assert.match(fields['Requested by'], /<@123456789012345678>/);
+  assert.strictEqual(fields['Seerr request'], '#77');
+  assert.strictEqual(fields.Pipeline, 'Downloading — Sonarr, 42%');
+  assert.strictEqual(fields['Also waiting'], '<@987654321098765432>');
+
+  bed.fetchArrQueues = async () => [{ title: 'Breaking Bad', source: { label: 'Sonarr' }, messages: ['No seeders'], status: 'warning' }];
+  bed.queueItemLooksUnhealthy = () => true;
+  await bed.run('handleWhoRequestedCommand(interaction)');
+  assert.match(Object.fromEntries(reply.embeds[0].fields.map(field => [field.name, field.value])).Pipeline, /^Stalled — No seeders/);
+});

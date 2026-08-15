@@ -2529,6 +2529,7 @@ const slashCommands = [
   new SlashCommandBuilder().setName('invite-post').setDescription('Post a public "Request Plex Access" button in this channel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('reinvite').setDescription('Re-send a Plex invite to a linked user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('Discord user currently in the server')).addStringOption(o => o.setName('email').setDescription('Any linked user — start typing to search the DB').setAutocomplete(true)),
   new SlashCommandBuilder().setName('requests').setDescription('Show the most recent Seerr requests').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addIntegerOption(o => o.setName('count').setDescription('How many to show (default 10)').setMinValue(1).setMaxValue(25)),
+  new SlashCommandBuilder().setName('whorequested').setDescription('Find who requested a tracked title').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('title').setDescription('Start typing — matches all tracked requests').setRequired(true).setAutocomplete(true)),
   new SlashCommandBuilder().setName('audit').setDescription('Audit log queries').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('recent').setDescription('Recent entries').addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100)))
     .addSubcommand(s => s.setName('user').setDescription('Entries by user').addUserOption(o => o.setName('person').setDescription('User').setRequired(true)).addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100)))
@@ -2977,6 +2978,31 @@ async function handleAutocomplete(interaction) {
     return interaction.respond(choices).catch(() => {});
   }
 
+  if (interaction.commandName === 'whorequested') {
+    const focusedTitle = interaction.options.getFocused(true);
+    if (focusedTitle.name !== 'title') return interaction.respond([]).catch(() => {});
+    const q = String(focusedTitle.value || '').toLowerCase().trim();
+    const rows = db.prepare('SELECT * FROM requests ORDER BY id DESC LIMIT 500').all();
+    const seen = new Set();
+    const choices = [];
+    for (const r of rows) {
+      if (q && !String(r.title || '').toLowerCase().includes(q)) continue;
+      if (seen.has(r.id)) continue;
+      const siblings = rows.filter(candidate => candidate.media_type === r.media_type
+        && !!candidate.is_4k === !!r.is_4k
+        && (candidate.media_id === r.media_id || (
+        candidate.title === r.title
+        && candidate.requested_by_discord_id === r.requested_by_discord_id
+        && String(candidate.media_id).split(':')[0] !== String(r.media_id).split(':')[0]
+        )));
+      for (const sibling of siblings) seen.add(sibling.id);
+      const current = siblings.find(candidate => candidate.status === 'available') || siblings.find(candidate => candidate.status === 'failed') || r;
+      choices.push({ name: `${r.title}${r.is_4k ? ' (4K)' : ''} · ${current.status}`.slice(0, 100), value: `request:${r.id}` });
+      if (choices.length >= 25) break;
+    }
+    return interaction.respond(choices).catch(() => {});
+  }
+
   // /request-cancel title: — only the requester's own still-outstanding (pending/approved)
   // requests. Once available or declined there's nothing left to withdraw.
   if (interaction.commandName === 'request-cancel') {
@@ -3101,6 +3127,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'invite-post') return handleInvitePostCommand(interaction);
   if (n === 'reinvite') return handleReinviteCommand(interaction);
   if (n === 'requests') return handleRequestsCommand(interaction);
+  if (n === 'whorequested') return handleWhoRequestedCommand(interaction);
   if (n === 'audit') return handleAuditCommand(interaction);
   if (n === 'queue') return handleQueueCommand(interaction);
   if (n === 'request-status') return handleRequestStatusCommand(interaction);
@@ -4250,6 +4277,70 @@ async function handleRequestsCommand(interaction) {
   await interaction.editReply({ embeds: [embed] });
 }
 
+async function handleWhoRequestedCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ ephemeral: true });
+  const raw = String(interaction.options.getString('title') || '').trim();
+  const selected = /^request:\d+$/.test(raw)
+    ? db.prepare('SELECT * FROM requests WHERE id = ?').get(Number(raw.slice('request:'.length)))
+    : db.prepare('SELECT * FROM requests WHERE title LIKE ? ORDER BY id DESC LIMIT 1').get(`%${raw}%`);
+  if (!selected) return interaction.editReply(`No tracked request matches **${raw}**. Pick a suggestion from the list.`);
+
+  const rows = db.prepare(`SELECT * FROM requests
+    WHERE media_type = ? AND is_4k = ? AND (media_id = ? OR (title = ? AND requested_by_discord_id IS ?))
+    ORDER BY id DESC`).all(selected.media_type, selected.is_4k ? 1 : 0, selected.media_id, selected.title, selected.requested_by_discord_id);
+  const current = rows.find(row => row.status === 'available')
+    || rows.find(row => row.status === 'failed')
+    || rows.find(row => row.status === 'approved')
+    || rows[0];
+  const requestId = rows.find(row => row.overseerr_request_id)?.overseerr_request_id;
+  const requesterRows = new Map();
+  for (const row of rows) {
+    if (!row.requested_by_discord_id) continue;
+    const known = requesterRows.get(row.requested_by_discord_id);
+    if (!known || sqliteUtcMs(row.created_at) < sqliteUtcMs(known.created_at)) requesterRows.set(row.requested_by_discord_id, row);
+  }
+  const requesterLines = [...requesterRows.values()].map(row => {
+    const who = isSnowflake(row.requested_by_discord_id) ? `<@${row.requested_by_discord_id}>` : `\`${row.requested_by_discord_id}\``;
+    const requestedAt = sqliteUtcMs(row.created_at);
+    return `${who}${requestedAt ? ` — ${discordTimestamp(requestedAt, 'f')} (${discordTimestamp(requestedAt)})` : ''}`;
+  });
+
+  const tmdbRow = rows.find(row => String(row.media_id).startsWith('tmdb:'));
+  const tmdbId = tmdbRow ? Number(tmdbRow.media_id.slice('tmdb:'.length)) : resolveTmdbId(current);
+  const subscriberIds = tmdbId != null ? listRequestSubscribers(subscriberKeyFor(tmdbId, !!current.is_4k)) : [];
+  const requesterIds = new Set(requesterRows.keys());
+  const subscribers = subscriberIds.filter(id => !requesterIds.has(id));
+
+  let pipeline = 'Queued';
+  if (current.status === 'available') pipeline = 'Available';
+  else if (current.status === 'failed') pipeline = 'Stalled';
+  else if (['declined', 'cancelled'].includes(current.status)) pipeline = 'Stopped';
+  else if (current.status === 'pending') pipeline = 'Queued — awaiting approval';
+  else if (current.status === 'approved') {
+    const queue = await fetchArrQueues().catch(() => null);
+    if (queue) {
+      const norm = value => String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      const title = norm(current.title);
+      const match = queue.find(item => { const candidate = norm(item.title); return title && candidate && (candidate.includes(title) || title.includes(candidate)); });
+      if (match && queueItemLooksUnhealthy(match)) pipeline = `Stalled — ${String(match.messages?.[0] || match.trackedStatus || match.status).slice(0, 180)}`;
+      else if (match) pipeline = `Downloading — ${match.source.label}, ${queuePercent(match)}%`;
+    }
+  }
+
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle(`${mediaTypeEmoji(current.media_type, current.is_4k)} ${current.title}${current.is_4k ? ' (4K)' : ''}`.slice(0, 256))
+    .addFields(
+      { name: 'Requested by', value: requesterLines.join('\n').slice(0, 1024) || 'Unknown', inline: false },
+      { name: 'Current status', value: requestStatusBadge(current.status), inline: true },
+      { name: 'Pipeline', value: pipeline, inline: true },
+      { name: 'Seerr request', value: requestId ? `#${requestId}` : 'Not assigned yet', inline: true },
+      { name: 'Also waiting', value: subscribers.length ? subscribers.map(id => isSnowflake(id) ? `<@${id}>` : `\`${id}\``).join(', ').slice(0, 1024) : 'Nobody else', inline: false },
+    );
+  audit('request_ownership_viewed', { actorDiscordId: interaction.user.id, requestId: requestId || null, mediaId: current.media_id, title: current.title, subscribers: subscribers.length });
+  return interaction.editReply({ embeds: [embed] });
+}
+
 async function handleAuditCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
   const sub = interaction.options.getSubcommand();
@@ -5294,6 +5385,7 @@ async function handleHelpCommand(interaction) {
       '`/status` — Show system health and stats',
       '`/doctor` — Run read-only Main → Philippines transfer and configuration checks',
       '`/requests` — Show the most recent Seerr requests',
+      '`/whorequested` — Find who requested a title and who else is waiting',
       '`/cleanup` — Remove deleted Seerr users',
       '`/audit` — Query the audit log',
       '`/revoke-downloads` — Revoke active download links',
