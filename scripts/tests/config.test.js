@@ -3,7 +3,11 @@
 // routes internet-reachable, independent of whether live deletion is on (see issue #59).
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { CONFIG, validateConfig, configWarnings, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings } = require('../../src/config');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { once } = require('events');
+const { CONFIG, validateConfig, startConfigErrorServer, configWarnings, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings } = require('../../src/config');
 
 test('config: validateConfig requires webhook secrets whenever TUNNEL_DOMAIN is set', () => {
   // A minimal, otherwise-valid baseline so only the field under test trips validateConfig().
@@ -81,4 +85,37 @@ test('config: a placeholder PH identity does not also produce the generic missin
   assert.strictEqual(warnings.filter(warning => warning.includes('PH_SERVER_NAMES')).length, 1);
   CONFIG.STAGING_ENABLED = false;
   CONFIG.PLACEHOLDER_WARNINGS = [];
+});
+
+test('config: validation failure stays reachable through health', async () => {
+  const previous = { ...CONFIG };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-error-'));
+  const fatalPath = path.join(dir, 'last-fatal.txt');
+  let server;
+  try {
+    Object.assign(CONFIG, {
+      DISCORD_BOT_TOKEN: '', DISCORD_CLIENT_ID: 'c', DISCORD_GUILD_ID: 'g',
+      ADMIN_CHANNEL_ID: 'a', ADMIN_USER_ID: 'u',
+      OVERSEERR_URL: 'http://seerr:5055', OVERSEERR_API_KEY: 'k',
+      PLEX_TOKEN: 'p', PLEX_USERNAME: '', PLEX_PASSWORD: '',
+      TUNNEL_DOMAIN: 'files.example.com', RAID_PATH: '/mnt/raid',
+      WEBHOOK_SECRET: 's3cret', TAUTULLI_WEBHOOK_SECRET: 'tautulli-secret',
+      DASHBOARD_ENABLED: false, ENABLE_DELETION: false, DELETION_DRY_RUN: true,
+      PH_SERVER_NAMES: [], CA_EDGE_SERVER_NAMES: [], PRIMARY_SERVER_NAMES: [], PORT: 0,
+    });
+    let validationError;
+    try { validateConfig(); } catch (err) { validationError = err; }
+    assert.match(validationError.message, /DISCORD_BOT_TOKEN/);
+
+    server = startConfigErrorServer(validationError, fatalPath);
+    if (!server.listening) await once(server, 'listening');
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/health`);
+    assert.strictEqual(response.status, 503);
+    assert.deepStrictEqual(await response.json(), { overall: 'config_error', error: validationError.message });
+    assert.match(fs.readFileSync(fatalPath, 'utf8'), /DISCORD_BOT_TOKEN/);
+  } finally {
+    if (server) await new Promise(resolve => server.close(resolve));
+    Object.assign(CONFIG, previous);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

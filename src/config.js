@@ -2,6 +2,8 @@
 // risky-config warnings. dotenv loads here so CONFIG is correct no matter which module
 // is required first.
 require('dotenv').config({ quiet: true });
+const fs = require('fs');
+const http = require('http');
 
 function parseBool(v, fallback = false) {
   if (v === undefined) return fallback;
@@ -383,6 +385,26 @@ function validateConfig() {
   }
 }
 
+function startConfigErrorServer(error, fatalPath = '/app/data/last-fatal.txt') {
+  const message = error instanceof Error ? error.message : String(error);
+  const { log } = require('./log');
+  log.error(`Startup validation failed: ${message}. Serving config-error health only on port ${CONFIG.PORT}.`);
+  try {
+    fs.writeFileSync(fatalPath, `${new Date().toISOString()} ${message}\n`, 'utf8');
+  } catch (writeError) {
+    log.error(`Could not write ${fatalPath}: ${writeError.message}`);
+  }
+  return http.createServer((req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.method === 'GET' && req.url === '/health') {
+      res.statusCode = 503;
+      return res.end(JSON.stringify({ overall: 'config_error', error: message }));
+    }
+    res.statusCode = 404;
+    return res.end(JSON.stringify({ error: 'Not Found' }));
+  }).listen(CONFIG.PORT);
+}
+
 // Non-fatal sanity checks for risky-but-valid configurations. Logged at startup and posted once
 // to the system channel after connect, so a dangerous combo can't sit unnoticed.
 function configWarnings() {
@@ -466,4 +488,4 @@ function configWarnings() {
   return warnings;
 }
 
-module.exports = { parseBool, parseId, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings, CONFIG, REQUIRED_ENV, validateConfig, configWarnings };
+module.exports = { parseBool, parseId, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings, CONFIG, REQUIRED_ENV, validateConfig, startConfigErrorServer, configWarnings };
