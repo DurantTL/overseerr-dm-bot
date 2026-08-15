@@ -28,7 +28,7 @@ const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
@@ -349,8 +349,6 @@ function rehydratePendingEmails() {
   for (const r of rows) pendingEmailRequests.set(r.key.slice('pending_email:'.length), true);
   if (rows.length) log.info(`Rehydrated ${rows.length} pending onboarding request(s)`);
 }
-const routeLimits = new Map();
-const userGenerationLimits = new Map();
 const requestCommandLimits = new Map();
 // Deliberately NOT in RATE_LIMIT_MAPS: its window is 24h and the hourly reaper would wipe the
 // counts. It holds at most one small bucket per family member.
@@ -358,7 +356,7 @@ const stageCommandLimits = new Map();
 
 // Keyed by client IP / user id, these maps only ever grew. Drop buckets whose newest hit is
 // older than an hour so a scan of unique IPs can't slowly eat memory.
-const RATE_LIMIT_MAPS = [routeLimits, userGenerationLimits, requestCommandLimits];
+const RATE_LIMIT_MAPS = [requestCommandLimits];
 setInterval(() => {
   const cutoff = Date.now() - 3600000;
   for (const map of RATE_LIMIT_MAPS) {
@@ -631,7 +629,6 @@ async function tagPreAuthorizedMedia(meta, { attempts = 8, delayMs = 15000 } = {
 // would flood the channel with one alert per episode. Alerts are consolidated per series+season
 // (stuckGroupKey): one message lists every stuck episode, and its buttons act on all of them.
 const stuckTracker = new Map(); // `${label}:${queueId}` -> { sizeleft, since }
-const stuckAlerted = new Map(); // groupKey -> last alert ts
 
 // Build the consolidated alert embed + action row for one stuck group. Season groups render a
 // single "N episodes stuck" summary; movies / lone items keep the original per-item layout.
@@ -687,15 +684,15 @@ async function sweepStuckDownloads() {
   const groups = groupStuckItems(stuck);
 
   // Group keys for everything currently in the queue (not just the stuck ones) — used to prune
-  // the alert-cooldown map and stale ignore flags once a group leaves the queue entirely.
+  // alert-cooldown rows and stale ignore flags once a group leaves the queue entirely.
   const activeGroups = new Set(items.map(stuckGroupKey));
-  for (const gk of stuckAlerted.keys()) if (!activeGroups.has(gk)) stuckAlerted.delete(gk);
+  for (const row of listAlertCooldowns('stuck')) if (!activeGroups.has(row.alert_key)) clearAlertCooldown('stuck', row.alert_key);
 
   let alerted = 0;
   for (const [gk, group] of groups) {
     if (getSetting(`stuck_ignore:${gk}`)) continue;
-    if (now - (stuckAlerted.get(gk) || 0) < tunable('STUCK_ALERT_COOLDOWN_HOURS') * 3600000) continue;
-    stuckAlerted.set(gk, now);
+    if (now - getAlertedAt('stuck', gk) < tunable('STUCK_ALERT_COOLDOWN_HOURS') * 3600000) continue;
+    setAlertedAt('stuck', gk, now);
     const { embed, row } = buildStuckAlert(group);
     notifyChannel('downloads', { embeds: [embed], components: [row] });
     audit('stuck_download_detected', { groupKey: gk, label: group.source.label, count: group.members.length, frozenMinutes: Math.round(group.maxFrozenMs / 60000) });
@@ -2102,21 +2099,18 @@ async function sweepAdoptCandidates() {
 
 // Alert the playback channel when a session is video-transcoding (the expensive kind; audio-only
 // transcodes are cheap and ignored). One alert per session+media per cooldown window.
-const transcodeAlerted = new Map(); // `${user}:${rating_key}` -> last alert ts
 async function sweepTranscodes() {
   if (!tautulliConfigured()) return;
   const data = await tautulliApi('get_activity');
   const sessions = data?.sessions || [];
   const now = Date.now();
-  for (const [key, ts] of transcodeAlerted) {
-    if (now - ts > 24 * 3600000) transcodeAlerted.delete(key);
-  }
+  pruneAlertCooldowns('transcode', now - 24 * 3600000);
   for (const s of sessions) {
     if (s.video_decision !== 'transcode') continue;
     const key = `${s.user_id || s.user}:${s.rating_key}`;
-    const last = transcodeAlerted.get(key) || 0;
+    const last = getAlertedAt('transcode', key);
     if (now - last < CONFIG.TRANSCODE_ALERT_COOLDOWN_MINUTES * 60000) continue;
-    transcodeAlerted.set(key, now);
+    setAlertedAt('transcode', key, now);
     notifyChannel('playback', { embeds: [brandedEmbed(COLORS.WARN)
       .setTitle('🔥 Heavy Transcode')
       .setDescription(describeSession(s))
@@ -2130,14 +2124,13 @@ async function sweepTranscodes() {
 // dead torrent), never reach the *arr queue — the stuck-download watchdog can't see them.
 // Alert the downloads channel with one-click Retry / Clear / Ignore.
 const pmTracker = new Map(); // transfer id -> { progress, since }
-const pmAlerted = new Map(); // transfer id -> last alert ts
 async function sweepPremiumizeTransfers() {
   if (!premiumizeConfigured()) return;
   const transfers = await listTransfers();
   const now = Date.now();
   const currentIds = new Set(transfers.map(t => String(t.id)));
-  for (const [id, ts] of pmAlerted) {
-    if (!currentIds.has(id) || now - ts > 48 * 3600000) pmAlerted.delete(id);
+  for (const row of listAlertCooldowns('premiumize')) {
+    if (!currentIds.has(row.alert_key) || now - row.last_alerted_at > 48 * 3600000) clearAlertCooldown('premiumize', row.alert_key);
   }
   // Ignore flags are per transfer id; drop them once the transfer leaves the list so a reused
   // id can't be silently ignored (same pattern as stuck_ignore:).
@@ -2149,8 +2142,8 @@ async function sweepPremiumizeTransfers() {
   for (const t of stuck) {
     const id = String(t.id);
     if (getSetting(`pm_ignore:${id}`)) continue;
-    if (now - (pmAlerted.get(id) || 0) < CONFIG.PREMIUMIZE_ALERT_COOLDOWN_HOURS * 3600000) continue;
-    pmAlerted.set(id, now);
+    if (now - getAlertedAt('premiumize', id) < CONFIG.PREMIUMIZE_ALERT_COOLDOWN_HOURS * 3600000) continue;
+    setAlertedAt('premiumize', id, now);
     const pct = Math.round(Number(t.progress || 0) * 100);
     const embed = brandedEmbed(COLORS.WARN)
       .setTitle('🧊 Premiumize Transfer Stuck')
@@ -3355,7 +3348,7 @@ async function requireAdmin(interaction) {
 async function handleDownloadCommand(interaction) {
   const user = getUserByDiscordId(interaction.user.id);
   if (!user) return interaction.reply({ content: '❌ You must be linked first.', ephemeral: true });
-  if (!takeRateLimit(userGenerationLimits, interaction.user.id, CONFIG.DOWNLOAD_MAX_PER_HOUR, 3600000)) {
+  if (!takePersistentRateLimit('download-command', interaction.user.id, CONFIG.DOWNLOAD_MAX_PER_HOUR, 3600000)) {
     return interaction.reply({ content: '❌ Rate limit reached. Try again later.', ephemeral: true });
   }
 
@@ -7220,7 +7213,7 @@ function startExpressServer() {
 
   app.get('/download/:token', async (req, res) => {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    if (!takeRateLimit(routeLimits, ip, CONFIG.DOWNLOAD_ROUTE_MAX_PER_MINUTE, 60000)) {
+    if (!takePersistentRateLimit('download-route', ip, CONFIG.DOWNLOAD_ROUTE_MAX_PER_MINUTE, 60000)) {
       return res.status(429).send('Too many requests.');
     }
     cleanExpiredTokens();

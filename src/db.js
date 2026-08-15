@@ -90,6 +90,22 @@ function runMigrations() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS rate_limit_hits (
+      scope TEXT NOT NULL,
+      identity TEXT NOT NULL,
+      hit_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_rate_limit_bucket ON rate_limit_hits(scope, identity, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_rate_limit_expiry ON rate_limit_hits(expires_at);
+
+    CREATE TABLE IF NOT EXISTS alert_cooldowns (
+      scope TEXT NOT NULL,
+      alert_key TEXT NOT NULL,
+      last_alerted_at INTEGER NOT NULL,
+      PRIMARY KEY (scope, alert_key)
+    );
+
     CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY,
       value TEXT,
@@ -1077,6 +1093,41 @@ function cleanExpiredTokens() {
   db.prepare('DELETE FROM download_tokens WHERE expires_at < ?').run(Date.now());
 }
 
+function takePersistentRateLimit(scope, identity, maxHits, periodMs, now = Date.now()) {
+  return db.transaction(() => {
+    db.prepare('DELETE FROM rate_limit_hits WHERE expires_at <= ?').run(now);
+    const hits = db.prepare('SELECT COUNT(*) AS n FROM rate_limit_hits WHERE scope = ? AND identity = ? AND expires_at > ?')
+      .get(scope, String(identity), now).n;
+    if (hits >= maxHits) return false;
+    db.prepare('INSERT INTO rate_limit_hits (scope, identity, hit_at, expires_at) VALUES (?, ?, ?, ?)')
+      .run(scope, String(identity), now, now + periodMs);
+    return true;
+  })();
+}
+
+function getAlertedAt(scope, key) {
+  return db.prepare('SELECT last_alerted_at FROM alert_cooldowns WHERE scope = ? AND alert_key = ?')
+    .get(scope, String(key))?.last_alerted_at || 0;
+}
+
+function setAlertedAt(scope, key, alertedAt = Date.now()) {
+  db.prepare(`INSERT INTO alert_cooldowns (scope, alert_key, last_alerted_at) VALUES (?, ?, ?)
+    ON CONFLICT(scope, alert_key) DO UPDATE SET last_alerted_at = excluded.last_alerted_at`)
+    .run(scope, String(key), alertedAt);
+}
+
+function listAlertCooldowns(scope) {
+  return db.prepare('SELECT alert_key, last_alerted_at FROM alert_cooldowns WHERE scope = ?').all(scope);
+}
+
+function clearAlertCooldown(scope, key) {
+  db.prepare('DELETE FROM alert_cooldowns WHERE scope = ? AND alert_key = ?').run(scope, String(key));
+}
+
+function pruneAlertCooldowns(scope, before) {
+  return db.prepare('DELETE FROM alert_cooldowns WHERE scope = ? AND last_alerted_at < ?').run(scope, before).changes;
+}
+
 // Records a webhook event key the first time it's seen. Returns true when this call recorded it
 // (i.e. process the event), false when the key was already present (a redelivery/replay).
 // Atomic claim-or-reject: a plain floor(now/window) bucket baked into the key would let two
@@ -1251,5 +1302,5 @@ function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k) {
   return null;
 }
 
-module.exports = { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
+module.exports = { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;

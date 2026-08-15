@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const express = require('express');
+const Database = require('better-sqlite3');
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { loadSandbox } = require('./extract');
 
@@ -305,6 +306,53 @@ test('request: approval-gate stash/take/restash round-trip', () => {
   sandbox.run(`restashPendingRequest('${nonce}', TAKEN)`);
   assert.strictEqual(sandbox.run(`takePendingRequest('${nonce}')`).label, 'The Matrix', 'restash revives the entry for retry');
   assert.strictEqual(sandbox.run(`takePendingRequest('zzzz')`), null, 'malformed nonce rejected');
+});
+
+test('rate limits: download counters survive reloads, expire on the boundary, and prune old rows', () => {
+  const database = new Database(':memory:');
+  database.exec(`CREATE TABLE rate_limit_hits (
+    scope TEXT NOT NULL, identity TEXT NOT NULL, hit_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+  ); CREATE INDEX idx_rate_limit_bucket ON rate_limit_hits(scope, identity, expires_at);
+  CREATE INDEX idx_rate_limit_expiry ON rate_limit_hits(expires_at);`);
+  const first = loadSandbox(['takePersistentRateLimit'], { db: database });
+  assert.strictEqual(first.run("takePersistentRateLimit('download-command', 'member', 2, 60000, 1000)"), true);
+  assert.strictEqual(first.run("takePersistentRateLimit('download-command', 'member', 2, 60000, 1000)"), true);
+
+  const afterRestart = loadSandbox(['takePersistentRateLimit'], { db: database });
+  assert.strictEqual(afterRestart.run("takePersistentRateLimit('download-command', 'member', 2, 60000, 2000)"), false);
+  database.prepare('INSERT INTO rate_limit_hits VALUES (?, ?, ?, ?)').run('download-route', 'old', 0, 5);
+  assert.strictEqual(afterRestart.run("takePersistentRateLimit('download-command', 'member', 2, 60000, 61000)"), true, 'a hit expires at the exact boundary');
+  assert.strictEqual(database.prepare('SELECT COUNT(*) AS n FROM rate_limit_hits WHERE expires_at <= ?').get(61000).n, 0, 'expired inactive buckets are pruned');
+  database.close();
+});
+
+test('alert cooldowns: a stuck-download alert stays suppressed after reload', async () => {
+  const database = new Database(':memory:');
+  database.exec(`CREATE TABLE alert_cooldowns (
+    scope TEXT NOT NULL, alert_key TEXT NOT NULL, last_alerted_at INTEGER NOT NULL,
+    PRIMARY KEY (scope, alert_key)
+  ); CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT);`);
+  let alerts = 0;
+  const stubs = {
+    db: database,
+    stuckTracker: new Map(),
+    fetchArrQueues: async () => [{}],
+    detectStuckItems: () => [],
+    groupStuckItems: () => new Map([['sonarr:1', { source: { label: 'sonarr' }, members: [{}], maxFrozenMs: 60000 }]]),
+    stuckGroupKey: () => 'sonarr:1',
+    tunable: () => 24,
+    getSetting: () => null,
+    buildStuckAlert: () => ({ embed: {}, row: {} }),
+    notifyChannel: () => { alerts++; },
+    audit: () => {},
+  };
+  const names = ['getAlertedAt', 'setAlertedAt', 'listAlertCooldowns', 'clearAlertCooldown', 'sweepStuckDownloads'];
+  const first = loadSandbox(names, stubs);
+  assert.strictEqual((await first.run('sweepStuckDownloads()')).alerted, 1);
+  const afterRestart = loadSandbox(names, stubs);
+  assert.strictEqual((await afterRestart.run('sweepStuckDownloads()')).alerted, 0);
+  assert.strictEqual(alerts, 1);
+  database.close();
 });
 
 test('whorequested: autocomplete searches all tracked requests and folds sibling rows', async () => {
