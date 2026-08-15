@@ -6,7 +6,7 @@
 // window as a real sliding check against created_at instead. A fixed floor(now/window) bucket
 // would let two deliveries a fraction of a second apart land in different buckets right at a
 // boundary and both be treated as new.
-function webhookEventKey(source, body) {
+function webhookEventKey(source, body, userKey) {
   if (source === 'overseerr') {
     const media = body.media || {};
     const mediaId = media.media_type === 'tv' ? `tvdb:${media.tvdbId}` : `tmdb:${media.tmdbId}`;
@@ -20,10 +20,21 @@ function webhookEventKey(source, body) {
   }
   if (source === 'plex') {
     const { event, Account, Metadata, Server } = body;
+    const guid = Metadata?.Guid || [];
+    const mediaId = Metadata?.type === 'movie'
+      ? (guid.find(value => value.id?.startsWith('tmdb://'))?.id || '').replace('tmdb://', 'tmdb:')
+      : (guid.find(value => value.id?.startsWith('tvdb://'))?.id || '').replace('tvdb://', 'tvdb:');
+    if (event === 'media.scrobble' && Server?.uuid && mediaId && userKey) {
+      return `watched:${String(Server.uuid).toLowerCase()}:${mediaId}:${String(userKey).toLowerCase()}`;
+    }
     return `plex:${event}:${Server?.uuid || ''}:${Metadata?.ratingKey || ''}:${Account?.id || ''}`;
   }
   if (source === 'tautulli') {
-    const mediaId = body.media_type === 'movie' ? `tmdb:${body.tmdb_id}` : `tvdb:${body.tvdb_id}`;
+    const rawMediaId = body.media_type === 'movie' ? body.tmdb_id : body.tvdb_id;
+    const mediaId = `${body.media_type === 'movie' ? 'tmdb' : 'tvdb'}:${rawMediaId ?? ''}`;
+    if (body.event === 'watched' && body.machine_id && String(rawMediaId ?? '').trim() && userKey) {
+      return `watched:${String(body.machine_id).toLowerCase()}:${mediaId}:${String(userKey).toLowerCase()}`;
+    }
     return `tautulli:${body.event}:${body.machine_id || ''}:${mediaId}:${body.user_email || ''}${body.is_4k ? ':4k' : ''}`;
   }
   return `${source}:unknown`;

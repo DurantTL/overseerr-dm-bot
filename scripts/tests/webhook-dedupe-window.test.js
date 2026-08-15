@@ -9,6 +9,7 @@ const os = require('os');
 const path = require('path');
 const Database = require('better-sqlite3');
 const { loadSandbox } = require('./extract');
+const { webhookEventKey } = require('../../src/webhook-events');
 
 function tempDb() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'overseerr-bot-webhook-window-'));
@@ -43,5 +44,28 @@ test('webhook dedupe: forgetWebhookEvent un-claims a key so a retry after failur
   sb.run("forgetWebhookEvent('k1')");
   assert.strictEqual(sb.run("recordWebhookEvent('k1', 'overseerr')"), true, 'a forgotten key is claimable again immediately, not stuck for the rest of the window');
 
+  db.close();
+});
+
+test('webhook dedupe: cross-source watched events claim once and a later re-watch is accepted', () => {
+  const db = tempDb();
+  const sb = loadSandbox(['recordWebhookEvent'], { db, CONFIG: { WEBHOOK_DEDUPE_WINDOW_MINUTES: 5 } });
+  const plex = {
+    event: 'media.scrobble',
+    Server: { uuid: 'm1' },
+    Metadata: { type: 'episode', ratingKey: 'r1', Guid: [{ id: 'tvdb://99' }] },
+    Account: { id: 7 },
+  };
+  const tautulli = { event: 'watched', media_type: 'episode', tvdb_id: 99, machine_id: 'm1', user_email: 'viewer@example.com' };
+  const plexKey = webhookEventKey('plex', plex, 'discord:123');
+  const tautulliKey = webhookEventKey('tautulli', tautulli, 'discord:123');
+  assert.strictEqual(plexKey, tautulliKey);
+  assert.strictEqual(sb.recordWebhookEvent(plexKey, 'plex'), true);
+  assert.strictEqual(sb.recordWebhookEvent(tautulliKey, 'tautulli'), false);
+  assert.strictEqual(db.prepare('SELECT source FROM webhook_events WHERE event_key = ?').get(plexKey).source, 'plex');
+
+  db.prepare("UPDATE webhook_events SET created_at = datetime('now', '-10 minutes') WHERE event_key = ?").run(plexKey);
+  assert.strictEqual(sb.recordWebhookEvent(tautulliKey, 'tautulli'), true, 'a genuine later watch is accepted');
+  assert.strictEqual(db.prepare('SELECT source FROM webhook_events WHERE event_key = ?').get(plexKey).source, 'tautulli');
   db.close();
 });
