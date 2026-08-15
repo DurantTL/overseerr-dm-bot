@@ -356,15 +356,18 @@ function renderStat(label, value) {
 
 function healthClass(v) {
   if (['ok', 'configured'].includes(v)) return 'ok';
-  if (v === 'skipped') return 'skip';
+  if (v === 'skipped' || v === 'disabled') return 'skip';
   if (v === 'down' || v === 'missing') return 'down';
   return 'warn';
 }
 
 function renderHealthBadges(health) {
-  const keys = ['discord', 'sqlite', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'prowlarr', 'byparr', 'raidPath', 'tunnelDomain'];
+  const keys = ['discord', 'sqlite', 'backup', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'prowlarr', 'byparr', 'raidPath', 'tunnelDomain'];
   return keys.filter(k => health[k] !== undefined)
-    .map(k => `<span class="badge"><span class="dot ${healthClass(health[k])}"></span>${escapeHtml(k)}: ${escapeHtml(String(health[k]))}</span>`)
+    .map(k => {
+      const age = k === 'backup' && health.backupLastSuccessfulAt ? ` · ${fmtAgo(health.backupLastSuccessfulAt)}` : '';
+      return `<span class="badge"><span class="dot ${healthClass(health[k])}"></span>${escapeHtml(k)}: ${escapeHtml(String(health[k]))}${escapeHtml(age)}</span>`;
+    })
     .join('');
 }
 

@@ -45,7 +45,7 @@ const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, parseReleaseName, seriesToken, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
-const { runBackup, rotateBackups } = require('./scripts/backup-db');
+const { runBackup, rotateBackups, backupState, rehearseLatestBackup } = require('./scripts/backup-db');
 const { webhookEventKey } = require('./src/webhook-events');
 const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
@@ -2361,15 +2361,26 @@ async function janitorSweep() {
 async function sweepBackup() {
   try {
     const destination = await runBackup(DB_PATH, CONFIG.BACKUP_DIR);
+    const successfulAt = Date.now();
+    setSetting('backup_last_success', String(successfulAt));
+    clearAlertCooldown('backup', 'overdue');
     const deleted = rotateBackups(CONFIG.BACKUP_DIR, CONFIG.BACKUP_KEEP_COUNT);
     log.info(`DB backup created: ${destination}${deleted.length ? ` (rotated out ${deleted.length} old backup(s))` : ''}`);
-    audit('db_backup_created', { destination, rotatedOut: deleted.length });
+    audit('db_backup_created', { destination, rotatedOut: deleted.length, successfulAt });
   } catch (err) {
     log.error(`DB backup failed: ${err.message}`);
     audit('db_backup_failed', { error: err.message });
     notifyChannel('system', { embeds: [brandedEmbed(COLORS.DANGER)
       .setTitle('🛑 Database Backup Failed')
       .setDescription(`\`\`\`${err.message}\`\`\``)] });
+    const state = backupState(getSetting('backup_last_success'), CONFIG.BACKUP_INTERVAL_HOURS);
+    if (state.overdue && !getAlertedAt('backup', 'overdue')) {
+      setAlertedAt('backup', 'overdue');
+      notifyChannel('system', { embeds: [brandedEmbed(COLORS.WARN)
+        .setTitle('Database Backup Overdue')
+        .setDescription(`The last successful backup was ${fmtDuration(state.ageMs)} ago, more than twice the configured ${CONFIG.BACKUP_INTERVAL_HOURS}h interval.`)] });
+      audit('db_backup_overdue', { lastSuccessfulAt: state.lastSuccessfulAt, ageMs: state.ageMs });
+    }
     throw err;
   }
 }
@@ -2626,6 +2637,7 @@ const slashCommands = [
   new SlashCommandBuilder().setName('unlink').setDescription('Unlink a user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)),
   new SlashCommandBuilder().setName('users').setDescription('List linked users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('status').setDescription('Show status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('backup-rehearse').setDescription('Verify the newest backup without changing the live database').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('doctor').setDescription('Read-only setup and Main → Philippines transfer checks').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('seerr-test').setDescription('Self-test Seerr Discord linking with a throwaway user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addBooleanOption(o => o.setName('keep').setDescription('Keep the test user in Seerr so you can inspect its Discord settings')),
   new SlashCommandBuilder().setName('sync').setDescription('Sync users safely').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(true).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
@@ -3296,6 +3308,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'unlink') return handleUnlinkCommand(interaction);
   if (n === 'users') return handleUsersCommand(interaction);
   if (n === 'status') return handleStatusCommand(interaction);
+  if (n === 'backup-rehearse') return handleBackupRehearseCommand(interaction);
   if (n === 'doctor') return handleDoctorCommand(interaction);
   if (n === 'seerr-test') return handleSeerrTestCommand(interaction);
   if (n === 'sync') return handleSyncCommand(interaction);
@@ -3745,6 +3758,26 @@ async function handleUsersCommand(interaction) {
   await interaction.editReply({ embeds: [embed] });
 }
 
+async function handleBackupRehearseCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    const result = rehearseLatestBackup(DB_PATH, CONFIG.BACKUP_DIR);
+    audit('db_backup_rehearsed', result);
+    const comparison = result.rowCountsMatch
+      ? `The live database and restored backup both contain ${result.liveUsers} user row(s).`
+      : `The live database contains ${result.liveUsers} user row(s); the restored backup contains ${result.backupUsers}.`;
+    await interaction.editReply({ embeds: [brandedEmbed(result.rowCountsMatch ? COLORS.SUCCESS : COLORS.WARN)
+      .setTitle('Backup Rehearsal Completed')
+      .setDescription(`Verified ${path.basename(result.backup)} in a temporary database. ${comparison}\n\nThe live database was opened read-only and was not modified.`)] });
+  } catch (err) {
+    audit('db_backup_rehearsal_failed', { error: err.message });
+    await interaction.editReply({ embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle('Backup Rehearsal Failed')
+      .setDescription(`\`\`\`${err.message}\`\`\``)] });
+  }
+}
+
 async function handleStatusCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
   await interaction.deferReply({ ephemeral: true });
@@ -3803,8 +3836,12 @@ async function handleStatusCommand(interaction) {
       : `⚠️ Backup directory has not been created yet: \`${CONFIG.BACKUP_DIR}\``);
   }
 
-  const integrationKeys = ['discord', 'sqlite', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'prowlarr', 'byparr', 'raidPath', 'tunnelDomain'];
-  const integrationLines = integrationKeys.filter(k => health[k] !== undefined).map(k => `${statusEmoji(health[k])} ${k}: ${health[k]}`);
+  const integrationKeys = ['discord', 'sqlite', 'backup', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'prowlarr', 'byparr', 'raidPath', 'tunnelDomain'];
+  const integrationLines = integrationKeys.filter(k => health[k] !== undefined).map(k => {
+    const age = k === 'backup' && health.backupLastSuccessfulAt ? ` · last success ${discordTimestamp(health.backupLastSuccessfulAt)}` : '';
+    const status = k === 'backup' && health[k] === 'disabled' ? 'skipped' : health[k];
+    return `${statusEmoji(status)} ${k}: ${health[k]}${age}`;
+  });
 
   // Categorize DB rows: real Discord-linked, plex_-only synthetic, and @plex.local placeholders
   // (collapsed to a count once acknowledged). Also tally fixable issues so admins know to run /sync-fix.
@@ -5650,6 +5687,7 @@ async function handleHelpCommand(interaction) {
     ];
     const operationsCommands = [
       '`/status` — Show system health and stats',
+      '`/backup-rehearse` — Verify the newest backup without changing the live database',
       '`/doctor` — Run read-only Main → Philippines transfer and configuration checks',
       '`/requests` — Show the most recent Seerr requests',
       '`/pending` — Review requests still awaiting approval',
@@ -6911,6 +6949,10 @@ async function gatherHealth() {
   const checks = { overall: 'ok', timestamp: new Date().toISOString(), errors: {} };
   checks.discord = client.isReady() ? 'ok' : 'down';
   try { db.prepare('SELECT 1').get(); checks.sqlite = 'ok'; } catch (e) { checks.sqlite = 'down'; checks.errors.sqlite = e.message; }
+  const backup = backupState(getSetting('backup_last_success'), CONFIG.BACKUP_INTERVAL_HOURS);
+  checks.backup = backup.status;
+  checks.backupLastSuccessfulAt = backup.lastSuccessfulAt;
+  checks.backupAgeMs = backup.ageMs;
   checks.raidPath = fs.existsSync(CONFIG.RAID_PATH) ? 'ok' : 'down';
   checks.tunnelDomain = CONFIG.TUNNEL_DOMAIN ? 'configured' : 'missing';
 
@@ -6934,7 +6976,7 @@ async function gatherHealth() {
     apiCheck('byparr', async () => { if (!CONFIG.BYPARR_URL) return 'skipped'; await axios.get(`${CONFIG.BYPARR_URL}/health`, { timeout: 5000 }); }),
   ]);
 
-  const failed = Object.entries(checks).filter(([k, v]) => !['overall', 'timestamp', 'tunnelDomain', 'errors'].includes(k) && !['ok','configured','skipped'].includes(v));
+  const failed = Object.entries(checks).filter(([k, v]) => !['overall', 'timestamp', 'tunnelDomain', 'errors', 'backupLastSuccessfulAt', 'backupAgeMs'].includes(k) && !['ok','configured','skipped','disabled'].includes(v));
   checks.overall = failed.length ? 'degraded' : 'ok';
   return checks;
 }
