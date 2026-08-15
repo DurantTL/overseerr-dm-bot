@@ -359,6 +359,42 @@ function takeRateLimit(bucketMap, key, maxHits, periodMs) {
   return true;
 }
 
+const plexWebhookAccountCache = { expiresAt: 0, emails: new Map() };
+async function resolvePlexWebhookEmail(accountId) {
+  const key = String(accountId ?? '');
+  if (!key) return null;
+  if (Date.now() < plexWebhookAccountCache.expiresAt) return plexWebhookAccountCache.emails.get(key) || null;
+
+  const token = await getPlexToken();
+  const [friendsResult, ownerResult] = await Promise.allSettled([
+    plexApiGet('/api/v2/friends', token),
+    plexApiGet('/api/v2/user', token),
+  ]);
+  if (friendsResult.status === 'rejected') log.warn(`Could not resolve Plex webhook friends: ${friendsResult.reason.message}`);
+  if (ownerResult.status === 'rejected') log.warn(`Could not resolve Plex webhook owner: ${ownerResult.reason.message}`);
+  if (friendsResult.status === 'rejected' && ownerResult.status === 'rejected') return null;
+
+  const friendsData = friendsResult.status === 'fulfilled' ? friendsResult.value : [];
+  const friends = Array.isArray(friendsData) ? friendsData : (friendsData.data || []);
+  const ownerData = ownerResult.status === 'fulfilled' ? ownerResult.value : null;
+  const owner = ownerData?.user || ownerData?.data || ownerData;
+  const emails = new Map();
+  for (const account of [...friends, owner].filter(Boolean)) {
+    if (account.id != null && isValidEmail(account.email)) emails.set(String(account.id), account.email.toLowerCase().trim());
+  }
+  plexWebhookAccountCache.emails = emails;
+  plexWebhookAccountCache.expiresAt = Date.now() + 10 * 60000;
+  return emails.get(key) || null;
+}
+
+function webhookUserKey(email) {
+  if (!isValidEmail(email)) return null;
+  const canonical = canonicalizeEmail(email);
+  if (!canonical || canonical.startsWith('__placeholder__:')) return null;
+  const user = getUserByCanonicalEmail(email);
+  return isSnowflake(user?.discord_id) ? `discord:${user.discord_id}` : `email:${canonical}`;
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -7065,7 +7101,16 @@ function startExpressServer() {
     let eventKey;
     try {
       const payload = JSON.parse(req.body.payload || '{}');
-      eventKey = webhookEventKey('plex', payload);
+      let userKey = null;
+      if (payload.event === 'media.scrobble') {
+        const email = await resolvePlexWebhookEmail(payload.Account?.id).catch(err => {
+          log.warn(`Could not resolve Plex webhook account ${payload.Account?.id || 'unknown'}: ${err.message}`);
+          return null;
+        });
+        userKey = webhookUserKey(email);
+        if (!userKey) audit('webhook_identity_unresolved', { source: 'plex', accountId: payload.Account?.id || null });
+      }
+      eventKey = webhookEventKey('plex', payload, userKey);
       if (!recordWebhookEvent(eventKey, 'plex')) {
         audit('webhook_duplicate', { source: 'plex', event: payload.event });
         return;
@@ -7084,7 +7129,9 @@ function startExpressServer() {
     let eventKey;
     try {
       const body = req.body || {};
-      eventKey = webhookEventKey('tautulli', body);
+      const userKey = body.event === 'watched' ? webhookUserKey(body.user_email) : null;
+      if (body.event === 'watched' && !userKey) audit('webhook_identity_unresolved', { source: 'tautulli' });
+      eventKey = webhookEventKey('tautulli', body, userKey);
       if (!recordWebhookEvent(eventKey, 'tautulli')) {
         audit('webhook_duplicate', { source: 'tautulli', event: body.event });
         return;
