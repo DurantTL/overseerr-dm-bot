@@ -12,6 +12,8 @@ const pendingRequest = () => ({
   tmdbId: 1396,
   is4k: false,
   label: 'Breaking Bad',
+  approvalChannelId: '111111111111111111',
+  approvalMessageId: '222222222222222222',
 });
 
 function build({ verification = { ok: true }, quotaWarning = null, createError = null } = {}) {
@@ -24,6 +26,7 @@ function build({ verification = { ok: true }, quotaWarning = null, createError =
     trust: new Map(),
     subscribers: new Set(),
     notifications: [],
+    closedNotices: [],
     audit: [],
     postedNotices: new Set(),
   };
@@ -59,12 +62,43 @@ function build({ verification = { ok: true }, quotaWarning = null, createError =
     notifyApproved: async row => state.notifications.push({ type: 'approved', discordId: row.discordId }),
     notifyAlreadyRequested: async (row, subscribed) => state.notifications.push({ type: 'already', discordId: row.discordId, subscribed }),
     notifyDenied: async row => state.notifications.push({ type: 'denied', discordId: row.discordId }),
+    closePendingRequestNotice: async row => state.closedNotices.push(row.approvalMessageId),
     log: { warn() {} },
   });
   return { gate, state };
 }
 
 const discordActor = { kind: 'discord', id: '999999999999999999', label: 'admin' };
+
+test('request-gate: pending list returns every valid stash entry', () => {
+  const sandbox = loadSandbox(['listPendingRequests'], {
+    db: { prepare: () => ({ all: () => [
+      { key: 'pending_request:abcd1234', value: JSON.stringify(pendingRequest()), updated_at: '2026-01-01 00:00:00' },
+      { key: 'pending_request:badc5678', value: '{bad json', updated_at: '2026-01-02 00:00:00' },
+    ] }) },
+  });
+  const rows = sandbox.run('listPendingRequests()');
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].nonce, 'abcd1234');
+  assert.strictEqual(rows[0].label, pendingRequest().label);
+  assert.strictEqual(rows[0].createdAt, '2026-01-01 00:00:00');
+});
+
+test('request-gate: notice identifiers only attach to a pending request', () => {
+  const payload = pendingRequest();
+  const raw = JSON.stringify(payload);
+  let update;
+  const sandbox = loadSandbox(['setPendingRequestNotice'], {
+    getSetting: () => raw,
+    db: { prepare: () => ({ run: (...args) => { update = args; return { changes: 1 }; } }) },
+  });
+  assert.strictEqual(sandbox.run("setPendingRequestNotice('abcd1234', 'channel', 'message')"), true);
+  assert.deepStrictEqual(JSON.parse(update[0]), { ...payload, approvalChannelId: 'channel', approvalMessageId: 'message' });
+  assert.deepStrictEqual(update.slice(1), ['pending_request:abcd1234', raw]);
+
+  const consumed = loadSandbox(['setPendingRequestNotice'], { getSetting: () => null });
+  assert.strictEqual(consumed.run("setPendingRequestNotice('abcd1234', 'channel', 'message')"), false);
+});
 
 test('request-gate: happy path performs approval side effects and returns identifiers', async () => {
   const { gate, state } = build();
@@ -78,6 +112,7 @@ test('request-gate: happy path performs approval side effects and returns identi
   assert.strictEqual(state.trust.get(pendingRequest().discordId), 1);
   assert.deepStrictEqual([...state.postedNotices], [77]);
   assert.deepStrictEqual(state.notifications, [{ type: 'approved', discordId: pendingRequest().discordId }]);
+  assert.deepStrictEqual(state.closedNotices, [pendingRequest().approvalMessageId]);
   const approval = state.audit.find(row => row.action === 'request_approved_gate');
   assert.deepStrictEqual({ kind: approval.metadata.actorKind, id: approval.metadata.actorId, discord: approval.metadata.actorDiscordId },
     { kind: 'discord', id: discordActor.id, discord: discordActor.id });
@@ -92,6 +127,7 @@ test('request-gate: a lost Seerr request is restashed without approval side effe
   assert.deepStrictEqual(state.requests, []);
   assert.deepStrictEqual(state.watches, []);
   assert.deepStrictEqual(state.notifications, []);
+  assert.deepStrictEqual(state.closedNotices, []);
 });
 
 test('request-gate: quota drift warns without blocking approval', async () => {
@@ -130,9 +166,34 @@ test('request-gate: denial never sends a request to Seerr', async () => {
   assert.strictEqual(state.requests[0].status, 'declined');
   assert.strictEqual(state.trust.get(pendingRequest().discordId), 0);
   assert.deepStrictEqual(state.notifications, [{ type: 'denied', discordId: pendingRequest().discordId }]);
+  assert.deepStrictEqual(state.closedNotices, [pendingRequest().approvalMessageId]);
   const denial = state.audit.find(row => row.action === 'request_denied_gate');
   assert.deepStrictEqual({ kind: denial.metadata.actorKind, id: denial.metadata.actorId, discord: denial.metadata.actorDiscordId },
     { kind: 'dashboard', id: 'session-1', discord: undefined });
+});
+
+test('request-gate: dashboard actor uses a stable session identity', () => {
+  const sandbox = loadSandbox(['readCookie', 'dashboardGateActor'], {
+    sha256: value => require('crypto').createHash('sha256').update(value).digest('hex'),
+  });
+  sandbox.req = { headers: { cookie: 'dm_session=signed-session; other=value' }, ip: '127.0.0.1', socket: {} };
+  const actor = sandbox.run('dashboardGateActor(req)');
+  assert.strictEqual(actor.kind, 'dashboard');
+  assert.match(actor.id, /^session:[0-9a-f]{12}$/);
+  assert.strictEqual(actor.id.includes('signed-session'), false);
+});
+
+test('request-gate: dashboard responses keep lost requests retryable', () => {
+  const sandbox = loadSandbox(['dashboardGateResponse']);
+  sandbox.result = { ok: false, requestId: 77, restashed: true, error: 'Seerr rolled it back' };
+  const failed = sandbox.run("dashboardGateResponse(result, 'approve')");
+  assert.strictEqual(failed.retryable, true);
+  assert.match(failed.error, /request #77/);
+  assert.match(failed.error, /Seerr rolled it back/);
+  sandbox.result = { ok: true, requestId: 78, quotaWarning: 'No series quota remains', pending: pendingRequest(), collision: false };
+  const approved = sandbox.run("dashboardGateResponse(result, 'approve')");
+  assert.match(approved.message, /request #78/);
+  assert.match(approved.message, /Quota warning: No series quota remains/);
 });
 
 function gateInteraction(result) {

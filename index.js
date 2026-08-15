@@ -30,6 +30,7 @@ const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
 const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
+const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
@@ -248,9 +249,11 @@ function subscriberKeyFor(tmdbId, is4k) {
 // `exclude` lets a caller that already has its own row counted in 'pending' status (the
 // approval-time recheck below) leave that one out — otherwise a request would count as its own
 // reservation and every quota=1 approval would look exhausted by itself.
-async function quotaBlockReason(seerrUserId, discordId, mediaType, exclude = null) {
+async function quotaBlockReason(seerrUserId, discordId, mediaType, exclude = null, surfaceFetchError = false) {
   let quota = null;
-  try { quota = await fetchUserQuota(seerrUserId); } catch (_e) {}
+  try { quota = await fetchUserQuota(seerrUserId); } catch (err) {
+    if (surfaceFetchError) throw err;
+  }
   const q = quota?.[mediaType];
   if (!q || !q.limit) return null;
   const liveRemaining = Number.isFinite(q.remaining) ? q.remaining : q.limit - (q.used || 0);
@@ -418,8 +421,19 @@ async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discord
   if (azEligible) buttons.push(new ButtonBuilder().setCustomId(`request_approve_az:${nonce}`).setLabel('Approve + AvistaZ Fallback').setStyle(ButtonStyle.Primary));
   buttons.push(new ButtonBuilder().setCustomId(`request_deny:${nonce}`).setLabel('Deny').setStyle(ButtonStyle.Danger));
   const row = new ActionRowBuilder().addComponents(...buttons);
-  await channel.send({ embeds: [embed], components: [row] });
+  const message = await channel.send({ embeds: [embed], components: [row] });
+  if (!setPendingRequestNotice(nonce, message.channelId, message.id)) {
+    await message.edit({ components: [] });
+    return 'handled';
+  }
   return true;
+}
+
+async function closePendingRequestNotice(pending) {
+  if (!pending.approvalChannelId || !pending.approvalMessageId) return;
+  const channel = await client.channels.fetch(pending.approvalChannelId);
+  const message = await channel.messages.fetch(pending.approvalMessageId);
+  await message.edit({ components: [] });
 }
 
 const { approveGatedRequest, denyGatedRequest } = createRequestGate({
@@ -439,6 +453,7 @@ const { approveGatedRequest, denyGatedRequest } = createRequestGate({
   subscriberKeyFor,
   audit,
   log,
+  closePendingRequestNotice,
   notifyApproved: pending => dmUser(pending.discordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
     .setTitle(`${mediaTypeEmoji(pending.mediaType, pending.is4k)} Request Approved`)
     .setDescription(`**${pending.label}** was approved and is being grabbed now. You'll get a DM when it's on Plex! 🍿`)] }),
@@ -3413,6 +3428,7 @@ async function handleRequestCommand(interaction) {
       takePendingRequest(nonce);
       return interaction.editReply('❌ Couldn\'t post the approval request to the admins — try again in a bit.');
     }
+    if (posted === 'handled') return interaction.editReply('This request was already handled by an admin.');
     upsertRequest(null, `tmdb:${tmdbId}`, mediaType, is4k, label, interaction.user.id, 'pending');
     audit('media_request_gated', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, nonce });
     return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
@@ -6584,6 +6600,25 @@ function dashboardActor(req) {
   return { actor: 'dashboard', actorIp: req.ip || req.socket.remoteAddress || 'unknown' };
 }
 
+function dashboardGateActor(req) {
+  const session = readCookie(req, 'dm_session');
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const id = session ? `session:${sha256(session).slice(0, 12)}` : `header:${ip}`;
+  return { kind: 'dashboard', id, label: `Dashboard operator ${id}` };
+}
+
+function dashboardGateResponse(result, operation) {
+  if (result.error === 'already_handled') return { ok: false, error: 'This request was already handled or expired.', retryable: false };
+  if (!result.ok) {
+    const request = result.requestId == null ? '' : `Seerr accepted request #${result.requestId}, but `;
+    return { ok: false, error: `${request}${result.error || 'the request failed'}`, retryable: !!result.restashed };
+  }
+  if (operation === 'deny') return { ok: true, message: `${result.pending.label} was denied.` };
+  const quota = result.quotaWarning ? ` Quota warning: ${result.quotaWarning}` : '';
+  if (result.collision) return { ok: true, message: `${result.pending.label} was already requested; the requester is subscribed.${quota}` };
+  return { ok: true, message: `Seerr request #${result.requestId} was created for ${result.pending.label}.${quota}` };
+}
+
 function dashboardActionError(err) {
   const data = err?.response?.data;
   if (typeof data === 'string') return data;
@@ -7078,15 +7113,20 @@ function startExpressServer() {
 
     app.get('/admin', dashboardAuth, async (_req, res) => {
       const now = Date.now();
+      const pendingApprovals = listPendingRequests();
       const passkeys = listPasskeys();
       // Live activity: every external read is failure-tolerant so one dead integration never
       // takes the dashboard down — null means "couldn't reach it", rendered as such.
-      const [health, sessions, queue, disks, edgeChecks] = await Promise.all([
+      const [health, sessions, queue, disks, edgeChecks, members, pendingQuota] = await Promise.all([
         gatherHealth(),
         tautulliConfigured() ? tautulliApi('get_activity').then(d => d?.sessions || []).catch(() => null) : Promise.resolve(null),
         arrSources().length ? fetchArrQueues().catch(() => null) : Promise.resolve(null),
         arrSources().length ? fetchDiskSpace().catch(() => null) : Promise.resolve(null),
         runEdgeDiagnostics({ live: false }).catch(() => []),
+        pendingApprovals.length ? getGuildMembers().catch(() => []) : Promise.resolve([]),
+        Promise.all(pendingApprovals.map(pending => quotaBlockReason(pending.seerrUserId, pending.discordId, pending.mediaType, { tmdbId: pending.tmdbId, is4k: pending.is4k }, true)
+          .then(warning => ({ warning, error: null }))
+          .catch(err => ({ warning: null, error: dashboardActionError(err) })))),
       ]);
       const grabJobs = listActiveGrabJobs();
       const stageJobs = listActiveStageJobs();
@@ -7113,6 +7153,24 @@ function startExpressServer() {
       const auditRows = db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 50').all();
       const linkedTotal = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
       const activeLinks = db.prepare('SELECT COUNT(*) AS c FROM download_tokens WHERE revoked = 0 AND expires_at > ?').get(now).c;
+
+      const memberNames = new Map(members.map(member => [member.user.id, member.displayName || member.user.globalName || member.user.username || member.user.tag]));
+      const approvalItems = pendingApprovals.map((pending, index) => {
+        const quota = pendingQuota[index];
+        const azAvailable = canEscalate(pending);
+        const createdAt = typeof pending.createdAt === 'number' ? pending.createdAt : sqliteUtcMs(pending.createdAt);
+        return {
+          state: quota.error || quota.warning ? 'warn' : 'ok',
+          title: pending.label,
+          sub: `${memberNames.get(pending.discordId) || pending.discordId} · ${mediaTypeLabel(pending.mediaType, pending.is4k)} · quota: ${quota.error ? `unavailable (${quota.error})` : (quota.warning || 'within limit')} · AvistaZ pre-auth ${azAvailable ? 'available' : 'unavailable'}`,
+          right: createdAt ? `waiting ${fmtDuration(Math.max(0, now - createdAt))}` : 'waiting age unknown',
+          actions: [
+            { label: 'Approve', url: '/admin/action/gate', body: { operation: 'approve', nonce: pending.nonce }, inline: true },
+            { label: 'Approve + AvistaZ fallback', url: '/admin/action/gate', body: { operation: 'approve_az', nonce: pending.nonce }, inline: true, disabled: !azAvailable, title: azAvailable ? '' : 'AvistaZ pre-auth is unavailable for this request.' },
+            { label: 'Deny', url: '/admin/action/gate', body: { operation: 'deny', nonce: pending.nonce }, inline: true, danger: true },
+          ],
+        };
+      });
 
       const stats = [
         renderStat('Streaming', sessions === null ? '—' : sessions.length),
@@ -7266,6 +7324,10 @@ function startExpressServer() {
 
         <section class="panel" data-panel="operations">
           <div class="card">
+            <h2>Pending Approval<span class="sub">Requests waiting for an administrator. Quota changes are warnings and do not block approval.</span></h2>
+            ${renderItemList(approvalItems, 'No requests are waiting for approval.')}
+          </div>
+          <div class="card">
             <h2>🧩 Not Watchable Yet<span class="sub">Requests still missing content — including series Seerr already calls "available" but that are missing aired episodes. Worst first.</span></h2>
             ${incomplete === null ? unavailable('Sonarr') : renderItemList(incomplete, 'Every request is complete — nothing missing.')}
           </div>
@@ -7353,15 +7415,30 @@ function startExpressServer() {
               if (prompt && !confirm(prompt)) return;
               var body = JSON.parse(btn.dataset.body || '{}');
               if (prompt) body.confirmed = true;
-              btn.disabled = true;
+              var item = btn.closest('.item-main');
+              var buttons = btn.dataset.inline && item ? [].slice.call(item.querySelectorAll('[data-post]')) : [btn];
+              var buttonStates = buttons.map(function (button) { return { button: button, disabled: button.disabled }; });
+              var note = btn.dataset.inline && item ? item.querySelector('.action-result') : null;
+              buttons.forEach(function (button) { button.disabled = true; });
+              if (note) { note.textContent = 'Workingâ€¦'; note.className = 'action-result'; }
               try {
                 var r = await fetch(btn.dataset.post, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
                 var result = await r.json().catch(function () { return {}; });
-                alert(r.ok && result.ok !== false ? (result.message || 'Action completed.') : (result.error || 'Request failed: ' + r.status));
-                if (r.ok && result.ok !== false) location.reload();
+                var ok = r.ok && result.ok !== false;
+                var message = ok ? (result.message || 'Action completed.') : (result.error || 'Request failed: ' + r.status);
+                if (note) {
+                  note.textContent = message;
+                  note.className = 'action-result ' + (ok ? 'ok' : 'bad');
+                  if (!ok && result.retryable) buttonStates.forEach(function (state) { state.button.disabled = state.disabled; });
+                } else {
+                  alert(message);
+                  if (ok) location.reload();
+                }
               } catch (err) {
-                alert(String(err && err.message || err));
-                btn.disabled = false;
+                var message = String(err && err.message || err);
+                if (note) { note.textContent = message; note.className = 'action-result bad'; }
+                else alert(message);
+                buttonStates.forEach(function (state) { state.button.disabled = state.disabled; });
               }
             });
           });
@@ -7542,6 +7619,24 @@ function startExpressServer() {
       const users = await fetchOverseerrUsers().catch(() => []);
       const toDelete = users.filter(u => u.userType !== 1 && ['displayName', 'email', 'username'].some(k => (u[k] || '').toLowerCase().startsWith('deleted_user')));
       res.json({ wouldRemove: toDelete.length, users: toDelete.map(u => ({ id: u.id, email: u.email, username: u.username })) });
+    });
+    app.post('/admin/action/gate', dashboardAuth, async (req, res) => {
+      const operation = req.body?.operation;
+      const nonce = String(req.body?.nonce || '');
+      if (!['approve', 'approve_az', 'deny'].includes(operation) || !/^[0-9a-f]{8}$/.test(nonce)) {
+        return res.status(400).json({ ok: false, error: 'Invalid pending-request action.', retryable: false });
+      }
+      try {
+        const actor = dashboardGateActor(req);
+        const result = operation === 'deny'
+          ? await denyGatedRequest({ nonce, actor })
+          : await approveGatedRequest({ nonce, actor, azPreAuth: operation === 'approve_az' });
+        const response = dashboardGateResponse(result, operation);
+        const status = response.ok ? 200 : (result.restashed ? 502 : 409);
+        return res.status(status).json(response);
+      } catch (err) {
+        return res.status(500).json({ ok: false, error: dashboardActionError(err), retryable: false });
+      }
     });
     app.post('/admin/passkey/registration-options', dashboardAuth, async (req, res) => {
       try {

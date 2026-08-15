@@ -29,8 +29,13 @@ function createRequestGate(deps) {
     notifyApproved,
     notifyAlreadyRequested,
     notifyDenied,
+    closePendingRequestNotice,
     log,
   } = deps;
+
+  async function closeNotice(pending) {
+    await closePendingRequestNotice(pending).catch(err => log.warn(`Could not close approval notice for ${pending.label}: ${err.message}`));
+  }
 
   async function approveGatedRequest({ nonce, actor, azPreAuth = false }) {
     const pending = takePendingRequest(nonce);
@@ -63,6 +68,7 @@ function createRequestGate(deps) {
       bumpTrustScore(pending.discordId, 1);
       audit('request_approved_gate', { ...actorMeta, targetDiscordId: pending.discordId, title: pending.label, requestId, azPreAuth, overQuota: !!quotaWarning });
       await notifyApproved(pending);
+      await closeNotice(pending);
       return { ok: true, requestId, mediaKey, quotaWarning, verified: true, restashed: false, error: null, pending, collision: false };
     } catch (err) {
       const status = err.response?.status;
@@ -75,6 +81,7 @@ function createRequestGate(deps) {
         const subscribed = addRequestSubscriber(subscriberKeyFor(pending.tmdbId, pending.is4k), pending.discordId);
         audit('request_subscribed', { ...actorMeta, targetDiscordId: pending.discordId, title: pending.label, tmdbId: pending.tmdbId, is4k: pending.is4k, stage: 'gate_approve_collision' });
         await notifyAlreadyRequested(pending, subscribed);
+        await closeNotice(pending);
         return { ok: true, requestId: null, mediaKey, quotaWarning, verified: null, restashed: false, error, pending, collision: true, subscribed };
       }
       restashPendingRequest(nonce, pending);
@@ -89,6 +96,7 @@ function createRequestGate(deps) {
     resetTrustScore(pending.discordId);
     audit('request_denied_gate', { ...actorMetadata(actor), targetDiscordId: pending.discordId, title: pending.label });
     await notifyDenied(pending);
+    await closeNotice(pending);
     return { ok: true, error: null, pending };
   }
 

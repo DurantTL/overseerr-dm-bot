@@ -52,6 +52,9 @@ test('dashboard-render: renderItemList', () => {
   assert.match(actions, /Search &lt;now&gt;/);
   assert.match(actions, /&quot;x\\&quot;y&quot;/);
   assert.match(actions, /data-confirm="Use allowance\?"/);
+  const inline = renderItemList([{ title: 'Pending', actions: [{ label: 'Approve', url: '/admin/action/gate', inline: true }] }]);
+  assert.match(inline, /data-inline="true"/);
+  assert.match(inline, /class="action-result" aria-live="polite"/);
 });
 
 test('dashboard-render: renderLogin', () => {
