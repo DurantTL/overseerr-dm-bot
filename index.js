@@ -816,6 +816,62 @@ function queuedSeasons(queue, seriesId) {
   return queue.filter(q => q.source.kind === 'tv' && q.seriesId === seriesId && q.seasonNumber != null).map(q => q.seasonNumber);
 }
 
+async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, missingAtSearch, commandId }) {
+  const command = await pollArrCommand({ url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY }, commandId, 10 * 60000);
+  const status = command.status || 'unknown';
+  const [episodes, queue] = await Promise.all([getSeriesEpisodes(seriesId), fetchArrQueues()]);
+  const remaining = episodes.filter(ep => Number(ep.seasonNumber) === seasonNumber && ep.monitored && !ep.hasFile
+    && Date.parse(ep.airDateUtc || ep.airDate || '') <= Date.now()).length;
+  const queued = queue.filter(item => item.source.kind === 'tv' && item.seriesId === seriesId && Number(item.seasonNumber) === seasonNumber).length;
+  const commandText = [command.message, command.result, command.exception].filter(Boolean).join(' ');
+  const downloadedMatch = /(\d+)\s+reports?\s+downloaded/i.exec(commandText);
+  const downloaded = downloadedMatch ? Number(downloadedMatch[1]) : null;
+  const label = `${seriesTitle} S${pad(seasonNumber)}`;
+  let outcome;
+  let title;
+  let description;
+  let color = COLORS.WARN;
+
+  if (!['completed', 'failed', 'aborted'].includes(status)) {
+    outcome = 'timed_out';
+    title = `Season Search Not Confirmed — ${label}`;
+    description = `Sonarr's search command is still \`${status}\` after 10 minutes. Its task queue may be wedged; check Sonarr → System → Tasks. Restarting Sonarr clears a stuck command queue, then the season can be searched again after the cooldown.`;
+  } else if (status !== 'completed') {
+    outcome = status;
+    title = `Season Search ${status === 'aborted' ? 'Aborted' : 'Failed'} — ${label}`;
+    description = `Sonarr ended the season search as \`${status}\`${commandText ? `: ${commandText.slice(0, 1000)}. ` : '. '}Check Sonarr → System → Events and Logs before retrying.`;
+  } else if (remaining < missingAtSearch) {
+    outcome = remaining === 0 ? 'verified' : 'partial';
+    title = `${remaining === 0 ? 'Season Search Verified' : 'Season Search Partially Filled'} — ${label}`;
+    description = `Sonarr completed the search and the aired missing count changed from **${missingAtSearch}** to **${remaining}**.${remaining ? ' The remaining episodes still need an Interactive Search review.' : ' Every aired monitored episode now has a file.'}`;
+    color = COLORS.SUCCESS;
+  } else if (queued || (downloaded != null && downloaded > 0)) {
+    outcome = 'grabbed';
+    title = `Season Release Grabbed — ${label}`;
+    description = `Sonarr completed the search and accepted ${downloaded != null ? `**${downloaded}** release${downloaded === 1 ? '' : 's'}` : 'a release'}${queued ? `; **${queued}** matching queue item${queued === 1 ? '' : 's'} ${queued === 1 ? 'is' : 'are'} active` : ''}. Import verification will come from Sonarr, and the stuck-download watchdog will report a stalled queue item.`;
+    color = COLORS.INFO;
+  } else {
+    outcome = 'no_grab';
+    title = `No Season Release Accepted — ${label}`;
+    description = `Sonarr completed the search, but no release entered its queue and all **${remaining || missingAtSearch}** aired episodes are still missing. Run an Interactive Search from this season's header in Sonarr to distinguish no indexer results from releases rejected for quality, language, custom formats, size, seeders, blocklist, categories, or tags.`;
+  }
+
+  audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, message: commandText.slice(0, 1000) || null });
+  notifyChannel('downloads', { embeds: [brandedEmbed(color)
+    .setTitle(title.slice(0, 256))
+    .setDescription(description.slice(0, 4000))] });
+  return { outcome, status, remaining, queued, downloaded };
+}
+
+function monitorSeasonSearch(args) {
+  verifySeasonSearchCommand(args).catch(err => {
+    audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'season_search_monitor', seriesId: args.seriesId, season: args.seasonNumber, commandId: args.commandId || null });
+    notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle(`Season Search Verification Failed — ${args.seriesTitle} S${pad(args.seasonNumber)}`.slice(0, 256))
+      .setDescription(`The search was accepted, but its outcome could not be verified: ${err.message}`.slice(0, 4000))] });
+  });
+}
+
 async function sweepSeasonPacks() {
   if (!tunable('SEASON_PACK_FIRST') || !CONFIG.SONARR_URL) return;
   const cfg = seasonPackConfig();
@@ -852,8 +908,9 @@ async function sweepSeasonPacks() {
     if (!eligible) continue;
     for (const season of seasons) {
       if (searched.length >= tunable('SEASON_PACK_MAX_PER_RUN')) break;
+      let command;
       try {
-        await triggerSeasonSearch(series.id, season.season);
+        command = await triggerSeasonSearch(series.id, season.season);
       } catch (err) {
         audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'season_search', seriesId: series.id, season: season.season });
         continue;
@@ -861,7 +918,8 @@ async function sweepSeasonPacks() {
       // Recorded only after the command is accepted, so a failed search retries next sweep
       // instead of sitting out the cooldown.
       recordSeasonSearch({ seriesId: series.id, seasonNumber: season.season, seriesTitle: series.title, missing: season.missing });
-      audit('season_pack_search', { seriesId: series.id, title: series.title, season: season.season, missing: season.missing, aired: season.aired, reason, requested });
+      audit('season_pack_search', { seriesId: series.id, title: series.title, season: season.season, missing: season.missing, aired: season.aired, reason, requested, commandId: command?.id || null });
+      monitorSeasonSearch({ seriesId: series.id, seriesTitle: series.title, seasonNumber: season.season, missingAtSearch: season.missing, commandId: command?.id });
       searched.push({ series, season, reason, pinned: isPinned(series, { keyFor: x => priorityKey({ tvdbId: x.tvdbId }), priority }) });
     }
   }
@@ -1318,16 +1376,16 @@ const sleepMs = ms => new Promise(resolve => setTimeout(resolve, ms));
 // request failures are swallowed and just retried — only a hard deadline gives up.
 async function pollArrCommand(arr, commandId, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
-  let status = 'unknown';
+  let command = { status: 'unknown' };
   while (Date.now() < deadline && commandId) {
     await sleepMs(15000);
     try {
       const r = await axios.get(`${arr.url}/api/v3/command/${commandId}`, { headers: { 'X-Api-Key': arr.key }, timeout: 10000 });
-      status = r.data?.status || status;
-      if (['completed', 'failed', 'aborted'].includes(status)) break;
+      command = r.data || command;
+      if (['completed', 'failed', 'aborted'].includes(command.status)) break;
     } catch (_e) { /* transient — keep polling until the deadline */ }
   }
-  return status;
+  return command;
 }
 
 // Whether it's safe to auto-force a batch of manualimport preview rows through ManualImport
@@ -1354,7 +1412,7 @@ function canAutoForceImport(job, mediaType, files) {
 //     'needs_mapping' (TV, with the guided wizard) or 'import_rejected' (movies), with the
 //     rejection reasons named instead of silence.
 async function verifyArrImport(job, arr, commandId, importPath, finalPath, sizeBytes) {
-  const status = await pollArrCommand(arr, commandId, 10 * 60000);
+  const status = (await pollArrCommand(arr, commandId, 10 * 60000)).status;
   if (!leftoverVideoFiles(finalPath).length) return finishGrabJobImported(job, sizeBytes); // consumed — the import really happened
 
   if (status !== 'completed') {
@@ -1380,7 +1438,7 @@ async function verifyArrImport(job, arr, commandId, importPath, finalPath, sizeB
       { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
     audit('grab_import_forced', { jobId: job.id, title: job.title, files: files.length });
     // Verify the forced import too — firing the command is not proof it worked.
-    const forcedStatus = await pollArrCommand(arr, cmdRes.data?.id, 5 * 60000);
+    const forcedStatus = (await pollArrCommand(arr, cmdRes.data?.id, 5 * 60000)).status;
     if (!leftoverVideoFiles(finalPath).length) {
       notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.INFO)
         .setTitle(`🔧 Import Nudged — ${job.title}`.slice(0, 256))
@@ -7578,9 +7636,10 @@ function startExpressServer() {
             audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'cooldown', seriesId, seasonNumber, nextEligible });
             return res.status(409).json({ ok: false, error, nextEligible });
           }
-          await triggerSeasonSearch(seriesId, seasonNumber);
+          const command = await triggerSeasonSearch(seriesId, seasonNumber);
           recordSeasonSearch({ seriesId, seasonNumber, seriesTitle: series.title, missing: missing.length });
-          audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, seasonNumber, title: series.title });
+          monitorSeasonSearch({ seriesId, seriesTitle: series.title, seasonNumber, missingAtSearch: missing.length, commandId: command?.id });
+          audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, seasonNumber, title: series.title, commandId: command?.id || null });
           return res.json({ ok: true, message: `Sonarr accepted the S${pad(seasonNumber)} season search for ${series.title}.` });
         }
         const episode = episodes.find(ep => Number(ep.id) === episodeId && ep.monitored && !ep.hasFile

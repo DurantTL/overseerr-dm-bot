@@ -40,6 +40,7 @@ function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = t
   const recorded = [];
   const notices = [];
   const episodeFetches = [];
+  const monitored = [];
   const CONFIG = {
     SEASON_PACK_FIRST: seasonPackFirst,
     SONARR_URL: 'http://sonarr',
@@ -67,7 +68,8 @@ function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = t
     listSonarrSeries: async () => SERIES,
     fetchArrQueues: async () => queue,
     getSeriesEpisodes: async id => { episodeFetches.push(id); return EPISODES[id] || []; },
-    triggerSeasonSearch: async (seriesId, seasonNumber) => { calls.push(`${seriesId}:${seasonNumber}`); },
+    triggerSeasonSearch: async (seriesId, seasonNumber) => { calls.push(`${seriesId}:${seasonNumber}`); return { id: seriesId * 100 + seasonNumber }; },
+    monitorSeasonSearch: row => { monitored.push(row); },
     getSeasonSearchTimes: id => searchedAt[id] || {},
     listRequestedTvdbIds: () => new Set(requestedTvdbIds),
     recordSeasonSearch: row => recorded.push(row),
@@ -76,7 +78,7 @@ function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = t
     COLORS: { INFO: 1 },
     brandedEmbed: () => ({ setTitle() { return this; }, setDescription(d) { this.description = d; return this; } }),
   });
-  return { sandbox, calls, recorded, notices, episodeFetches };
+  return { sandbox, calls, recorded, notices, episodeFetches, monitored };
 }
 
 test('season-pack-sweep: old shows get season searches, airing shows are never touched', async () => {
@@ -91,6 +93,8 @@ test('season-pack-sweep: old shows get season searches, airing shows are never t
   // The cooldown is what makes this safe to run every few hours — it has to be written for
   // every season actually searched, or the next sweep re-searches the whole library.
   assert.strictEqual(h.recorded.length, 3, 'every search is recorded for the cooldown');
+  assert.strictEqual(h.monitored.length, 3, 'every accepted command is monitored through completion');
+  assert.strictEqual(h.monitored[0].commandId, 101, 'the Sonarr command id is retained for verification');
   // Compared as JSON: objects built inside the vm carry the sandbox's own Object prototype,
   // which deepStrictEqual counts as a difference.
   assert.strictEqual(JSON.stringify(h.recorded[0]), JSON.stringify({ seriesId: 1, seasonNumber: 1, seriesTitle: 'Winter Sonata', missing: 3 }),
@@ -210,4 +214,47 @@ test('season search cooldown: reports the next eligible time and expires on the 
   assert.strictEqual(cooling.nextEligible, last + 24 * 3600000);
   assert.strictEqual(sandbox.seasonSearchCooldown(last, last + 24 * 3600000).cooling, false);
   assert.strictEqual(sandbox.seasonSearchCooldown(undefined, NOW).cooling, false);
+});
+
+function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], queue = [] }) {
+  const notices = [];
+  const audits = [];
+  const sandbox = loadSandbox(['verifySeasonSearchCommand'], {
+    CONFIG: { SONARR_URL: 'http://sonarr', SONARR_API_KEY: 'key' },
+    pollArrCommand: async () => command,
+    getSeriesEpisodes: async () => episodes,
+    fetchArrQueues: async () => queue,
+    audit: (action, detail) => audits.push({ action, detail }),
+    notifyChannel: (channel, msg) => notices.push({ channel, msg }),
+    pad: n => String(n).padStart(2, '0'),
+    COLORS: { WARN: 1, INFO: 2, SUCCESS: 3 },
+    brandedEmbed: color => ({ color, setTitle(value) { this.title = value; return this; }, setDescription(value) { this.description = value; return this; } }),
+  });
+  return { sandbox, notices, audits };
+}
+
+test('season search verification: reports a completed search with no accepted release', async () => {
+  const h = seasonVerifier({ command: { status: 'completed', message: 'Season search completed. 0 reports downloaded.' } });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101 });
+  assert.strictEqual(result.outcome, 'no_grab');
+  assert.match(h.notices[0].msg.embeds[0].description, /Interactive Search/);
+  assert.strictEqual(h.audits[0].detail.downloaded, 0);
+});
+
+test('season search verification: distinguishes queued, verified, failed, and wedged outcomes', async () => {
+  let h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 1 report downloaded.' },
+    queue: [{ source: { kind: 'tv' }, seriesId: 1, seasonNumber: 1 }],
+  });
+  assert.strictEqual((await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101 })).outcome, 'grabbed');
+
+  h = seasonVerifier({ command: { status: 'completed' }, episodes: [ep(1, 1, { hasFile: true }), ep(1, 2, { hasFile: true }), ep(1, 3, { hasFile: true })] });
+  assert.strictEqual((await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101 })).outcome, 'verified');
+
+  h = seasonVerifier({ command: { status: 'failed', message: 'Indexer unavailable' } });
+  assert.strictEqual((await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101 })).outcome, 'failed');
+
+  h = seasonVerifier({ command: { status: 'started' } });
+  assert.strictEqual((await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101 })).outcome, 'timed_out');
+  assert.match(h.notices[0].msg.embeds[0].description, /task queue may be wedged/);
 });
