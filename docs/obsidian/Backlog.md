@@ -3,7 +3,7 @@ tags:
   - project/overseerr-dm-bot
   - backlog
 reviewed: 2026-08-16
-source_commit: 6d8b68c
+source_commit: bc8266a
 github_snapshot: 5 open issues
 ---
 
@@ -16,8 +16,9 @@ This is a snapshot of the live issue tracker on 2026-08-16. GitHub remains autho
 ## Active work
 
 - [#124 Sonarr season search](https://github.com/DurantTL/overseerr-dm-bot/issues/124) is the oldest open issue and the current implementation track.
-  - This branch: record pack-vs-episode fill detail from Sonarr queue/history, label verified alerts honestly, and correct the partial-season summary claim.
-  - Next: interactive release search, rejection reporting, an admin-gated force-grab button, and opt-in automatic forcing.
+  - Shipped in [#162](https://github.com/DurantTL/overseerr-dm-bot/pull/162): record pack-vs-episode fill detail and correct the partial-season summary claim.
+  - This branch: add pure interactive-release classification/ranking and the thin Sonarr search/grab API calls.
+  - Next: report interactive-search candidates and rejection reasons in Discord, then add an admin-gated force-grab button and opt-in automatic forcing.
 
 ## Follow-up issues
 

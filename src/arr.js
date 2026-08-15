@@ -292,6 +292,37 @@ async function triggerSeasonSearch(seriesId, seasonNumber) {
   return res.data;
 }
 
+// Sonarr's interactive search returns accepted and rejected candidates. Indexers can take tens
+// of seconds to answer, so this deliberately uses the same long timeout as the Prowlarr search.
+async function interactiveSeasonSearch(seriesId, seasonNumber) {
+  try {
+    const res = await axios.get(`${CONFIG.SONARR_URL}/api/v3/release`, {
+      params: { seriesId, seasonNumber },
+      headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY },
+      timeout: 90000,
+    });
+    return res.data || [];
+  } catch (err) {
+    audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'interactive_season_search', seriesId, season: seasonNumber });
+    throw err;
+  }
+}
+
+// Manual-release grab. This can override Sonarr's decision-engine rejection, so callers must own
+// the admin gate, offer audit, consumed-offer check, and confidence guard rails.
+async function forceGrabRelease({ guid, indexerId }) {
+  try {
+    const res = await axios.post(`${CONFIG.SONARR_URL}/api/v3/release`, { guid, indexerId }, {
+      headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY },
+      timeout: 30000,
+    });
+    return res.data;
+  } catch (err) {
+    audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'force_grab_release', indexerId });
+    throw err;
+  }
+}
+
 const getSeriesEpisodes = seriesId => sonarrGet('/episode', { seriesId });
 
 // Recent Sonarr grab/import history is the durable half of season-search verification: a pack can
@@ -579,4 +610,4 @@ function remapPath(hostPath) {
   return hostPath;
 }
 
-module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, getSeriesEpisodes, getSeasonDownloadHistory, listSonarrSeries, resolveSonarrSeriesIdentity, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };
+module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, interactiveSeasonSearch, forceGrabRelease, getSeriesEpisodes, getSeasonDownloadHistory, listSonarrSeries, resolveSonarrSeriesIdentity, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };
