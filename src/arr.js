@@ -284,8 +284,9 @@ async function triggerSeriesSearch(seriesId) {
 // season as a whole, so a single pack can satisfy every missing episode at once — the point of
 // the whole season-pack path for old shows (see src/season-pack.js).
 async function triggerSeasonSearch(seriesId, seasonNumber) {
-  await axios.post(`${CONFIG.SONARR_URL}/api/v3/command`, { name: 'SeasonSearch', seriesId, seasonNumber },
+  const res = await axios.post(`${CONFIG.SONARR_URL}/api/v3/command`, { name: 'SeasonSearch', seriesId, seasonNumber },
     { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 15000 });
+  return res.data;
 }
 
 const getSeriesEpisodes = seriesId => sonarrGet('/episode', { seriesId });
