@@ -59,6 +59,8 @@ const RUNTIME_SETTINGS = [
   // ---- Season-pack-first searching ----
   { key: 'SEASON_PACK_FIRST', group: 'season_pack', type: 'bool', source: 'config',
     label: 'Search whole seasons for old shows' },
+  { key: 'SEASON_PACK_INTERACTIVE', group: 'season_pack', type: 'bool', source: 'config',
+    label: 'Report releases after incomplete searches', help: 'Runs a report-only Interactive Search; rejected releases are never force-grabbed.' },
   { key: 'SEASON_PACK_REQUESTED', group: 'season_pack', type: 'bool', source: 'config',
     label: 'Also pack-search currently-airing requested shows' },
   { key: 'SEASON_PACK_CHECK_MINUTES', group: 'season_pack', type: 'int', min: 0, max: 1440, source: 'config',

@@ -6,6 +6,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { loadSandbox } = require('./extract');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('../../src/season-pack');
+const { rankSeasonReleases, describeRejections } = require('../../src/season-release');
 const runtimeSettings = require('../../src/runtime-settings');
 const { priorityKey, orderByPriority, isPinned } = require('../../src/priority');
 
@@ -245,19 +246,29 @@ test('season search history: keeps recent grabs/imports for the requested season
   assert.ok(result.every(row => row.fullSeason), 'S01 without an episode marker is a season pack');
 });
 
-function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], queue = [], history = [] }) {
+function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], queue = [], history = [], interactive = [], interactiveError = null, interactiveEnabled = true }) {
   const notices = [];
   const audits = [];
+  const interactiveCalls = [];
   const sandbox = loadSandbox(['verifySeasonSearchCommand'], {
-    CONFIG: { SONARR_URL: 'http://sonarr', SONARR_API_KEY: 'key' },
+    CONFIG: { SONARR_URL: 'http://sonarr', SONARR_API_KEY: 'key', SEASON_PACK_INTERACTIVE: interactiveEnabled },
+    tunable: key => key === 'SEASON_PACK_INTERACTIVE' && interactiveEnabled,
     pollArrCommand: async () => command,
     getSeriesEpisodes: async () => episodes,
     fetchArrQueues: async () => queue,
     getSeasonDownloadHistory: async () => history,
+    interactiveSeasonSearch: async (seriesId, seasonNumber) => {
+      interactiveCalls.push({ seriesId, seasonNumber });
+      if (interactiveError) throw interactiveError;
+      return interactive;
+    },
+    rankSeasonReleases,
+    describeRejections,
     summarizeSeasonFillActivity,
     audit: (action, detail) => audits.push({ action, detail }),
     notifyChannel: (channel, msg) => notices.push({ channel, msg }),
     pad: n => String(n).padStart(2, '0'),
+    fmtSpace: bytes => `${(bytes / (1024 ** 3)).toFixed(1)} GB`,
     COLORS: { WARN: 1, INFO: 2, SUCCESS: 3, DANGER: 4 },
     brandedEmbed: color => ({
       color, fields: [],
@@ -266,20 +277,30 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
       addFields(...values) { this.fields.push(...values); return this; },
     }),
   });
-  return { sandbox, notices, audits };
+  return { sandbox, notices, audits, interactiveCalls };
 }
 
-test('season search verification: reports a completed search with no accepted release', async () => {
-  const h = seasonVerifier({ command: { status: 'completed', message: 'Season search completed. 0 reports downloaded.' } });
+test('season search verification: reports ranked candidates and rejection reasons after no accepted release', async () => {
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 0 reports downloaded.' },
+    interactive: [
+      { title: 'Winter.Sonata.S01.1080p.WEB-DL', size: 20 * 1024 ** 3, seeders: 12, indexer: 'AvistaZ', fullSeason: true, seasonNumber: 1, approved: false, rejections: [{ reason: 'Quality for existing file on disk is of equal or higher preference' }] },
+      { title: 'Winter.Sonata.S01E01.1080p.WEB-DL', size: 2 * 1024 ** 3, seeders: 30, indexer: 'Public', fullSeason: false, approved: true },
+    ],
+  });
   const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101 });
   assert.strictEqual(result.outcome, 'no_grab');
-  // The guidance moved out of the prose blob into a 'Next step' field — these arrive in batches,
-  // so the counts have to be scannable and the action has to be findable.
   const embed = h.notices[0].msg.embeds[0];
   assert.match(embed.description, /nothing entered its queue/);
-  assert.deepStrictEqual(embed.fields.map(field => field.name), ['Aired missing', 'Sonarr command', 'In queue', 'Next step']);
-  assert.match(embed.fields.at(-1).value, /Interactive Search/);
+  assert.deepStrictEqual(h.interactiveCalls, [{ seriesId: 1, seasonNumber: 1 }]);
+  assert.match(embed.fields.find(field => field.name === 'Interactive search').value, /2 releases · 1 full-season pack/);
+  const candidate = embed.fields.find(field => field.name.startsWith('Candidate 1'));
+  assert.match(candidate.value, /20\.0 GB · 12 seeders · AvistaZ/);
+  assert.match(candidate.value, /Quality for existing file/);
+  assert.match(embed.fields.at(-1).value, /does not force rejected releases/);
   assert.strictEqual(h.audits[0].detail.downloaded, 0);
+  assert.strictEqual(h.audits[0].detail.interactiveReleaseCount, 2);
+  assert.strictEqual(h.audits[0].detail.interactivePackCount, 1);
 });
 
 test('season search verification: distinguishes queued, verified, failed, and wedged outcomes', async () => {
@@ -299,6 +320,41 @@ test('season search verification: distinguishes queued, verified, failed, and we
   assert.strictEqual((await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101 })).outcome, 'timed_out');
   assert.match(h.notices[0].msg.embeds[0].description, /task queue may be wedged/);
   assert.match(h.notices[0].msg.embeds[0].fields.at(-1).value, /System → Tasks/);
+});
+
+test('season search verification: interactive lookup only runs for partial and no-grab outcomes', async () => {
+  let h = seasonVerifier({
+    command: { status: 'completed' },
+    episodes: [ep(1, 1, { hasFile: true }), ep(1, 2), ep(1, 3)],
+  });
+  assert.strictEqual((await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101 })).outcome, 'partial');
+  assert.strictEqual(h.interactiveCalls.length, 1, 'partial progress gets release detail');
+
+  h = seasonVerifier({
+    command: { status: 'completed' },
+    episodes: [ep(1, 1, { hasFile: true }), ep(1, 2, { hasFile: true }), ep(1, 3, { hasFile: true })],
+  });
+  await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 102 });
+  assert.strictEqual(h.interactiveCalls.length, 0, 'verified searches do not pay for another query');
+
+  h = seasonVerifier({ command: { status: 'failed' } });
+  await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 103 });
+  assert.strictEqual(h.interactiveCalls.length, 0, 'failed commands do not query releases');
+});
+
+test('season search verification: interactive reporting can be disabled and failures remain non-fatal', async () => {
+  let h = seasonVerifier({ command: { status: 'completed' }, interactiveEnabled: false });
+  const disabled = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101 });
+  assert.strictEqual(disabled.outcome, 'no_grab');
+  assert.strictEqual(h.interactiveCalls.length, 0);
+  assert.match(h.notices[0].msg.embeds[0].fields.at(-1).value, /Run an Interactive Search/);
+
+  h = seasonVerifier({ command: { status: 'completed' }, interactiveError: new Error('Sonarr timed out') });
+  const failed = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 102 });
+  assert.strictEqual(failed.outcome, 'no_grab', 'release detail failure does not erase the verified command outcome');
+  assert.strictEqual(h.notices.length, 1, 'the result notification is still posted');
+  assert.match(h.notices[0].msg.embeds[0].fields.find(field => field.name === 'Interactive search').value, /Sonarr timed out/);
+  assert.strictEqual(h.audits[0].detail.interactiveError, 'Sonarr timed out');
 });
 
 test('season search verification: records and labels pack versus episode fills', async () => {

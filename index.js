@@ -34,9 +34,10 @@ const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
-const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, getSeasonDownloadHistory, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
+const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('./src/escalation');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('./src/season-pack');
+const { rankSeasonReleases, describeRejections } = require('./src/season-release');
 const { assessAsianOrigin, describeAvistazFit } = require('./src/asian');
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
@@ -1080,6 +1081,29 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
     nextStep = 'Run an Interactive Search from this season\'s header in Sonarr — that distinguishes "no indexer results" from releases rejected for quality, language, custom formats, size, seeders, blocklist, categories, or tags.';
   }
 
+  // A completed search that made no (or only partial) progress is the one useful time to pay for
+  // Sonarr's interactive release query. This phase is deliberately report-only: rejected results
+  // are explained to an admin, never force-grabbed by the verifier.
+  let interactive = null;
+  let interactiveError = null;
+  if (['no_grab', 'partial'].includes(outcome) && tunable('SEASON_PACK_INTERACTIVE')) {
+    try {
+      const releases = await interactiveSeasonSearch(seriesId, seasonNumber);
+      const ranked = rankSeasonReleases(releases, { title: seriesTitle, season: seasonNumber });
+      interactive = {
+        releaseCount: ranked.length,
+        packCount: ranked.filter(release => release.isPack && release.coversSeason).length,
+        candidates: ranked.slice(0, 3),
+      };
+      nextStep = ranked.length
+        ? 'Review the candidates above in Sonarr. This report does not force rejected releases.'
+        : 'No interactive releases were returned. Check Sonarr indexers or retry after the cooldown.';
+    } catch (err) {
+      interactiveError = err.message;
+      nextStep = 'Interactive search details could not be loaded. Check Sonarr and its indexers before retrying.';
+    }
+  }
+
   // Fields rather than one paragraph: these land in #media-alerts in batches (one per season per
   // sweep), so the numbers have to be scannable without reading a wall of prose.
   const fields = [
@@ -1091,14 +1115,32 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
     const fillLabels = { pack: 'Season pack', episodes: 'Individual episodes', mixed: 'Pack + episodes', unknown: 'Release shape unavailable' };
     fields.push({ name: 'Fill method', value: `${fillLabels[fill.mode]} · ${fill.releaseCount} release${fill.releaseCount === 1 ? '' : 's'}`, inline: true });
   }
+  if (interactive) {
+    fields.push({
+      name: 'Interactive search',
+      value: `${interactive.releaseCount} release${interactive.releaseCount === 1 ? '' : 's'} · ${interactive.packCount} full-season pack${interactive.packCount === 1 ? '' : 's'}`,
+      inline: false,
+    });
+    for (const [index, release] of interactive.candidates.entries()) {
+      const safeTitle = release.title.replace(/`/g, '\u02cb').slice(0, 700);
+      const source = `${fmtSpace(release.size)} · ${release.seeders} seeder${release.seeders === 1 ? '' : 's'} · ${release.indexer}`;
+      fields.push({
+        name: `Candidate ${index + 1} · ${release.confidence}% match`,
+        value: `\`${safeTitle}\`\n${source.slice(0, 250)}\nSonarr: ${describeRejections(release)}`.slice(0, 1024),
+        inline: false,
+      });
+    }
+  } else if (interactiveError) {
+    fields.push({ name: 'Interactive search', value: `Unavailable: ${interactiveError}`.slice(0, 1024), inline: false });
+  }
   if (nextStep) fields.push({ name: 'Next step', value: nextStep.slice(0, 1024), inline: false });
 
-  audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, fillMode: fill.mode, releaseCount: fill.releaseCount, packReleases: fill.packReleases, episodeReleases: fill.episodeReleases, message: commandText.slice(0, 1000) || null });
+  audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, fillMode: fill.mode, releaseCount: fill.releaseCount, packReleases: fill.packReleases, episodeReleases: fill.episodeReleases, interactiveSearched: interactive !== null || interactiveError !== null, interactiveReleaseCount: interactive?.releaseCount ?? null, interactivePackCount: interactive?.packCount ?? null, interactiveError, message: commandText.slice(0, 1000) || null });
   notifyChannel('downloads', { embeds: [brandedEmbed(color)
     .setTitle(title.slice(0, 256))
     .setDescription(description.slice(0, 4000))
     .addFields(...fields)] });
-  return { outcome, status, remaining, queued, downloaded, fill };
+  return { outcome, status, remaining, queued, downloaded, fill, interactive, interactiveError };
 }
 
 function monitorSeasonSearch(args) {
