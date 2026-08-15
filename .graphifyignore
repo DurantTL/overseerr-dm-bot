@@ -1,0 +1,28 @@
+# Graphify uses gitignore syntax. Keep its project graph focused on source and documentation.
+
+# Dependencies and generated output
+/node_modules/
+/coverage/
+/graphify-out/
+
+# Secrets and credentials
+/.env
+/.env.*
+!/.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime state and backups
+/data/
+/backups/
+*.db
+*.db-wal
+*.db-shm
+*.bak
+*.backup
+
+# Git internals and logs
+/.git/
+*.log

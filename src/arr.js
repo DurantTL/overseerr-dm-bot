@@ -3,7 +3,7 @@ const axios = require('axios');
 const { CONFIG } = require('./config');
 const { audit } = require('./db');
 const { pad } = require('./util');
-const { normalizeTitle } = require('./grab');
+const { normalizeTitle, parseReleaseName } = require('./grab');
 
 async function radarrGetFrom(url, apiKey, endpoint) {
   const res = await axios.get(`${url}/api/v3${endpoint}`, { params: { apikey: apiKey }, timeout: 10000 });
@@ -59,6 +59,10 @@ async function fetchArrQueues() {
           status: r.status || '',
           trackedStatus: r.trackedDownloadStatus || '',
           trackedState: r.trackedDownloadState || '',
+          downloadId: r.downloadId || '',
+          sourceTitle: r.title || '',
+          episodeNumbers: (r.episodes || []).map(ep => ep.episodeNumber).filter(Number.isFinite),
+          fullSeason: parseReleaseName(r.title).seasonPack,
           messages: (r.statusMessages || []).flatMap(m => m.messages || []).slice(0, 3),
         });
       }
@@ -280,9 +284,8 @@ async function triggerSeriesSearch(seriesId) {
     { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 15000 });
 }
 
-// Search one season as a unit. Unlike a per-episode search this asks the indexers for the
-// season as a whole, so a single pack can satisfy every missing episode at once — the point of
-// the whole season-pack path for old shows (see src/season-pack.js).
+// Ask Sonarr to search one season. A fully missing season can produce one pack; for a partially
+// missing season Sonarr may still search at episode granularity, which verification now records.
 async function triggerSeasonSearch(seriesId, seasonNumber) {
   const res = await axios.post(`${CONFIG.SONARR_URL}/api/v3/command`, { name: 'SeasonSearch', seriesId, seasonNumber },
     { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 15000 });
@@ -290,6 +293,32 @@ async function triggerSeasonSearch(seriesId, seasonNumber) {
 }
 
 const getSeriesEpisodes = seriesId => sonarrGet('/episode', { seriesId });
+
+// Recent Sonarr grab/import history is the durable half of season-search verification: a pack can
+// finish and leave the queue before the command poll returns. Keep only this season and time
+// window, and normalize the release identity used by summarizeSeasonFillActivity.
+async function getSeasonDownloadHistory(seriesId, seasonNumber, since = 0) {
+  const data = await sonarrGet('/history', {
+    page: 1, pageSize: 500, sortKey: 'date', sortDirection: 'descending',
+    includeEpisode: true, includeSeries: true, seriesId,
+  });
+  return (data.records || []).filter(row => {
+    const event = String(row.eventType || '').toLowerCase();
+    const date = Date.parse(row.date || '');
+    return ['grabbed', 'downloadfolderimported'].includes(event)
+      && Number(row.episode?.seasonNumber ?? row.seasonNumber) === Number(seasonNumber)
+      && (!since || (Number.isFinite(date) && date >= since));
+  }).map(row => {
+    const sourceTitle = row.sourceTitle || row.data?.sourceTitle || '';
+    return {
+      downloadId: row.downloadId || row.data?.downloadId || '',
+      sourceTitle,
+      episodeNumber: row.episode?.episodeNumber ?? row.episodeNumber ?? null,
+      episodeNumbers: (row.episodes || []).map(ep => ep.episodeNumber).filter(Number.isFinite),
+      fullSeason: row.fullSeason === true || parseReleaseName(sourceTitle).seasonPack,
+    };
+  });
+}
 
 const listSonarrSeries = () => sonarrGet('/series');
 
@@ -550,4 +579,4 @@ function remapPath(hostPath) {
   return hostPath;
 }
 
-module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries, resolveSonarrSeriesIdentity, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };
+module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, getSeriesEpisodes, getSeasonDownloadHistory, listSonarrSeries, resolveSonarrSeriesIdentity, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };

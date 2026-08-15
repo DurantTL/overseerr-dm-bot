@@ -5,7 +5,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { loadSandbox } = require('./extract');
-const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch } = require('../../src/season-pack');
+const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('../../src/season-pack');
 const runtimeSettings = require('../../src/runtime-settings');
 const { priorityKey, orderByPriority, isPinned } = require('../../src/priority');
 
@@ -195,6 +195,14 @@ test('season-pack-sweep: pinning marks the notification so the reason is visible
   assert.match(notices[0].msg.embeds[0].description, /📌/, 'pinned rows are flagged in the summary');
 });
 
+test('season-pack-sweep: summary does not promise a whole-season release for partial gaps', async () => {
+  const { sandbox, notices } = build();
+  await sandbox.run('sweepSeasonPacks()');
+  const summary = notices.at(-1).msg.embeds[0].description;
+  assert.match(summary, /partially missing seasons may still be searched episode by episode/);
+  assert.doesNotMatch(summary, /asked for these seasons as a whole/);
+});
+
 test('sweep guard: concurrent runs are refused and the guard clears after failure', async () => {
   const automationRuns = new Map();
   const sandbox = loadSandbox(['runGuardedSweep'], {
@@ -220,7 +228,24 @@ test('season search cooldown: reports the next eligible time and expires on the 
   assert.strictEqual(sandbox.seasonSearchCooldown(undefined, NOW).cooling, false);
 });
 
-function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], queue = [] }) {
+test('season search history: keeps recent grabs/imports for the requested season and detects pack names', async () => {
+  const rows = [
+    { eventType: 'grabbed', date: new Date(NOW + 1000).toISOString(), downloadId: 'pack-1', sourceTitle: 'Drama.S01.1080p', episode: { seasonNumber: 1, episodeNumber: 1 } },
+    { eventType: 'downloadFolderImported', date: new Date(NOW + 2000).toISOString(), data: { downloadId: 'pack-1', sourceTitle: 'Drama.S01.1080p' }, episode: { seasonNumber: 1, episodeNumber: 2 } },
+    { eventType: 'grabbed', date: new Date(NOW - 1000).toISOString(), downloadId: 'old', sourceTitle: 'Drama.S01E03.1080p', episode: { seasonNumber: 1, episodeNumber: 3 } },
+    { eventType: 'grabbed', date: new Date(NOW + 1000).toISOString(), downloadId: 'other-season', sourceTitle: 'Drama.S02.1080p', episode: { seasonNumber: 2, episodeNumber: 1 } },
+    { eventType: 'episodeFileDeleted', date: new Date(NOW + 1000).toISOString(), downloadId: 'delete', episode: { seasonNumber: 1, episodeNumber: 4 } },
+  ];
+  const sandbox = loadSandbox(['parseReleaseName', 'getSeasonDownloadHistory'], {
+    sonarrGet: async () => ({ records: rows }),
+  });
+  const result = await sandbox.getSeasonDownloadHistory(7, 1, NOW);
+  assert.strictEqual(result.length, 2);
+  assert.ok(result.every(row => row.downloadId === 'pack-1'));
+  assert.ok(result.every(row => row.fullSeason), 'S01 without an episode marker is a season pack');
+});
+
+function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], queue = [], history = [] }) {
   const notices = [];
   const audits = [];
   const sandbox = loadSandbox(['verifySeasonSearchCommand'], {
@@ -228,6 +253,8 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
     pollArrCommand: async () => command,
     getSeriesEpisodes: async () => episodes,
     fetchArrQueues: async () => queue,
+    getSeasonDownloadHistory: async () => history,
+    summarizeSeasonFillActivity,
     audit: (action, detail) => audits.push({ action, detail }),
     notifyChannel: (channel, msg) => notices.push({ channel, msg }),
     pad: n => String(n).padStart(2, '0'),
@@ -272,6 +299,37 @@ test('season search verification: distinguishes queued, verified, failed, and we
   assert.strictEqual((await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101 })).outcome, 'timed_out');
   assert.match(h.notices[0].msg.embeds[0].description, /task queue may be wedged/);
   assert.match(h.notices[0].msg.embeds[0].fields.at(-1).value, /System → Tasks/);
+});
+
+test('season search verification: records and labels pack versus episode fills', async () => {
+  const complete = [ep(1, 1, { hasFile: true }), ep(1, 2, { hasFile: true }), ep(1, 3, { hasFile: true })];
+  let h = seasonVerifier({
+    command: { status: 'completed' }, episodes: complete,
+    history: [
+      { downloadId: 'pack-1', sourceTitle: 'Winter.Sonata.S01.1080p', episodeNumber: 1 },
+      { downloadId: 'pack-1', sourceTitle: 'Winter.Sonata.S01.1080p', episodeNumber: 2 },
+      { downloadId: 'pack-1', sourceTitle: 'Winter.Sonata.S01.1080p', episodeNumber: 3 },
+    ],
+  });
+  let result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101, searchedAt: NOW });
+  assert.strictEqual(result.fill.mode, 'pack');
+  assert.match(h.notices[0].msg.embeds[0].title, /Season Pack Verified/);
+  assert.match(h.notices[0].msg.embeds[0].fields.find(field => field.name === 'Fill method').value, /Season pack · 1 release/);
+  assert.strictEqual(h.audits[0].detail.fillMode, 'pack');
+  assert.strictEqual(h.audits[0].detail.releaseCount, 1);
+
+  h = seasonVerifier({
+    command: { status: 'completed' }, episodes: complete,
+    history: [
+      { downloadId: 'ep-1', sourceTitle: 'Winter.Sonata.S01E01.1080p', episodeNumber: 1 },
+      { downloadId: 'ep-2', sourceTitle: 'Winter.Sonata.S01E02.1080p', episodeNumber: 2 },
+      { downloadId: 'ep-3', sourceTitle: 'Winter.Sonata.S01E03.1080p', episodeNumber: 3 },
+    ],
+  });
+  result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 102, searchedAt: NOW });
+  assert.strictEqual(result.fill.mode, 'episodes');
+  assert.match(h.notices[0].msg.embeds[0].title, /Episode Releases Verified/);
+  assert.strictEqual(h.audits[0].detail.episodeReleases, 3);
 });
 
 // ---- Preview (#134) ----

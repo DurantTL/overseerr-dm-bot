@@ -34,9 +34,9 @@ const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
-const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
+const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, getSeasonDownloadHistory, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('./src/escalation');
-const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch } = require('./src/season-pack');
+const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('./src/season-pack');
 const { assessAsianOrigin, describeAvistazFit } = require('./src/asian');
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
@@ -1018,13 +1018,22 @@ function queuedSeasons(queue, seriesId) {
   return queue.filter(q => q.source.kind === 'tv' && q.seriesId === seriesId && q.seasonNumber != null).map(q => q.seasonNumber);
 }
 
-async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, missingAtSearch, commandId }) {
+async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, missingAtSearch, commandId, searchedAt = 0 }) {
   const command = await pollArrCommand({ url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY }, commandId, 10 * 60000);
   const status = command.status || 'unknown';
-  const [episodes, queue] = await Promise.all([getSeriesEpisodes(seriesId), fetchArrQueues()]);
+  const [episodes, queue, history] = await Promise.all([
+    getSeriesEpisodes(seriesId),
+    fetchArrQueues(),
+    getSeasonDownloadHistory(seriesId, seasonNumber, searchedAt).catch(err => {
+      audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'season_search_history', seriesId, season: seasonNumber });
+      return [];
+    }),
+  ]);
   const remaining = episodes.filter(ep => Number(ep.seasonNumber) === seasonNumber && ep.monitored && !ep.hasFile
     && Date.parse(ep.airDateUtc || ep.airDate || '') <= Date.now()).length;
-  const queued = queue.filter(item => item.source.kind === 'tv' && item.seriesId === seriesId && Number(item.seasonNumber) === seasonNumber).length;
+  const matchingQueue = queue.filter(item => item.source.kind === 'tv' && item.seriesId === seriesId && Number(item.seasonNumber) === seasonNumber);
+  const queued = matchingQueue.length;
+  const fill = summarizeSeasonFillActivity([...matchingQueue, ...history]);
   const commandText = [command.message, command.result, command.exception].filter(Boolean).join(' ');
   const downloadedMatch = /(\d+)\s+reports?\s+downloaded/i.exec(commandText);
   const downloaded = downloadedMatch ? Number(downloadedMatch[1]) : null;
@@ -1048,10 +1057,14 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
     color = COLORS.DANGER;
   } else if (remaining < missingAtSearch) {
     outcome = remaining === 0 ? 'verified' : 'partial';
-    title = `${remaining === 0 ? '✅ Season Search Verified' : '🟡 Season Search Partially Filled'} — ${label}`;
+    const method = fill.mode === 'pack' ? 'Season Pack'
+      : fill.mode === 'episodes' ? 'Episode Releases'
+        : fill.mode === 'mixed' ? 'Mixed Releases'
+          : 'Season Search';
+    title = `${remaining === 0 ? `✅ ${method} Verified` : `🟡 ${method} Partially Filled`} — ${label}`;
     description = remaining
-      ? 'Sonarr completed the search and filled some of the gap.'
-      : 'Sonarr completed the search and every aired monitored episode now has a file.';
+      ? `Sonarr completed the search and filled some of the gap${fill.mode === 'pack' ? ' with a season pack' : fill.mode === 'episodes' ? ' with individual episode releases' : ''}.`
+      : `Sonarr completed the search and every aired monitored episode now has a file${fill.mode === 'pack' ? ' from a season pack' : fill.mode === 'episodes' ? ' from individual episode releases' : ''}.`;
     if (remaining) nextStep = 'The remaining episodes still need an Interactive Search review in Sonarr.';
     color = COLORS.SUCCESS;
   } else if (queued || (downloaded != null && downloaded > 0)) {
@@ -1074,14 +1087,18 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
     { name: 'Sonarr command', value: `\`${status}\``, inline: true },
     { name: 'In queue', value: queued ? `${queued}` : '—', inline: true },
   ];
+  if (fill.mode !== 'none') {
+    const fillLabels = { pack: 'Season pack', episodes: 'Individual episodes', mixed: 'Pack + episodes', unknown: 'Release shape unavailable' };
+    fields.push({ name: 'Fill method', value: `${fillLabels[fill.mode]} · ${fill.releaseCount} release${fill.releaseCount === 1 ? '' : 's'}`, inline: true });
+  }
   if (nextStep) fields.push({ name: 'Next step', value: nextStep.slice(0, 1024), inline: false });
 
-  audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, message: commandText.slice(0, 1000) || null });
+  audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, fillMode: fill.mode, releaseCount: fill.releaseCount, packReleases: fill.packReleases, episodeReleases: fill.episodeReleases, message: commandText.slice(0, 1000) || null });
   notifyChannel('downloads', { embeds: [brandedEmbed(color)
     .setTitle(title.slice(0, 256))
     .setDescription(description.slice(0, 4000))
     .addFields(...fields)] });
-  return { outcome, status, remaining, queued, downloaded };
+  return { outcome, status, remaining, queued, downloaded, fill };
 }
 
 function monitorSeasonSearch(args) {
@@ -1130,6 +1147,7 @@ async function sweepSeasonPacks() {
     for (const season of seasons) {
       if (searched.length >= tunable('SEASON_PACK_MAX_PER_RUN')) break;
       let command;
+      const searchedAt = Date.now();
       try {
         command = await triggerSeasonSearch(series.id, season.season);
       } catch (err) {
@@ -1140,7 +1158,7 @@ async function sweepSeasonPacks() {
       // instead of sitting out the cooldown.
       recordSeasonSearch({ seriesId: series.id, seasonNumber: season.season, seriesTitle: series.title, missing: season.missing });
       audit('season_pack_search', { seriesId: series.id, title: series.title, season: season.season, missing: season.missing, aired: season.aired, reason, requested, commandId: command?.id || null });
-      monitorSeasonSearch({ seriesId: series.id, seriesTitle: series.title, seasonNumber: season.season, missingAtSearch: season.missing, commandId: command?.id });
+      monitorSeasonSearch({ seriesId: series.id, seriesTitle: series.title, seasonNumber: season.season, missingAtSearch: season.missing, commandId: command?.id, searchedAt });
       searched.push({ series, season, reason, pinned: isPinned(series, { keyFor: x => priorityKey({ tvdbId: x.tvdbId }), priority }) });
     }
   }
@@ -1148,7 +1166,7 @@ async function sweepSeasonPacks() {
     notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.INFO)
       .setTitle(`📦 Season-Pack Search — ${searched.length} season(s)`)
       .setDescription([
-        'Sonarr was asked for these seasons as a whole instead of episode by episode:',
+        'Sonarr was asked to search each listed season. Fully missing seasons can use one pack; partially missing seasons may still be searched episode by episode:',
         '',
         ...searched.map(s => `${s.pinned ? '📌 ' : ''}${describeSeasonSearch(s.series.title, s.season)} _(${s.reason})_`),
         '',
