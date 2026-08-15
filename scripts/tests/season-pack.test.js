@@ -3,7 +3,7 @@
 // imported directly — it's pure, so no Sonarr and no SQLite are involved).
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { assessSeriesAge, planSeasonSearches, seasonSearchTargets, describeSeasonSearch } = require('../../src/season-pack');
+const { assessSeriesAge, planSeasonSearches, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('../../src/season-pack');
 
 const DAY = 86400000;
 const NOW = Date.parse('2026-08-09T00:00:00Z');
@@ -114,4 +114,34 @@ test('season-pack: requested shows bypass the age gate; describeSeasonSearch sum
 
   assert.strictEqual(describeSeasonSearch('Winter Sonata', { season: 1, missing: 3, aired: 20 }),
     '**Winter Sonata** S01 — 3 of 20 aired episode(s) missing', 'summary line');
+});
+
+test('season-pack: queue and history rows identify pack, episode, mixed, and unknown fills', () => {
+  assert.deepStrictEqual(summarizeSeasonFillActivity([]), {
+    mode: 'none', releaseCount: 0, packReleases: 0, episodeReleases: 0, unknownReleases: 0,
+  });
+
+  const pack = summarizeSeasonFillActivity([
+    { downloadId: 'pack-1', sourceTitle: 'Drama.S01.1080p', episodeNumber: 1 },
+    { downloadId: 'pack-1', sourceTitle: 'Drama.S01.1080p', episodeNumber: 2 },
+    { downloadId: 'pack-1', sourceTitle: 'Drama.S01.1080p', episodeNumber: 3 },
+  ]);
+  assert.deepStrictEqual(pack, {
+    mode: 'pack', releaseCount: 1, packReleases: 1, episodeReleases: 0, unknownReleases: 0,
+  });
+
+  const episodes = summarizeSeasonFillActivity([
+    { downloadId: 'ep-1', sourceTitle: 'Drama.S01E01.1080p', episodeNumber: 1 },
+    { downloadId: 'ep-2', sourceTitle: 'Drama.S01E02.1080p', episodeNumber: 2 },
+  ]);
+  assert.deepStrictEqual(episodes, {
+    mode: 'episodes', releaseCount: 2, packReleases: 0, episodeReleases: 2, unknownReleases: 0,
+  });
+
+  assert.strictEqual(summarizeSeasonFillActivity([
+    { downloadId: 'pack-1', episodeNumbers: [1, 2] },
+    { downloadId: 'ep-3', episodeNumber: 3 },
+  ]).mode, 'mixed');
+  assert.strictEqual(summarizeSeasonFillActivity([{ downloadId: 'opaque' }]).mode, 'unknown');
+  assert.strictEqual(summarizeSeasonFillActivity([{ downloadId: 'flagged', fullSeason: true }]).mode, 'pack');
 });

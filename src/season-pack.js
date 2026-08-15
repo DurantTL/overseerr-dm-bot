@@ -115,4 +115,41 @@ function describeSeasonSearch(seriesTitle, season) {
   return `**${seriesTitle}** S${String(season.season).padStart(2, '0')} — ${season.missing} of ${season.aired} aired episode(s) missing`;
 }
 
-module.exports = { assessSeriesAge, planSeasonSearches, seasonSearchTargets, describeSeasonSearch };
+// Collapse Sonarr queue/history rows into releases, then report whether the search filled the
+// season with one multi-episode release or with separate episode releases. Queue and history can
+// both contain one row per episode for the same download, so downloadId (falling back to the
+// source title) is the release identity and the episode set is the important signal.
+function summarizeSeasonFillActivity(rows = []) {
+  const releases = new Map();
+  let anonymous = 0;
+  for (const row of rows || []) {
+    const downloadId = String(row.downloadId || '').trim();
+    const sourceTitle = String(row.sourceTitle || row.releaseTitle || '').trim();
+    const key = downloadId || (sourceTitle ? `title:${sourceTitle.toLowerCase()}` : `anonymous:${anonymous++}`);
+    if (!releases.has(key)) releases.set(key, { episodeNumbers: new Set(), fullSeason: false });
+    const release = releases.get(key);
+    release.fullSeason ||= row.fullSeason === true;
+    const numbers = [row.episodeNumber, ...(Array.isArray(row.episodeNumbers) ? row.episodeNumbers : [])];
+    for (const number of numbers) {
+      const parsed = Number(number);
+      if (Number.isFinite(parsed)) release.episodeNumbers.add(parsed);
+    }
+  }
+
+  let packReleases = 0;
+  let episodeReleases = 0;
+  let unknownReleases = 0;
+  for (const release of releases.values()) {
+    if (release.fullSeason || release.episodeNumbers.size > 1) packReleases++;
+    else if (release.episodeNumbers.size === 1) episodeReleases++;
+    else unknownReleases++;
+  }
+  const mode = packReleases && episodeReleases ? 'mixed'
+    : packReleases ? 'pack'
+      : episodeReleases ? 'episodes'
+        : unknownReleases ? 'unknown'
+          : 'none';
+  return { mode, releaseCount: releases.size, packReleases, episodeReleases, unknownReleases };
+}
+
+module.exports = { assessSeriesAge, planSeasonSearches, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity };
