@@ -148,6 +148,9 @@ const CONFIG = (() => {
   // the whole season exists as one torrent, so the bot asks Sonarr for a SeasonSearch instead —
   // one grab instead of N. Currently-airing shows are untouched (no pack exists for them yet).
   SEASON_PACK_FIRST: parseBool(process.env.SEASON_PACK_FIRST, true),
+  // After a completed search makes no or partial progress, inspect Sonarr's rejected releases
+  // and report the best candidates. This never force-grabs a release.
+  SEASON_PACK_INTERACTIVE: parseBool(process.env.SEASON_PACK_INTERACTIVE, true),
   SEASON_PACK_CHECK_MINUTES: Number.parseInt(process.env.SEASON_PACK_CHECK_MINUTES || '180', 10),
   // Give shows somebody actually requested the same treatment even while they're still airing:
   // most releases are "S01" season packs whatever the show's age, and a requester is waiting.
