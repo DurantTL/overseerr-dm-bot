@@ -1,6 +1,6 @@
 'use strict';
 
-const { fmtDuration } = require('./util');
+const { fmtDuration, fmtSpace } = require('./util');
 
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
@@ -76,6 +76,9 @@ const DASHBOARD_CSS = `
   .login-card label { display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
   .login-card input { width:100%; padding:12px; border-radius:10px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:16px; margin-bottom:16px; }
   .login-card .btn.primary { width:100%; text-align:center; }
+  .login-card .btn.passkey { width:100%; margin-bottom:14px; }
+  .login-divider { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:11px; margin:0 0 14px; }
+  .login-divider::before, .login-divider::after { content:''; flex:1; border-top:1px solid var(--border); }
   .error { background:rgba(239,68,68,.12); border:1px solid var(--down); color:#fca5a5; padding:10px 12px; border-radius:10px; font-size:13px; margin-bottom:16px; }
   .chip.tab { cursor:pointer; font:inherit; font-size:13px; }
   .chip.tab[aria-selected="true"] { background:var(--accent); color:#131316; border-color:var(--accent); font-weight:650; }
@@ -87,8 +90,9 @@ const DASHBOARD_CSS = `
   .setting-main { flex:1 1 240px; min-width:0; }
   .setting-name { font-size:14px; }
   .setting-help { font-size:12px; color:var(--muted); margin-top:3px; }
-  .setting-ctl { flex:0 0 auto; display:flex; align-items:center; gap:8px; }
+  .setting-ctl { flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
   .setting-ctl input[type=number] { width:96px; padding:9px 10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:15px; }
+  .setting-ctl input[type=text], .setting-foot input[type=text] { min-width:180px; padding:9px 10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:14px; }
   .setting-ctl .unit { font-size:12px; color:var(--muted); min-width:34px; }
   .switch { position:relative; width:46px; height:26px; flex:0 0 auto; }
   .switch input { opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
@@ -101,6 +105,12 @@ const DASHBOARD_CSS = `
   .setting-foot { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:14px; }
   .save-note { font-size:12.5px; color:var(--muted); }
   .save-note.ok { color:var(--ok); } .save-note.bad { color:#fca5a5; }
+  .setup-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:10px; }
+  .setup-grid label { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:12px; }
+  .setup-grid input, .setup-grid select { width:100%; padding:10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:14px; }
+  .setup-check { display:flex; align-items:center; gap:8px; color:var(--text); font-size:13px; margin:12px 0; }
+  .setup-output { white-space:pre-wrap; overflow-wrap:anywhere; background:#131316; border:1px solid var(--border); border-radius:10px; padding:12px; font-size:12px; }
+  .setup-warning { color:#fca5a5; font-size:12.5px; }
   @media (max-width:560px) {
     .topbar { flex-wrap:wrap; }
     .topbar-search { order:3; flex-basis:100%; max-width:none; }
@@ -209,29 +219,135 @@ function renderItemList(items, emptyText = 'Nothing right now.') {
         <div class="item-title">${escapeHtml(i.title || '')}</div>
         ${i.sub ? `<div class="item-sub">${escapeHtml(i.sub)}</div>` : ''}
         ${typeof i.pct === 'number' ? renderBar(i.pct) : ''}
-        ${i.actions?.length ? `<div class="item-actions">${i.actions.map(action => `<button class="btn${action.danger ? ' danger' : ''}" type="button" data-post="${escapeHtml(action.url)}" data-body="${escapeHtml(JSON.stringify(action.body || {}))}"${action.confirm ? ` data-confirm="${escapeHtml(action.confirm)}"` : ''}${action.inline ? ' data-inline="true"' : ''}${action.disabled ? ' disabled' : ''}${action.title ? ` title="${escapeHtml(action.title)}"` : ''}>${escapeHtml(action.label)}</button>`).join('')}</div>${i.actions.some(action => action.inline) ? '<span class="action-result" aria-live="polite"></span>' : ''}` : ''}
+        ${i.actions?.length ? `<div class="item-actions">${i.actions.map(action => `<button class="btn${action.danger ? ' danger' : ''}" type="button"${action.setupNode ? ` data-setup-node="${escapeHtml(action.setupNode)}"` : ` data-post="${escapeHtml(action.url)}" data-body="${escapeHtml(JSON.stringify(action.body || {}))}"`}${action.confirm ? ` data-confirm="${escapeHtml(action.confirm)}"` : ''}${action.inline ? ' data-inline="true"' : ''}${action.disabled ? ' disabled' : ''}${action.title ? ` title="${escapeHtml(action.title)}"` : ''}>${escapeHtml(action.label)}</button>`).join('')}</div>${i.actions.some(action => action.inline) ? '<span class="action-result" aria-live="polite"></span>' : ''}` : ''}
       </div>
       ${i.right ? `<div class="item-right">${escapeHtml(i.right)}</div>` : ''}
     </div>`).join('')}</div>`;
 }
 
-function renderLogin(isError, message) {
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+}
+
+function tierInstallCommand({ botUrl, node, token, folderRoot, syncthingApiKey, syncthingFolderId, mountRoot, mountMarker }) {
+  const env = [
+    `TIER_AGENT_TOKEN="$TIER_AGENT_TOKEN"`,
+    `TIER_FOLDER_ROOT=${shellQuote(folderRoot)}`,
+    `SYNCTHING_API_KEY=${shellQuote(syncthingApiKey)}`,
+    `SYNCTHING_FOLDER_ID=${shellQuote(syncthingFolderId)}`,
+  ];
+  if (mountRoot) env.push(`TIER_MOUNT_ROOT=${shellQuote(mountRoot)}`);
+  if (mountMarker) env.push(`TIER_MOUNT_MARKER=${shellQuote(mountMarker)}`);
+  return [
+    `export TIER_AGENT_TOKEN=${shellQuote(token)}`,
+    `curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" ${shellQuote(`${botUrl}/agent/install/${node}`)} \\`,
+    `  | env ${env.join(' ')} sh`,
+    'unset TIER_AGENT_TOKEN',
+  ].join('\n');
+}
+
+function tierNodeStatus(plan, report, now = Date.now()) {
+  const checkIn = plan?.lastHeartbeatAt || (report ? sqliteUtcMs(report.at) : null);
+  const publishedHash = plan?.published?.planHash || null;
+  const convergedHash = plan?.converged?.planHash || null;
+  const matches = !!publishedHash && publishedHash === convergedHash;
+  const errors = plan?.lastErrors?.length ? plan.lastErrors.join('; ') : report?.errors;
+  const details = [
+    publishedHash ? `last plan ${publishedHash}` : 'no plan published',
+    checkIn ? `last check-in ${fmtDuration(Math.max(0, now - checkIn))} ago` : 'never checked in',
+    report?.bytesFreed ? `freed ${fmtSpace(report.bytesFreed)} last run` : 'freed 0 B last run',
+    publishedHash ? `published manifest ${matches ? 'matches' : 'does not match'} last confirmed plan` : null,
+    errors ? `errors: ${errors}` : null,
+  ].filter(Boolean).join(' · ');
+  if (!checkIn) return { state: 'warn', status: 'never reported', details, setup: true };
+  if (matches && now - checkIn > 45 * 60 * 1000) return { state: 'down', status: 'stale', details };
+  if (matches) return { state: errors ? 'warn' : 'ok', status: errors ? 'converged with errors' : 'converged', details };
+  return { state: 'warn', status: 'reported, not converged', details };
+}
+
+function renderTierNodeSetup(nodes) {
+  const options = nodes.map(node => `<option value="${escapeHtml(node.name)}">${escapeHtml(node.name)}</option>`).join('');
+  return `<div class="card" id="tier-node-setup">
+    <h2>Tier Node Setup<span class="sub">Register a node, then generate its complete one-time install command.</span></h2>
+    <form id="tier-register-form">
+      <div class="setup-grid">
+        <label>Node name<input name="name" pattern="[a-z0-9][a-z0-9_-]{0,63}" required></label>
+        <label>Usable capacity (GB)<input name="usableGb" type="number" min="1" step="1" required></label>
+        <label>Access<select name="access"><option value="open">Full</option><option value="restricted">Restricted</option></select></label>
+        <label>Demand source<select name="demandSource"><option value="tautulli">Tautulli</option><option value="plex">Plex</option><option value="atime">File access time</option></select></label>
+      </div>
+      <label class="setup-check"><input name="full" type="checkbox"> Keep a full master copy on this node</label>
+      <button class="btn primary" type="submit">Register node</button>
+      <span class="save-note" id="tier-register-note"></span>
+    </form>
+    ${nodes.length ? `<form id="tier-install-form">
+      <h2>Generate install command</h2>
+      <div class="setup-grid">
+        <label>Node<select name="node">${options}</select></label>
+        <label>TIER_FOLDER_ROOT<input name="folderRoot" placeholder="/mnt/media" required></label>
+        <label>SYNCTHING_API_KEY<input name="syncthingApiKey" type="password" autocomplete="off" required></label>
+        <label>SYNCTHING_FOLDER_ID<input name="syncthingFolderId" required></label>
+        <label>TIER_MOUNT_ROOT (optional)<input name="mountRoot" placeholder="/mnt/media"></label>
+        <label>TIER_MOUNT_MARKER (optional)<input name="mountMarker" placeholder=".tier-media-ok"></label>
+      </div>
+      <p class="setup-warning">Run the generated command in a root shell. Generating it rotates the node token immediately, so any existing agent using the old token will stop checking in.</p>
+      <button class="btn danger" type="submit">Rotate token and generate command</button>
+      <span class="save-note" id="tier-install-note"></span>
+      <div id="tier-install-result" hidden><p class="setup-warning">This command is shown once. Copy it before leaving or reloading this page.</p><pre class="setup-output" id="tier-install-command"></pre><button class="btn" type="button" id="tier-copy-command">Copy command</button></div>
+    </form>` : '<p class="muted">Register a node to generate its install command.</p>'}
+  </div>`;
+}
+
+function renderLogin(isError, message, { passkeyEnabled = false } = {}) {
   const banner = message ? `<div class="error">${escapeHtml(message)}</div>`
     : (isError ? '<div class="error">Incorrect password. Please try again.</div>' : '');
   const body = `<div class="login-wrap"><div class="login-card">
     <h1><span class="brand">Durant</span> Media Server</h1>
     <p>Admin dashboard login</p>
     ${banner}
+    ${passkeyEnabled ? '<button class="btn primary passkey" type="button" id="passkey-login">Sign in with a passkey</button><div class="login-divider">password fallback</div>' : ''}
     <form method="post" action="/admin/login">
       <label for="password">Password</label>
-      <input type="password" id="password" name="password" autofocus autocomplete="current-password" required>
+      <input type="password" id="password" name="password"${passkeyEnabled ? '' : ' autofocus'} autocomplete="current-password webauthn" required>
       <button class="btn primary" type="submit">Log in</button>
     </form>
-  </div></div>`;
+  </div></div>${passkeyEnabled ? `<script src="/admin/webauthn-browser.js"></script><script>
+    document.getElementById('passkey-login').addEventListener('click', async function () {
+      var button = this;
+      var banner = document.querySelector('.error');
+      button.disabled = true;
+      try {
+        var optionsResponse = await fetch('/admin/passkey/authentication-options', { cache: 'no-store' });
+        var optionsJSON = await optionsResponse.json();
+        if (!optionsResponse.ok) throw new Error(optionsJSON.error || 'Could not start passkey sign-in.');
+        var response = await SimpleWebAuthnBrowser.startAuthentication({ optionsJSON: optionsJSON });
+        var verificationResponse = await fetch('/admin/passkey/authenticate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(response) });
+        var result = await verificationResponse.json();
+        if (!verificationResponse.ok || !result.verified) throw new Error(result.error || 'Passkey sign-in failed.');
+        location.assign('/admin');
+      } catch (error) {
+        if (!banner) { banner = document.createElement('div'); banner.className = 'error'; document.querySelector('.login-card p').after(banner); }
+        banner.textContent = error.message || String(error);
+        button.disabled = false;
+      }
+    });
+  </script>` : ''}`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Login — Durant Media Server</title><style>${DASHBOARD_CSS}</style></head>
   <body>${body}</body></html>`;
+}
+
+function renderPasskeyManagement(passkeys, rpID) {
+  const rows = passkeys.length ? passkeys.map(passkey => `<div class="setting" data-passkey="${escapeHtml(passkey.credential_id)}">
+    <div class="setting-main"><div class="setting-name">${escapeHtml(passkey.label)}</div><div class="setting-help">Created ${escapeHtml(new Date(passkey.created_at).toISOString())}${passkey.last_used_at ? ` · last used ${escapeHtml(new Date(passkey.last_used_at).toISOString())}` : ' · never used'}</div></div>
+    <div class="setting-ctl"><input type="text" value="${escapeHtml(passkey.label)}" maxlength="64" aria-label="Passkey label"><button class="btn" type="button" data-passkey-rename>Rename</button><button class="btn danger" type="button" data-passkey-revoke>Revoke</button></div>
+  </div>`).join('') : '<p class="muted">No passkeys enrolled.</p>';
+  return `<div class="card" id="passkeys">
+    <h2>Passkeys<span class="sub">Platform passkeys for ${escapeHtml(rpID)}. The tunnel hostname is the relying-party ID and cannot be changed without enrolling again.</span></h2>
+    ${rows}
+    <div class="setting-foot"><input type="text" id="passkey-label" maxlength="64" placeholder="Device label, e.g. Caleb's iPhone" aria-label="New passkey label"><button class="btn primary" type="button" id="passkey-enroll">Enroll passkey</button><span class="save-note" id="passkey-note"></span></div>
+  </div>`;
 }
 
 function renderStat(label, value) {
@@ -317,4 +433,8 @@ module.exports = {
   renderHealthBadges,
   renderTable,
   renderSection,
+  tierInstallCommand,
+  tierNodeStatus,
+  renderTierNodeSetup,
+  renderPasskeyManagement,
 };

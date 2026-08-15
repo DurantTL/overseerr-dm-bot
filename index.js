@@ -28,9 +28,9 @@ const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, deleteSetting, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
-const { listPendingRequests } = require('./src/db');
+const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
@@ -42,7 +42,7 @@ const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = requi
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
-const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable } = require('./src/dashboard-render');
+const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, parseReleaseName, seriesToken, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
 const { runBackup, rotateBackups } = require('./scripts/backup-db');
@@ -56,6 +56,7 @@ const { summarizeImportRejections, renderRejectionLines, looksLikeMappingProblem
 const { normalizeSearchQuery, searchDashboard } = require('./src/search');
 const { runEpisodeRecoverySweep } = require('./src/episode-recovery');
 const { createRequestGate } = require('./src/request-gate');
+const { passkeyRp, createPasskeyService } = require('./src/passkeys');
 
 // Centralized embed palette so every notification shares one consistent look.
 const COLORS = {
@@ -110,6 +111,12 @@ function verifySession(token) {
   }
 }
 
+function setDashboardSessionCookie(req, res) {
+  const ttlMs = CONFIG.SESSION_TTL_HOURS * 3600000;
+  const secure = req.secure || (req.headers['x-forwarded-proto'] || '').includes('https');
+  res.setHeader('Set-Cookie', `dm_session=${signSession(ttlMs)}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=${Math.floor(ttlMs / 1000)}${secure ? '; Secure' : ''}`);
+}
+
 // Minimal cookie parser — pulls a single named cookie from the request header.
 function readCookie(req, name) {
   const header = req.headers.cookie;
@@ -131,6 +138,11 @@ function readCookie(req, name) {
 // would ignore every override until the next restart.
 const settingsStore = { get: getSetting, set: setSetting, del: deleteSetting };
 const tunable = key => runtimeSettings.resolveRuntime(key, { config: CONFIG, store: settingsStore });
+const PASSKEY_RP = passkeyRp(CONFIG.TUNNEL_DOMAIN);
+const passkeyService = createPasskeyService({
+  store: { listPasskeys, getPasskey, savePasskey, updatePasskeyUse },
+  ...PASSKEY_RP,
+});
 
 // A sweep whose cadence and on/off state are runtime-tunable. setInterval is wrong for these:
 // its period is fixed when it is created, so a cadence changed from the dashboard would not take
@@ -237,9 +249,11 @@ function subscriberKeyFor(tmdbId, is4k) {
 // `exclude` lets a caller that already has its own row counted in 'pending' status (the
 // approval-time recheck below) leave that one out — otherwise a request would count as its own
 // reservation and every quota=1 approval would look exhausted by itself.
-async function quotaBlockReason(seerrUserId, discordId, mediaType, exclude = null) {
+async function quotaBlockReason(seerrUserId, discordId, mediaType, exclude = null, surfaceFetchError = false) {
   let quota = null;
-  try { quota = await fetchUserQuota(seerrUserId); } catch (_e) {}
+  try { quota = await fetchUserQuota(seerrUserId); } catch (err) {
+    if (surfaceFetchError) throw err;
+  }
   const q = quota?.[mediaType];
   if (!q || !q.limit) return null;
   const liveRemaining = Number.isFinite(q.remaining) ? q.remaining : q.limit - (q.used || 0);
@@ -408,8 +422,10 @@ async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discord
   buttons.push(new ButtonBuilder().setCustomId(`request_deny:${nonce}`).setLabel('Deny').setStyle(ButtonStyle.Danger));
   const row = new ActionRowBuilder().addComponents(...buttons);
   const message = await channel.send({ embeds: [embed], components: [row] });
-  const pending = takePendingRequest(nonce);
-  if (pending) restashPendingRequest(nonce, { ...pending, approvalChannelId: message.channelId, approvalMessageId: message.id });
+  if (!setPendingRequestNotice(nonce, message.channelId, message.id)) {
+    await message.edit({ components: [] });
+    return 'handled';
+  }
   return true;
 }
 
@@ -815,6 +831,62 @@ function queuedSeasons(queue, seriesId) {
   return queue.filter(q => q.source.kind === 'tv' && q.seriesId === seriesId && q.seasonNumber != null).map(q => q.seasonNumber);
 }
 
+async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, missingAtSearch, commandId }) {
+  const command = await pollArrCommand({ url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY }, commandId, 10 * 60000);
+  const status = command.status || 'unknown';
+  const [episodes, queue] = await Promise.all([getSeriesEpisodes(seriesId), fetchArrQueues()]);
+  const remaining = episodes.filter(ep => Number(ep.seasonNumber) === seasonNumber && ep.monitored && !ep.hasFile
+    && Date.parse(ep.airDateUtc || ep.airDate || '') <= Date.now()).length;
+  const queued = queue.filter(item => item.source.kind === 'tv' && item.seriesId === seriesId && Number(item.seasonNumber) === seasonNumber).length;
+  const commandText = [command.message, command.result, command.exception].filter(Boolean).join(' ');
+  const downloadedMatch = /(\d+)\s+reports?\s+downloaded/i.exec(commandText);
+  const downloaded = downloadedMatch ? Number(downloadedMatch[1]) : null;
+  const label = `${seriesTitle} S${pad(seasonNumber)}`;
+  let outcome;
+  let title;
+  let description;
+  let color = COLORS.WARN;
+
+  if (!['completed', 'failed', 'aborted'].includes(status)) {
+    outcome = 'timed_out';
+    title = `Season Search Not Confirmed — ${label}`;
+    description = `Sonarr's search command is still \`${status}\` after 10 minutes. Its task queue may be wedged; check Sonarr → System → Tasks. Restarting Sonarr clears a stuck command queue, then the season can be searched again after the cooldown.`;
+  } else if (status !== 'completed') {
+    outcome = status;
+    title = `Season Search ${status === 'aborted' ? 'Aborted' : 'Failed'} — ${label}`;
+    description = `Sonarr ended the season search as \`${status}\`${commandText ? `: ${commandText.slice(0, 1000)}. ` : '. '}Check Sonarr → System → Events and Logs before retrying.`;
+  } else if (remaining < missingAtSearch) {
+    outcome = remaining === 0 ? 'verified' : 'partial';
+    title = `${remaining === 0 ? 'Season Search Verified' : 'Season Search Partially Filled'} — ${label}`;
+    description = `Sonarr completed the search and the aired missing count changed from **${missingAtSearch}** to **${remaining}**.${remaining ? ' The remaining episodes still need an Interactive Search review.' : ' Every aired monitored episode now has a file.'}`;
+    color = COLORS.SUCCESS;
+  } else if (queued || (downloaded != null && downloaded > 0)) {
+    outcome = 'grabbed';
+    title = `Season Release Grabbed — ${label}`;
+    description = `Sonarr completed the search and accepted ${downloaded != null ? `**${downloaded}** release${downloaded === 1 ? '' : 's'}` : 'a release'}${queued ? `; **${queued}** matching queue item${queued === 1 ? '' : 's'} ${queued === 1 ? 'is' : 'are'} active` : ''}. Import verification will come from Sonarr, and the stuck-download watchdog will report a stalled queue item.`;
+    color = COLORS.INFO;
+  } else {
+    outcome = 'no_grab';
+    title = `No Season Release Accepted — ${label}`;
+    description = `Sonarr completed the search, but no release entered its queue and all **${remaining || missingAtSearch}** aired episodes are still missing. Run an Interactive Search from this season's header in Sonarr to distinguish no indexer results from releases rejected for quality, language, custom formats, size, seeders, blocklist, categories, or tags.`;
+  }
+
+  audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, message: commandText.slice(0, 1000) || null });
+  notifyChannel('downloads', { embeds: [brandedEmbed(color)
+    .setTitle(title.slice(0, 256))
+    .setDescription(description.slice(0, 4000))] });
+  return { outcome, status, remaining, queued, downloaded };
+}
+
+function monitorSeasonSearch(args) {
+  verifySeasonSearchCommand(args).catch(err => {
+    audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'season_search_monitor', seriesId: args.seriesId, season: args.seasonNumber, commandId: args.commandId || null });
+    notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle(`Season Search Verification Failed — ${args.seriesTitle} S${pad(args.seasonNumber)}`.slice(0, 256))
+      .setDescription(`The search was accepted, but its outcome could not be verified: ${err.message}`.slice(0, 4000))] });
+  });
+}
+
 async function sweepSeasonPacks() {
   if (!tunable('SEASON_PACK_FIRST') || !CONFIG.SONARR_URL) return;
   const cfg = seasonPackConfig();
@@ -851,8 +923,9 @@ async function sweepSeasonPacks() {
     if (!eligible) continue;
     for (const season of seasons) {
       if (searched.length >= tunable('SEASON_PACK_MAX_PER_RUN')) break;
+      let command;
       try {
-        await triggerSeasonSearch(series.id, season.season);
+        command = await triggerSeasonSearch(series.id, season.season);
       } catch (err) {
         audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'season_search', seriesId: series.id, season: season.season });
         continue;
@@ -860,7 +933,8 @@ async function sweepSeasonPacks() {
       // Recorded only after the command is accepted, so a failed search retries next sweep
       // instead of sitting out the cooldown.
       recordSeasonSearch({ seriesId: series.id, seasonNumber: season.season, seriesTitle: series.title, missing: season.missing });
-      audit('season_pack_search', { seriesId: series.id, title: series.title, season: season.season, missing: season.missing, aired: season.aired, reason, requested });
+      audit('season_pack_search', { seriesId: series.id, title: series.title, season: season.season, missing: season.missing, aired: season.aired, reason, requested, commandId: command?.id || null });
+      monitorSeasonSearch({ seriesId: series.id, seriesTitle: series.title, seasonNumber: season.season, missingAtSearch: season.missing, commandId: command?.id });
       searched.push({ series, season, reason, pinned: isPinned(series, { keyFor: x => priorityKey({ tvdbId: x.tvdbId }), priority }) });
     }
   }
@@ -1317,16 +1391,16 @@ const sleepMs = ms => new Promise(resolve => setTimeout(resolve, ms));
 // request failures are swallowed and just retried — only a hard deadline gives up.
 async function pollArrCommand(arr, commandId, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
-  let status = 'unknown';
+  let command = { status: 'unknown' };
   while (Date.now() < deadline && commandId) {
     await sleepMs(15000);
     try {
       const r = await axios.get(`${arr.url}/api/v3/command/${commandId}`, { headers: { 'X-Api-Key': arr.key }, timeout: 10000 });
-      status = r.data?.status || status;
-      if (['completed', 'failed', 'aborted'].includes(status)) break;
+      command = r.data || command;
+      if (['completed', 'failed', 'aborted'].includes(command.status)) break;
     } catch (_e) { /* transient — keep polling until the deadline */ }
   }
-  return status;
+  return command;
 }
 
 // Whether it's safe to auto-force a batch of manualimport preview rows through ManualImport
@@ -1353,7 +1427,7 @@ function canAutoForceImport(job, mediaType, files) {
 //     'needs_mapping' (TV, with the guided wizard) or 'import_rejected' (movies), with the
 //     rejection reasons named instead of silence.
 async function verifyArrImport(job, arr, commandId, importPath, finalPath, sizeBytes) {
-  const status = await pollArrCommand(arr, commandId, 10 * 60000);
+  const status = (await pollArrCommand(arr, commandId, 10 * 60000)).status;
   if (!leftoverVideoFiles(finalPath).length) return finishGrabJobImported(job, sizeBytes); // consumed — the import really happened
 
   if (status !== 'completed') {
@@ -1379,7 +1453,7 @@ async function verifyArrImport(job, arr, commandId, importPath, finalPath, sizeB
       { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
     audit('grab_import_forced', { jobId: job.id, title: job.title, files: files.length });
     // Verify the forced import too — firing the command is not proof it worked.
-    const forcedStatus = await pollArrCommand(arr, cmdRes.data?.id, 5 * 60000);
+    const forcedStatus = (await pollArrCommand(arr, cmdRes.data?.id, 5 * 60000)).status;
     if (!leftoverVideoFiles(finalPath).length) {
       notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.INFO)
         .setTitle(`🔧 Import Nudged — ${job.title}`.slice(0, 256))
@@ -3354,6 +3428,7 @@ async function handleRequestCommand(interaction) {
       takePendingRequest(nonce);
       return interaction.editReply('❌ Couldn\'t post the approval request to the admins — try again in a bit.');
     }
+    if (posted === 'handled') return interaction.editReply('This request was already handled by an admin.');
     upsertRequest(null, `tmdb:${tmdbId}`, mediaType, is4k, label, interaction.user.id, 'pending');
     audit('media_request_gated', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, nonce });
     return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
@@ -6974,16 +7049,50 @@ function startExpressServer() {
     const loginLimits = new Map();
     RATE_LIMIT_MAPS.push(loginLimits);
     const adminForm = express.urlencoded({ extended: false, limit: '16kb' });
+    const webauthnBrowserPath = path.join(path.dirname(require.resolve('@simplewebauthn/browser')), '..', 'dist', 'bundle', 'index.es5.umd.min.js');
+
+    app.get('/admin/webauthn-browser.js', (_req, res) => res.sendFile(webauthnBrowserPath, { headers: { 'Cache-Control': 'public, max-age=31536000, immutable' } }));
 
     app.get('/admin/login', (req, res) => {
       if (verifySession(readCookie(req, 'dm_session'))) return res.redirect('/admin');
-      res.type('html').send(renderLogin(!!req.query.error));
+      res.type('html').send(renderLogin(!!req.query.error, null, { passkeyEnabled: listPasskeys().length > 0 }));
+    });
+
+    app.get('/admin/passkey/authentication-options', async (req, res) => {
+      const ip = req.ip || req.socket.remoteAddress || 'unknown';
+      if (!takeRateLimit(loginLimits, `passkey:${ip}`, 10, 15 * 60000)) return res.status(429).json({ error: 'Too many attempts. Try again in a few minutes.' });
+      if (!listPasskeys().length) return res.status(404).json({ error: 'No passkeys are enrolled.' });
+      const binding = crypto.randomBytes(32).toString('base64url');
+      const secure = req.secure || (req.headers['x-forwarded-proto'] || '').includes('https');
+      try {
+        const options = await passkeyService.authenticationOptions(binding);
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Set-Cookie', `dm_webauthn=${binding}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=300${secure ? '; Secure' : ''}`);
+        return res.json(options);
+      } catch (_err) {
+        audit('dashboard_passkey_login_failed', { ip, reason: 'options_failed' });
+        return res.status(400).json({ error: 'Could not start passkey sign-in.' });
+      }
+    });
+
+    app.post('/admin/passkey/authenticate', async (req, res) => {
+      const ip = req.ip || req.socket.remoteAddress || 'unknown';
+      try {
+        await passkeyService.finishAuthentication(readCookie(req, 'dm_webauthn'), req.body);
+        setDashboardSessionCookie(req, res);
+        res.append('Set-Cookie', 'dm_webauthn=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0');
+        audit('dashboard_login_success', { ip, method: 'passkey' });
+        return res.json({ verified: true });
+      } catch (_err) {
+        audit('dashboard_passkey_login_failed', { ip, reason: 'verification_failed' });
+        return res.status(401).json({ verified: false, error: 'Passkey sign-in failed.' });
+      }
     });
 
     app.post('/admin/login', adminForm, (req, res) => {
       const ip = req.ip || req.socket.remoteAddress || 'unknown';
       if (!takeRateLimit(loginLimits, ip, 5, 15 * 60000)) {
-        return res.status(429).type('html').send(renderLogin(false, 'Too many attempts. Try again in a few minutes.'));
+        return res.status(429).type('html').send(renderLogin(false, 'Too many attempts. Try again in a few minutes.', { passkeyEnabled: listPasskeys().length > 0 }));
       }
       const pwd = req.body?.password || '';
       const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && safeEqual(pwd, CONFIG.DASHBOARD_ADMIN_PASSWORD);
@@ -6992,10 +7101,8 @@ function startExpressServer() {
         audit('dashboard_login_failed', { ip });
         return res.redirect('/admin/login?error=1');
       }
-      const ttlMs = CONFIG.SESSION_TTL_HOURS * 3600000;
-      const secure = req.secure || (req.headers['x-forwarded-proto'] || '').includes('https');
-      res.setHeader('Set-Cookie', `dm_session=${signSession(ttlMs)}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=${Math.floor(ttlMs / 1000)}${secure ? '; Secure' : ''}`);
-      audit('dashboard_login_success', { ip });
+      setDashboardSessionCookie(req, res);
+      audit('dashboard_login_success', { ip, method: 'password' });
       res.redirect('/admin');
     });
 
@@ -7007,6 +7114,7 @@ function startExpressServer() {
     app.get('/admin', dashboardAuth, async (_req, res) => {
       const now = Date.now();
       const pendingApprovals = listPendingRequests();
+      const passkeys = listPasskeys();
       // Live activity: every external read is failure-tolerant so one dead integration never
       // takes the dashboard down — null means "couldn't reach it", rendered as such.
       const [health, sessions, queue, disks, edgeChecks, members, pendingQuota] = await Promise.all([
@@ -7016,7 +7124,7 @@ function startExpressServer() {
         arrSources().length ? fetchDiskSpace().catch(() => null) : Promise.resolve(null),
         runEdgeDiagnostics({ live: false }).catch(() => []),
         pendingApprovals.length ? getGuildMembers().catch(() => []) : Promise.resolve([]),
-        Promise.all(pendingApprovals.map(pending => quotaBlockReason(pending.seerrUserId, pending.discordId, pending.mediaType, { tmdbId: pending.tmdbId, is4k: pending.is4k })
+        Promise.all(pendingApprovals.map(pending => quotaBlockReason(pending.seerrUserId, pending.discordId, pending.mediaType, { tmdbId: pending.tmdbId, is4k: pending.is4k }, true)
           .then(warning => ({ warning, error: null }))
           .catch(err => ({ warning: null, error: dashboardActionError(err) })))),
       ]);
@@ -7153,19 +7261,13 @@ function startExpressServer() {
       const tierItems = tierNodes.map(n => {
         const plan = getTierPlan(n.name);
         const rep = lastReportByNode[n.name];
-        // Liveness from the heartbeat (bumped on every check-in incl. no-op runs) — a long-idle,
-        // fully-converged node has no recent tier_agent_report audit row but still heartbeats, so
-        // keying "agent last seen" off the report alone would falsely read as stale/stopped.
-        const beatAt = plan?.lastHeartbeatAt || (rep ? sqliteUtcMs(rep.at) : null);
-        const hasErr = !!(rep && rep.errors) || !!plan?.lastErrors?.length;
-        const repBits = beatAt
-          ? `agent ${fmtAgo(beatAt)}${rep && rep.bytesFreed ? ` · freed ${fmtSpace(rep.bytesFreed)}` : ''}${hasErr ? ' · ⚠️ errors' : ''}`
-          : 'no agent report yet';
+        const status = tierNodeStatus(plan, rep, now);
         return {
-          state: !n.enabled ? 'skip' : (hasErr ? 'warn' : 'ok'),
+          state: !n.enabled ? 'skip' : status.state,
           title: `${n.name}${n.full ? ' · full master' : ''}${n.sticky ? ' · sticky' : ''}`,
-          sub: `${n.access} · ${n.demand_source}${n.demand_source === 'atime' && n.atime_mask ? ` (mask ${n.atime_mask})` : ''} · ${n.transport} · ${fmtSpace(n.usable_bytes || 0)} @ ${n.headroom_pct}% headroom`,
-          right: `${plan?.converged ? `converged ${plan.converged.planHash} ${fmtAgo(plan.converged.convergedAt)}` : plan?.published ? `published ${plan.published.planHash} (pending) ${fmtAgo(plan.published.publishedAt)}` : 'no plan applied'} · ${repBits}`,
+          sub: `${n.access} · ${n.demand_source}${n.demand_source === 'atime' && n.atime_mask ? ` (mask ${n.atime_mask})` : ''} · ${n.transport} · ${fmtSpace(n.usable_bytes || 0)} @ ${n.headroom_pct}% headroom · ${status.details}`,
+          right: status.status,
+          actions: status.setup ? [{ label: 'Set up this node', setupNode: n.name }] : [],
         };
       });
 
@@ -7200,6 +7302,7 @@ function startExpressServer() {
         <div class="stats">${stats}</div>
 
         <section class="panel" data-panel="overview">
+          ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID)}
           <div class="card">
             <h2>Integrations</h2>
             <div class="badges">${renderHealthBadges(health)}</div>
@@ -7267,8 +7370,9 @@ function startExpressServer() {
         <section class="panel" data-panel="edge">
           <div class="card">
             <h2>📦 Tier Nodes</h2>
-            ${renderItemList(tierItems, 'No tier nodes registered — /tier-node add creates one.')}
+            ${renderItemList(tierItems, 'No tier nodes registered yet.')}
           </div>
+          ${renderTierNodeSetup(tierNodes)}
           <div class="card">
             <h2>🩺 Edge Readiness</h2>
             ${renderItemList(edgeChecks.map(c => ({ state: c.status === 'fail' ? 'down' : c.status, title: c.name, sub: c.detail })), 'No edge checks available.')}
@@ -7297,6 +7401,7 @@ function startExpressServer() {
           </div>
         </section>
 
+        <script src="/admin/webauthn-browser.js"></script>
         <script>
           async function revokeAll() {
             if (!confirm('Revoke ALL active download links? This cannot be undone.')) return;
@@ -7337,6 +7442,94 @@ function startExpressServer() {
               }
             });
           });
+          (function () {
+            var enroll = document.getElementById('passkey-enroll');
+            var note = document.getElementById('passkey-note');
+            var post = async function (url, body) {
+              var response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+              var result = await response.json().catch(function () { return {}; });
+              if (!response.ok) throw new Error(result.error || 'Passkey request failed.');
+              return result;
+            };
+            if (enroll) enroll.addEventListener('click', async function () {
+              var label = document.getElementById('passkey-label').value.trim();
+              if (!label) { note.textContent = 'Enter a device label.'; note.className = 'save-note bad'; return; }
+              enroll.disabled = true;
+              try {
+                var optionsJSON = await post('/admin/passkey/registration-options', { label: label });
+                var response = await SimpleWebAuthnBrowser.startRegistration({ optionsJSON: optionsJSON });
+                await post('/admin/passkey/register', response);
+                location.hash = 'overview';
+                location.reload();
+              } catch (error) {
+                note.textContent = error.message || String(error);
+                note.className = 'save-note bad';
+                enroll.disabled = false;
+              }
+            });
+            document.querySelectorAll('[data-passkey-rename]').forEach(function (button) {
+              button.addEventListener('click', async function () {
+                var row = button.closest('[data-passkey]');
+                try { await post('/admin/passkey/rename', { credentialId: row.dataset.passkey, label: row.querySelector('input').value }); location.reload(); }
+                catch (error) { note.textContent = error.message || String(error); note.className = 'save-note bad'; }
+              });
+            });
+            document.querySelectorAll('[data-passkey-revoke]').forEach(function (button) {
+              button.addEventListener('click', async function () {
+                if (!confirm('Revoke this passkey? That device will no longer be able to sign in.')) return;
+                var row = button.closest('[data-passkey]');
+                try { await post('/admin/passkey/revoke', { credentialId: row.dataset.passkey }); location.reload(); }
+                catch (error) { note.textContent = error.message || String(error); note.className = 'save-note bad'; }
+              });
+            });
+          })();
+          document.querySelectorAll('[data-setup-node]').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+              var form = document.getElementById('tier-install-form');
+              if (!form) return;
+              form.elements.node.value = btn.dataset.setupNode;
+              document.getElementById('tier-node-setup').scrollIntoView({ behavior: 'smooth' });
+              form.elements.folderRoot.focus();
+            });
+          });
+          (function () {
+            var registerForm = document.getElementById('tier-register-form');
+            var installForm = document.getElementById('tier-install-form');
+            [registerForm, installForm].filter(Boolean).forEach(function (form) {
+              form.addEventListener('input', function () { window.__dirtySettings = true; });
+            });
+            if (registerForm) registerForm.addEventListener('submit', async function (event) {
+              event.preventDefault();
+              var values = Object.fromEntries(new FormData(registerForm));
+              values.full = registerForm.elements.full.checked;
+              var note = document.getElementById('tier-register-note');
+              var r = await fetch('/admin/action/tier-node', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+              var result = await r.json().catch(function () { return {}; });
+              if (!r.ok || result.ok === false) { note.textContent = result.error || 'Registration failed.'; note.className = 'save-note bad'; return; }
+              window.__dirtySettings = false;
+              location.hash = 'edge';
+              location.reload();
+            });
+            if (installForm) installForm.addEventListener('submit', async function (event) {
+              event.preventDefault();
+              if (!confirm('Rotate this node token? The existing agent will stop working until this new command is installed.')) return;
+              var values = Object.fromEntries(new FormData(installForm));
+              values.confirmed = true;
+              var note = document.getElementById('tier-install-note');
+              var r = await fetch('/admin/action/tier-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+              var result = await r.json().catch(function () { return {}; });
+              if (!r.ok || result.ok === false) { note.textContent = result.error || 'Command generation failed.'; note.className = 'save-note bad'; return; }
+              document.getElementById('tier-install-command').textContent = result.command;
+              document.getElementById('tier-install-result').hidden = false;
+              note.textContent = 'Token rotated. Copy this command now.';
+              note.className = 'save-note ok';
+            });
+            var copy = document.getElementById('tier-copy-command');
+            if (copy) copy.addEventListener('click', async function () {
+              await navigator.clipboard.writeText(document.getElementById('tier-install-command').textContent);
+              copy.textContent = 'Copied';
+            });
+          })();
           (function () {
             var note = function (group, text, cls) {
               var el = document.querySelector('[data-note="' + group + '"]');
@@ -7445,6 +7638,76 @@ function startExpressServer() {
         return res.status(500).json({ ok: false, error: dashboardActionError(err), retryable: false });
       }
     });
+    app.post('/admin/passkey/registration-options', dashboardAuth, async (req, res) => {
+      try {
+        const options = await passkeyService.registrationOptions(readCookie(req, 'dm_session'), req.body?.label);
+        res.setHeader('Cache-Control', 'no-store');
+        return res.json(options);
+      } catch (err) {
+        return res.status(400).json({ error: err.message });
+      }
+    });
+    app.post('/admin/passkey/register', dashboardAuth, async (req, res) => {
+      try {
+        const passkey = await passkeyService.finishRegistration(readCookie(req, 'dm_session'), req.body);
+        audit('dashboard_passkey_enrolled', dashboardActor(req));
+        return res.json({ ok: true, label: passkey.label });
+      } catch (_err) {
+        audit('dashboard_passkey_enrollment_failed', { ...dashboardActor(req), reason: 'verification_failed' });
+        return res.status(400).json({ error: 'Passkey enrollment failed.' });
+      }
+    });
+    app.post('/admin/passkey/rename', dashboardAuth, (req, res) => {
+      const credentialId = String(req.body?.credentialId || '');
+      const label = String(req.body?.label || '').trim();
+      if (!credentialId || !label || label.length > 64) return res.status(400).json({ error: 'Credential and a label of 1 to 64 characters are required.' });
+      if (!renamePasskey(credentialId, label)) return res.status(404).json({ error: 'Passkey not found.' });
+      audit('dashboard_passkey_renamed', dashboardActor(req));
+      return res.json({ ok: true });
+    });
+    app.post('/admin/passkey/revoke', dashboardAuth, (req, res) => {
+      const credentialId = String(req.body?.credentialId || '');
+      if (listPasskeys().length === 1 && !CONFIG.DASHBOARD_ADMIN_PASSWORD && !CONFIG.DASHBOARD_ADMIN_TOKEN) {
+        return res.status(409).json({ error: 'Configure the password fallback before revoking the last passkey.' });
+      }
+      if (!revokePasskey(credentialId)) return res.status(404).json({ error: 'Passkey not found.' });
+      audit('dashboard_passkey_revoked', dashboardActor(req));
+      return res.json({ ok: true });
+    });
+    app.post('/admin/action/tier-node', dashboardAuth, (req, res) => {
+      const name = String(req.body?.name || '').trim().toLowerCase();
+      const usableGb = Number(req.body?.usableGb);
+      const access = req.body?.access;
+      const demandSource = req.body?.demandSource;
+      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name) || !Number.isInteger(usableGb) || usableGb < 1
+        || !['open', 'restricted'].includes(access) || !['tautulli', 'plex', 'atime'].includes(demandSource)) {
+        audit('dashboard_tier_node_upserted', { ...dashboardActor(req), ok: false, node: name || null, reason: 'invalid_request' });
+        return res.status(400).json({ ok: false, error: 'Enter a valid node name, capacity, access, and demand source.' });
+      }
+      const { created, node } = upsertTierNode({ name, usable_bytes: usableGb * 1024 ** 3, access, demand_source: demandSource, full: req.body?.full === true });
+      audit('dashboard_tier_node_upserted', { ...dashboardActor(req), ok: true, node: name, created });
+      return res.json({ ok: true, node: { name: node.name }, message: created ? 'Node registered.' : 'Node updated.' });
+    });
+    app.post('/admin/action/tier-token', dashboardAuth, (req, res) => {
+      const node = String(req.body?.node || '').trim().toLowerCase();
+      const folderRoot = String(req.body?.folderRoot || '').trim();
+      const syncthingApiKey = String(req.body?.syncthingApiKey || '').trim();
+      const syncthingFolderId = String(req.body?.syncthingFolderId || '').trim();
+      const mountRoot = String(req.body?.mountRoot || '').trim();
+      const mountMarker = String(req.body?.mountMarker || '').trim();
+      if (req.body?.confirmed !== true) return res.status(400).json({ ok: false, error: 'Token rotation confirmation is required.' });
+      if (!getTierNode(node)) return res.status(404).json({ ok: false, error: 'Node not found.' });
+      if (!folderRoot || !syncthingApiKey || !syncthingFolderId || ((mountRoot || mountMarker) && !(mountRoot && mountMarker))) {
+        return res.status(400).json({ ok: false, error: 'Folder root, Syncthing API key, and folder ID are required. Mount root and marker must be supplied together.' });
+      }
+      upsertTierNode({ name: node, folder_root: folderRoot });
+      const token = setTierAgentToken(node);
+      const botUrl = CONFIG.TUNNEL_DOMAIN ? `https://${CONFIG.TUNNEL_DOMAIN}` : `http://127.0.0.1:${CONFIG.PORT}`;
+      const command = tierInstallCommand({ botUrl, node, token, folderRoot, syncthingApiKey, syncthingFolderId, mountRoot, mountMarker });
+      audit('dashboard_tier_agent_token_rotated', { ...dashboardActor(req), node });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ ok: true, command });
+    });
     app.post('/admin/action/search', dashboardAuth, async (req, res) => {
       const kind = req.body?.kind;
       const seriesId = Number(req.body?.seriesId);
@@ -7468,9 +7731,10 @@ function startExpressServer() {
             audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'cooldown', seriesId, seasonNumber, nextEligible });
             return res.status(409).json({ ok: false, error, nextEligible });
           }
-          await triggerSeasonSearch(seriesId, seasonNumber);
+          const command = await triggerSeasonSearch(seriesId, seasonNumber);
           recordSeasonSearch({ seriesId, seasonNumber, seriesTitle: series.title, missing: missing.length });
-          audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, seasonNumber, title: series.title });
+          monitorSeasonSearch({ seriesId, seriesTitle: series.title, seasonNumber, missingAtSearch: missing.length, commandId: command?.id });
+          audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, seasonNumber, title: series.title, commandId: command?.id || null });
           return res.json({ ok: true, message: `Sonarr accepted the S${pad(seasonNumber)} season search for ${series.title}.` });
         }
         const episode = episodes.find(ep => Number(ep.id) === episodeId && ep.monitored && !ep.hasFile

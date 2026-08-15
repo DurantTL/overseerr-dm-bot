@@ -143,6 +143,14 @@ test('quotaBlockReason: a zero/missing limit never blocks', async () => {
   db.close();
 });
 
+test('quotaBlockReason: dashboard checks surface unavailable quota', async () => {
+  const sb = loadSandbox(['quotaBlockReason'], {
+    fetchUserQuota: async () => { throw new Error('Seerr unavailable'); },
+  });
+  await assert.rejects(sb.run("quotaBlockReason('seerrUser1', 'u1', 'movie', null, true)"), /Seerr unavailable/);
+  assert.strictEqual(await sb.run("quotaBlockReason('seerrUser1', 'u1', 'movie')"), null);
+});
+
 function makeMember(id, hasRole) {
   const state = { hasRole, added: 0, removed: 0 };
   return {

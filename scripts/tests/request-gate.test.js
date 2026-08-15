@@ -84,6 +84,22 @@ test('request-gate: pending list returns every valid stash entry', () => {
   assert.strictEqual(rows[0].createdAt, '2026-01-01 00:00:00');
 });
 
+test('request-gate: notice identifiers only attach to a pending request', () => {
+  const payload = pendingRequest();
+  const raw = JSON.stringify(payload);
+  let update;
+  const sandbox = loadSandbox(['setPendingRequestNotice'], {
+    getSetting: () => raw,
+    db: { prepare: () => ({ run: (...args) => { update = args; return { changes: 1 }; } }) },
+  });
+  assert.strictEqual(sandbox.run("setPendingRequestNotice('abcd1234', 'channel', 'message')"), true);
+  assert.deepStrictEqual(JSON.parse(update[0]), { ...payload, approvalChannelId: 'channel', approvalMessageId: 'message' });
+  assert.deepStrictEqual(update.slice(1), ['pending_request:abcd1234', raw]);
+
+  const consumed = loadSandbox(['setPendingRequestNotice'], { getSetting: () => null });
+  assert.strictEqual(consumed.run("setPendingRequestNotice('abcd1234', 'channel', 'message')"), false);
+});
+
 test('request-gate: happy path performs approval side effects and returns identifiers', async () => {
   const { gate, state } = build();
   const result = await gate.approveGatedRequest({ nonce: 'abcd1234', actor: discordActor, azPreAuth: true });
