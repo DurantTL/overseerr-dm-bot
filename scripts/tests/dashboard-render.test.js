@@ -2,6 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { loadSandbox } = require('./extract');
+const { normalizeTierFolders, prepareTierNodeInstall } = require('../../src/tier-node-setup');
 const {
   escapeHtml,
   renderPage,
@@ -121,21 +122,28 @@ test('dashboard-render: renderPage', () => {
 });
 
 test('dashboard-render: tier install command is complete and shell quoted', () => {
+  const folders = [
+    { id: 'movies', path: "/mnt/media's/Movies" },
+    { id: 'tv', path: '/mnt/media/TV Shows' },
+    { id: '4k', path: '/mnt/media/4k' },
+    { id: 'family', path: '/mnt/media/Family Films' },
+  ];
   const command = tierInstallCommand({
     botUrl: 'https://bot.example',
     node: 'edge-one',
     token: 'secret-token',
-    folderRoot: "/mnt/media's",
+    folders,
     syncthingApiKey: 'api-key',
-    syncthingFolderId: 'media',
     mountRoot: '/mnt',
     mountMarker: '.mounted',
   });
   assert.match(command, /export TIER_AGENT_TOKEN='secret-token'/);
   assert.strictEqual(command.match(/secret-token/g).length, 1);
-  assert.match(command, /TIER_FOLDER_ROOT='\/mnt\/media'"'"'s'/);
   assert.match(command, /SYNCTHING_API_KEY='api-key'/);
-  assert.match(command, /SYNCTHING_FOLDER_ID='media'/);
+  assert.match(command, /TIER_FOLDERS=/);
+  assert.doesNotMatch(command, /TIER_FOLDER_ROOT|SYNCTHING_FOLDER_ID/);
+  const encoded = command.match(/TIER_FOLDERS='((?:[^']|'"'"')+)'/)[1].replace(/'"'"'/g, "'");
+  assert.deepStrictEqual(JSON.parse(encoded), folders);
   assert.match(command, /TIER_MOUNT_ROOT='\/mnt'/);
   assert.match(command, /TIER_MOUNT_MARKER='\.mounted'/);
   assert.doesNotMatch(command, /CHANGEME/);
@@ -150,10 +158,36 @@ test('dashboard-render: tier node status distinguishes lifecycle states', () => 
 });
 
 test('dashboard-render: tier setup contains no agent token', () => {
-  const html = renderTierNodeSetup([{ name: 'edge-one' }]);
+  const html = renderTierNodeSetup([{ name: 'edge-one', folders: [
+    { folderId: 'movies', folderRoot: '/mnt/media/Movies' },
+    { folderId: 'tv', folderRoot: '/mnt/media/TV Shows' },
+  ] }]);
   assert.match(html, /tier-install-form/);
   assert.match(html, /Set up|Generate install command/);
+  assert.strictEqual((html.match(/class="tier-folder-row"/g) || []).length, 4, 'four folder rows are immediately available');
+  assert.match(html, /movies/);
+  assert.match(html, /\/mnt\/media\/TV Shows/);
+  assert.match(html, /Add folder/);
   assert.doesNotMatch(html, /secret-token/);
+});
+
+test('tier node setup: validates multi-folder pairs without arbitrary single-folder assumptions', () => {
+  const folders = normalizeTierFolders([
+    { id: 'movies', path: '/mnt/media/Movies/' },
+    { id: 'tv', path: '/mnt/media/TV Shows' },
+    { id: '4k', path: '/mnt/media/4k' },
+    { id: 'family', path: '/mnt/media/Family Films' },
+  ]);
+  assert.strictEqual(folders.length, 4);
+  assert.strictEqual(folders[0].path, '/mnt/media/Movies', 'trailing slash is normalized');
+  assert.throws(() => normalizeTierFolders([{ id: 'same', path: '/one' }, { id: 'same', path: '/two' }]), /listed more than once/);
+  assert.throws(() => normalizeTierFolders([{ id: 'movies', path: 'relative/path' }]), /absolute Linux path/);
+  assert.throws(() => normalizeTierFolders([{ id: '', path: '/mnt/media/Movies' }]), /both a Syncthing folder ID and a local path/);
+  const setup = prepareTierNodeInstall({ syncthingApiKey: 'key', folders, mountRoot: '/mnt/media/', mountMarker: '.tier-media-ok' });
+  assert.strictEqual(setup.mountRoot, '/mnt/media');
+  assert.throws(() => prepareTierNodeInstall({ syncthingApiKey: 'key', folders, mountRoot: '/srv/other', mountMarker: '.ok' }), /parent of every/);
+  assert.throws(() => prepareTierNodeInstall({ syncthingApiKey: 'key', folders, mountRoot: '/mnt/media' }), /supplied together/);
+  assert.throws(() => prepareTierNodeInstall({ syncthingApiKey: 'key', folders, mountRoot: '/mnt/media', mountMarker: '../unsafe' }), /relative path/);
 });
 
 test('dashboard actions: arr response details are returned', () => {

@@ -4,7 +4,7 @@
 #
 #   export TIER_AGENT_TOKEN=<token from /tier-node token>
 #   curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" __BOT_URL__/agent/install/__NODE__ \
-#     | sudo -E env TIER_FOLDER_ROOT=/mnt/media SYNCTHING_API_KEY=... SYNCTHING_FOLDER_ID=... sh
+#     | sudo -E env SYNCTHING_API_KEY=... TIER_FOLDERS='[{"id":"movies","path":"/mnt/media/Movies"}]' sh
 #
 # Config comes from the environment, never from prompts: stdin is the script itself when piped,
 # so an interactive `read` would silently consume the rest of this file instead of waiting.
@@ -22,19 +22,44 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root (pipe to 'sudo -E sh', and keep -E so your env vars survive)"
 
 missing=''
-for var in TIER_AGENT_TOKEN TIER_FOLDER_ROOT SYNCTHING_API_KEY SYNCTHING_FOLDER_ID; do
+for var in TIER_AGENT_TOKEN SYNCTHING_API_KEY; do
   eval "val=\${$var:-}"
   [ -n "$val" ] || missing="$missing $var"
 done
+[ -n "${TIER_FOLDERS:-}" ] || {
+  [ -n "${TIER_FOLDER_ROOT:-}" ] || missing="$missing TIER_FOLDER_ROOT-or-TIER_FOLDERS"
+  [ -n "${SYNCTHING_FOLDER_ID:-}" ] || missing="$missing SYNCTHING_FOLDER_ID-or-TIER_FOLDERS"
+}
 [ -z "$missing" ] || die "missing required environment:$missing
 Re-run with them set, e.g.
-  sudo -E env TIER_FOLDER_ROOT=/mnt/media SYNCTHING_API_KEY=abc SYNCTHING_FOLDER_ID=aaaaa-bbbbb sh"
+  sudo -E env SYNCTHING_API_KEY=abc TIER_FOLDERS='[{\"id\":\"movies\",\"path\":\"/mnt/media/Movies\"}]' sh"
 
 command -v node >/dev/null 2>&1 || die "node not found — the agent needs Node 18+ (it uses global fetch)"
 NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]')
 [ "$NODE_MAJOR" -ge 18 ] || die "node $NODE_MAJOR is too old — the agent needs Node 18+"
 command -v curl >/dev/null 2>&1 || die "curl not found"
-[ -d "$TIER_FOLDER_ROOT" ] || die "TIER_FOLDER_ROOT ($TIER_FOLDER_ROOT) does not exist on this host"
+
+# Parse the same JSON/compact multi-folder format as agent.js, validate every root before changing
+# the host, and pre-render systemd's write allowlist with correct quoting for paths containing spaces.
+FOLDER_UNIT_LINES=$(node -e '
+const fs = require("fs");
+const raw = String(process.env.TIER_FOLDERS || "").trim();
+let folders;
+if (raw) {
+  folders = raw.startsWith("[")
+    ? JSON.parse(raw).map(f => ({ id: String(f.id ?? f.folderId ?? ""), root: String(f.path ?? f.root ?? f.folderRoot ?? "") }))
+    : raw.split(";").filter(Boolean).map(pair => { const i = pair.indexOf(":"); if (i < 1) throw new Error(`invalid TIER_FOLDERS entry: ${pair}`); return { id: pair.slice(0, i), root: pair.slice(i + 1) }; });
+} else {
+  folders = [{ id: process.env.SYNCTHING_FOLDER_ID || "", root: process.env.TIER_FOLDER_ROOT || "" }];
+}
+if (!folders.length) throw new Error("no folders configured");
+for (const folder of folders) {
+  folder.root = folder.root.replace(/\/+$/, "");
+  if (!folder.id || !folder.root) throw new Error("every folder needs an id and path");
+  if (!fs.statSync(folder.root).isDirectory()) throw new Error(`${folder.root} is not a directory`);
+  process.stdout.write(`ReadWritePaths=${JSON.stringify(folder.root)}\n`);
+}
+') || die "TIER_FOLDERS is invalid or one of its local paths does not exist"
 
 say "Installing the tier agent for node '$NODE_NAME' from $BOT_URL"
 
@@ -60,17 +85,19 @@ cat > "$ENV_FILE.new" <<ENVEOF
 TIER_BOT_URL=$BOT_URL
 TIER_NODE=$NODE_NAME
 TIER_AGENT_TOKEN=$TIER_AGENT_TOKEN
-TIER_FOLDER_ROOT=$TIER_FOLDER_ROOT
 TIER_STATE_DIR=$STATE_DIR
 SYNCTHING_URL=${SYNCTHING_URL:-http://127.0.0.1:8384}
 SYNCTHING_API_KEY=$SYNCTHING_API_KEY
-SYNCTHING_FOLDER_ID=$SYNCTHING_FOLDER_ID
 ENVEOF
+[ -z "${TIER_FOLDERS:-}" ] || node -e 'process.stdout.write(`TIER_FOLDERS=${JSON.stringify(process.env.TIER_FOLDERS)}\n`)' >> "$ENV_FILE.new"
+[ -n "${TIER_FOLDERS:-}" ] || {
+  printf 'TIER_FOLDER_ROOT=%s\n' "$TIER_FOLDER_ROOT" >> "$ENV_FILE.new"
+  printf 'SYNCTHING_FOLDER_ID=%s\n' "$SYNCTHING_FOLDER_ID" >> "$ENV_FILE.new"
+}
 [ -z "${TIER_MOUNT_ROOT:-}" ] || printf 'TIER_MOUNT_ROOT=%s\n' "$TIER_MOUNT_ROOT" >> "$ENV_FILE.new"
 [ -z "${TIER_MOUNT_MARKER:-}" ] || printf 'TIER_MOUNT_MARKER=%s\n' "$TIER_MOUNT_MARKER" >> "$ENV_FILE.new"
 [ -z "${TIER_EXPECTED_UUID:-}" ] || printf 'TIER_EXPECTED_UUID=%s\n' "$TIER_EXPECTED_UUID" >> "$ENV_FILE.new"
 [ -z "${TIER_REPORT_INVENTORY:-}" ] || printf 'TIER_REPORT_INVENTORY=%s\n' "$TIER_REPORT_INVENTORY" >> "$ENV_FILE.new"
-[ -z "${TIER_FOLDERS:-}" ] || printf 'TIER_FOLDERS=%s\n' "$TIER_FOLDERS" >> "$ENV_FILE.new"
 chmod 600 "$ENV_FILE.new"
 mv "$ENV_FILE.new" "$ENV_FILE"
 umask 022
@@ -93,10 +120,10 @@ PrivateTmp=true
 NoNewPrivileges=true
 UNITEOF
 
-# The folder root has to be writable for pruning; add it (and the mount root, if guarded) explicitly.
+# Every folder root has to be writable for pruning; add each one (and the guarded mount) explicitly.
 {
-  printf 'ReadWritePaths=%s\n' "$TIER_FOLDER_ROOT"
-  [ -z "${TIER_MOUNT_ROOT:-}" ] || printf 'ReadWritePaths=%s\n' "$TIER_MOUNT_ROOT"
+  printf '%s\n' "$FOLDER_UNIT_LINES"
+  [ -z "${TIER_MOUNT_ROOT:-}" ] || node -e 'process.stdout.write(`ReadWritePaths=${JSON.stringify(process.env.TIER_MOUNT_ROOT)}\n`)'
 } >> /etc/systemd/system/tier-agent.service
 
 cat > /etc/systemd/system/tier-agent.timer <<'TIMEREOF'

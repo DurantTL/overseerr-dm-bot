@@ -28,7 +28,7 @@ const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
@@ -60,6 +60,7 @@ const { normalizeSearchQuery, searchDashboard } = require('./src/search');
 const { runEpisodeRecoverySweep, previewEpisodeRecoverySweep } = require('./src/episode-recovery');
 const { createRequestGate } = require('./src/request-gate');
 const { passkeyRp, createPasskeyService } = require('./src/passkeys');
+const { prepareTierNodeInstall } = require('./src/tier-node-setup');
 
 // Centralized embed palette so every notification shares one consistent look.
 const COLORS = {
@@ -6450,16 +6451,18 @@ async function handleTierNodeCommand(interaction) {
 
   if (sub === 'token') {
     if (!getTierNode(name)) return interaction.reply({ content: `❌ Unknown node \`${name}\` — add it first.`, ephemeral: true });
+    const folders = listTierNodeFolders(name).filter(folder => folder.folderRoot)
+      .map(folder => ({ id: folder.folderId || 'CHANGEME_FOLDER_ID', path: folder.folderRoot }));
+    if (!folders.length) {
+      return interaction.reply({ content: `❌ \`${name}\` has no Syncthing folders. Add each one with \`/tier-node folder add\` before rotating its token.`, ephemeral: true });
+    }
     const raw = setTierAgentToken(name);
     audit('tier_agent_token_rotated', { actorDiscordId: interaction.user.id, node: name });
     const botUrl = CONFIG.TUNNEL_DOMAIN ? `https://${CONFIG.TUNNEL_DOMAIN}` : `http://127.0.0.1:${CONFIG.PORT}`;
     // Shown once, so hand over the finished command rather than a token and a documentation hunt.
-    const install = [
-      `export TIER_AGENT_TOKEN=${raw}`,
-      `curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" ${botUrl}/agent/install/${name} \\`,
-      '  | sudo -E env TIER_FOLDER_ROOT=/mnt/media SYNCTHING_API_KEY=CHANGEME SYNCTHING_FOLDER_ID=CHANGEME sh',
-    ].join('\n');
-    return interaction.reply({ content: `🔑 Agent token for \`${name}\` — **shown once**, and it replaces any previous token.\n\nRun this **on that node** (fill in the three CHANGEME/media values first):\n\`\`\`sh\n${install}\n\`\`\`\nIt installs the agent to \`/opt/tier-agent\`, writes the token to root-only \`/etc/tier-agent.env\`, enables a 15-minute systemd timer, and runs once so you see immediately whether it worked. Add \`TIER_MOUNT_ROOT\`/\`TIER_MOUNT_MARKER\` to the \`env\` list if the media lives on an external drive.`, ephemeral: true });
+    const install = tierInstallCommand({ botUrl, node: name, token: raw, folders, syncthingApiKey: 'CHANGEME' });
+    const placeholders = folders.some(folder => folder.id === 'CHANGEME_FOLDER_ID') ? ' and folder-ID placeholders' : '';
+    return interaction.reply({ content: `🔑 Agent token for \`${name}\` — **shown once**, and it replaces any previous token.\n\nRun this **on that node** after replacing the API-key${placeholders}:\n\`\`\`sh\n${install}\n\`\`\`\nAll ${folders.length} registered folder(s) are included. It installs the agent to \`/opt/tier-agent\`, writes the token to root-only \`/etc/tier-agent.env\`, enables a 15-minute systemd timer, and runs once so you see immediately whether it worked. Add \`TIER_MOUNT_ROOT\`/\`TIER_MOUNT_MARKER\` to the \`env\` list if the media lives on an external drive.`, ephemeral: true });
   }
 
   // sub === 'add' (also edits an existing node — only supplied options change)
@@ -8127,7 +8130,7 @@ function startExpressServer() {
             <h2>📦 Tier Nodes</h2>
             ${renderItemList(tierItems, 'No tier nodes registered yet.')}
           </div>
-          ${renderTierNodeSetup(tierNodes)}
+          ${renderTierNodeSetup(tierNodes.map(node => ({ ...node, folders: listTierNodeFolders(node.name) })))}
           <div class="card">
             <h2>🩺 Edge Readiness</h2>
             ${renderItemList(edgeChecks.map(c => ({ state: c.status === 'fail' ? 'down' : c.status, title: c.name, sub: c.detail })), 'No edge checks available.')}
@@ -8243,13 +8246,51 @@ function startExpressServer() {
               var form = document.getElementById('tier-install-form');
               if (!form) return;
               form.elements.node.value = btn.dataset.setupNode;
+              form.elements.node.dispatchEvent(new Event('change'));
               document.getElementById('tier-node-setup').scrollIntoView({ behavior: 'smooth' });
-              form.elements.folderRoot.focus();
+              var firstFolder = form.querySelector('[name="folderId"]');
+              if (firstFolder) firstFolder.focus();
             });
           });
           (function () {
             var registerForm = document.getElementById('tier-register-form');
             var installForm = document.getElementById('tier-install-form');
+            var folderList = document.getElementById('tier-folder-list');
+            var folderRow = function (folder) {
+              var row = document.createElement('div');
+              row.className = 'tier-folder-row';
+              row.innerHTML = '<label>Syncthing folder ID<input name="folderId" placeholder="e.g. movies"></label>'
+                + '<label>Local folder path<input name="folderRoot" placeholder="/mnt/media/Media/Movies"></label>'
+                + '<button class="btn tier-folder-remove" type="button">Remove</button>';
+              row.querySelector('[name="folderId"]').value = folder && (folder.folderId || folder.id) || '';
+              row.querySelector('[name="folderRoot"]').value = folder && (folder.folderRoot || folder.path) || '';
+              return row;
+            };
+            var ensureFourFolderRows = function () {
+              if (!folderList) return;
+              while (folderList.children.length < 4) folderList.appendChild(folderRow());
+            };
+            if (folderList) {
+              folderList.addEventListener('click', function (event) {
+                var button = event.target.closest('.tier-folder-remove');
+                if (!button) return;
+                button.closest('.tier-folder-row').remove();
+                ensureFourFolderRows();
+                window.__dirtySettings = true;
+              });
+              document.getElementById('tier-folder-add').addEventListener('click', function () {
+                folderList.appendChild(folderRow());
+                window.__dirtySettings = true;
+              });
+            }
+            if (installForm) installForm.elements.node.addEventListener('change', function () {
+              var option = this.options[this.selectedIndex];
+              var folders = [];
+              try { folders = JSON.parse(option.dataset.folders || '[]'); } catch (_e) {}
+              folderList.replaceChildren();
+              folders.forEach(function (folder) { folderList.appendChild(folderRow(folder)); });
+              ensureFourFolderRows();
+            });
             [registerForm, installForm].filter(Boolean).forEach(function (form) {
               form.addEventListener('input', function () { window.__dirtySettings = true; });
             });
@@ -8267,15 +8308,31 @@ function startExpressServer() {
             });
             if (installForm) installForm.addEventListener('submit', async function (event) {
               event.preventDefault();
-              if (!confirm('Rotate this node token? The existing agent will stop working until this new command is installed.')) return;
               var values = Object.fromEntries(new FormData(installForm));
-              values.confirmed = true;
+              values.folders = [].slice.call(folderList.querySelectorAll('.tier-folder-row')).map(function (row) {
+                return { id: row.querySelector('[name="folderId"]').value.trim(), path: row.querySelector('[name="folderRoot"]').value.trim() };
+              }).filter(function (folder) { return folder.id || folder.path; });
+              delete values.folderId;
+              delete values.folderRoot;
               var note = document.getElementById('tier-install-note');
+              if (!values.folders.length || values.folders.some(function (folder) { return !folder.id || !folder.path; })) {
+                note.textContent = 'Add at least one complete folder ID/path pair; remove or finish partial rows.';
+                note.className = 'save-note bad';
+                return;
+              }
+              if (!!values.mountRoot !== !!values.mountMarker) {
+                note.textContent = 'Mount root and mount marker must be supplied together.';
+                note.className = 'save-note bad';
+                return;
+              }
+              if (!confirm('Save this complete folder list and rotate the node token? The existing agent will stop working until this new command is installed.')) return;
+              values.confirmed = true;
               var r = await fetch('/admin/action/tier-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
               var result = await r.json().catch(function () { return {}; });
               if (!r.ok || result.ok === false) { note.textContent = result.error || 'Command generation failed.'; note.className = 'save-note bad'; return; }
               document.getElementById('tier-install-command').textContent = result.command;
               document.getElementById('tier-install-result').hidden = false;
+              installForm.elements.node.options[installForm.elements.node.selectedIndex].dataset.folders = JSON.stringify(values.folders);
               note.textContent = 'Token rotated. Copy this command now.';
               note.className = 'save-note ok';
             });
@@ -8476,21 +8533,25 @@ function startExpressServer() {
     });
     app.post('/admin/action/tier-token', dashboardAuth, (req, res) => {
       const node = String(req.body?.node || '').trim().toLowerCase();
-      const folderRoot = String(req.body?.folderRoot || '').trim();
-      const syncthingApiKey = String(req.body?.syncthingApiKey || '').trim();
-      const syncthingFolderId = String(req.body?.syncthingFolderId || '').trim();
-      const mountRoot = String(req.body?.mountRoot || '').trim();
-      const mountMarker = String(req.body?.mountMarker || '').trim();
+      const legacyFolderRoot = String(req.body?.folderRoot || '').trim();
+      const legacyFolderId = String(req.body?.syncthingFolderId || '').trim();
       if (req.body?.confirmed !== true) return res.status(400).json({ ok: false, error: 'Token rotation confirmation is required.' });
       if (!getTierNode(node)) return res.status(404).json({ ok: false, error: 'Node not found.' });
-      if (!folderRoot || !syncthingApiKey || !syncthingFolderId || ((mountRoot || mountMarker) && !(mountRoot && mountMarker))) {
-        return res.status(400).json({ ok: false, error: 'Folder root, Syncthing API key, and folder ID are required. Mount root and marker must be supplied together.' });
+      let setup;
+      try {
+        setup = prepareTierNodeInstall({
+          ...req.body,
+          folders: req.body?.folders || [{ id: legacyFolderId, path: legacyFolderRoot }],
+        });
       }
-      upsertTierNode({ name: node, folder_root: folderRoot });
+      catch (err) { return res.status(400).json({ ok: false, error: err.message }); }
+      const { folders, syncthingApiKey, mountRoot, mountMarker } = setup;
+      upsertTierNode({ name: node, folder_root: folders[0].path });
+      replaceTierNodeFolders(node, folders);
       const token = setTierAgentToken(node);
       const botUrl = CONFIG.TUNNEL_DOMAIN ? `https://${CONFIG.TUNNEL_DOMAIN}` : `http://127.0.0.1:${CONFIG.PORT}`;
-      const command = tierInstallCommand({ botUrl, node, token, folderRoot, syncthingApiKey, syncthingFolderId, mountRoot, mountMarker });
-      audit('dashboard_tier_agent_token_rotated', { ...dashboardActor(req), node });
+      const command = tierInstallCommand({ botUrl, node, token, folders, syncthingApiKey, mountRoot, mountMarker });
+      audit('dashboard_tier_agent_token_rotated', { ...dashboardActor(req), node, folderCount: folders.length });
       res.setHeader('Cache-Control', 'no-store');
       return res.json({ ok: true, command });
     });
