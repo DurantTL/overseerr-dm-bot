@@ -7,7 +7,62 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { once } = require('events');
-const { CONFIG, validateConfig, startConfigErrorServer, configWarnings, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings } = require('../../src/config');
+const runtimeSettings = require('../../src/runtime-settings');
+const { renderSettingsGroup } = require('../../src/dashboard-render');
+const { CONFIG, validateConfig, startConfigErrorServer, configWarnings, resolveFileEnv, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings } = require('../../src/config');
+
+const SECRET_CONFIG_KEYS = [
+  'DISCORD_BOT_TOKEN', 'OVERSEERR_API_KEY', 'WEBHOOK_SECRET', 'PLEX_TOKEN', 'PLEX_PASSWORD',
+  'RADARR_API_KEY', 'RADARR_4K_API_KEY', 'SONARR_API_KEY', 'PROWLARR_API_KEY', 'TAUTULLI_API_KEY',
+  'PREMIUMIZE_API_KEY', 'RTORRENT_URL', 'TAUTULLI_WEBHOOK_SECRET', 'DASHBOARD_ADMIN_PASSWORD',
+  'DASHBOARD_ADMIN_TOKEN', 'SESSION_SECRET', 'TIER_NODES_SEED',
+];
+
+test('config: every credential accepts _FILE and trims one trailing newline', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-secret-'));
+  try {
+    const file = path.join(dir, 'secret');
+    fs.writeFileSync(file, '  value  \r\n', 'utf8');
+    const env = Object.fromEntries(SECRET_CONFIG_KEYS.map(key => [`${key}_FILE`, file]));
+    const resolved = resolveFileEnv(env);
+    for (const key of SECRET_CONFIG_KEYS) assert.strictEqual(resolved[key], '  value  ', `${key} reads its file`);
+
+    fs.writeFileSync(file, 'value\n\n', 'utf8');
+    assert.strictEqual(resolveFileEnv({ WEBHOOK_SECRET_FILE: file }).WEBHOOK_SECRET, 'value\n', 'only one newline is trimmed');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('config: _FILE conflicts and unreadable files fail with the key name', () => {
+  assert.strictEqual(resolveFileEnv({ UNRELATED_FILE: '/missing' }).LOG_LEVEL, undefined, 'unrelated process _FILE values are ignored');
+  assert.throws(
+    () => resolveFileEnv({ OVERSEERR_API_KEY: 'direct', OVERSEERR_API_KEY_FILE: '/unused' }).OVERSEERR_API_KEY,
+    /OVERSEERR_API_KEY and OVERSEERR_API_KEY_FILE are both set/,
+  );
+  assert.throws(
+    () => resolveFileEnv({ WEBHOOK_SECRET_FILE: '/missing/config-secret' }).WEBHOOK_SECRET,
+    /could not read WEBHOOK_SECRET_FILE for WEBHOOK_SECRET/,
+  );
+});
+
+test('config: secret values stay out of warnings, dashboard settings, and audit metadata', () => {
+  const previous = Object.fromEntries(SECRET_CONFIG_KEYS.map(key => [key, CONFIG[key]]));
+  const sentinel = 'secret-value-that-must-not-render';
+  try {
+    for (const key of SECRET_CONFIG_KEYS) CONFIG[key] = sentinel;
+    assert.ok(!JSON.stringify(configWarnings()).includes(sentinel));
+    const store = { get: () => null, set: () => {}, del: () => {} };
+    const html = runtimeSettings.describeRuntimeSettings({ config: CONFIG, env: {}, store }).map(renderSettingsGroup).join('');
+    assert.ok(!html.includes(sentinel));
+
+    const source = fs.readFileSync(path.join(__dirname, '..', '..', 'index.js'), 'utf8');
+    const auditCalls = [...source.matchAll(/\baudit\(([\s\S]*?)\);/g)].map(match => match[0]).join('\n');
+    for (const key of SECRET_CONFIG_KEYS) assert.ok(!auditCalls.includes(`CONFIG.${key}`), `${key} is not written to audit metadata`);
+  } finally {
+    Object.assign(CONFIG, previous);
+  }
+});
 
 test('config: validateConfig requires webhook secrets whenever TUNNEL_DOMAIN is set', () => {
   // A minimal, otherwise-valid baseline so only the field under test trips validateConfig().
