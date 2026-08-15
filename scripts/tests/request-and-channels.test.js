@@ -400,12 +400,28 @@ test('request progress: future release and stalled DMs persist once-only state',
     tunable: () => 72,
     sqliteUtcMs: value => Date.parse(`${value}Z`),
     fmtDuration: () => '1 day',
+    COLORS: { INFO: 1, WARN: 2 },
+    mediaTypeLabel: () => 'Movie',
+    brandedEmbed: color => ({
+      color, fields: [],
+      setTitle(value) { this.title = value; return this; },
+      setDescription(value) { this.description = value; return this; },
+      addFields(...values) { this.fields.push(...values); return this; },
+    }),
   });
+
+  // Both DMs are branded embeds, not plain strings — a requester-facing notice should look like
+  // every other embed the bot sends them, and the field layout is what carries the detail.
+  const embedOf = message => message.embeds[0];
+  const fieldNames = embed => embed.fields.map(field => field.name);
 
   assert.deepStrictEqual({ ...await bed.run('sweepRequestProgressNotifications([])') }, { eta: 1, stalled: 0 });
   assert.deepStrictEqual({ ...await bed.run('sweepRequestProgressNotifications([])') }, { eta: 0, stalled: 0 });
   assert.strictEqual(messages.length, 1, 'closed DMs still persist the once-only marker');
-  assert.match(messages[0].message, /not available to download yet/);
+  assert.match(embedOf(messages[0].message).title, /Not Out Yet — The Matrix/);
+  assert.match(embedOf(messages[0].message).description, /not available to download yet/);
+  assert.deepStrictEqual(fieldNames(embedOf(messages[0].message)), ['Type', 'Expected', 'What happens next']);
+  assert.match(embedOf(messages[0].message).fields[1].value, /Digital release is January 1\./);
 
   settings.clear();
   messages.length = 0;
@@ -413,7 +429,9 @@ test('request progress: future release and stalled DMs persist once-only state',
   assert.deepStrictEqual({ ...await bed.run('sweepRequestProgressNotifications([])') }, { eta: 0, stalled: 1 });
   assert.deepStrictEqual({ ...await bed.run('sweepRequestProgressNotifications([])') }, { eta: 0, stalled: 0 });
   assert.strictEqual(messages.length, 1);
-  assert.match(messages[0].message, /cannot confirm an active download or a future release date/);
+  assert.match(embedOf(messages[0].message).title, /Still Looking — The Matrix/);
+  assert.match(embedOf(messages[0].message).description, /cannot confirm an active download or a future release date/);
+  assert.deepStrictEqual(fieldNames(embedOf(messages[0].message)), ['Type', 'Waiting', 'What happens next']);
 });
 
 test('request progress: member preference mutes automated outcome DMs', async () => {

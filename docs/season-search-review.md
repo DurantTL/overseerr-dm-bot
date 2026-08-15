@@ -127,6 +127,13 @@ For contrast, the escalation watchdog's "Nothing Found Yet" alert (index.js:900-
 right: the finding, the context, and `Escalate to AvistaZ` / `Ignore` buttons in the message.
 That's the pattern to copy.
 
+**Partially addressed.** These arrive in batches — one per season per sweep — so the verification
+embeds were restructured from a prose paragraph into a short finding plus `Aired missing` /
+`Sonarr command` / `In queue` / `Next step` fields, and the requester-facing progress DMs were
+converted from plain text to branded embeds to match. That makes them scannable; it does **not**
+give them a payload. The candidate list, rejection reasons, and grab button still depend on the
+interactive search below.
+
 ### Gap 4 — two scoring brains that never talk
 
 `src/grab.js` contains a full release-name parser and scorer: `parseReleaseName` (resolution,
