@@ -100,6 +100,36 @@ test('request-gate: notice identifiers only attach to a pending request', () => 
   assert.strictEqual(consumed.run("setPendingRequestNotice('abcd1234', 'channel', 'message')"), false);
 });
 
+test('request-gate: stale approvals expire once and notify the requester', async () => {
+  const row = { ...pendingRequest(), nonce: 'abcd1234', createdAt: Date.now() - 22 * 86400000 };
+  const pending = new Map([[row.nonce, row]]);
+  const notifications = []; const audits = []; const updates = [];
+  const sandbox = loadSandbox(['sweepPendingApprovals'], {
+    listPendingRequests: () => [...pending.values()],
+    takePendingRequest: nonce => { const value = pending.get(nonce) || null; pending.delete(nonce); return value; },
+    tunable: key => ({ PENDING_APPROVAL_EXPIRE_DAYS: 21, PENDING_APPROVAL_REQUESTER_HOURS: 48, PENDING_APPROVAL_NUDGE_HOURS: 24 }[key]),
+    db: { prepare: () => ({ run: (...args) => updates.push(args) }) },
+    dmUser: async (id, message) => notifications.push({ id, message }),
+    brandedEmbed: () => ({ setTitle() { return this; }, setDescription(value) { this.description = value; return this; } }),
+    COLORS: { WARN: 1 },
+    closePendingRequestNotice: async () => {},
+    deleteSetting: () => {},
+    getSetting: () => null,
+    setSetting: () => {},
+    notifyChannel: async () => true,
+    fmtDuration: value => String(value),
+    audit: (action, metadata) => audits.push({ action, metadata }),
+    log: { warn() {} },
+  });
+  const result = await sandbox.run('sweepPendingApprovals()');
+  assert.deepStrictEqual({ expired: result.expired, waiting: result.waiting }, { expired: 1, waiting: 0 });
+  assert.strictEqual(pending.size, 0);
+  assert.strictEqual(notifications.length, 1);
+  assert.match(notifications[0].message.embeds[0].description, /expired/i);
+  assert.strictEqual(audits[0].action, 'request_approval_expired');
+  assert.strictEqual(updates.length, 1);
+});
+
 test('request-gate: happy path performs approval side effects and returns identifiers', async () => {
   const { gate, state } = build();
   const result = await gate.approveGatedRequest({ nonce: 'abcd1234', actor: discordActor, azPreAuth: true });

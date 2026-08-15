@@ -159,11 +159,22 @@ function scheduleTunableSweep({ label, minutesKey, enabledKey, fn, firstRunDelay
 }
 
 const runningSweeps = new Set();
+const automationRuns = new Map();
+function recordAutomationRun(name, state) {
+  automationRuns.set(name, state);
+  setSetting(`automation_run:${name}`, JSON.stringify(state));
+}
 async function runGuardedSweep(name, fn) {
   if (runningSweeps.has(name)) return { ok: false, busy: true };
   runningSweeps.add(name);
   try {
-    return { ok: true, result: await fn() };
+    recordAutomationRun(name, { status: 'running', startedAt: Date.now(), finishedAt: null, error: null });
+    const result = await fn();
+    recordAutomationRun(name, { status: 'ok', startedAt: automationRuns.get(name).startedAt, finishedAt: Date.now(), error: null });
+    return { ok: true, result };
+  } catch (err) {
+    recordAutomationRun(name, { status: 'failed', startedAt: automationRuns.get(name).startedAt, finishedAt: Date.now(), error: err.message });
+    throw err;
   } finally {
     runningSweeps.delete(name);
   }
@@ -375,6 +386,7 @@ function markApprovalNoticePosted(requestId) {
 // one admin double-clicking) both pass the initial lookup before either finishes, producing
 // duplicate Plex invites / Seerr users / DMs for the same person.
 const plexGateInFlight = new Set();
+const buttonActionsInFlight = new Set();
 
 // "45m" / "1h 30m" — the escalation delay as shown in embeds and logs.
 const escalationDelayLabel = () => fmtDuration(tunable('ESCALATION_DELAY_MINUTES') * 60000);
@@ -434,6 +446,45 @@ async function closePendingRequestNotice(pending) {
   const channel = await client.channels.fetch(pending.approvalChannelId);
   const message = await channel.messages.fetch(pending.approvalMessageId);
   await message.edit({ components: [] });
+}
+
+async function sweepPendingApprovals() {
+  const now = Date.now();
+  const pending = listPendingRequests();
+  let expired = 0; let requesterUpdates = 0;
+  for (const item of pending) {
+    const age = now - Number(item.createdAt || 0);
+    if (age >= tunable('PENDING_APPROVAL_EXPIRE_DAYS') * 86400000) {
+      const claimed = takePendingRequest(item.nonce);
+      if (!claimed) continue;
+      db.prepare("UPDATE requests SET status = 'cancelled' WHERE requested_by_discord_id = ? AND media_id = ? AND is_4k = ? AND status = 'pending'")
+        .run(claimed.discordId, `tmdb:${claimed.tmdbId}`, claimed.is4k ? 1 : 0);
+      await dmUser(claimed.discordId, { embeds: [brandedEmbed(COLORS.WARN)
+        .setTitle('Request Approval Expired')
+        .setDescription(`**${claimed.label}** was not reviewed within ${tunable('PENDING_APPROVAL_EXPIRE_DAYS')} days, so it expired without reaching Seerr. You can submit it again with \`/request\`.`)] });
+      await closePendingRequestNotice(claimed).catch(err => log.warn(`Could not close expired approval notice for ${claimed.label}: ${err.message}`));
+      deleteSetting(`pending_requester_update:${item.nonce}`);
+      audit('request_approval_expired', { targetDiscordId: claimed.discordId, title: claimed.label, nonce: item.nonce });
+      expired++;
+      continue;
+    }
+    if (age >= tunable('PENDING_APPROVAL_REQUESTER_HOURS') * 3600000 && !getSetting(`pending_requester_update:${item.nonce}`)) {
+      await dmUser(item.discordId, `⏳ **${item.label}** is still waiting for an admin to review it. Nothing has been sent to Seerr yet.`);
+      setSetting(`pending_requester_update:${item.nonce}`, String(now));
+      requesterUpdates++;
+    }
+  }
+
+  const overdue = listPendingRequests().filter(item => now - Number(item.createdAt || 0) >= tunable('PENDING_APPROVAL_NUDGE_HOURS') * 3600000);
+  const fingerprint = overdue.map(item => item.nonce).sort().join(',');
+  if (fingerprint && fingerprint !== getSetting('pending_approval_nudge_fingerprint')) {
+    const oldest = Math.max(...overdue.map(item => now - Number(item.createdAt || now)));
+    const sent = await notifyChannel('requests', `⏳ **${overdue.length} request${overdue.length === 1 ? '' : 's'} waiting for approval** · oldest ${fmtDuration(oldest)}\n${overdue.slice(0, 10).map(item => `• **${item.label}** — <@${item.discordId}>`).join('\n')}\nRun \`/pending\` to review them.`);
+    if (sent) setSetting('pending_approval_nudge_fingerprint', fingerprint);
+  } else if (!fingerprint) {
+    deleteSetting('pending_approval_nudge_fingerprint');
+  }
+  return { acted: expired + requesterUpdates, expired, requesterUpdates, waiting: overdue.length };
 }
 
 const { approveGatedRequest, denyGatedRequest } = createRequestGate({
@@ -720,6 +771,10 @@ async function sweepEscalations() {
     if (action === 'expire') {
       setEscalationState(row.id, 'expired');
       audit('escalation_expired', { mediaId: row.media_id, title: row.title });
+      if (row.requested_by_discord_id) {
+        await dmUser(row.requested_by_discord_id, `⚠️ **${row.title}** could not be found by any configured source within ${cfg.maxAgeDays} days. It is no longer being escalated automatically; ask an admin if you want it retried.`);
+        audit('request_exhausted_notified', { targetDiscordId: row.requested_by_discord_id, mediaId: row.media_id, title: row.title });
+      }
       continue;
     }
     const waited = fmtDuration(Date.now() - row.approved_at);
@@ -2265,6 +2320,7 @@ async function sweepBackup() {
     notifyChannel('system', { embeds: [brandedEmbed(COLORS.DANGER)
       .setTitle('🛑 Database Backup Failed')
       .setDescription(`\`\`\`${err.message}\`\`\``)] });
+    throw err;
   }
 }
 
@@ -2514,7 +2570,7 @@ function homeServerFor(discordId) {
 }
 
 const slashCommands = [
-  new SlashCommandBuilder().setName('download').setDescription('Get a secure download link').addStringOption(o => o.setName('title').setDescription('Movie or show title').setRequired(true)).addIntegerOption(o => o.setName('season').setDescription('Season number')).addIntegerOption(o => o.setName('episode').setDescription('Episode number')).addBooleanOption(o => o.setName('one_time').setDescription('One-time download link')),
+  new SlashCommandBuilder().setName('download').setDescription('Get a secure download link').addStringOption(o => o.setName('title').setDescription('Movie or show title').setRequired(true)).addIntegerOption(o => o.setName('season').setDescription('Season number').setMinValue(0).setMaxValue(99)).addIntegerOption(o => o.setName('episode').setDescription('Episode number').setMinValue(1).setMaxValue(999)).addBooleanOption(o => o.setName('one_time').setDescription('One-time download link')),
   new SlashCommandBuilder().setName('request').setDescription('Request a movie or show (searches Seerr)').addStringOption(o => o.setName('title').setDescription('Start typing to search — pick from the list').setRequired(true).setAutocomplete(true)).addBooleanOption(o => o.setName('is4k').setDescription('Request the 4K version')),
   new SlashCommandBuilder().setName('link').setDescription('Link a user to Plex email (invites + sets up Seerr)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('email').setDescription('Plex email — start typing to search linked/Plex users').setRequired(true).setAutocomplete(true)),
   new SlashCommandBuilder().setName('unlink').setDescription('Unlink a user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)),
@@ -2529,6 +2585,7 @@ const slashCommands = [
   new SlashCommandBuilder().setName('invite-post').setDescription('Post a public "Request Plex Access" button in this channel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('reinvite').setDescription('Re-send a Plex invite to a linked user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('Discord user currently in the server')).addStringOption(o => o.setName('email').setDescription('Any linked user — start typing to search the DB').setAutocomplete(true)),
   new SlashCommandBuilder().setName('requests').setDescription('Show the most recent Seerr requests').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addIntegerOption(o => o.setName('count').setDescription('How many to show (default 10)').setMinValue(1).setMaxValue(25)),
+  new SlashCommandBuilder().setName('pending').setDescription('Review requests awaiting approval').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('whorequested').setDescription('Find who requested a tracked title').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('title').setDescription('Start typing — matches all tracked requests').setRequired(true).setAutocomplete(true)),
   new SlashCommandBuilder().setName('audit').setDescription('Audit log queries').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('recent').setDescription('Recent entries').addIntegerOption(o => o.setName('count').setDescription('Count').setMinValue(1).setMaxValue(100)))
@@ -2598,8 +2655,8 @@ const slashCommands = [
   new SlashCommandBuilder().setName('tier-node').setDescription('Manage the tiering node registry').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('add').setDescription('Add or update a node')
       .addStringOption(o => o.setName('name').setDescription('Node name, e.g. california').setRequired(true))
-      .addIntegerOption(o => o.setName('usable_gb').setDescription('Pool usable capacity in GB'))
-      .addIntegerOption(o => o.setName('headroom_pct').setDescription('Free-space floor % (default 15; ~25 for old drives)'))
+      .addIntegerOption(o => o.setName('usable_gb').setDescription('Pool usable capacity in GB').setMinValue(0))
+      .addIntegerOption(o => o.setName('headroom_pct').setDescription('Free-space floor % (default 15; ~25 for old drives)').setMinValue(0).setMaxValue(95))
       .addStringOption(o => o.setName('access').setDescription('Who may stream from it').addChoices({ name: 'open (all linked users)', value: 'open' }, { name: 'restricted (explicit member set)', value: 'restricted' }))
       .addStringOption(o => o.setName('demand_source').setDescription('Demand signal').addChoices({ name: 'tautulli (watch history)', value: 'tautulli' }, { name: 'plex (PMS watch history, no Tautulli)', value: 'plex' }, { name: 'atime (file last-read LRU)', value: 'atime' }))
       .addStringOption(o => o.setName('transport').setDescription('Sync transport').addChoices({ name: 'syncthing', value: 'syncthing' }, { name: 'rclone', value: 'rclone' }))
@@ -2611,8 +2668,8 @@ const slashCommands = [
       .addStringOption(o => o.setName('atime_mask').setDescription('UTC window to launder Plex-maintenance reads from atime, e.g. 09:00-13:00'))
       .addBooleanOption(o => o.setName('full').setDescription('Never-pruned master (holds everything)'))
       .addBooleanOption(o => o.setName('sticky').setDescription('Extra-low churn (old drives): longer warm window'))
-      .addIntegerOption(o => o.setName('warm_days').setDescription('Override: recently-watched protection window'))
-      .addIntegerOption(o => o.setName('fresh_days').setDescription('Override: newly-added grace window')))
+      .addIntegerOption(o => o.setName('warm_days').setDescription('Override: recently-watched protection window').setMinValue(0).setMaxValue(3650))
+      .addIntegerOption(o => o.setName('fresh_days').setDescription('Override: newly-added grace window').setMinValue(0).setMaxValue(3650)))
     .addSubcommand(s => s.setName('list').setDescription('List all nodes'))
     .addSubcommand(s => s.setName('enable').setDescription('Enable a node').addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true)))
     .addSubcommand(s => s.setName('disable').setDescription('Disable a node (skipped by the planner entirely)').addStringOption(o => o.setName('name').setDescription('Node name').setRequired(true)))
@@ -2637,14 +2694,27 @@ const slashCommands = [
 ].map(v => v.toJSON());
 
 async function registerSlashCommands() {
-  const rest = new REST({ version: '10' }).setToken(CONFIG.DISCORD_BOT_TOKEN);
-  await rest.put(Routes.applicationGuildCommands(CONFIG.DISCORD_CLIENT_ID, CONFIG.DISCORD_GUILD_ID), { body: slashCommands });
-  log.ok(`Registered ${slashCommands.length} slash command(s)`);
+  try {
+    const rest = new REST({ version: '10' }).setToken(CONFIG.DISCORD_BOT_TOKEN);
+    await rest.put(Routes.applicationGuildCommands(CONFIG.DISCORD_CLIENT_ID, CONFIG.DISCORD_GUILD_ID), { body: slashCommands });
+    log.ok(`Registered ${slashCommands.length} slash command(s)`);
+  } catch (err) {
+    log.error(`Slash command registration failed: ${err.message}. Retrying in 5 minutes.`);
+    notifyChannel('system', `❌ Slash command registration failed: ${err.message}. The bot and automations are still running; registration retries in 5 minutes.`);
+    setTimeout(registerSlashCommands, 5 * 60000).unref();
+  }
 }
 
 async function sweepRequestStatuses() {
   const remoteRequests = await fetchSeerrRequests();
   const result = reconcileRequestStatuses(remoteRequests);
+  for (const change of result.changed.filter(row => row.to === 'failed')) {
+    const request = db.prepare('SELECT * FROM requests WHERE id = ?').get(change.id);
+    if (!request?.requested_by_discord_id || getSetting(`request_failure_notified:${change.id}`)) continue;
+    await dmUser(request.requested_by_discord_id, `❌ **${request.title}** failed in Seerr. It is no longer downloading; an admin can inspect Seerr and the arr queue before retrying it.`);
+    setSetting(`request_failure_notified:${change.id}`, String(Date.now()));
+    audit('request_failure_notified', { targetDiscordId: request.requested_by_discord_id, requestId: request.overseerr_request_id, title: request.title });
+  }
   if (result.changed.length || result.repaired.length) {
     log.info(`Reconciled request tracking: ${result.changed.length} status update(s), ${result.repaired.length} stale pending row(s) removed`);
   }
@@ -2672,11 +2742,13 @@ client.once('ready', async () => {
     if (sent) log.ok(`Deploy ping posted to channel ${channelFor('deploy')}${process.env.GIT_SHA ? ` (image ${process.env.GIT_SHA})` : ' (no GIT_SHA baked in — this image was not built by CI)'}`);
   }
   rehydratePendingEmails();
-  await registerSlashCommands();
   startExpressServer();
+  registerSlashCommands();
+  scheduleTunableSweep({ label: 'Pending-approval sweep', minutesKey: 'PENDING_APPROVAL_CHECK_MINUTES', fn: () => runGuardedSweep('pending-approvals', sweepPendingApprovals) });
+  log.ok(`Pending-approval sweep every ${tunable('PENDING_APPROVAL_CHECK_MINUTES')} min (nudge ${tunable('PENDING_APPROVAL_NUDGE_HOURS')}h, requester update ${tunable('PENDING_APPROVAL_REQUESTER_HOURS')}h, expire ${tunable('PENDING_APPROVAL_EXPIRE_DAYS')}d)`);
   if (CONFIG.REQUEST_RECONCILE_MINUTES > 0) {
-    sweepRequestStatuses().catch(err => log.warn(`Request reconciliation failed: ${err.message}`));
-    setInterval(() => sweepRequestStatuses().catch(err => log.warn(`Request reconciliation failed: ${err.message}`)), CONFIG.REQUEST_RECONCILE_MINUTES * 60000).unref();
+    runGuardedSweep('request-reconcile', sweepRequestStatuses).catch(err => log.warn(`Request reconciliation failed: ${err.message}`));
+    setInterval(() => runGuardedSweep('request-reconcile', sweepRequestStatuses).catch(err => log.warn(`Request reconciliation failed: ${err.message}`)), CONFIG.REQUEST_RECONCILE_MINUTES * 60000).unref();
     log.ok(`Seerr request reconciliation running every ${CONFIG.REQUEST_RECONCILE_MINUTES} min`);
   }
   // The arr URLs are a static prerequisite (no arrs configured, nothing to watch); the cadence and
@@ -2711,35 +2783,35 @@ client.once('ready', async () => {
     const resumed = resetInterruptedGrabTransfers();
     if (resumed) log.info(`Re-queued ${resumed} AvistaZ transfer(s) interrupted by restart`);
     if (CONFIG.GRAB_CHECK_MINUTES > 0) {
-      setInterval(() => sweepGrabJobs().catch(err => log.warn(`Grab sweep failed: ${err.message}`)), CONFIG.GRAB_CHECK_MINUTES * 60000).unref();
+      setInterval(() => runGuardedSweep('grab', sweepGrabJobs).catch(err => log.warn(`Grab sweep failed: ${err.message}`)), CONFIG.GRAB_CHECK_MINUTES * 60000).unref();
     }
     pumpGrabTransfers().catch(err => log.warn(`Grab transfer pump failed: ${err.message}`));
     log.ok(`AvistaZ direct grab enabled → seedbox rTorrent (sweep every ${CONFIG.GRAB_CHECK_MINUTES} min, mode ${CONFIG.GRAB_MODE}, daily limit ${CONFIG.AVISTAZ_DAILY_GRAB_LIMIT || 'unlimited'})`);
   }
   if (CONFIG.RTORRENT_ADOPT_ENABLED && adoptPipelineReady() && CONFIG.RTORRENT_ADOPT_CHECK_MINUTES > 0) {
-    setInterval(() => sweepAdoptCandidates().catch(err => log.warn(`Adoption sweep failed: ${err.message}`)), CONFIG.RTORRENT_ADOPT_CHECK_MINUTES * 60000).unref();
+    setInterval(() => runGuardedSweep('adoption', sweepAdoptCandidates).catch(err => log.warn(`Adoption sweep failed: ${err.message}`)), CONFIG.RTORRENT_ADOPT_CHECK_MINUTES * 60000).unref();
     log.ok(`rTorrent adoption discovery running every ${CONFIG.RTORRENT_ADOPT_CHECK_MINUTES} min (labels: ${CONFIG.RTORRENT_ADOPT_LABELS.join(', ') || 'none'}, auto: ${CONFIG.RTORRENT_ADOPT_AUTO ? 'on' : 'off'})`);
   }
   if (CONFIG.JANITOR_CHECK_MINUTES > 0) {
-    setInterval(() => janitorSweep().catch(err => log.warn(`Janitor sweep failed: ${err.message}`)), CONFIG.JANITOR_CHECK_MINUTES * 60000).unref();
+    setInterval(() => runGuardedSweep('janitor', janitorSweep).catch(err => log.warn(`Janitor sweep failed: ${err.message}`)), CONFIG.JANITOR_CHECK_MINUTES * 60000).unref();
     log.ok(`Janitor running every ${CONFIG.JANITOR_CHECK_MINUTES} min (grace deletes: ${CONFIG.ENABLE_DELETION ? 'on' : 'off'}, retention: ${CONFIG.RETENTION_ENFORCEMENT ? 'on' : 'off'}, dry-run: ${CONFIG.DELETION_DRY_RUN ? 'on' : 'off'})`);
   }
   if (CONFIG.BACKUP_INTERVAL_HOURS > 0) {
-    setInterval(() => sweepBackup(), CONFIG.BACKUP_INTERVAL_HOURS * 3600000).unref();
+    setInterval(() => runGuardedSweep('backup', sweepBackup).catch(err => log.warn(`Backup sweep failed: ${err.message}`)), CONFIG.BACKUP_INTERVAL_HOURS * 3600000).unref();
     log.ok(`DB backup running every ${CONFIG.BACKUP_INTERVAL_HOURS}h → ${CONFIG.BACKUP_DIR} (keeping last ${CONFIG.BACKUP_KEEP_COUNT})`);
   }
   if (CONFIG.MONTHLY_RECAP_ENABLED) {
     // Checked hourly, like the other "last_run" gated sweeps in janitorSweep, but this one fires
     // rarely enough to run on its own interval rather than folding into that sweep.
-    setInterval(() => sweepMonthlyRecap().catch(err => log.warn(`Monthly recap sweep failed: ${err.message}`)), 3600000).unref();
+    setInterval(() => runGuardedSweep('monthly-recap', sweepMonthlyRecap).catch(err => log.warn(`Monthly recap sweep failed: ${err.message}`)), 3600000).unref();
     log.ok('Monthly community recap enabled — posts to the whats_new channel roughly every 30 days');
   }
   if (tautulliConfigured() && CONFIG.PLAYBACK_CHECK_MINUTES > 0) {
-    setInterval(() => sweepTranscodes().catch(err => log.warn(`Transcode sweep failed: ${err.message}`)), CONFIG.PLAYBACK_CHECK_MINUTES * 60000).unref();
+    setInterval(() => runGuardedSweep('transcode', sweepTranscodes).catch(err => log.warn(`Transcode sweep failed: ${err.message}`)), CONFIG.PLAYBACK_CHECK_MINUTES * 60000).unref();
     log.ok(`Transcode watchdog running every ${CONFIG.PLAYBACK_CHECK_MINUTES} min`);
   }
   if (premiumizeConfigured() && CONFIG.PREMIUMIZE_CHECK_MINUTES > 0) {
-    setInterval(() => sweepPremiumizeTransfers().catch(err => log.warn(`Premiumize sweep failed: ${err.message}`)), CONFIG.PREMIUMIZE_CHECK_MINUTES * 60000).unref();
+    setInterval(() => runGuardedSweep('premiumize', sweepPremiumizeTransfers).catch(err => log.warn(`Premiumize sweep failed: ${err.message}`)), CONFIG.PREMIUMIZE_CHECK_MINUTES * 60000).unref();
     log.ok(`Premiumize transfer watchdog running every ${CONFIG.PREMIUMIZE_CHECK_MINUTES} min (stuck after ${CONFIG.PREMIUMIZE_STUCK_AFTER_MINUTES} min)`);
   }
   if (stagingConfigured()) {
@@ -2748,19 +2820,19 @@ client.once('ready', async () => {
     const resumed = resetInterruptedStageJobs();
     if (resumed) log.info(`Re-queued ${resumed} stage job(s) interrupted by restart`);
     if (CONFIG.STAGE_CHECK_MINUTES > 0) {
-      setInterval(() => pumpStageQueue().catch(err => log.warn(`Stage queue pump failed: ${err.message}`)), CONFIG.STAGE_CHECK_MINUTES * 60000).unref();
+      setInterval(() => runGuardedSweep('stage-queue', pumpStageQueue).catch(err => log.warn(`Stage queue pump failed: ${err.message}`)), CONFIG.STAGE_CHECK_MINUTES * 60000).unref();
     }
     pumpStageQueue().catch(err => log.warn(`Stage queue pump failed: ${err.message}`));
     // §Phase2: reconcile the staged_items DB against the cache drive once at startup (the DB may have
     // drifted while the process was down) and then periodically.
     sweepStagedReconciliation().catch(err => log.warn(`Stage reconciliation failed: ${err.message}`));
     if (CONFIG.STAGE_RECONCILE_MINUTES > 0) {
-      setInterval(() => sweepStagedReconciliation().catch(err => log.warn(`Stage reconciliation failed: ${err.message}`)), CONFIG.STAGE_RECONCILE_MINUTES * 60000).unref();
+      setInterval(() => runGuardedSweep('stage-reconcile', sweepStagedReconciliation).catch(err => log.warn(`Stage reconciliation failed: ${err.message}`)), CONFIG.STAGE_RECONCILE_MINUTES * 60000).unref();
     }
     log.ok(`Plex Home staging enabled → ${CONFIG.STAGE_RCLONE_REMOTE} (queue check every ${CONFIG.STAGE_CHECK_MINUTES} min, min free ${CONFIG.STAGE_MIN_FREE_GB} GB)`);
   }
   if (CONFIG.PH_TUNNEL_HEALTH_URL && CONFIG.PH_TUNNEL_CHECK_MINUTES > 0) {
-    setInterval(() => sweepTunnelHealth().catch(err => log.warn(`Tunnel health sweep failed: ${err.message}`)), CONFIG.PH_TUNNEL_CHECK_MINUTES * 60000).unref();
+    setInterval(() => runGuardedSweep('tunnel', sweepTunnelHealth).catch(err => log.warn(`Tunnel health sweep failed: ${err.message}`)), CONFIG.PH_TUNNEL_CHECK_MINUTES * 60000).unref();
     log.ok(`PH tunnel watchdog running every ${CONFIG.PH_TUNNEL_CHECK_MINUTES} min (alert after ${CONFIG.PH_TUNNEL_FAILS_BEFORE_ALERT} failures)`);
   }
 });
@@ -2816,7 +2888,10 @@ client.on('guildMemberRemove', async member => {
 // and the public Request Access modal.
 async function postAccessRequestToAdmins(user, email) {
   const adminChannel = await safeGetChannel(CONFIG.ADMIN_CHANNEL_ID);
-  if (!adminChannel) return;
+  if (!adminChannel) {
+    log.error(`Access request for ${user.id} could not be posted: ADMIN_CHANNEL_ID is unavailable.`);
+    return false;
+  }
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`plex_approve:${user.id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`plex_deny:${user.id}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
@@ -2827,6 +2902,7 @@ async function postAccessRequestToAdmins(user, email) {
   const avatarUrl = user.displayAvatarURL?.();
   if (avatarUrl) requestEmbed.setThumbnail(avatarUrl);
   await adminChannel.send({ embeds: [requestEmbed], components: [row] });
+  return true;
 }
 
 client.on('messageCreate', async message => {
@@ -2840,17 +2916,17 @@ client.on('messageCreate', async message => {
   // Approve button and run the full chain (absorb + Plex invite + Seerr) the moment they reply.
   if (getSetting(`admin_invited:${message.author.id}`)) {
     db.prepare('DELETE FROM app_settings WHERE key = ?').run(`admin_invited:${message.author.id}`);
-    const { absorbed, plexStatus, seerrStatus } = await applyFullChainLink(message.author.id, email, message.author.username);
+    const { absorbed, plexStatus, seerrStatus, plexOk, seerrOk } = await applyFullChainLink(message.author.id, email, message.author.username);
     audit('user_linked', { targetDiscordId: message.author.id, email, source: 'admin_invite_auto', absorbedPlexRow: absorbed?.discord_id || null });
     const hadAccess = plexStatus.includes('already');
-    await message.reply({ embeds: [brandedEmbed(COLORS.SUCCESS)
-      .setTitle('🎉 You\'re In!')
-      .setDescription(hadAccess
-        ? `You're all set — \`${email}\` already has Plex access. Use \`/help\` here to see everything I can do. 🍿`
-        : `📬 A Plex invite was sent to \`${email}\` — accept it and you're set. Use \`/help\` here to see everything I can do. 🍿`)] });
-    notifyChannel('audit', { embeds: [brandedEmbed(COLORS.SUCCESS)
-      .setTitle('✅ Admin Invite Completed')
-      .setDescription(`<@${message.author.id}> replied with \`${email}\` — auto-approved.`)
+    await message.reply({ embeds: [brandedEmbed(plexOk ? COLORS.SUCCESS : COLORS.WARN)
+      .setTitle(plexOk ? '🎉 You\'re In!' : '⚠️ Your Setup Needs Attention')
+      .setDescription(plexOk
+        ? (hadAccess ? `You're all set — \`${email}\` already has Plex access. Use \`/help\` here to see everything I can do. 🍿` : `📬 A Plex invite was sent to \`${email}\` — accept it and you're set. Use \`/help\` here to see everything I can do. 🍿`)
+        : `The Plex invite to \`${email}\` failed. An admin has the failure details and can retry your setup.`)] });
+    notifyChannel('audit', { embeds: [brandedEmbed(plexOk && seerrOk ? COLORS.SUCCESS : COLORS.WARN)
+      .setTitle(plexOk && seerrOk ? '✅ Admin Invite Completed' : '⚠️ Admin Invite Needs Attention')
+      .setDescription(`<@${message.author.id}> replied with \`${email}\`.`)
       .addFields(
         { name: 'Plex', value: plexStatus, inline: true },
         { name: 'Seerr', value: seerrStatus, inline: true },
@@ -2874,15 +2950,26 @@ client.on('messageCreate', async message => {
   // absorbed instead of becoming a duplicate pair — e.g. an existing Plex friend joining Discord.
   linkUserToEmail(message.author.id, email);
   audit('user_linked', { targetDiscordId: message.author.id, email });
-  await message.reply('✅ Thanks! Your request has been sent to the admins for approval. You\'ll get a DM here as soon as you\'re approved.');
-  await postAccessRequestToAdmins(message.author, email);
+  const posted = await postAccessRequestToAdmins(message.author, email).catch(err => {
+    log.error(`Access request for ${message.author.id} failed to post: ${err.message}`);
+    return false;
+  });
+  await message.reply(posted
+    ? '✅ Thanks! Your request has been sent to the admins for approval. You\'ll get a DM here as soon as you\'re approved.'
+    : '❌ I saved your email, but I could not notify the admins. Please tell an admin to check `ADMIN_CHANNEL_ID`; the Request Plex Access button can retry the notice.');
 });
 
 client.on('interactionCreate', async interaction => {
   try {
     if (interaction.isAutocomplete()) return handleAutocomplete(interaction);
     if (interaction.isChatInputCommand()) await handleSlashCommand(interaction);
-    if (interaction.isButton()) await handleButton(interaction);
+    if (interaction.isButton()) {
+      if (buttonActionsInFlight.has(interaction.customId)) {
+        return interaction.reply({ content: '⏳ This action is already being processed.', ephemeral: true });
+      }
+      buttonActionsInFlight.add(interaction.customId);
+      try { await handleButton(interaction); } finally { buttonActionsInFlight.delete(interaction.customId); }
+    }
     if (interaction.isStringSelectMenu()) await handleSelectMenu(interaction);
     if (interaction.isModalSubmit()) await handleModalSubmit(interaction);
   } catch (err) {
@@ -3127,6 +3214,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'invite-post') return handleInvitePostCommand(interaction);
   if (n === 'reinvite') return handleReinviteCommand(interaction);
   if (n === 'requests') return handleRequestsCommand(interaction);
+  if (n === 'pending') return handlePendingCommand(interaction);
   if (n === 'whorequested') return handleWhoRequestedCommand(interaction);
   if (n === 'audit') return handleAuditCommand(interaction);
   if (n === 'queue') return handleQueueCommand(interaction);
@@ -3179,12 +3267,12 @@ async function handleDownloadCommand(interaction) {
   const oneTime = interaction.options.getBoolean('one_time') ?? CONFIG.DOWNLOAD_ONE_TIME_LINKS_DEFAULT;
 
   let filePath; let displayTitle;
-  if (season || episode) {
+  if (season != null || episode != null) {
     const series = (await searchSeries(title))[0];
     if (!series) return interaction.editReply('❌ Series not found.');
-    const epFile = (await getEpisodeFiles(series.id)).find(f => f.seasonNumber === (season || 1) && f.episodeNumber === (episode || 1));
+    const epFile = (await getEpisodeFiles(series.id)).find(f => f.seasonNumber === (season ?? 1) && f.episodeNumber === (episode ?? 1));
     if (!epFile) return interaction.editReply('❌ Episode not found.');
-    filePath = epFile.path; displayTitle = `${series.title} S${pad(season || 1)}E${pad(episode || 1)}`;
+    filePath = epFile.path; displayTitle = `${series.title} S${pad(season ?? 1)}E${pad(episode ?? 1)}`;
   } else {
     const movie = (await searchMovies(title))[0];
     if (!movie || !movie.movieFile?.path) return interaction.editReply('❌ Movie file not found.');
@@ -3297,13 +3385,15 @@ async function applyFullChainLink(discordId, email, username) {
   const { absorbed } = linkUserToEmail(discordId, email);
   const row = getUserByDiscordId(discordId);
 
-  let plexStatus;
+  let plexStatus; let plexOk = false;
   if (row.invited) {
+    plexOk = true;
     plexStatus = absorbed ? '✅ already had access (merged Plex row)' : '✅ already invited';
   } else {
     try {
       const result = await inviteUserToPlex(email, { homeServer: homeServerFor(discordId) });
-      if (result.successCount > 0) markUserInvited(discordId);
+      plexOk = result.successCount > 0;
+      if (plexOk) markUserInvited(discordId);
       plexStatus = result.successCount > 0 ? `✅ invite sent (${result.successCount}/${result.total})` : '⚠️ invite failed on all servers';
     } catch (err) {
       audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId: discordId });
@@ -3311,7 +3401,7 @@ async function applyFullChainLink(discordId, email, username) {
     }
   }
 
-  let seerrStatus;
+  let seerrStatus; let seerrOk = false;
   try {
     const key = canonicalizeEmail(email);
     const existing = (await fetchOverseerrUsers()).find(ou => canonicalizeEmail(ou.email) === key);
@@ -3319,10 +3409,12 @@ async function applyFullChainLink(discordId, email, username) {
       markOverseerrCreated(discordId, existing.id ?? null);
       const notified = existing.id != null ? await setOverseerrDiscordNotification(existing.id, discordId) : false;
       seerrStatus = `✅ linked existing user${notified ? ' + Discord notifications' : ''}`;
+      seerrOk = true;
     } else {
       const id = await createOverseerrUser(email, discordId, username || email.split('@')[0]);
       markOverseerrCreated(discordId, id);
       seerrStatus = '✅ user created + Discord notifications';
+      seerrOk = true;
     }
   } catch (err) {
     audit('external_api_error', { provider: 'overseerr', error: err.message, targetDiscordId: discordId });
@@ -3330,7 +3422,7 @@ async function applyFullChainLink(discordId, email, username) {
   }
 
   if (plexStatus.startsWith('✅')) grantMemberRole(discordId).catch(() => {});
-  return { absorbed, plexStatus, seerrStatus };
+  return { absorbed, plexStatus, seerrStatus, plexOk, seerrOk };
 }
 
 async function handleLinkCommand(interaction) {
@@ -3341,10 +3433,10 @@ async function handleLinkCommand(interaction) {
     return interaction.reply({ content: `❌ \`${email}\` isn't a valid email address.`, ephemeral: true });
   }
   await interaction.deferReply({ ephemeral: true });
-  const { absorbed, plexStatus, seerrStatus } = await applyFullChainLink(target.id, email, target.username);
+  const { absorbed, plexStatus, seerrStatus, plexOk, seerrOk } = await applyFullChainLink(target.id, email, target.username);
   audit('user_linked', { actorDiscordId: interaction.user.id, targetDiscordId: target.id, email, source: 'slash_link', absorbedPlexRow: absorbed?.discord_id || null });
-  const embed = brandedEmbed(COLORS.SUCCESS)
-    .setTitle('🔗 User Linked')
+  const embed = brandedEmbed(plexOk && seerrOk ? COLORS.SUCCESS : COLORS.WARN)
+    .setTitle(plexOk && seerrOk ? '🔗 User Linked' : '⚠️ User Link Needs Attention')
     .setDescription(`${target.tag} → \`${email}\``)
     .addFields(
       { name: 'DB', value: absorbed ? `✅ linked (merged \`${absorbed.discord_id}\` row)` : '✅ linked', inline: false },
@@ -3568,6 +3660,56 @@ async function handleStatusCommand(interaction) {
   const invitedUsers = db.prepare('SELECT COUNT(*) AS c FROM users WHERE invited = 1').get().c;
   const pendingRequests = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get().c;
   const activeLinks = db.prepare('SELECT COUNT(*) AS c FROM download_tokens WHERE revoked = 0 AND expires_at > ?').get(Date.now()).c;
+  const warnings = configWarnings();
+
+  const automationConfig = [
+    ['pending-approvals', tunable('PENDING_APPROVAL_CHECK_MINUTES')],
+    ['request-reconcile', CONFIG.REQUEST_RECONCILE_MINUTES],
+    ['stuck', tunable('STUCK_CHECK_MINUTES')],
+    ['escalation', tunable('ESCALATION_ENABLED') ? tunable('ESCALATION_CHECK_MINUTES') : 0],
+    ['season-pack', tunable('SEASON_PACK_FIRST') ? tunable('SEASON_PACK_CHECK_MINUTES') : 0],
+    ['grab', grabConfigured() ? CONFIG.GRAB_CHECK_MINUTES : 0],
+    ['adoption', CONFIG.RTORRENT_ADOPT_ENABLED ? CONFIG.RTORRENT_ADOPT_CHECK_MINUTES : 0],
+    ['janitor', CONFIG.JANITOR_CHECK_MINUTES],
+    ['backup', CONFIG.BACKUP_INTERVAL_HOURS > 0 ? CONFIG.BACKUP_INTERVAL_HOURS * 60 : 0],
+    ['monthly-recap', CONFIG.MONTHLY_RECAP_ENABLED ? 60 : 0],
+    ['transcode', tautulliConfigured() ? CONFIG.PLAYBACK_CHECK_MINUTES : 0],
+    ['premiumize', premiumizeConfigured() ? CONFIG.PREMIUMIZE_CHECK_MINUTES : 0],
+    ['stage-queue', stagingConfigured() ? CONFIG.STAGE_CHECK_MINUTES : 0],
+    ['stage-reconcile', stagingConfigured() ? CONFIG.STAGE_RECONCILE_MINUTES : 0],
+    ['tunnel', CONFIG.PH_TUNNEL_HEALTH_URL ? CONFIG.PH_TUNNEL_CHECK_MINUTES : 0],
+  ];
+  const automationLines = automationConfig.map(([name, minutes]) => {
+    if (minutes <= 0) return `⏭️ ${name}: disabled`;
+    let run = automationRuns.get(name);
+    if (!run) {
+      const stored = getSetting(`automation_run:${name}`);
+      if (stored) {
+        try { run = JSON.parse(stored); } catch (err) { run = { status: 'failed', finishedAt: null, error: `invalid stored run state: ${err.message}` }; }
+      }
+    }
+    if (!run) return `❔ ${name}: every ${minutes}m · not run since boot`;
+    if (run.status === 'running') return `⏳ ${name}: running since ${discordTimestamp(run.startedAt)}`;
+    const detail = run.status === 'failed' ? ` · ${String(run.error).slice(0, 100)}` : '';
+    const overdue = run.finishedAt && Date.now() - run.finishedAt > Math.max(minutes * 2, minutes + 5) * 60000;
+    return `${run.status === 'ok' && !overdue ? '✅' : run.status === 'failed' ? '❌' : '⚠️'} ${name}: ${overdue ? 'overdue · last ' : `${run.status} `}${run.finishedAt ? discordTimestamp(run.finishedAt, 'R') : 'unknown'}${detail}`;
+  });
+
+  const deploymentChecks = [];
+  try {
+    fs.accessSync(path.dirname(DB_PATH), fs.constants.W_OK);
+    deploymentChecks.push(`✅ Data directory writable: \`${path.dirname(DB_PATH)}\``);
+  } catch (err) {
+    deploymentChecks.push(`❌ Data directory is not writable: \`${path.dirname(DB_PATH)}\` (${err.code || err.message})`);
+  }
+  deploymentChecks.push(fs.existsSync(CONFIG.RAID_PATH)
+    ? `✅ Media mount exists: \`${CONFIG.RAID_PATH}\``
+    : `❌ Media mount missing: \`${CONFIG.RAID_PATH}\` — check the Compose volume and \`MEDIA_HOST_PATH\`.`);
+  if (CONFIG.BACKUP_INTERVAL_HOURS > 0) {
+    deploymentChecks.push(fs.existsSync(CONFIG.BACKUP_DIR)
+      ? `✅ Backup directory exists: \`${CONFIG.BACKUP_DIR}\``
+      : `⚠️ Backup directory has not been created yet: \`${CONFIG.BACKUP_DIR}\``);
+  }
 
   const integrationKeys = ['discord', 'sqlite', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'prowlarr', 'byparr', 'raidPath', 'tunnelDomain'];
   const integrationLines = integrationKeys.filter(k => health[k] !== undefined).map(k => `${statusEmoji(health[k])} ${k}: ${health[k]}`);
@@ -3624,9 +3766,10 @@ async function handleStatusCommand(interaction) {
     return `\`${d.displayPath || d.path}\` — ${fmtSpace(d.freeSpace)} free of ${fmtSpace(d.totalSpace)} (${pctUsed}% used)${lowFlag}`;
   });
 
-  const embed = brandedEmbed(health.overall === 'ok' ? COLORS.SUCCESS : COLORS.WARN)
+  const overall = health.overall === 'ok' && !warnings.length && !deploymentChecks.some(line => line.startsWith('❌')) ? 'ok' : 'degraded';
+  const embed = brandedEmbed(overall === 'ok' ? COLORS.SUCCESS : COLORS.WARN)
     .setTitle('📊 Durant Media Server Status')
-    .setDescription(`Overall: **${String(health.overall).toUpperCase()}**`)
+    .setDescription(`Overall: **${overall.toUpperCase()}**`)
     .addFields(
       { name: 'Integrations', value: integrationLines.join('\n') || 'none', inline: false },
       { name: 'Users', value: usersSummary, inline: true },
@@ -3635,6 +3778,8 @@ async function handleStatusCommand(interaction) {
       { name: 'Storage', value: storageLines.join('\n') || 'No *arr diskspace data', inline: false },
       { name: 'DB ↔ Overseerr', value: reconcileLine, inline: false },
       { name: 'Fixable sync issues', value: fixableLine, inline: false },
+      { name: 'Configuration and Compose', value: [...deploymentChecks, ...warnings.map(w => `⚠️ ${w}`)].join('\n').slice(0, 1024) || '✅ No configuration warnings', inline: false },
+      { name: 'Automations', value: automationLines.join('\n').slice(0, 1024), inline: false },
     );
 
   // PH staging at a glance: cache free space, active stage jobs, tunnel state.
@@ -3657,7 +3802,7 @@ async function handleStatusCommand(interaction) {
     }
     embed.addFields({ name: 'PH staging', value: lines.join('\n'), inline: false });
   }
-  audit('status_checked', { actorDiscordId: interaction.user.id, overall: health.overall });
+  audit('status_checked', { actorDiscordId: interaction.user.id, overall, configWarnings: warnings.length });
   await interaction.editReply({ embeds: [embed] });
 }
 
@@ -4096,16 +4241,16 @@ async function handleInviteCommand(interaction) {
     if (!isValidEmail(email) || canonicalizeEmail(email).startsWith('__placeholder__:')) {
       return interaction.editReply(`❌ \`${email}\` isn't a valid email address.`);
     }
-    const { absorbed, plexStatus, seerrStatus } = await applyFullChainLink(target.id, email, target.username);
+    const { absorbed, plexStatus, seerrStatus, plexOk, seerrOk } = await applyFullChainLink(target.id, email, target.username);
     audit('user_linked', { actorDiscordId: interaction.user.id, targetDiscordId: target.id, email, source: 'slash_invite', absorbedPlexRow: absorbed?.discord_id || null });
     const hadAccess = plexStatus.includes('already');
-    await dmUser(target.id, { embeds: [brandedEmbed(COLORS.SUCCESS)
-      .setTitle('🎉 You\'re In!')
-      .setDescription(hadAccess
-        ? `An admin set you up on the media server — \`${email}\` already has Plex access. Use \`/help\` here to see everything I can do. 🍿`
-        : `An admin set you up on the media server! 📬 A Plex invite was sent to \`${email}\` — accept it and you're set. Use \`/help\` here to see everything I can do. 🍿`)] });
-    return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
-      .setTitle('🔗 User Invited')
+    await dmUser(target.id, { embeds: [brandedEmbed(plexOk ? COLORS.SUCCESS : COLORS.WARN)
+      .setTitle(plexOk ? '🎉 You\'re In!' : '⚠️ Your Setup Needs Attention')
+      .setDescription(plexOk
+        ? (hadAccess ? `An admin set you up on the media server — \`${email}\` already has Plex access. Use \`/help\` here to see everything I can do. 🍿` : `An admin set you up on the media server. 📬 A Plex invite was sent to \`${email}\` — accept it and you're set. Use \`/help\` here to see everything I can do. 🍿`)
+        : `The Plex invite to \`${email}\` failed. An admin has the failure details and can retry your setup.`)] });
+    return interaction.editReply({ embeds: [brandedEmbed(plexOk && seerrOk ? COLORS.SUCCESS : COLORS.WARN)
+      .setTitle(plexOk && seerrOk ? '🔗 User Invited' : '⚠️ User Invite Needs Attention')
       .setDescription(`${target.tag} → \`${email}\`${existingNote}`)
       .addFields(
         { name: 'DB', value: absorbed ? `✅ linked (merged \`${absorbed.discord_id}\` row)` : '✅ linked', inline: false },
@@ -4204,22 +4349,25 @@ async function handleModalSubmit(interaction) {
     return handleStageBulkModal(interaction);
   }
   if (interaction.customId !== 'request_access_modal') return;
+  await interaction.deferReply({ ephemeral: true });
   const email = String(interaction.fields.getTextInputValue('plex_email') || '').toLowerCase().trim();
   if (!isValidEmail(email)) {
-    return interaction.reply({ content: '❌ That doesn\'t look like a valid email address — click the button and try again.', ephemeral: true });
+    return interaction.editReply({ content: '❌ That doesn\'t look like a valid email address — click the button and try again.' });
   }
   clearPendingEmail(interaction.user.id); // a DM ask may be outstanding; the modal supersedes it
   const conflict = findConflictingRealUser(interaction.user.id, email);
   if (conflict) {
     audit('email_collision', { actorDiscordId: interaction.user.id, targetDiscordId: conflict.discord_id, email, source: 'request_access_button' });
-    await interaction.reply({ content: '⚠️ That email is already linked to another Discord account here. If that wasn\'t you, double-check the address — otherwise flag an admin to help sort it out.', ephemeral: true });
+    await interaction.editReply({ content: '⚠️ That email is already linked to another Discord account here. If that wasn\'t you, double-check the address — otherwise flag an admin to help sort it out.' });
     notifyChannel('admin', `⚠️ <@${interaction.user.id}> requested access with \`${email}\`, which is already linked to <@${conflict.discord_id}>. Needs manual review before either account is approved.`);
     return;
   }
   linkUserToEmail(interaction.user.id, email);
   audit('user_linked', { targetDiscordId: interaction.user.id, email, source: 'request_access_button' });
-  await interaction.reply({ content: `✅ Thanks! Your request for \`${email}\` was sent to the admins. You'll get a DM as soon as you're approved.`, ephemeral: true });
-  await postAccessRequestToAdmins(interaction.user, email);
+  const posted = await postAccessRequestToAdmins(interaction.user, email).catch(() => false);
+  await interaction.editReply({ content: posted
+    ? `✅ Thanks! Your request for \`${email}\` was sent to the admins. You'll get a DM as soon as you're approved.`
+    : '❌ I saved your email, but I could not notify the admins. Ask an admin to check `ADMIN_CHANNEL_ID`; clicking Request Plex Access again will retry the notice.' });
 }
 
 // Re-send a Plex invite. Resolves an email from either a linked Discord user or a raw email —
@@ -4275,6 +4423,22 @@ async function handleRequestsCommand(interaction) {
     .setDescription(rows.length ? rows.map(line).join('\n') : 'No requests recorded yet.');
   audit('requests_viewed', { actorDiscordId: interaction.user.id, count: rows.length });
   await interaction.editReply({ embeds: [embed] });
+}
+
+async function handlePendingCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  const pending = listPendingRequests();
+  if (!pending.length) return interaction.reply({ content: '✅ No requests are waiting for approval.', ephemeral: true });
+  const shown = pending.slice(0, 5);
+  const components = shown.map(item => {
+    const buttons = [new ButtonBuilder().setCustomId(`request_approve:${item.nonce}`).setLabel('Approve').setStyle(ButtonStyle.Success)];
+    if (canEscalate(item)) buttons.push(new ButtonBuilder().setCustomId(`request_approve_az:${item.nonce}`).setLabel('Approve + AvistaZ').setStyle(ButtonStyle.Primary));
+    buttons.push(new ButtonBuilder().setCustomId(`request_deny:${item.nonce}`).setLabel('Deny').setStyle(ButtonStyle.Danger));
+    return new ActionRowBuilder().addComponents(...buttons);
+  });
+  const lines = shown.map((item, index) => `${index + 1}. **${item.label}** — <@${item.discordId}> · ${discordTimestamp(item.createdAt, 'R')}`);
+  if (pending.length > shown.length) lines.push(`…and ${pending.length - shown.length} more; resolve these and run \`/pending\` again.`);
+  return interaction.reply({ embeds: [brandedEmbed(COLORS.INFO).setTitle(`⏳ Pending Approvals (${pending.length})`).setDescription(lines.join('\n'))], components, ephemeral: true });
 }
 
 async function handleWhoRequestedCommand(interaction) {
@@ -5385,6 +5549,7 @@ async function handleHelpCommand(interaction) {
       '`/status` — Show system health and stats',
       '`/doctor` — Run read-only Main → Philippines transfer and configuration checks',
       '`/requests` — Show the most recent Seerr requests',
+      '`/pending` — Review requests still awaiting approval',
       '`/whorequested` — Find who requested a title and who else is waiting',
       '`/cleanup` — Remove deleted Seerr users',
       '`/audit` — Query the audit log',
@@ -5784,6 +5949,12 @@ async function handleTierNodeCommand(interaction) {
 
   // sub === 'add' (also edits an existing node — only supplied options change)
   const usableGb = interaction.options.getInteger('usable_gb');
+  const headroomPct = interaction.options.getInteger('headroom_pct');
+  const warmDays = interaction.options.getInteger('warm_days');
+  const freshDays = interaction.options.getInteger('fresh_days');
+  if (usableGb != null && usableGb < 0) return interaction.reply({ content: '❌ `usable_gb` cannot be negative.', ephemeral: true });
+  if (headroomPct != null && (headroomPct < 0 || headroomPct > 95)) return interaction.reply({ content: '❌ `headroom_pct` must be between 0 and 95.', ephemeral: true });
+  if ([warmDays, freshDays].some(value => value != null && (value < 0 || value > 3650))) return interaction.reply({ content: '❌ `warm_days` and `fresh_days` must be between 0 and 3650.', ephemeral: true });
   const fields = { name };
   if (usableGb != null) fields.usable_bytes = usableGb * 1024 ** 3;
   for (const [opt, col] of [['headroom_pct', 'headroom_pct'], ['warm_days', 'warm_days'], ['fresh_days', 'fresh_days']]) {
@@ -5909,7 +6080,14 @@ async function handleButton(interaction) {
   if (action === 'request_access') {
     const existing = getUserByDiscordId(interaction.user.id);
     if (existing && !canonicalizeEmail(existing.email).startsWith('__placeholder__:')) {
-      return interaction.reply({ content: `✅ You're already set up with \`${existing.email}\`. Use \`/me\` to check your access, or ask an admin if the email needs changing.`, ephemeral: true });
+      if (existing.invited && existing.overseerr_created) {
+        return interaction.reply({ content: `✅ You're already set up with \`${existing.email}\`. Use \`/me\` to check your access, or ask an admin if the email needs changing.`, ephemeral: true });
+      }
+      await interaction.deferReply({ ephemeral: true });
+      const posted = await postAccessRequestToAdmins(interaction.user, existing.email).catch(() => false);
+      return interaction.editReply(posted
+        ? `✅ Your pending request for \`${existing.email}\` was posted to the admins again.`
+        : '❌ I still could not reach the admin channel. Ask an admin to check `ADMIN_CHANNEL_ID` and the bot\'s channel permissions.');
     }
     const modal = new ModalBuilder()
       .setCustomId('request_access_modal')
@@ -5964,22 +6142,22 @@ async function handleButton(interaction) {
         await interaction.deferUpdate();
         const user = getUserByDiscordId(targetDiscordId);
         if (!user) return interaction.editReply({ content: 'User not found.', components: [] });
-        let plexStatus = 'failed'; let overseerrStatus = 'failed'; let plexOk = false;
-        try { const result = await inviteUserToPlex(user.email, { homeServer: homeServerFor(targetDiscordId) }); plexOk = result.successCount > 0; if (plexOk) markUserInvited(targetDiscordId); plexStatus = `ok (${result.successCount}/${result.total})`; } catch (err) { audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId }); }
-        try { const du = await client.users.fetch(targetDiscordId); const oid = await createOverseerrUser(user.email, targetDiscordId, du.username); markOverseerrCreated(targetDiscordId, oid); overseerrStatus = `ok (${oid})`; } catch (err) { audit('external_api_error', { provider: 'overseerr', error: err.message, targetDiscordId }); }
-        if (plexOk) grantMemberRole(targetDiscordId).catch(() => {});
-        audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: 'plex_approve' });
-        // The welcome DM promises a confirmation — deliver it.
-        await dmUser(targetDiscordId, { embeds: [brandedEmbed(COLORS.SUCCESS)
-          .setTitle('🎉 You\'re In!')
-          .setDescription(`Your access request was approved!\n\n${plexOk ? `📬 A Plex invite was sent to \`${user.email}\` — accept it and you're set.` : `⚠️ Your Plex invite to \`${user.email}\` hit a snag — an admin is on it.`}\n\nOnce you're in, use \`/help\` here to see everything I can do. 🍿`)] });
-        await interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
-          .setTitle('✅ Access Approved')
+        const discordUser = await client.users.fetch(targetDiscordId).catch(() => null);
+        const { plexStatus, seerrStatus, plexOk, seerrOk } = await applyFullChainLink(targetDiscordId, user.email, discordUser?.username);
+        const complete = plexOk && seerrOk;
+        audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: 'plex_approve', plexOk, seerrOk });
+        await dmUser(targetDiscordId, { embeds: [brandedEmbed(plexOk ? COLORS.SUCCESS : COLORS.WARN)
+          .setTitle(plexOk ? '🎉 You\'re In!' : '⚠️ Your Setup Needs Attention')
+          .setDescription(plexOk
+            ? `Your access request was approved. Check \`${user.email}\` for the Plex invite, then use \`/help\` here to see what the bot can do.`
+            : `The Plex invite to \`${user.email}\` failed. An admin has the failure details and can retry your approval.`)] });
+        await interaction.editReply({ embeds: [brandedEmbed(complete ? COLORS.SUCCESS : COLORS.WARN)
+          .setTitle(complete ? '✅ Access Approved' : '⚠️ Access Setup Incomplete')
           .addFields(
             { name: 'User', value: `<@${targetDiscordId}>`, inline: true },
             { name: 'Plex', value: plexStatus, inline: true },
-            { name: 'Seerr', value: overseerrStatus, inline: true },
-          )], components: [] });
+            { name: 'Seerr', value: seerrStatus, inline: true },
+          )], components: complete ? [] : interaction.message.components });
         return;
       }
       // plex_deny
@@ -6830,9 +7008,12 @@ function startExpressServer() {
   });
 
   let publicHealthCache = { at: 0, value: null, pending: null };
+  app.get('/live', (_req, res) => res.json({ overall: 'ok', timestamp: new Date().toISOString() }));
   app.get('/health', async (_req, res) => {
     try {
-      if (publicHealthCache.value && Date.now() - publicHealthCache.at < 30000) return res.json(publicHealthCache.value);
+      if (publicHealthCache.value && Date.now() - publicHealthCache.at < 30000) {
+        return res.status(publicHealthCache.value.overall === 'ok' ? 200 : 503).json(publicHealthCache.value);
+      }
       publicHealthCache.pending ||= gatherHealth().then(value => {
         // Public health drives container checks; keep internal integration error text behind the
         // authenticated dashboard so hostnames and network details are not exposed.
@@ -6844,7 +7025,8 @@ function startExpressServer() {
         publicHealthCache.pending = null;
         throw err;
       });
-      return res.json(await publicHealthCache.pending);
+      const value = await publicHealthCache.pending;
+      return res.status(value.overall === 'ok' ? 200 : 503).json(value);
     } catch (err) {
       return res.status(503).json({ overall: 'down', error: err.message });
     }
