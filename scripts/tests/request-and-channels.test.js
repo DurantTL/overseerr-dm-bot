@@ -217,7 +217,7 @@ test('discord: every registered command dispatches and bounded options stay boun
   const source = fs.readFileSync(path.join(__dirname, '..', '..', 'index.js'), 'utf8');
   const block = source.match(/const slashCommands = \[([\s\S]*?)\]\.map\(v => v\.toJSON\(\)\);/)[1];
   const commands = Function('SlashCommandBuilder', 'PermissionFlagsBits', `return [${block}].map(v => v.toJSON());`)(SlashCommandBuilder, PermissionFlagsBits);
-  assert.strictEqual(commands.length, 46);
+  assert.strictEqual(commands.length, 47);
   assert.strictEqual(new Set(commands.map(command => command.name)).size, commands.length);
   for (const command of commands) assert.match(source, new RegExp(`if \\(n === '${command.name}'\\) return handle`), `${command.name} dispatches`);
 
@@ -346,7 +346,7 @@ test('alert cooldowns: a stuck-download alert stays suppressed after reload', as
     notifyChannel: () => { alerts++; },
     audit: () => {},
   };
-  const names = ['getAlertedAt', 'setAlertedAt', 'listAlertCooldowns', 'clearAlertCooldown', 'sweepStuckDownloads'];
+  const names = ['getAlertedAt', 'setAlertedAt', 'listAlertCooldowns', 'clearAlertCooldown', 'planStuckDownloads', 'sweepStuckDownloads'];
   const first = loadSandbox(names, stubs);
   assert.strictEqual((await first.run('sweepStuckDownloads()')).alerted, 1);
   const afterRestart = loadSandbox(names, stubs);

@@ -144,8 +144,22 @@ async function createEpisodeRecoveryWorker(deps = {}) {
   ensureSchema(db);
 
   let running = false;
-  async function performSweep() {
-    const cfg = liveConfig();
+  async function performSweep({ preview = false, values = {} } = {}) {
+    const cfg = { ...liveConfig() };
+    const recoveryKeys = {
+      EPISODE_RECOVERY_ENABLED: 'enabled',
+      EPISODE_RECOVERY_MAX_PER_RUN: 'maxPerRun',
+      EPISODE_RECOVERY_PUBLIC_GRACE_HOURS: 'publicGraceHours',
+      EPISODE_RECOVERY_AVISTAZ_GRACE_HOURS: 'avistazGraceHours',
+      EPISODE_RECOVERY_MIN_CONFIDENCE: 'minConfidence',
+      EPISODE_RECOVERY_LOOKBACK_DAYS: 'lookbackDays',
+    };
+    for (const [key, property] of Object.entries(recoveryKeys)) {
+      if (!Object.prototype.hasOwnProperty.call(values, key)) continue;
+      const parsed = runtimeSettings.validate(runtimeSettings.settingByKey(key), values[key]);
+      if (!parsed.ok) throw new Error(parsed.error);
+      cfg[property] = parsed.value;
+    }
     if (!cfg.enabled || !CONFIG.SONARR_URL || !CONFIG.PROWLARR_URL || !CONFIG.RTORRENT_URL) return { skipped: true };
     const source = { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, label: 'sonarr' };
     const tagId = await getArrTagId(source, CONFIG.AVISTAZ_TAG).catch(() => null);
@@ -165,6 +179,7 @@ async function createEpisodeRecoveryWorker(deps = {}) {
     // to know about them too — otherwise both paths would chase the same requested season.
     const requestedTvdbIds = tunable('SEASON_PACK_REQUESTED') && listRequestedTvdbIds ? listRequestedTvdbIds() : new Set();
     let acted = 0;
+    const previewItems = [];
 
     // maxPerRun caps how many episodes get actioned, so the order series are visited in decides
     // who benefits. Pinned shows go first (src/priority.js); everything else keeps Sonarr's order.
@@ -194,9 +209,11 @@ async function createEpisodeRecoveryWorker(deps = {}) {
         if (packSeasons.has(Number(episode.seasonNumber))) continue;
         const airedAt = Date.parse(episode.airDateUtc || episode.airDate || '');
         if (!isAiredEpisode(episode, now) || !Number.isFinite(airedAt) || airedAt < cutoff) continue;
-        const row = upsertMissingEpisode(db, series, episode, now);
         const key = episodeKey(episode);
         const label = episodeLabel(series, episode);
+        const row = preview
+          ? (db.prepare('SELECT * FROM episode_recovery WHERE episode_key = ?').get(key) || { first_seen_at: now })
+          : upsertMissingEpisode(db, series, episode, now);
         const activeGrab = activeJobs.some(j => {
           const claim = releaseContentClaim(j.release_title);
           return claim && claim.series && contentClaimsOverlap(claim, releaseContentClaim(label));
@@ -210,6 +227,18 @@ async function createEpisodeRecoveryWorker(deps = {}) {
           activeGrab,
         };
         const action = decideEpisodeRecoveryAction(row, facts, now, cfg);
+        if (preview) {
+          const actioned = ['search_public', 'search_avistaz'].includes(action);
+          const stage = actioned && acted >= cfg.maxPerRun ? `held by per-run cap ${cfg.maxPerRun}` : action;
+          let reason = stage;
+          if (action === 'search_public') reason = `public-search grace of ${cfg.publicGraceHours}h has elapsed`;
+          else if (action === 'search_avistaz') reason = `public search was tried at least ${cfg.avistazGraceHours}h ago`;
+          else if (action === 'wait' && !row.public_searched_at) reason = `waiting for public-search grace until ${new Date(Number(row.first_seen_at) + cfg.publicGraceHours * 3600000).toISOString()}`;
+          else if (action === 'wait' && row.public_searched_at) reason = `waiting for AvistaZ grace until ${new Date(Number(row.public_searched_at) + cfg.avistazGraceHours * 3600000).toISOString()}`;
+          previewItems.push({ title: label, reason, stage });
+          if (actioned && acted < cfg.maxPerRun) acted++;
+          continue;
+        }
         if (action === 'resolve' || action === 'ignore') {
           setEpisodeRecoveryState(db, key, action === 'resolve' ? { resolved_at: now, last_error: null } : { ignored_at: now });
           continue;
@@ -275,7 +304,7 @@ async function createEpisodeRecoveryWorker(deps = {}) {
         acted++;
       }
     }
-    return { acted };
+    return preview ? { acted, items: previewItems } : { acted };
   }
 
   async function sweep() {
@@ -312,7 +341,9 @@ async function createEpisodeRecoveryWorker(deps = {}) {
     return null;
   }
 
-  return { cfg: bootCfg, sweep, start };
+  const preview = values => performSweep({ preview: true, values });
+
+  return { cfg: bootCfg, sweep, preview, start };
 }
 
 async function startEpisodeRecovery(deps) {
@@ -327,6 +358,11 @@ const runEpisodeRecoverySweep = () => {
   return activeWorker.sweep();
 };
 
+const previewEpisodeRecoverySweep = values => {
+  if (!activeWorker) throw new Error('Episode recovery worker is not ready');
+  return activeWorker.preview(values);
+};
+
 module.exports = {
   episodeKey,
   episodeLabel,
@@ -338,5 +374,6 @@ module.exports = {
   ensureSchema,
   createEpisodeRecoveryWorker,
   runEpisodeRecoverySweep,
+  previewEpisodeRecoverySweep,
   startEpisodeRecovery,
 };
