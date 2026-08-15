@@ -34,10 +34,10 @@ const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
-const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
+const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('./src/escalation');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('./src/season-pack');
-const { rankSeasonReleases, describeRejections } = require('./src/season-release');
+const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('./src/season-release');
 const { assessAsianOrigin, describeAvistazFit } = require('./src/asian');
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
@@ -1082,10 +1082,11 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
   }
 
   // A completed search that made no (or only partial) progress is the one useful time to pay for
-  // Sonarr's interactive release query. This phase is deliberately report-only: rejected results
-  // are explained to an admin, never force-grabbed by the verifier.
+  // Sonarr's interactive release query. The verifier never force-grabs by itself: it explains the
+  // rejection and, only for candidates inside the safety limits, leaves the decision to an admin.
   let interactive = null;
   let interactiveError = null;
+  let seasonGrabOffer = null;
   if (['no_grab', 'partial'].includes(outcome) && tunable('SEASON_PACK_INTERACTIVE')) {
     try {
       const releases = await interactiveSeasonSearch(seriesId, seasonNumber);
@@ -1095,9 +1096,35 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
         packCount: ranked.filter(release => release.isPack && release.coversSeason).length,
         candidates: ranked.slice(0, 3),
       };
-      nextStep = ranked.length
-        ? 'Review the candidates above in Sonarr. This report does not force rejected releases.'
-        : 'No interactive releases were returned. Check Sonarr indexers or retry after the cooldown.';
+      const choice = chooseSeasonPack(ranked, {
+        minSeeders: tunable('SEASON_PACK_MIN_SEEDERS'),
+        maxSizeGb: tunable('SEASON_PACK_MAX_SIZE_GB'),
+        minConfidence: tunable('SEASON_PACK_MIN_CONFIDENCE'),
+      });
+      const eligible = [choice.pick, ...choice.runnersUp].filter(Boolean);
+      if (eligible.length) {
+        const candidates = eligible.map(release => ({
+          guid: release.guid,
+          indexerId: release.indexerId,
+          title: release.title,
+          size: release.size,
+          seeders: release.seeders,
+          indexer: release.indexer,
+          confidence: release.confidence,
+          displayedRank: ranked.indexOf(release) + 1,
+        }));
+        const nonce = stashGrabOffer({ kind: 'season-pack-force', seriesId, seriesTitle, seasonNumber, candidates });
+        seasonGrabOffer = { nonce, candidates };
+        audit('season_pack_force_offered', {
+          seriesId, title: seriesTitle, season: seasonNumber, candidateCount: candidates.length,
+          candidates: candidates.map(candidate => ({ title: candidate.title, indexer: candidate.indexer, seeders: candidate.seeders, confidence: candidate.confidence })),
+        });
+      }
+      nextStep = eligible.length
+        ? 'An admin can force one eligible pack below. This bypasses Sonarr’s rejection; review the reason first.'
+        : ranked.length
+          ? `No full-season candidate passed the force-grab safety limits: ${choice.why}`
+          : 'No interactive releases were returned. Check Sonarr indexers or retry after the cooldown.';
     } catch (err) {
       interactiveError = err.message;
       nextStep = 'Interactive search details could not be loaded. Check Sonarr and its indexers before retrying.';
@@ -1136,11 +1163,66 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
   if (nextStep) fields.push({ name: 'Next step', value: nextStep.slice(0, 1024), inline: false });
 
   audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, fillMode: fill.mode, releaseCount: fill.releaseCount, packReleases: fill.packReleases, episodeReleases: fill.episodeReleases, interactiveSearched: interactive !== null || interactiveError !== null, interactiveReleaseCount: interactive?.releaseCount ?? null, interactivePackCount: interactive?.packCount ?? null, interactiveError, message: commandText.slice(0, 1000) || null });
-  notifyChannel('downloads', { embeds: [brandedEmbed(color)
+  const message = { embeds: [brandedEmbed(color)
     .setTitle(title.slice(0, 256))
     .setDescription(description.slice(0, 4000))
-    .addFields(...fields)] });
-  return { outcome, status, remaining, queued, downloaded, fill, interactive, interactiveError };
+    .addFields(...fields)] };
+  if (seasonGrabOffer) {
+    message.components = [new ActionRowBuilder().addComponents(...seasonGrabOffer.candidates.map((candidate, index) =>
+      new ButtonBuilder()
+        .setCustomId(`season_grab:${seasonGrabOffer.nonce}:${index}`)
+        .setLabel(`Grab pack ${candidate.displayedRank}`)
+        .setStyle(index === 0 ? ButtonStyle.Danger : ButtonStyle.Secondary)))];
+  }
+  notifyChannel('downloads', message);
+  return { outcome, status, remaining, queued, downloaded, fill, interactive, interactiveError, seasonGrabOffer };
+}
+
+// Force-grab is intentionally a human-in-the-loop action. The offer carries only a short nonce;
+// Sonarr's long guid stays in SQLite, and consuming it makes stale/double clicks harmless.
+async function handleSeasonPackGrab(interaction, nonce, candidateIndex) {
+  if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+  const offer = takeGrabOffer(nonce);
+  if (!offer) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
+  if (offer.kind !== 'season-pack-force') {
+    restashGrabOffer(nonce, offer);
+    return interaction.reply({ content: '❌ This button does not match the cached offer.', ephemeral: true });
+  }
+  const candidate = offer.candidates?.[Number(candidateIndex)];
+  if (!candidate?.guid || candidate.indexerId == null) {
+    return interaction.update({ content: 'ℹ️ That pack is no longer available.', components: [] });
+  }
+  await interaction.deferUpdate();
+
+  const duplicate = findActiveContentDuplicate({ releaseTitle: candidate.title, mediaType: 'tv', mediaId: null });
+  if (duplicate) {
+    audit('season_pack_force_refused', { actorDiscordId: interaction.user.id, seriesId: offer.seriesId, title: offer.seriesTitle, season: offer.seasonNumber, reason: 'active_grab', jobId: duplicate.job.id, releaseTitle: candidate.title });
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle(`ℹ️ Season Already Covered — ${offer.seriesTitle} S${pad(offer.seasonNumber)}`.slice(0, 256))
+      .setDescription(`Skipped **${candidate.title}** because ${duplicate.label} is already tracked as grab job #${duplicate.job.id} (${duplicate.job.state}).`)], components: [] });
+  }
+
+  const queue = await fetchArrQueues();
+  const queued = queue.find(item => item.source.kind === 'tv' && Number(item.seriesId) === Number(offer.seriesId)
+    && Number(item.seasonNumber) === Number(offer.seasonNumber));
+  if (queued) {
+    audit('season_pack_force_refused', { actorDiscordId: interaction.user.id, seriesId: offer.seriesId, title: offer.seriesTitle, season: offer.seasonNumber, reason: 'sonarr_queue', releaseTitle: candidate.title });
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle(`ℹ️ Season Already Downloading — ${offer.seriesTitle} S${pad(offer.seasonNumber)}`.slice(0, 256))
+      .setDescription('Sonarr now has a matching queue item, so the rejected pack was not forced.')], components: [] });
+  }
+
+  try {
+    await forceGrabRelease({ guid: candidate.guid, indexerId: candidate.indexerId });
+  } catch (err) {
+    restashGrabOffer(nonce, offer);
+    audit('season_pack_force_failed', { actorDiscordId: interaction.user.id, seriesId: offer.seriesId, title: offer.seriesTitle, season: offer.seasonNumber, releaseTitle: candidate.title, error: err.message });
+    return interaction.followUp({ content: `❌ Sonarr could not grab that pack: ${err.message}\nThe buttons still work — retry after fixing the Sonarr/indexer problem.`, ephemeral: true });
+  }
+  audit('season_pack_force_grabbed', { actorDiscordId: interaction.user.id, seriesId: offer.seriesId, title: offer.seriesTitle, season: offer.seasonNumber, releaseTitle: candidate.title, indexer: candidate.indexer, seeders: candidate.seeders, confidence: candidate.confidence });
+  return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+    .setTitle(`📥 Season Pack Forced — ${offer.seriesTitle} S${pad(offer.seasonNumber)}`.slice(0, 256))
+    .setDescription(`**${candidate.title}** (${fmtSpace(candidate.size)}) was sent to Sonarr by <@${interaction.user.id}>. Sonarr's rejection was deliberately overridden; import verification remains with Sonarr.`)], components: [] });
 }
 
 function monitorSeasonSearch(args) {
@@ -6537,9 +6619,11 @@ async function handleButton(interaction) {
     return interaction.showModal(modal);
   }
 
-  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'trust_undo', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'adopt_do', 'adopt_bulk', 'adopt_cancel'].includes(action) && !isAdminInteraction(interaction)) {
+  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'trust_undo', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'season_grab', 'adopt_do', 'adopt_bulk', 'adopt_cancel'].includes(action) && !isAdminInteraction(interaction)) {
     return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
   }
+
+  if (action === 'season_grab') return handleSeasonPackGrab(interaction, parts[0], parts[1]);
 
   // One-click undo for an auto-approved request (#80) — pulls it back the same way
   // /request-cancel does, and resets the requester's trust the same as a manual denial would.

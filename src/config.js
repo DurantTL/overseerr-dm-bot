@@ -151,6 +151,9 @@ const CONFIG = (() => {
   // After a completed search makes no or partial progress, inspect Sonarr's rejected releases
   // and report the best candidates. This never force-grabs a release.
   SEASON_PACK_INTERACTIVE: parseBool(process.env.SEASON_PACK_INTERACTIVE, true),
+  SEASON_PACK_MIN_SEEDERS: Number.parseInt(process.env.SEASON_PACK_MIN_SEEDERS || '1', 10),
+  SEASON_PACK_MAX_SIZE_GB: Number.parseInt(process.env.SEASON_PACK_MAX_SIZE_GB || '200', 10),
+  SEASON_PACK_MIN_CONFIDENCE: Number.parseInt(process.env.SEASON_PACK_MIN_CONFIDENCE || '70', 10),
   SEASON_PACK_CHECK_MINUTES: Number.parseInt(process.env.SEASON_PACK_CHECK_MINUTES || '180', 10),
   // Give shows somebody actually requested the same treatment even while they're still airing:
   // most releases are "S01" season packs whatever the show's age, and a requester is waiting.

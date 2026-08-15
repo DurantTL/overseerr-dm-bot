@@ -6,7 +6,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { loadSandbox } = require('./extract');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('../../src/season-pack');
-const { rankSeasonReleases, describeRejections } = require('../../src/season-release');
+const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('../../src/season-release');
 const runtimeSettings = require('../../src/runtime-settings');
 const { priorityKey, orderByPriority, isPinned } = require('../../src/priority');
 
@@ -250,9 +250,24 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
   const notices = [];
   const audits = [];
   const interactiveCalls = [];
+  const offers = [];
+  class FakeButton {
+    setCustomId(value) { this.customId = value; return this; }
+    setLabel(value) { this.label = value; return this; }
+    setStyle(value) { this.style = value; return this; }
+  }
+  class FakeRow {
+    constructor() { this.components = []; }
+    addComponents(...values) { this.components.push(...values); return this; }
+  }
   const sandbox = loadSandbox(['verifySeasonSearchCommand'], {
     CONFIG: { SONARR_URL: 'http://sonarr', SONARR_API_KEY: 'key', SEASON_PACK_INTERACTIVE: interactiveEnabled },
-    tunable: key => key === 'SEASON_PACK_INTERACTIVE' && interactiveEnabled,
+    tunable: key => ({
+      SEASON_PACK_INTERACTIVE: interactiveEnabled,
+      SEASON_PACK_MIN_SEEDERS: 1,
+      SEASON_PACK_MAX_SIZE_GB: 200,
+      SEASON_PACK_MIN_CONFIDENCE: 70,
+    })[key],
     pollArrCommand: async () => command,
     getSeriesEpisodes: async () => episodes,
     fetchArrQueues: async () => queue,
@@ -263,12 +278,17 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
       return interactive;
     },
     rankSeasonReleases,
+    chooseSeasonPack,
     describeRejections,
+    stashGrabOffer: payload => { offers.push(payload); return 'abc12345'; },
     summarizeSeasonFillActivity,
     audit: (action, detail) => audits.push({ action, detail }),
     notifyChannel: (channel, msg) => notices.push({ channel, msg }),
     pad: n => String(n).padStart(2, '0'),
     fmtSpace: bytes => `${(bytes / (1024 ** 3)).toFixed(1)} GB`,
+    ActionRowBuilder: FakeRow,
+    ButtonBuilder: FakeButton,
+    ButtonStyle: { Danger: 'danger', Secondary: 'secondary' },
     COLORS: { WARN: 1, INFO: 2, SUCCESS: 3, DANGER: 4 },
     brandedEmbed: color => ({
       color, fields: [],
@@ -277,14 +297,15 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
       addFields(...values) { this.fields.push(...values); return this; },
     }),
   });
-  return { sandbox, notices, audits, interactiveCalls };
+  return { sandbox, notices, audits, interactiveCalls, offers };
 }
 
 test('season search verification: reports ranked candidates and rejection reasons after no accepted release', async () => {
   const h = seasonVerifier({
     command: { status: 'completed', message: 'Season search completed. 0 reports downloaded.' },
     interactive: [
-      { title: 'Winter.Sonata.S01.1080p.WEB-DL', size: 20 * 1024 ** 3, seeders: 12, indexer: 'AvistaZ', fullSeason: true, seasonNumber: 1, approved: false, rejections: [{ reason: 'Quality for existing file on disk is of equal or higher preference' }] },
+      { title: 'Winter.Sonata.S01.1080p.WEB-DL', guid: 'pack-guid', indexerId: 7, size: 20 * 1024 ** 3, seeders: 12, indexer: 'AvistaZ', fullSeason: true, seasonNumber: 1, approved: false, rejections: [{ reason: 'Quality for existing file on disk is of equal or higher preference' }] },
+      { title: 'Winter.Sonata.S01.720p.WEB-DL', guid: 'pack-guid-2', indexerId: 8, size: 12 * 1024 ** 3, seeders: 5, indexer: 'Public', fullSeason: true, seasonNumber: 1, approved: false, rejections: [{ reason: 'Custom format score too low' }] },
       { title: 'Winter.Sonata.S01E01.1080p.WEB-DL', size: 2 * 1024 ** 3, seeders: 30, indexer: 'Public', fullSeason: false, approved: true },
     ],
   });
@@ -293,14 +314,19 @@ test('season search verification: reports ranked candidates and rejection reason
   const embed = h.notices[0].msg.embeds[0];
   assert.match(embed.description, /nothing entered its queue/);
   assert.deepStrictEqual(h.interactiveCalls, [{ seriesId: 1, seasonNumber: 1 }]);
-  assert.match(embed.fields.find(field => field.name === 'Interactive search').value, /2 releases · 1 full-season pack/);
+  assert.match(embed.fields.find(field => field.name === 'Interactive search').value, /3 releases · 2 full-season packs/);
   const candidate = embed.fields.find(field => field.name.startsWith('Candidate 1'));
   assert.match(candidate.value, /20\.0 GB · 12 seeders · AvistaZ/);
   assert.match(candidate.value, /Quality for existing file/);
-  assert.match(embed.fields.at(-1).value, /does not force rejected releases/);
-  assert.strictEqual(h.audits[0].detail.downloaded, 0);
-  assert.strictEqual(h.audits[0].detail.interactiveReleaseCount, 2);
-  assert.strictEqual(h.audits[0].detail.interactivePackCount, 1);
+  assert.match(embed.fields.at(-1).value, /admin can force one eligible pack/);
+  assert.strictEqual(h.offers.length, 1);
+  assert.strictEqual(h.offers[0].kind, 'season-pack-force');
+  assert.deepStrictEqual(h.notices[0].msg.components[0].components.map(button => button.customId), ['season_grab:abc12345:0', 'season_grab:abc12345:1']);
+  const resultAudit = h.audits.find(row => row.action === 'season_pack_search_result');
+  assert.strictEqual(resultAudit.detail.downloaded, 0);
+  assert.strictEqual(resultAudit.detail.interactiveReleaseCount, 3);
+  assert.strictEqual(resultAudit.detail.interactivePackCount, 2);
+  assert.ok(h.audits.some(row => row.action === 'season_pack_force_offered'));
 });
 
 test('season search verification: distinguishes queued, verified, failed, and wedged outcomes', async () => {
@@ -354,7 +380,7 @@ test('season search verification: interactive reporting can be disabled and fail
   assert.strictEqual(failed.outcome, 'no_grab', 'release detail failure does not erase the verified command outcome');
   assert.strictEqual(h.notices.length, 1, 'the result notification is still posted');
   assert.match(h.notices[0].msg.embeds[0].fields.find(field => field.name === 'Interactive search').value, /Sonarr timed out/);
-  assert.strictEqual(h.audits[0].detail.interactiveError, 'Sonarr timed out');
+  assert.strictEqual(h.audits.find(row => row.action === 'season_pack_search_result').detail.interactiveError, 'Sonarr timed out');
 });
 
 test('season search verification: records and labels pack versus episode fills', async () => {
@@ -371,8 +397,8 @@ test('season search verification: records and labels pack versus episode fills',
   assert.strictEqual(result.fill.mode, 'pack');
   assert.match(h.notices[0].msg.embeds[0].title, /Season Pack Verified/);
   assert.match(h.notices[0].msg.embeds[0].fields.find(field => field.name === 'Fill method').value, /Season pack · 1 release/);
-  assert.strictEqual(h.audits[0].detail.fillMode, 'pack');
-  assert.strictEqual(h.audits[0].detail.releaseCount, 1);
+  assert.strictEqual(h.audits.find(row => row.action === 'season_pack_search_result').detail.fillMode, 'pack');
+  assert.strictEqual(h.audits.find(row => row.action === 'season_pack_search_result').detail.releaseCount, 1);
 
   h = seasonVerifier({
     command: { status: 'completed' }, episodes: complete,
@@ -385,7 +411,72 @@ test('season search verification: records and labels pack versus episode fills',
   result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 102, searchedAt: NOW });
   assert.strictEqual(result.fill.mode, 'episodes');
   assert.match(h.notices[0].msg.embeds[0].title, /Episode Releases Verified/);
-  assert.strictEqual(h.audits[0].detail.episodeReleases, 3);
+  assert.strictEqual(h.audits.find(row => row.action === 'season_pack_search_result').detail.episodeReleases, 3);
+});
+
+function seasonGrabHarness({ admin = true, offer, duplicate = null, queue = [], forceError = null } = {}) {
+  const audits = [];
+  const restored = [];
+  const forced = [];
+  const calls = [];
+  let cached = offer || {
+    kind: 'season-pack-force', seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1,
+    candidates: [{ guid: 'pack-guid', indexerId: 7, title: 'Winter.Sonata.S01.1080p', size: 20 * 1024 ** 3, seeders: 12, indexer: 'AvistaZ', confidence: 92 }],
+  };
+  const embed = () => ({ setTitle(value) { this.title = value; return this; }, setDescription(value) { this.description = value; return this; } });
+  const sandbox = loadSandbox(['handleSeasonPackGrab'], {
+    isAdminInteraction: () => admin,
+    takeGrabOffer: () => { const value = cached; cached = null; return value; },
+    restashGrabOffer: (nonce, value) => { restored.push({ nonce, value }); cached = value; },
+    findActiveContentDuplicate: () => duplicate,
+    fetchArrQueues: async () => queue,
+    forceGrabRelease: async identity => { forced.push(identity); if (forceError) throw forceError; },
+    audit: (action, detail) => audits.push({ action, detail }),
+    brandedEmbed: embed,
+    COLORS: { INFO: 1, SUCCESS: 2 },
+    pad: n => String(n).padStart(2, '0'),
+    fmtSpace: bytes => `${(bytes / (1024 ** 3)).toFixed(1)} GB`,
+  });
+  const interaction = {
+    user: { id: 'admin-1' },
+    reply: async payload => { calls.push({ method: 'reply', payload }); return payload; },
+    update: async payload => { calls.push({ method: 'update', payload }); return payload; },
+    deferUpdate: async () => { calls.push({ method: 'deferUpdate' }); },
+    editReply: async payload => { calls.push({ method: 'editReply', payload }); return payload; },
+    followUp: async payload => { calls.push({ method: 'followUp', payload }); return payload; },
+  };
+  return { sandbox, interaction, audits, restored, forced, calls };
+}
+
+test('season force-grab button: admin click consumes the nonce, rechecks safety, and audits the override', async () => {
+  const h = seasonGrabHarness();
+  await h.sandbox.handleSeasonPackGrab(h.interaction, 'abc12345', 0);
+  assert.strictEqual(JSON.stringify(h.forced), JSON.stringify([{ guid: 'pack-guid', indexerId: 7 }]));
+  assert.ok(h.audits.some(row => row.action === 'season_pack_force_grabbed' && row.detail.actorDiscordId === 'admin-1'));
+  assert.match(h.calls.find(call => call.method === 'editReply').payload.embeds[0].title, /Season Pack Forced/);
+});
+
+test('season force-grab button: non-admin, duplicate, and Sonarr failure paths never silently force', async () => {
+  let h = seasonGrabHarness({ admin: false });
+  await h.sandbox.handleSeasonPackGrab(h.interaction, 'abc12345', 0);
+  assert.strictEqual(h.forced.length, 0);
+  assert.match(h.calls[0].payload.content, /Admin only/);
+
+  h = seasonGrabHarness({ duplicate: { job: { id: 44, state: 'downloading' }, label: 'season 1' } });
+  await h.sandbox.handleSeasonPackGrab(h.interaction, 'abc12345', 0);
+  assert.strictEqual(h.forced.length, 0);
+  assert.ok(h.audits.some(row => row.action === 'season_pack_force_refused' && row.detail.reason === 'active_grab'));
+
+  h = seasonGrabHarness({ queue: [{ source: { kind: 'tv' }, seriesId: 1, seasonNumber: 1 }] });
+  await h.sandbox.handleSeasonPackGrab(h.interaction, 'abc12345', 0);
+  assert.strictEqual(h.forced.length, 0);
+  assert.ok(h.audits.some(row => row.action === 'season_pack_force_refused' && row.detail.reason === 'sonarr_queue'));
+
+  h = seasonGrabHarness({ forceError: new Error('indexer unavailable') });
+  await h.sandbox.handleSeasonPackGrab(h.interaction, 'abc12345', 0);
+  assert.strictEqual(h.restored.length, 1, 'a failed force-grab restores the offer for retry');
+  assert.match(h.calls.find(call => call.method === 'followUp').payload.content, /indexer unavailable/);
+  assert.ok(h.audits.some(row => row.action === 'season_pack_force_failed'));
 });
 
 // ---- Preview (#134) ----

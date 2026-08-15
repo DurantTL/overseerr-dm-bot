@@ -3,7 +3,7 @@ tags:
   - project/overseerr-dm-bot
   - backlog
 reviewed: 2026-08-16
-source_commit: 33af64a
+source_commit: 5866460
 github_snapshot: 5 open issues
 ---
 
@@ -18,8 +18,9 @@ This is a snapshot of the live issue tracker on 2026-08-16. GitHub remains autho
 - [#124 Sonarr season search](https://github.com/DurantTL/overseerr-dm-bot/issues/124) is the oldest open issue and the current implementation track.
   - Shipped in [#162](https://github.com/DurantTL/overseerr-dm-bot/pull/162): record pack-vs-episode fill detail and correct the partial-season summary claim.
   - Shipped in [#163](https://github.com/DurantTL/overseerr-dm-bot/pull/163): add pure interactive-release classification/ranking and the thin Sonarr search/grab API calls.
-  - This branch: report interactive-search candidates and Sonarr rejection reasons in Discord after partial/no-grab outcomes.
-  - Next: add an admin-gated force-grab button, then opt-in automatic forcing.
+  - Shipped in [#164](https://github.com/DurantTL/overseerr-dm-bot/pull/164): report interactive-search candidates and Sonarr rejection reasons in Discord after partial/no-grab outcomes.
+  - This branch: add nonce-backed, admin-gated force-grab buttons with duplicate and queue checks.
+  - Next: add opt-in automatic forcing, default off.
 
 ## Follow-up issues
 
