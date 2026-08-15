@@ -62,7 +62,8 @@ advanced-infrastructure layer lives in `docs/`:
   title simply isn't out yet; approval DMs and AvistaZ escalation alerts show the same release
   ETA), `/queue` shows live downloads with stall reasons, `/watching` shows current Plex
   sessions, `/indexers` shows Prowlarr/Byparr health, `/debrid` shows Premiumize status, and
-  `/cleanup-suggestions` lists the biggest disk hogs (read-only; honors keep/never-delete lists).
+  `/cleanup-suggestions` lists the biggest disk hogs and estimates how much time the top five on
+  the fastest-filling root would buy (read-only; honors keep/never-delete lists).
 - Heavy-transcode alerts via Tautulli, startup config sanity warnings, and a version-stamped
   "Bot Online" deploy ping (`GIT_SHA` is baked into the image by CI).
 - Test suite (`npm test`) runs the shipped code against mock Seerr servers; CI runs it on every
@@ -129,7 +130,16 @@ See `.env.example` for full values.
      exact movie edition. 4K prompts retain `radarr-4k` identity through execution; ambiguous legacy
      rows fail closed. Episode playback never creates a series-wide delete action. Requires
      `ENABLE_DELETION=true`; honors dry-run, keep list, and never-delete list.
-  2. **Disk-space alerts** — warns the admin channel (24h cooldown) when any *arr-visible volume drops below `DISK_SPACE_WARN_GB` (default `100`, `0` disables). `/status` also shows a Storage section. Set `DISK_SPACE_PATHS` (comma-separated) to an allowlist of mounts/folders to report — this hides the container's own `/` and `/config` disks and relabels a mount with the more specific media folder (e.g. shows `/share/media` for the `/share` mount). Unset reports every *arr mount.
+  2. **Disk-space alerts and forecast** — samples each *arr-visible root during the existing poll,
+     retaining at most 30 days and 720 samples per root. After at least six samples spanning 24
+     hours, `/status` and the dashboard show an approximate fill date from a median interval trend;
+     a single large import is treated as a step rather than a sustained rate. The admin channel is
+     warned (24h cooldown) below `DISK_SPACE_WARN_GB` (default `100`) or within
+     `DISK_FORECAST_WARN_DAYS` projected days (default `14`). Both thresholds are runtime-tunable
+     in the Automation tab and `0` disables that warning. Forecasts remain advisory. Set
+     `DISK_SPACE_PATHS` (comma-separated) to an allowlist of mounts/folders to report — this hides
+     the container's own `/` and `/config` disks and relabels a mount with the more specific media
+     folder (e.g. shows `/share/media` for the `/share` mount). Unset reports every *arr mount.
   3. **Retention rules** — with `RETENTION_ENFORCEMENT=true`, enforces the `media_retention_rules` table (`movie_4k`/`movie_1080p` → matching Radarr, `tv_episode` → Sonarr) every `RETENTION_CHECK_HOURS` (default `24`), deleting oldest-first, at most `RETENTION_MAX_DELETES_PER_RUN` (default `10`) per run. Dry-run posts a "would delete" digest instead.
 - `PATH_REMAP_FROM`, `PATH_REMAP_TO`
 - `DOWNLOAD_*`, `ENABLE_DELETION`, `KEEP_LIST_DEFAULT_DAYS`, `NEVER_DELETE_MEDIA_IDS`

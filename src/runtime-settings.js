@@ -23,6 +23,11 @@ const RUNTIME_SETTINGS = [
   { key: 'REQUEST_STALLED_HOURS', group: 'request_progress', type: 'int', min: 1, max: 720, source: 'config',
     label: 'Notify requester after no visible activity for', unit: 'h' },
 
+  { key: 'DISK_SPACE_WARN_GB', group: 'capacity', type: 'int', min: 0, max: 1000000, source: 'config',
+    label: 'Warn when free space drops below', unit: 'GB', help: '0 disables the fixed free-space warning.' },
+  { key: 'DISK_FORECAST_WARN_DAYS', group: 'capacity', type: 'int', min: 0, max: 3650, source: 'config',
+    label: 'Warn when projected time remaining drops below', unit: 'days', help: '0 disables forecast warnings.' },
+
   // ---- Pending request approvals ----
   { key: 'PENDING_APPROVAL_CHECK_MINUTES', group: 'pending_approvals', type: 'int', min: 0, max: 1440, source: 'config',
     label: 'Check every', unit: 'min', help: '0 pauses nudges and expiry.' },
@@ -84,6 +89,7 @@ const RUNTIME_SETTINGS = [
 
 const GROUPS = [
   { id: 'request_progress', title: 'Request progress', blurb: 'Tells requesters when an approved title has a future release date or no visible activity.' },
+  { id: 'capacity', title: 'Storage capacity', blurb: 'Warns on fixed free space and the recent projected fill date. Forecasting stays advisory.' },
   { id: 'pending_approvals', title: 'Pending approvals', blurb: 'Nudges admins, updates requesters, and expires unanswered request gates.' },
   { id: 'stuck', title: 'Stuck downloads', blurb: 'Watches the Sonarr/Radarr queues and alerts when an item stops making progress.' },
   { id: 'escalation', title: 'AvistaZ escalation', blurb: 'Requests that find nothing on public indexers get escalated to the private tracker.' },

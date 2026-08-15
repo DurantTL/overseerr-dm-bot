@@ -112,6 +112,14 @@ function runMigrations() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS disk_space_samples (
+      root TEXT NOT NULL,
+      free_bytes INTEGER NOT NULL,
+      total_bytes INTEGER NOT NULL,
+      sampled_at INTEGER NOT NULL,
+      PRIMARY KEY (root, sampled_at)
+    );
+
     CREATE TABLE IF NOT EXISTS dashboard_passkeys (
       credential_id TEXT PRIMARY KEY,
       public_key BLOB NOT NULL,
@@ -306,6 +314,7 @@ function runMigrations() {
     CREATE INDEX IF NOT EXISTS idx_download_tokens_discord ON download_tokens(discord_id);
     CREATE INDEX IF NOT EXISTS idx_download_tokens_expires ON download_tokens(expires_at);
     CREATE INDEX IF NOT EXISTS idx_download_access_created ON download_access_log(created_at);
+    CREATE INDEX IF NOT EXISTS idx_disk_space_samples_time ON disk_space_samples(sampled_at);
     CREATE INDEX IF NOT EXISTS idx_audit_action_created ON audit_log(action, created_at);
     CREATE INDEX IF NOT EXISTS idx_escalations_state ON escalations(state);
     CREATE INDEX IF NOT EXISTS idx_grab_jobs_state ON grab_jobs(state);

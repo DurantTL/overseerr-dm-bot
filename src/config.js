@@ -238,6 +238,7 @@ const CONFIG = (() => {
   RETENTION_CHECK_HOURS: Number.parseInt(process.env.RETENTION_CHECK_HOURS || '24', 10),
   RETENTION_MAX_DELETES_PER_RUN: Number.parseInt(process.env.RETENTION_MAX_DELETES_PER_RUN || '10', 10),
   DISK_SPACE_WARN_GB: Number.parseInt(process.env.DISK_SPACE_WARN_GB || '100', 10),
+  DISK_FORECAST_WARN_DAYS: Number.parseInt(process.env.DISK_FORECAST_WARN_DAYS || '14', 10),
   // Optional allowlist of mount points / media folders to report in /status and disk alerts.
   // Unset = report every *arr mount (original behaviour). Set e.g. `/share/media` to hide the
   // container's own `/` and `/config` disks and label the media mount by its real folder.
