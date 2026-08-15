@@ -216,7 +216,7 @@ test('discord: every registered command dispatches and bounded options stay boun
   const source = fs.readFileSync(path.join(__dirname, '..', '..', 'index.js'), 'utf8');
   const block = source.match(/const slashCommands = \[([\s\S]*?)\]\.map\(v => v\.toJSON\(\)\);/)[1];
   const commands = Function('SlashCommandBuilder', 'PermissionFlagsBits', `return [${block}].map(v => v.toJSON());`)(SlashCommandBuilder, PermissionFlagsBits);
-  assert.strictEqual(commands.length, 44);
+  assert.strictEqual(commands.length, 45);
   assert.strictEqual(new Set(commands.map(command => command.name)).size, commands.length);
   for (const command of commands) assert.match(source, new RegExp(`if \\(n === '${command.name}'\\) return handle`), `${command.name} dispatches`);
 
@@ -328,6 +328,85 @@ test('whorequested: autocomplete searches all tracked requests and folds sibling
   assert.match(choices[1].name, /available/);
 });
 
+test('request progress: future release and stalled DMs persist once-only state', async () => {
+  const settings = new Map();
+  const messages = [];
+  const row = {
+    id: 7, overseerr_request_id: '77', media_id: 'tmdb:603', media_type: 'movie', is_4k: 0,
+    title: 'The Matrix', requested_by_discord_id: '123456789012345678', status: 'approved', created_at: '2020-01-01 00:00:00',
+  };
+  const bed = loadSandbox(['sweepRequestProgressNotifications'], {
+    db: { prepare: () => ({ all: () => [row] }) },
+    fetchArrQueues: async () => [],
+    isSnowflake: () => true,
+    requestProgressDmEnabled: () => true,
+    resolveTmdbId: () => 603,
+    fetchSeerrTvdbId: async () => null,
+    findRequestQueueItem: () => null,
+    fetchReleaseEta: async () => ({ waiting: true, line: 'Digital release is January 1.' }),
+    releaseEtaInfo: value => value,
+    getSetting: key => settings.get(key) ?? null,
+    setSetting: (key, value) => settings.set(key, value),
+    dmUser: async (id, message) => { messages.push({ id, message }); return false; },
+    audit: () => {},
+    tunable: () => 72,
+    sqliteUtcMs: value => Date.parse(`${value}Z`),
+    fmtDuration: () => '1 day',
+  });
+
+  assert.deepStrictEqual({ ...await bed.run('sweepRequestProgressNotifications([])') }, { eta: 1, stalled: 0 });
+  assert.deepStrictEqual({ ...await bed.run('sweepRequestProgressNotifications([])') }, { eta: 0, stalled: 0 });
+  assert.strictEqual(messages.length, 1, 'closed DMs still persist the once-only marker');
+  assert.match(messages[0].message, /not available to download yet/);
+
+  settings.clear();
+  messages.length = 0;
+  bed.fetchReleaseEta = async () => null;
+  assert.deepStrictEqual({ ...await bed.run('sweepRequestProgressNotifications([])') }, { eta: 0, stalled: 1 });
+  assert.deepStrictEqual({ ...await bed.run('sweepRequestProgressNotifications([])') }, { eta: 0, stalled: 0 });
+  assert.strictEqual(messages.length, 1);
+  assert.match(messages[0].message, /cannot confirm an active download or a future release date/);
+});
+
+test('request progress: member preference mutes automated outcome DMs', async () => {
+  const row = {
+    id: 8, overseerr_request_id: '78', media_id: 'tmdb:604', media_type: 'movie', title: 'Muted title',
+    requested_by_discord_id: '123456789012345678', created_at: '2020-01-01 00:00:00',
+  };
+  let sent = 0;
+  const bed = loadSandbox(['sweepRequestProgressNotifications'], {
+    db: { prepare: () => ({ all: () => [row] }) },
+    fetchArrQueues: async () => [],
+    isSnowflake: () => true,
+    requestProgressDmEnabled: () => false,
+    dmUser: async () => { sent++; },
+  });
+  assert.deepStrictEqual({ ...await bed.run('sweepRequestProgressNotifications([])') }, { eta: 0, stalled: 0 });
+  assert.strictEqual(sent, 0);
+});
+
+test('notifications: command persists and clears the member preference', async () => {
+  const settings = new Map();
+  const bed = loadSandbox(['handleNotificationsCommand'], {
+    setSetting: (key, value) => settings.set(key, value),
+    deleteSetting: key => settings.delete(key),
+    audit: () => {},
+  });
+  let reply;
+  bed.interaction = {
+    user: { id: '123456789012345678' },
+    options: { getBoolean: () => false },
+    reply: async value => { reply = value; },
+  };
+  await bed.run('handleNotificationsCommand(interaction)');
+  assert.strictEqual(settings.get('request_progress_dm:123456789012345678'), '0');
+  assert.match(reply.content, /muted/);
+  bed.interaction.options.getBoolean = () => true;
+  await bed.run('handleNotificationsCommand(interaction)');
+  assert.strictEqual(settings.has('request_progress_dm:123456789012345678'), false);
+  assert.match(reply.content, /enabled/);
+});
+
 test('whorequested: reports requester, subscribers, and live pipeline state', async () => {
   const rows = [
     { id: 2, overseerr_request_id: '77', media_id: 'tvdb:81189', media_type: 'tv', is_4k: 0, title: 'Breaking Bad', requested_by_discord_id: '123456789012345678', status: 'approved', created_at: '2026-08-10 12:00:00' },
@@ -335,7 +414,7 @@ test('whorequested: reports requester, subscribers, and live pipeline state', as
   ];
   const util = require('../../src/util');
   const { sqliteUtcMs } = require('../../src/dashboard-render');
-  const bed = loadSandbox(['handleWhoRequestedCommand'], {
+  const bed = loadSandbox(['findRequestQueueItem', 'handleWhoRequestedCommand'], {
     requireAdmin: async () => true,
     db: { prepare: _sql => ({
       get: () => rows[0],
@@ -349,7 +428,7 @@ test('whorequested: reports requester, subscribers, and live pipeline state', as
     subscriberKeyFor: (tmdbId, is4k) => `tmdb:${tmdbId}${is4k ? ':4k' : ''}`,
     listRequestSubscribers: () => ['123456789012345678', '987654321098765432'],
     resolveTmdbId: () => null,
-    fetchArrQueues: async () => [{ title: 'Breaking Bad', source: { label: 'Sonarr' }, messages: [], status: 'downloading' }],
+    fetchArrQueues: async () => [{ title: 'Breaking Bad', source: { kind: 'tv', label: 'Sonarr' }, messages: [], status: 'downloading' }],
     queueItemLooksUnhealthy: () => false,
     queuePercent: () => 42,
     COLORS: { INFO: 1 },
@@ -370,7 +449,7 @@ test('whorequested: reports requester, subscribers, and live pipeline state', as
   assert.strictEqual(fields.Pipeline, 'Downloading — Sonarr, 42%');
   assert.strictEqual(fields['Also waiting'], '<@987654321098765432>');
 
-  bed.fetchArrQueues = async () => [{ title: 'Breaking Bad', source: { label: 'Sonarr' }, messages: ['No seeders'], status: 'warning' }];
+  bed.fetchArrQueues = async () => [{ title: 'Breaking Bad', source: { kind: 'tv', label: 'Sonarr' }, messages: ['No seeders'], status: 'warning' }];
   bed.queueItemLooksUnhealthy = () => true;
   await bed.run('handleWhoRequestedCommand(interaction)');
   assert.match(Object.fromEntries(reply.embeds[0].fields.map(field => [field.name, field.value])).Pipeline, /^Stalled — No seeders/);

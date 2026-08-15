@@ -15,7 +15,7 @@ function memStore(initial = {}) {
   };
 }
 
-const CONFIG = { STUCK_AFTER_MINUTES: 45, ESCALATION_ENABLED: false, SEASON_PACK_MAX_PER_RUN: 5 };
+const CONFIG = { REQUEST_STALLED_HOURS: 72, STUCK_AFTER_MINUTES: 45, ESCALATION_ENABLED: false, SEASON_PACK_MAX_PER_RUN: 5 };
 
 test('runtime-settings: env is the default, an override wins, clearing restores env', () => {
   const store = memStore();
@@ -66,7 +66,7 @@ test('runtime-settings: describe reports compose value, override state, and effe
   const store = memStore();
   rs.setOverride('ESCALATION_ENABLED', '1', { store });
   const groups = rs.describeRuntimeSettings({ config: CONFIG, store });
-  assert.deepStrictEqual(groups.map(g => g.id), ['pending_approvals', 'stuck', 'escalation', 'season_pack', 'episode_recovery']);
+  assert.deepStrictEqual(groups.map(g => g.id), ['request_progress', 'pending_approvals', 'stuck', 'escalation', 'season_pack', 'episode_recovery']);
   const esc = groups.find(g => g.id === 'escalation').settings.find(s => s.key === 'ESCALATION_ENABLED');
   assert.strictEqual(esc.envValue, false, 'compose says off');
   assert.strictEqual(esc.value, true, 'override says on');

@@ -20,6 +20,9 @@ const OVERRIDE_PREFIX = 'runtime_override:';
 // `source: 'env'` mirrors a module that parses process.env itself, and `fallback` must match that
 // module's default — runtime-settings.test.js asserts the episode-recovery ones still agree.
 const RUNTIME_SETTINGS = [
+  { key: 'REQUEST_STALLED_HOURS', group: 'request_progress', type: 'int', min: 1, max: 720, source: 'config',
+    label: 'Notify requester after no visible activity for', unit: 'h' },
+
   // ---- Pending request approvals ----
   { key: 'PENDING_APPROVAL_CHECK_MINUTES', group: 'pending_approvals', type: 'int', min: 0, max: 1440, source: 'config',
     label: 'Check every', unit: 'min', help: '0 pauses nudges and expiry.' },
@@ -80,6 +83,7 @@ const RUNTIME_SETTINGS = [
 ];
 
 const GROUPS = [
+  { id: 'request_progress', title: 'Request progress', blurb: 'Tells requesters when an approved title has a future release date or no visible activity.' },
   { id: 'pending_approvals', title: 'Pending approvals', blurb: 'Nudges admins, updates requesters, and expires unanswered request gates.' },
   { id: 'stuck', title: 'Stuck downloads', blurb: 'Watches the Sonarr/Radarr queues and alerts when an item stops making progress.' },
   { id: 'escalation', title: 'AvistaZ escalation', blurb: 'Requests that find nothing on public indexers get escalated to the private tracker.' },
