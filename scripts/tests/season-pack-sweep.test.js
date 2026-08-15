@@ -231,8 +231,13 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
     audit: (action, detail) => audits.push({ action, detail }),
     notifyChannel: (channel, msg) => notices.push({ channel, msg }),
     pad: n => String(n).padStart(2, '0'),
-    COLORS: { WARN: 1, INFO: 2, SUCCESS: 3 },
-    brandedEmbed: color => ({ color, setTitle(value) { this.title = value; return this; }, setDescription(value) { this.description = value; return this; } }),
+    COLORS: { WARN: 1, INFO: 2, SUCCESS: 3, DANGER: 4 },
+    brandedEmbed: color => ({
+      color, fields: [],
+      setTitle(value) { this.title = value; return this; },
+      setDescription(value) { this.description = value; return this; },
+      addFields(...values) { this.fields.push(...values); return this; },
+    }),
   });
   return { sandbox, notices, audits };
 }
@@ -241,7 +246,12 @@ test('season search verification: reports a completed search with no accepted re
   const h = seasonVerifier({ command: { status: 'completed', message: 'Season search completed. 0 reports downloaded.' } });
   const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101 });
   assert.strictEqual(result.outcome, 'no_grab');
-  assert.match(h.notices[0].msg.embeds[0].description, /Interactive Search/);
+  // The guidance moved out of the prose blob into a 'Next step' field — these arrive in batches,
+  // so the counts have to be scannable and the action has to be findable.
+  const embed = h.notices[0].msg.embeds[0];
+  assert.match(embed.description, /nothing entered its queue/);
+  assert.deepStrictEqual(embed.fields.map(field => field.name), ['Aired missing', 'Sonarr command', 'In queue', 'Next step']);
+  assert.match(embed.fields.at(-1).value, /Interactive Search/);
   assert.strictEqual(h.audits[0].detail.downloaded, 0);
 });
 
@@ -261,4 +271,5 @@ test('season search verification: distinguishes queued, verified, failed, and we
   h = seasonVerifier({ command: { status: 'started' } });
   assert.strictEqual((await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101 })).outcome, 'timed_out');
   assert.match(h.notices[0].msg.embeds[0].description, /task queue may be wedged/);
+  assert.match(h.notices[0].msg.embeds[0].fields.at(-1).value, /System → Tasks/);
 });

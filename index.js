@@ -956,36 +956,55 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
   let outcome;
   let title;
   let description;
+  let nextStep;
   let color = COLORS.WARN;
 
   if (!['completed', 'failed', 'aborted'].includes(status)) {
     outcome = 'timed_out';
-    title = `Season Search Not Confirmed — ${label}`;
-    description = `Sonarr's search command is still \`${status}\` after 10 minutes. Its task queue may be wedged; check Sonarr → System → Tasks. Restarting Sonarr clears a stuck command queue, then the season can be searched again after the cooldown.`;
+    title = `⏱️ Season Search Not Confirmed — ${label}`;
+    description = `Sonarr's search command is still \`${status}\` after 10 minutes — its task queue may be wedged.`;
+    nextStep = 'Check Sonarr → System → Tasks. Restarting Sonarr clears a stuck command queue; the season can be searched again after the cooldown.';
   } else if (status !== 'completed') {
     outcome = status;
-    title = `Season Search ${status === 'aborted' ? 'Aborted' : 'Failed'} — ${label}`;
-    description = `Sonarr ended the season search as \`${status}\`${commandText ? `: ${commandText.slice(0, 1000)}. ` : '. '}Check Sonarr → System → Events and Logs before retrying.`;
+    title = `❌ Season Search ${status === 'aborted' ? 'Aborted' : 'Failed'} — ${label}`;
+    description = `Sonarr ended the season search as \`${status}\`.${commandText ? `\n\`\`\`${commandText.slice(0, 900)}\`\`\`` : ''}`;
+    nextStep = 'Check Sonarr → System → Events and Logs before retrying.';
+    color = COLORS.DANGER;
   } else if (remaining < missingAtSearch) {
     outcome = remaining === 0 ? 'verified' : 'partial';
-    title = `${remaining === 0 ? 'Season Search Verified' : 'Season Search Partially Filled'} — ${label}`;
-    description = `Sonarr completed the search and the aired missing count changed from **${missingAtSearch}** to **${remaining}**.${remaining ? ' The remaining episodes still need an Interactive Search review.' : ' Every aired monitored episode now has a file.'}`;
+    title = `${remaining === 0 ? '✅ Season Search Verified' : '🟡 Season Search Partially Filled'} — ${label}`;
+    description = remaining
+      ? 'Sonarr completed the search and filled some of the gap.'
+      : 'Sonarr completed the search and every aired monitored episode now has a file.';
+    if (remaining) nextStep = 'The remaining episodes still need an Interactive Search review in Sonarr.';
     color = COLORS.SUCCESS;
   } else if (queued || (downloaded != null && downloaded > 0)) {
     outcome = 'grabbed';
-    title = `Season Release Grabbed — ${label}`;
-    description = `Sonarr completed the search and accepted ${downloaded != null ? `**${downloaded}** release${downloaded === 1 ? '' : 's'}` : 'a release'}${queued ? `; **${queued}** matching queue item${queued === 1 ? '' : 's'} ${queued === 1 ? 'is' : 'are'} active` : ''}. Import verification will come from Sonarr, and the stuck-download watchdog will report a stalled queue item.`;
+    title = `📥 Season Release Grabbed — ${label}`;
+    description = `Sonarr accepted ${downloaded != null ? `**${downloaded}** release${downloaded === 1 ? '' : 's'}` : 'a release'}${queued ? ` and **${queued}** matching queue item${queued === 1 ? '' : 's'} ${queued === 1 ? 'is' : 'are'} active` : ''}.`;
+    nextStep = 'Import verification comes from Sonarr; the stuck-download watchdog reports a stalled queue item.';
     color = COLORS.INFO;
   } else {
     outcome = 'no_grab';
-    title = `No Season Release Accepted — ${label}`;
-    description = `Sonarr completed the search, but no release entered its queue and all **${remaining || missingAtSearch}** aired episodes are still missing. Run an Interactive Search from this season's header in Sonarr to distinguish no indexer results from releases rejected for quality, language, custom formats, size, seeders, blocklist, categories, or tags.`;
+    title = `🔍 No Season Release Accepted — ${label}`;
+    description = 'Sonarr completed the search, but nothing entered its queue and the whole season is still missing.';
+    nextStep = 'Run an Interactive Search from this season\'s header in Sonarr — that distinguishes "no indexer results" from releases rejected for quality, language, custom formats, size, seeders, blocklist, categories, or tags.';
   }
+
+  // Fields rather than one paragraph: these land in #media-alerts in batches (one per season per
+  // sweep), so the numbers have to be scannable without reading a wall of prose.
+  const fields = [
+    { name: 'Aired missing', value: remaining === missingAtSearch ? `${remaining}` : `${missingAtSearch} → **${remaining}**`, inline: true },
+    { name: 'Sonarr command', value: `\`${status}\``, inline: true },
+    { name: 'In queue', value: queued ? `${queued}` : '—', inline: true },
+  ];
+  if (nextStep) fields.push({ name: 'Next step', value: nextStep.slice(0, 1024), inline: false });
 
   audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, message: commandText.slice(0, 1000) || null });
   notifyChannel('downloads', { embeds: [brandedEmbed(color)
     .setTitle(title.slice(0, 256))
-    .setDescription(description.slice(0, 4000))] });
+    .setDescription(description.slice(0, 4000))
+    .addFields(...fields)] });
   return { outcome, status, remaining, queued, downloaded };
 }
 
@@ -2774,7 +2793,13 @@ async function sweepRequestStatuses() {
   for (const change of result.changed.filter(row => row.to === 'failed')) {
     const request = db.prepare('SELECT * FROM requests WHERE id = ?').get(change.id);
     if (!request?.requested_by_discord_id || !requestProgressDmEnabled(request.requested_by_discord_id) || getSetting(`request_failure_notified:${change.id}`)) continue;
-    await dmUser(request.requested_by_discord_id, `❌ **${request.title}** failed in Seerr. It is no longer downloading; an admin can inspect Seerr and the arr queue before retrying it.`);
+    await dmUser(request.requested_by_discord_id, { embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle(`❌ Request Failed — ${request.title}`.slice(0, 256))
+      .setDescription('This request **failed in Seerr**. It is no longer downloading.')
+      .addFields(
+        { name: 'Type', value: mediaTypeLabel(request.media_type, request.is_4k), inline: true },
+        { name: 'What happens next', value: 'An admin can inspect Seerr and the arr queue before retrying it.', inline: false },
+      )] });
     setSetting(`request_failure_notified:${change.id}`, String(Date.now()));
     audit('request_failure_notified', { targetDiscordId: request.requested_by_discord_id, requestId: request.overseerr_request_id, title: request.title });
   }
@@ -2805,7 +2830,14 @@ async function sweepRequestProgressNotifications(remoteRequests) {
     if (eta?.waiting) {
       const key = `request_eta_notified:${row.id}`;
       if (getSetting(key)) continue;
-      await dmUser(row.requested_by_discord_id, `**${row.title}** is approved, but it is not available to download yet.\n${eta.line}\nThe bot will keep checking automatically.`);
+      await dmUser(row.requested_by_discord_id, { embeds: [brandedEmbed(COLORS.INFO)
+        .setTitle(`🗓️ Not Out Yet — ${row.title}`.slice(0, 256))
+        .setDescription('Your request is approved, but it is **not available to download yet**.')
+        .addFields(
+          { name: 'Type', value: mediaTypeLabel(row.media_type, row.is_4k), inline: true },
+          { name: 'Expected', value: eta.line, inline: false },
+          { name: 'What happens next', value: 'The bot keeps checking automatically and will grab it as soon as a release shows up. Nothing for you to do.', inline: false },
+        )] });
       setSetting(key, String(Date.now()));
       audit('request_eta_notified', { targetDiscordId: row.requested_by_discord_id, requestId: row.overseerr_request_id, title: row.title });
       counts.eta++;
@@ -2816,7 +2848,14 @@ async function sweepRequestProgressNotifications(remoteRequests) {
     if (ageMs < tunable('REQUEST_STALLED_HOURS') * 3600000) continue;
     const key = `request_stalled_notified:${row.id}`;
     if (getSetting(key)) continue;
-    await dmUser(row.requested_by_discord_id, `**${row.title}** has been approved for ${fmtDuration(ageMs)}, but I cannot confirm an active download or a future release date. Searches may still be running; an admin can check Seerr and the arr queue or retry it.`);
+    await dmUser(row.requested_by_discord_id, { embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle(`⏳ Still Looking — ${row.title}`.slice(0, 256))
+      .setDescription(`Approved ${fmtDuration(ageMs)} ago, but I cannot confirm an active download or a future release date.`)
+      .addFields(
+        { name: 'Type', value: mediaTypeLabel(row.media_type, row.is_4k), inline: true },
+        { name: 'Waiting', value: fmtDuration(ageMs), inline: true },
+        { name: 'What happens next', value: 'Searches may still be running. An admin can check Seerr and the arr queue, or retry it.', inline: false },
+      )] });
     setSetting(key, String(Date.now()));
     audit('request_stalled_notified', { targetDiscordId: row.requested_by_discord_id, requestId: row.overseerr_request_id, title: row.title });
     counts.stalled++;
