@@ -360,6 +360,13 @@ Schedule the backup command via cron on the host for regular snapshots, or set
 schedule — it uses the same `runBackup()`/rotation logic and reports failures to the
 `system_alerts` channel instead of failing silently on a host cron.
 
+The dashboard and `/status` show the age of the last successful in-process backup. If that age
+exceeds twice `BACKUP_INTERVAL_HOURS`, the bot sends one durable overdue alert and does not repeat
+it until a later backup succeeds. Run `/backup-rehearse` as an administrator to copy the newest
+retained backup into a temporary database, run its integrity and user-row checks, compare its user
+count with the live read-only database, and remove the temporary database. The command never
+replaces or writes to the live database.
+
 ## 7. Rollback
 
 If a deploy goes bad:

@@ -83,6 +83,7 @@ test('dashboard-render: healthClass', () => {
   assert.strictEqual(healthClass('ok'), 'ok');
   assert.strictEqual(healthClass('configured'), 'ok');
   assert.strictEqual(healthClass('skipped'), 'skip');
+  assert.strictEqual(healthClass('disabled'), 'skip');
   assert.strictEqual(healthClass('down'), 'down');
   assert.strictEqual(healthClass('missing'), 'down');
   assert.strictEqual(healthClass('anything else'), 'warn');
@@ -91,6 +92,7 @@ test('dashboard-render: healthClass', () => {
 test('dashboard-render: renderHealthBadges', () => {
   assert.match(renderHealthBadges({ discord: 'ok', plex: 'down' }), /discord: ok/);
   assert.match(renderHealthBadges({ discord: 'ok', plex: 'down' }), /plex: down/);
+  assert.match(renderHealthBadges({ backup: 'ok', backupLastSuccessfulAt: Date.now() - 60000 }), /backup: ok · 1m ago/);
 });
 
 test('dashboard-render: renderTable', () => {

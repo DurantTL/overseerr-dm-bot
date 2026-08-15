@@ -424,7 +424,7 @@ command set.
 
 ## Slash Command List
 Admin (hidden from non-admin roles by default; grant per-role via Server Settings → Integrations if e.g. PH users should `/pin`):
-- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/doctor`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`, `/avistaz`, `/rtorrent`, `/staged`, `/pin`, `/unpin`, `/stage-bulk`, `/assign-server`, `/tier`, `/tier-node`, `/tier-member`
+- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/backup-rehearse`, `/doctor`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`, `/avistaz`, `/rtorrent`, `/staged`, `/pin`, `/unpin`, `/stage-bulk`, `/assign-server`, `/tier`, `/tier-node`, `/tier-member`
 
 User:
 - `/request`, `/request-status`, `/download`, `/queue`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`, `/stage`

@@ -3,10 +3,28 @@
 // silently omit committed rows that still live in the -wal sidecar; better-sqlite3's backup API
 // uses SQLite's online-backup mechanism and captures one coherent snapshot.
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const Database = require('better-sqlite3');
 
-async function runBackup(source, outDir) {
+function verifyDatabase(file) {
+  const database = new Database(file, { readonly: true, fileMustExist: true });
+  try {
+    const result = database.pragma('integrity_check', { simple: true });
+    if (result !== 'ok') throw new Error(`Integrity check failed: ${result}`);
+    return database.prepare('SELECT COUNT(*) AS count FROM users').get().count;
+  } finally {
+    database.close();
+  }
+}
+
+function backupFiles(outDir) {
+  return fs.readdirSync(path.resolve(outDir))
+    .filter(f => /^plex_invites-.*\.db$/.test(f))
+    .sort();
+}
+
+async function runBackup(source, outDir, backupDatabase = (database, file) => database.backup(file)) {
   source = path.resolve(source);
   outDir = path.resolve(outDir);
   if (!fs.existsSync(source)) throw new Error(`Database not found: ${source}`);
@@ -15,29 +33,21 @@ async function runBackup(source, outDir) {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z').replace('T', '-');
   const destination = path.join(outDir, `plex_invites-${stamp}.db`);
   const temporary = `${destination}.tmp-${process.pid}`;
-  const sourceDb = new Database(source, { readonly: true, fileMustExist: true });
   try {
-    await sourceDb.backup(temporary);
+    const sourceDb = new Database(source, { readonly: true, fileMustExist: true });
+    try {
+      await backupDatabase(sourceDb, temporary);
+    } finally {
+      sourceDb.close();
+    }
+    verifyDatabase(temporary);
+    fs.renameSync(temporary, destination);
+    return destination;
   } finally {
-    sourceDb.close();
+    for (const file of [temporary, `${temporary}-wal`, `${temporary}-shm`]) {
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+    }
   }
-
-  const snapshot = new Database(temporary, { readonly: true, fileMustExist: true });
-  try {
-    const result = snapshot.pragma('integrity_check', { simple: true });
-    if (result !== 'ok') throw new Error(`Backup integrity check failed: ${result}`);
-  } finally {
-    snapshot.close();
-  }
-  fs.renameSync(temporary, destination);
-  // The temp snapshot picks up its own -wal/-shm sidecars while it's opened above; they're
-  // checkpointed into it on close, but the sidecar files themselves aren't renamed away with the
-  // main file, so clean them up explicitly instead of leaving them to accumulate on every backup.
-  for (const suffix of ['-wal', '-shm']) {
-    const sidecar = `${temporary}${suffix}`;
-    if (fs.existsSync(sidecar)) fs.unlinkSync(sidecar);
-  }
-  return destination;
 }
 
 // Deletes the oldest plex_invites-*.db backups in outDir beyond keepCount. Returns the deleted
@@ -45,14 +55,41 @@ async function runBackup(source, outDir) {
 function rotateBackups(outDir, keepCount) {
   outDir = path.resolve(outDir);
   if (!keepCount || keepCount <= 0) return [];
-  const files = fs.readdirSync(outDir)
-    .filter(f => /^plex_invites-.*\.db$/.test(f))
-    .sort();
+  const files = backupFiles(outDir);
   const excess = files.length - keepCount;
   if (excess <= 0) return [];
   const toDelete = files.slice(0, excess);
   for (const f of toDelete) fs.unlinkSync(path.join(outDir, f));
   return toDelete;
+}
+
+function backupState(lastSuccessfulAt, intervalHours, now = Date.now()) {
+  if (intervalHours <= 0) return { status: 'disabled', lastSuccessfulAt: null, ageMs: null, overdue: false };
+  const timestamp = Number(lastSuccessfulAt) || 0;
+  if (!timestamp) return { status: 'missing', lastSuccessfulAt: null, ageMs: null, overdue: false };
+  const ageMs = Math.max(0, now - timestamp);
+  const overdue = ageMs > intervalHours * 2 * 3600000;
+  return { status: overdue ? 'overdue' : 'ok', lastSuccessfulAt: timestamp, ageMs, overdue };
+}
+
+function rehearseLatestBackup(source, outDir) {
+  source = path.resolve(source);
+  outDir = path.resolve(outDir);
+  if (!fs.existsSync(source)) throw new Error(`Database not found: ${source}`);
+  if (!fs.existsSync(outDir)) throw new Error(`Backup directory not found: ${outDir}`);
+  const newest = backupFiles(outDir).at(-1);
+  if (!newest) throw new Error(`No backups found in: ${outDir}`);
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'overseerr-backup-rehearsal-'));
+  const restored = path.join(directory, 'restored.db');
+  try {
+    fs.copyFileSync(path.join(outDir, newest), restored);
+    const backupUsers = verifyDatabase(restored);
+    const liveUsers = verifyDatabase(source);
+    return { backup: path.join(outDir, newest), backupUsers, liveUsers, rowCountsMatch: backupUsers === liveUsers };
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 async function main() {
@@ -69,4 +106,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { runBackup, rotateBackups };
+module.exports = { verifyDatabase, runBackup, rotateBackups, backupState, rehearseLatestBackup };
