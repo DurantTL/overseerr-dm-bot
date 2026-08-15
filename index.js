@@ -7653,6 +7653,11 @@ function startExpressServer() {
   if (CONFIG.DASHBOARD_ENABLED) {
     const loginLimits = new Map();
     RATE_LIMIT_MAPS.push(loginLimits);
+    // A preview is authenticated but expensive: it reads the whole Sonarr series list and then
+    // walks episodes series by series. Held-down Enter on the Preview button, or a stuck bit of
+    // dashboard JS, would hammer Sonarr harder than the sweep it is previewing ever does.
+    const previewLimits = new Map();
+    RATE_LIMIT_MAPS.push(previewLimits);
     const adminForm = express.urlencoded({ extended: false, limit: '16kb' });
     const webauthnBrowserPath = path.join(path.dirname(require.resolve('@simplewebauthn/browser')), '..', 'dist', 'bundle', 'index.es5.umd.min.js');
 
@@ -8424,6 +8429,9 @@ function startExpressServer() {
     });
 
     app.post('/admin/action/sweep-preview', dashboardAuth, async (req, res) => {
+      if (!takeRateLimit(previewLimits, dashboardActor(req).actorIp, 20, 60000)) {
+        return res.status(429).json({ ok: false, error: 'Too many previews. Wait a moment and try again.' });
+      }
       try {
         const items = await previewAutomation(req.body?.name, req.body?.values || {});
         return res.json({ ok: true, items });
