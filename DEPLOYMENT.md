@@ -18,6 +18,64 @@ out of the image build context. If a secret ever lands in Git history, rotate
 it (Discord token, Overseerr/Radarr/Sonarr API keys, Plex token, dashboard
 password) — removing the file later does not un-leak it.
 
+### File-backed secrets
+
+Every bot configuration key supports the `KEY_FILE` convention. Set the file variant instead of
+the direct value, and the bot reads it once during startup:
+
+```env
+DISCORD_BOT_TOKEN_FILE=/run/secrets/discord_bot_token
+OVERSEERR_API_KEY_FILE=/run/secrets/overseerr_api_key
+RTORRENT_URL_FILE=/run/secrets/rtorrent_url
+```
+
+This applies to all credential-bearing keys, including Plex credentials, arr/Tautulli/Prowlarr and
+Premiumize API keys, webhook secrets, dashboard credentials, `SESSION_SECRET`, and seedbox URLs.
+Remove the direct key entirely when using its file variant; even `KEY=` together with `KEY_FILE=...`
+is refused. Missing or unreadable files stop startup with the key name in the error. One final LF or
+CRLF is removed from the file value, while spaces and any other content are preserved.
+
+Docker Compose secrets mount at `/run/secrets/<name>`. Add the secret to the bot service and point
+the corresponding file variable at it:
+
+```yaml
+services:
+  overseerr-dm-bot:
+    environment:
+      DISCORD_BOT_TOKEN_FILE: /run/secrets/discord_bot_token
+      OVERSEERR_API_KEY_FILE: /run/secrets/overseerr_api_key
+    secrets:
+      - discord_bot_token
+      - overseerr_api_key
+
+secrets:
+  discord_bot_token:
+    file: /srv/overseerr-dm-bot/secrets/discord_bot_token
+  overseerr_api_key:
+    file: /srv/overseerr-dm-bot/secrets/overseerr_api_key
+```
+
+A plain read-only bind mount works when Compose secrets are unavailable:
+
+```yaml
+services:
+  overseerr-dm-bot:
+    environment:
+      WEBHOOK_SECRET_FILE: /run/bot-secrets/webhook_secret
+    volumes:
+      - /srv/overseerr-dm-bot/secrets:/run/bot-secrets:ro
+```
+
+For a Portainer standalone Docker stack, create the files on the Docker host, add the read-only bind
+mount to the stack Compose definition, and add only the `KEY_FILE` paths under the stack's
+environment variables. For Portainer Swarm, create each value under **Secrets**, reference it from
+the service with an external Compose secret, and use its `/run/secrets/<name>` path. Keep secret
+files outside the Git checkout and restrict host permissions to the account running Docker.
+
+To rotate a value, replace its file and restart or redeploy the bot container. Values are loaded
+only at startup. `CLOUDFLARE_TUNNEL_TOKEN` belongs to the separate `cloudflared` service and is not
+processed by the bot's `KEY_FILE` loader.
+
 ## 2. How Portainer handles environment variables
 
 When you deploy a stack from Git, Portainer writes every environment variable

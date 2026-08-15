@@ -10,6 +10,28 @@ function parseBool(v, fallback = false) {
   return ['1', 'true', 'yes', 'on'].includes(String(v).toLowerCase());
 }
 
+function resolveFileEnv(env, readFileSync = fs.readFileSync) {
+  const fileValues = new Map();
+  return new Proxy(env, {
+    get(target, key) {
+      if (typeof key !== 'string') return Reflect.get(target, key);
+      const fileKey = `${key}_FILE`;
+      if (!Object.prototype.hasOwnProperty.call(target, fileKey)) return Reflect.get(target, key);
+      if (Object.prototype.hasOwnProperty.call(target, key)) {
+        throw new Error(`Configuration error: ${key} and ${fileKey} are both set; set only one`);
+      }
+      if (fileValues.has(key)) return fileValues.get(key);
+      try {
+        const value = readFileSync(target[fileKey], 'utf8').replace(/\r?\n$/, '');
+        fileValues.set(key, value);
+        return value;
+      } catch (err) {
+        throw new Error(`Configuration error: could not read ${fileKey} for ${key}: ${err.message}`, { cause: err });
+      }
+    },
+  });
+}
+
 // Discord snowflakes arrive as env values that people paste by hand (and that Portainer/compose
 // pass through verbatim), so they routinely carry a trailing CR from a Windows-edited env file,
 // stray spaces, or the quotes someone wrapped them in. Discord rejects those as "Unknown Channel"
@@ -56,7 +78,10 @@ function placeholderConfigWarnings(config, env) {
   return warnings;
 }
 
-const CONFIG = {
+const RESOLVED_ENV = resolveFileEnv(process.env);
+const CONFIG = (() => {
+  const process = { env: RESOLVED_ENV };
+  return {
   // Logging: level filters what gets emitted (debug < info < warn < error); format switches
   // between the human-readable default and single-line JSON for log shippers (Loki/ELK/CloudWatch).
   LOG_LEVEL: (process.env.LOG_LEVEL || 'info').toLowerCase(),
@@ -345,9 +370,10 @@ const CONFIG = {
   AUTO_APPROVE_AFTER_N_APPROVED: Number.parseInt(process.env.AUTO_APPROVE_AFTER_N_APPROVED || '0', 10),
   MONTHLY_RECAP_ENABLED: parseBool(process.env.MONTHLY_RECAP_ENABLED, false),
   NEVER_DELETE_MEDIA_IDS: process.env.NEVER_DELETE_MEDIA_IDS ? process.env.NEVER_DELETE_MEDIA_IDS.split(',').map(s => s.trim()) : [],
-};
+  };
+})();
 
-CONFIG.PLACEHOLDER_WARNINGS = placeholderConfigWarnings(CONFIG, process.env);
+CONFIG.PLACEHOLDER_WARNINGS = placeholderConfigWarnings(CONFIG, RESOLVED_ENV);
 
 const REQUIRED_ENV = [
   'DISCORD_BOT_TOKEN', 'DISCORD_CLIENT_ID', 'DISCORD_GUILD_ID', 'ADMIN_CHANNEL_ID', 'ADMIN_USER_ID',
@@ -507,4 +533,4 @@ function configWarnings() {
   return warnings;
 }
 
-module.exports = { parseBool, parseId, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings, CONFIG, REQUIRED_ENV, validateConfig, startConfigErrorServer, configWarnings };
+module.exports = { parseBool, parseId, resolveFileEnv, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings, CONFIG, REQUIRED_ENV, validateConfig, startConfigErrorServer, configWarnings };
