@@ -3,16 +3,10 @@
 // accepts the secret in the query string, because Plex's webhook feature cannot send headers.
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { loadSandbox } = require('./extract');
+const { webhookSecretOk } = require('../../src/routes/webhooks');
 
 const SECRET = 'a'.repeat(64);
-const sandbox = loadSandbox(['webhookSecretOk', 'safeEqual'], { Buffer, crypto: require('crypto') });
-const check = (req, expected, opts) => {
-  sandbox.REQ = req;
-  sandbox.EXPECTED = expected;
-  sandbox.OPTS = opts;
-  return sandbox.run('webhookSecretOk(REQ, EXPECTED, OPTS)');
-};
+const check = (req, expected, opts) => webhookSecretOk(req, expected, opts);
 
 test('webhook auth: header secret accepted, wrong or missing rejected', () => {
   assert.strictEqual(check({ headers: { 'x-webhook-secret': SECRET } }, SECRET), true, 'correct header passes');
