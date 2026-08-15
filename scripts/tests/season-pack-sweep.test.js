@@ -196,7 +196,11 @@ test('season-pack-sweep: pinning marks the notification so the reason is visible
 });
 
 test('sweep guard: concurrent runs are refused and the guard clears after failure', async () => {
-  const sandbox = loadSandbox(['runGuardedSweep'], { runningSweeps: new Set() });
+  const automationRuns = new Map();
+  const sandbox = loadSandbox(['runGuardedSweep'], {
+    runningSweeps: new Set(), automationRuns,
+    recordAutomationRun: (name, state) => automationRuns.set(name, state),
+  });
   const first = sandbox.run(`runGuardedSweep('season-pack', () => new Promise(resolve => { release = resolve; }))`);
   await Promise.resolve();
   assert.strictEqual((await sandbox.run(`runGuardedSweep('season-pack', () => Promise.resolve())`)).busy, true);
