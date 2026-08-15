@@ -164,7 +164,7 @@ Compose defaults:
 - Service name + container: `overseerr-dm-bot`
 - SQLite persisted in named volume `durant_bot_data`
 - Media mounted read-only: `${MEDIA_HOST_PATH:-/mnt/raid}:/mnt/raid:ro`
-- Healthcheck endpoint: `http://127.0.0.1:3000/health`
+- Liveness endpoint: `http://127.0.0.1:3000/live`; readiness and integration status: `http://127.0.0.1:3000/health`
 
 ## Portainer Setup (first deployment)
 1. In Portainer, create a new stack and paste `docker-compose.yml`.

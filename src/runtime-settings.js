@@ -20,6 +20,16 @@ const OVERRIDE_PREFIX = 'runtime_override:';
 // `source: 'env'` mirrors a module that parses process.env itself, and `fallback` must match that
 // module's default — runtime-settings.test.js asserts the episode-recovery ones still agree.
 const RUNTIME_SETTINGS = [
+  // ---- Pending request approvals ----
+  { key: 'PENDING_APPROVAL_CHECK_MINUTES', group: 'pending_approvals', type: 'int', min: 0, max: 1440, source: 'config',
+    label: 'Check every', unit: 'min', help: '0 pauses nudges and expiry.' },
+  { key: 'PENDING_APPROVAL_NUDGE_HOURS', group: 'pending_approvals', type: 'int', min: 1, max: 720, source: 'config',
+    label: 'Nudge admins after', unit: 'h' },
+  { key: 'PENDING_APPROVAL_REQUESTER_HOURS', group: 'pending_approvals', type: 'int', min: 1, max: 720, source: 'config',
+    label: 'Update requester after', unit: 'h' },
+  { key: 'PENDING_APPROVAL_EXPIRE_DAYS', group: 'pending_approvals', type: 'int', min: 1, max: 365, source: 'config',
+    label: 'Expire unanswered requests after', unit: 'days' },
+
   // ---- Stuck-download watchdog ----
   { key: 'STUCK_CHECK_MINUTES', group: 'stuck', type: 'int', min: 0, max: 1440, source: 'config',
     label: 'Check every', unit: 'min', help: '0 stops the watchdog entirely.' },
@@ -70,6 +80,7 @@ const RUNTIME_SETTINGS = [
 ];
 
 const GROUPS = [
+  { id: 'pending_approvals', title: 'Pending approvals', blurb: 'Nudges admins, updates requesters, and expires unanswered request gates.' },
   { id: 'stuck', title: 'Stuck downloads', blurb: 'Watches the Sonarr/Radarr queues and alerts when an item stops making progress.' },
   { id: 'escalation', title: 'AvistaZ escalation', blurb: 'Requests that find nothing on public indexers get escalated to the private tracker.' },
   { id: 'season_pack', title: 'Season-pack search', blurb: 'Asks Sonarr for a whole season instead of episode-by-episode when a pack is likely to exist.' },

@@ -3,8 +3,11 @@
 // warnings, and Tautulli session formatting.
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('fs');
+const path = require('path');
 const axios = require('axios');
 const express = require('express');
+const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { loadSandbox } = require('./extract');
 
 const settingsStore = new Map();
@@ -15,6 +18,7 @@ const sandbox = loadSandbox(
     crypto: require('crypto'),
     CONFIG: {
       LOG_LEVEL: 'info', LOG_FORMAT: 'text',
+      PORT: 3000,
       OVERSEERR_URL: '', OVERSEERR_API_KEY: 'k', ADMIN_CHANNEL_ID: '100000000000000001',
       TUNNEL_DOMAIN: 'x.example.com', WEBHOOK_SECRET: 's3cret', TAUTULLI_WEBHOOK_SECRET: 'tautulli-secret', ENABLE_DELETION: false, DELETION_DRY_RUN: true,
       DASHBOARD_ENABLED: false, DASHBOARD_ADMIN_PASSWORD: '', DASHBOARD_ADMIN_TOKEN: '',
@@ -195,6 +199,62 @@ test('request: configWarnings flags a channel ID that is not a Discord snowflake
   assert.ok(warnings.some(w => w.includes('DEPLOY_CHANNEL_ID')), `malformed deploy ID flagged, got: ${JSON.stringify(warnings)}`);
   sandbox.CONFIG.DEPLOY_CHANNEL_ID = '100000000000000003';
   assert.ok(!sandbox.run('configWarnings()').some(w => w.includes('DEPLOY_CHANNEL_ID')), 'a real snowflake is accepted');
+});
+
+test('request: configWarnings names incomplete API pairs and Compose port drift', () => {
+  sandbox.CONFIG.SONARR_URL = 'http://sonarr:8989';
+  sandbox.CONFIG.SONARR_API_KEY = '';
+  sandbox.CONFIG.PORT = 4000;
+  const warnings = sandbox.run('configWarnings()');
+  assert.ok(warnings.some(w => w.includes('SONARR_URL') && w.includes('SONARR_API_KEY')));
+  assert.ok(warnings.some(w => w.includes('PORT=4000') && w.includes('3000:3000')));
+  sandbox.CONFIG.SONARR_URL = '';
+  sandbox.CONFIG.PORT = 3000;
+});
+
+test('discord: every registered command dispatches and bounded options stay bounded', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'index.js'), 'utf8');
+  const block = source.match(/const slashCommands = \[([\s\S]*?)\]\.map\(v => v\.toJSON\(\)\);/)[1];
+  const commands = Function('SlashCommandBuilder', 'PermissionFlagsBits', `return [${block}].map(v => v.toJSON());`)(SlashCommandBuilder, PermissionFlagsBits);
+  assert.strictEqual(commands.length, 44);
+  assert.strictEqual(new Set(commands.map(command => command.name)).size, commands.length);
+  for (const command of commands) assert.match(source, new RegExp(`if \\(n === '${command.name}'\\) return handle`), `${command.name} dispatches`);
+
+  const download = commands.find(command => command.name === 'download');
+  const season = download.options.find(option => option.name === 'season');
+  const episode = download.options.find(option => option.name === 'episode');
+  assert.deepStrictEqual([season.min_value, season.max_value], [0, 99]);
+  assert.deepStrictEqual([episode.min_value, episode.max_value], [1, 999]);
+
+  const tierAdd = commands.find(command => command.name === 'tier-node').options.find(option => option.name === 'add');
+  const option = name => tierAdd.options.find(value => value.name === name);
+  assert.deepStrictEqual([option('headroom_pct').min_value, option('headroom_pct').max_value], [0, 95]);
+  assert.strictEqual(option('usable_gb').min_value, 0);
+  assert.deepStrictEqual([option('warm_days').min_value, option('warm_days').max_value], [0, 3650]);
+  assert.ok(source.indexOf('startExpressServer();') < source.indexOf('registerSlashCommands();', source.indexOf("client.once('ready'")), 'HTTP starts before command registration');
+});
+
+test('discord: access setup reports partial failures for retry', async () => {
+  const rows = new Map([['123', { discord_id: '123', email: 'user@example.com', invited: 0 }]]);
+  const bed = loadSandbox(['applyFullChainLink'], {
+    linkUserToEmail: () => ({ absorbed: null }),
+    getUserByDiscordId: id => rows.get(id),
+    inviteUserToPlex: async () => ({ successCount: 0, total: 1 }),
+    homeServerFor: () => 'primary',
+    markUserInvited: () => {},
+    fetchOverseerrUsers: async () => [],
+    canonicalizeEmail: value => value.toLowerCase(),
+    createOverseerrUser: async () => 44,
+    markOverseerrCreated: () => {},
+    setOverseerrDiscordNotification: async () => true,
+    grantMemberRole: async () => {},
+    audit: () => {},
+  });
+  const result = await bed.run("applyFullChainLink('123', 'user@example.com', 'user')");
+  assert.strictEqual(result.plexOk, false);
+  assert.strictEqual(result.seerrOk, true);
+  assert.match(result.plexStatus, /failed/);
+  assert.match(result.seerrStatus, /created/);
 });
 
 test('request: notifyChannel reports drops instead of swallowing them', async () => {

@@ -69,6 +69,10 @@ const CONFIG = {
   OVERSEERR_URL: (process.env.OVERSEERR_URL || '').replace(/\/$/, ''),
   OVERSEERR_API_KEY: process.env.OVERSEERR_API_KEY,
   REQUEST_RECONCILE_MINUTES: Number.parseInt(process.env.REQUEST_RECONCILE_MINUTES || '15', 10),
+  PENDING_APPROVAL_CHECK_MINUTES: Number.parseInt(process.env.PENDING_APPROVAL_CHECK_MINUTES || '60', 10),
+  PENDING_APPROVAL_NUDGE_HOURS: Number.parseInt(process.env.PENDING_APPROVAL_NUDGE_HOURS || '24', 10),
+  PENDING_APPROVAL_REQUESTER_HOURS: Number.parseInt(process.env.PENDING_APPROVAL_REQUESTER_HOURS || '48', 10),
+  PENDING_APPROVAL_EXPIRE_DAYS: Number.parseInt(process.env.PENDING_APPROVAL_EXPIRE_DAYS || '21', 10),
   WEBHOOK_SECRET: process.env.WEBHOOK_SECRET || '',
   PLEX_TOKEN: process.env.PLEX_TOKEN || '',
   PLEX_USERNAME: process.env.PLEX_USERNAME || '',
@@ -409,6 +413,20 @@ function startConfigErrorServer(error, fatalPath = '/app/data/last-fatal.txt') {
 // to the system channel after connect, so a dangerous combo can't sit unnoticed.
 function configWarnings() {
   const warnings = [...CONFIG.PLACEHOLDER_WARNINGS];
+  for (const [urlKey, keyKey] of [
+    ['RADARR_URL', 'RADARR_API_KEY'],
+    ['RADARR_4K_URL', 'RADARR_4K_API_KEY'],
+    ['SONARR_URL', 'SONARR_API_KEY'],
+    ['PROWLARR_URL', 'PROWLARR_API_KEY'],
+    ['TAUTULLI_URL', 'TAUTULLI_API_KEY'],
+  ]) {
+    if (!!CONFIG[urlKey] !== !!CONFIG[keyKey]) {
+      warnings.push(`\`${urlKey}\` and \`${keyKey}\` must be set together — this integration is incomplete.`);
+    }
+  }
+  if (CONFIG.PORT !== 3000) {
+    warnings.push(`\`PORT=${CONFIG.PORT}\` does not match the repository Compose mapping \`3000:3000\` — update both sides of \`ports\` or restore \`PORT=3000\`.`);
+  }
   if (!['debug', 'info', 'warn', 'error'].includes(CONFIG.LOG_LEVEL)) {
     warnings.push(`\`LOG_LEVEL=${CONFIG.LOG_LEVEL}\` is not a valid level (use \`debug\`, \`info\`, \`warn\`, or \`error\`) — treating it as \`info\`.`);
   }
