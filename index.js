@@ -6320,7 +6320,7 @@ async function handleTierCommand(interaction) {
         '',
         ...routingErrors.map(issue => `• \`${issue.node}\`: ${issue.count} unmatched title(s)${issue.examples.length ? ` — examples: ${issue.examples.map(v => `\`${v}\``).join(', ')}` : ''}`),
         '',
-        'Make the node folder roots share their trailing media path with the remapped Arr paths, then re-run `/tier preview`.',
+        'Configure the enabled full master with its Syncthing folder IDs and source-side roots, and make sure each edge has the same IDs. Local paths and folder order may differ. Then re-run `/tier preview`.',
       ].join('\n').slice(0, 4000))] });
   }
 

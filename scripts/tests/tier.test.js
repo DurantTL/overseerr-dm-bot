@@ -401,11 +401,42 @@ test('tier: resolveTitleFolder maps different host mount prefixes by longest sou
 test('tier: unresolved multi-folder routes are surfaced as apply-blocking diagnostics', () => {
   const inventory = [mfTitle('tmdb:1', 'movie', '/unrelated/source/Alpha (2020)')];
   inventory[0].relPath = 'unrelated/source/Alpha (2020)';
+  const master = { ...homeFull, folders: [
+    { folderId: 'mov', folderRoot: '/mnt/raid/Media/Movies' },
+    { folderId: 'tv', folderRoot: '/mnt/raid/Media/TV Shows' },
+  ] };
   const cali = { name: 'cali', enabled: 1, usable_bytes: 20 * GB, headroom_pct: 0, access: 'open', demand_source: 'atime', folders: caliFolders };
-  const result = planTier({ nodes: [homeFull, cali], inventory, now: NOW });
+  const result = planTier({ nodes: [master, cali], inventory, now: NOW });
   assert.strictEqual(result.routingErrors.length, 1);
-  assert.deepStrictEqual(result.routingErrors[0], { node: 'cali', count: 1, examples: ['/unrelated/source/Alpha (2020)'] });
-  assert.ok(result.warnings.some(w => w.includes('could not route 1 title')));
+  assert.deepStrictEqual(result.routingErrors[0], { node: 'full master folder map', count: 1, examples: ['/unrelated/source/Alpha (2020)'] });
+  assert.ok(result.warnings.some(w => w.includes('could not classify 1 title')));
+});
+
+test('tier: multi-folder routing uses master folder IDs, independent of edge path and order', () => {
+  const masterFolders = [
+    { folderId: 'mov', folderRoot: '/mnt/raid/Media/Movies' },
+    { folderId: 'fourk', folderRoot: '/mnt/raid/Media/4k' },
+    { folderId: 'tv', folderRoot: '/mnt/raid/Media/TV Shows' },
+  ];
+  const edgeFolders = [
+    { folderId: 'tv', folderRoot: '/srv/series' },
+    { folderId: 'mov', folderRoot: '/data/cinema' },
+    { folderId: 'fourk', folderRoot: '/array/ultra-hd' },
+  ];
+  const master = { ...homeFull, folders: masterFolders };
+  const edge = { name: 'edge', enabled: 1, usable_bytes: 100 * GB, headroom_pct: 0, access: 'open', demand_source: 'atime', folders: edgeFolders };
+  const inventory = [
+    mfTitle('tmdb:1', 'movie', '/mnt/raid/Media/Movies/Alpha (2020)'),
+    mfTitle('tmdb:2', 'movie', '/mnt/raid/Media/4k/Beta (2021)'),
+    mfTitle('tvdb:3', 'tv', '/mnt/raid/Media/TV Shows/Gamma'),
+  ];
+  for (const item of inventory) item.relPath = item.path.replace('/mnt/raid/', '');
+  const result = planTier({ nodes: [master, edge], inventory, now: NOW });
+  const byId = Object.fromEntries(result.manifests.edge.folders.map(f => [f.folder_id, f]));
+  assert.deepStrictEqual(byId.mov.keep.map(e => e.relPath), ['Alpha (2020)']);
+  assert.deepStrictEqual(byId.fourk.keep.map(e => e.relPath), ['Beta (2021)']);
+  assert.deepStrictEqual(byId.tv.keep.map(e => e.relPath), ['Gamma']);
+  assert.deepStrictEqual(result.routingErrors, []);
 });
 
 test('tier: R2.1 multi-folder planning — single-pool LRU, per-folder manifest split, per-folder stignore', () => {
