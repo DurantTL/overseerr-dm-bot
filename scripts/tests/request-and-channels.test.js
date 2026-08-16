@@ -12,6 +12,7 @@ const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { loadSandbox } = require('./extract');
 const runtimeSettings = require('../../src/runtime-settings');
 const { detectStuckItems, groupStuckItems, isSeasonGroup } = require('../../src/stuck');
+const { nextSeasonNoGrabAlert } = require('../../src/season-alert');
 
 const settingsStore = new Map();
 const sandbox = loadSandbox(
@@ -354,6 +355,37 @@ test('alert cooldowns: a stuck-download alert stays suppressed after reload', as
   const afterRestart = loadSandbox(names, stubs);
   assert.strictEqual((await afterRestart.run('sweepStuckDownloads()')).alerted, 0);
   assert.strictEqual(alerts, 1);
+  database.close();
+});
+
+test('season alerts: durable per-season stand-down survives restart and changed results re-arm', () => {
+  const database = new Database(':memory:');
+  database.exec(`CREATE TABLE alert_cooldowns (
+    scope TEXT NOT NULL, alert_key TEXT NOT NULL, last_alerted_at INTEGER NOT NULL,
+    attempt_count INTEGER DEFAULT 0, last_attempted_at INTEGER, fingerprint TEXT,
+    stood_down INTEGER DEFAULT 0, metadata_json TEXT,
+    PRIMARY KEY (scope, alert_key)
+  );`);
+  const names = ['seasonAlertKey', 'seasonAlertRow', 'getSeasonAlertState', 'recordSeasonNoGrab', 'clearSeasonAlertState', 'listSeasonAlertStates'];
+  const make = () => loadSandbox(names, { db: database, nextSeasonNoGrabAlert, SEASON_ALERT_SCOPE: 'season-pack:no-grab' });
+  let bed = make();
+  const input = { seriesId: 7, seasonNumber: 2, seriesTitle: 'Revenge', fingerprint: 'same', missingCount: 22, releaseCount: 0 };
+  const alerts = [];
+  for (let attempt = 1; attempt <= 4; attempt++) alerts.push(bed.recordSeasonNoGrab({ ...input, now: attempt * 1000 }).shouldAlert);
+  assert.deepStrictEqual(alerts, [true, true, false, true]);
+  assert.strictEqual(bed.getSeasonAlertState(7, 2).stoodDown, true);
+
+  bed = make(); // process restart, same SQLite rows
+  const silent = bed.recordSeasonNoGrab({ ...input, now: 5000 });
+  assert.strictEqual(silent.shouldAlert, false);
+  assert.strictEqual(bed.listSeasonAlertStates({ stoodDownOnly: true })[0].seriesTitle, 'Revenge');
+
+  const changed = bed.recordSeasonNoGrab({ ...input, fingerprint: 'new-release-list', releaseCount: 1, now: 6000 });
+  assert.strictEqual(changed.shouldAlert, true);
+  assert.strictEqual(changed.attemptCount, 1);
+  assert.strictEqual(changed.stoodDown, false);
+  assert.strictEqual(bed.clearSeasonAlertState(7, 2), true);
+  assert.strictEqual(bed.getSeasonAlertState(7, 2), null);
   database.close();
 });
 

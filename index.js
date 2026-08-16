@@ -28,7 +28,7 @@ const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
@@ -1087,11 +1087,21 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
   // rejection and, only for candidates inside the safety limits, leaves the decision to an admin.
   let interactive = null;
   let interactiveError = null;
+  let interactiveFingerprint = null;
+  let seasonGrabCandidates = null;
   let seasonGrabOffer = null;
   if (['no_grab', 'partial'].includes(outcome) && tunable('SEASON_PACK_INTERACTIVE')) {
     try {
       const releases = await interactiveSeasonSearch(seriesId, seasonNumber);
       const ranked = rankSeasonReleases(releases, { title: seriesTitle, season: seasonNumber });
+      interactiveFingerprint = ranked.map(release => ({
+        id: release.guid || `${release.indexerId ?? ''}:${release.title}`,
+        approved: release.approved,
+        downloadAllowed: release.downloadAllowed,
+        rejections: release.rejections,
+        customFormatScore: release.raw?.customFormatScore ?? null,
+        qualityWeight: release.raw?.qualityWeight ?? null,
+      })).sort((a, b) => a.id.localeCompare(b.id));
       interactive = {
         releaseCount: ranked.length,
         packCount: ranked.filter(release => release.isPack && release.coversSeason).length,
@@ -1104,7 +1114,7 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
       });
       const eligible = [choice.pick, ...choice.runnersUp].filter(Boolean);
       if (eligible.length) {
-        const candidates = eligible.map(release => ({
+        seasonGrabCandidates = eligible.map(release => ({
           guid: release.guid,
           indexerId: release.indexerId,
           title: release.title,
@@ -1114,12 +1124,6 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
           confidence: release.confidence,
           displayedRank: ranked.indexOf(release) + 1,
         }));
-        const nonce = stashGrabOffer({ kind: 'season-pack-force', seriesId, seriesTitle, seasonNumber, candidates });
-        seasonGrabOffer = { nonce, candidates };
-        audit('season_pack_force_offered', {
-          seriesId, title: seriesTitle, season: seasonNumber, candidateCount: candidates.length,
-          candidates: candidates.map(candidate => ({ title: candidate.title, indexer: candidate.indexer, seeders: candidate.seeders, confidence: candidate.confidence })),
-        });
       }
       nextStep = eligible.length
         ? 'An admin can force one eligible pack below. This bypasses Sonarr’s rejection; review the reason first.'
@@ -1161,9 +1165,39 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
   } else if (interactiveError) {
     fields.push({ name: 'Interactive search', value: `Unavailable: ${interactiveError}`.slice(0, 1024), inline: false });
   }
+  let alertDecision = null;
+  let shouldNotify = true;
+  if (outcome === 'no_grab') {
+    const fingerprint = sha256(JSON.stringify({
+      missing: remaining,
+      releases: interactiveFingerprint ?? (interactiveError ? 'unavailable' : 'disabled'),
+    }));
+    alertDecision = recordSeasonNoGrab({
+      seriesId, seasonNumber, seriesTitle, fingerprint, missingCount: remaining,
+      releaseCount: interactive?.releaseCount ?? null,
+    });
+    shouldNotify = alertDecision.shouldAlert;
+    if (alertDecision.stoodDown) {
+      fields.push({ name: 'Alert status', value: `Standing down after ${alertDecision.attemptCount} identical results. Searches continue; alerts resume when releases, rejection reasons, or the missing count change, or after a manual retry.`, inline: false });
+    } else if (alertDecision.nextAlertAttempt) {
+      fields.push({ name: 'Alert status', value: `Identical result ${alertDecision.attemptCount}; next repeat at attempt ${alertDecision.nextAlertAttempt}.`, inline: false });
+    }
+  } else {
+    clearSeasonAlertState(seriesId, seasonNumber);
+  }
+  // Do not create an offer that nobody can see during a backed-off alert. A changed candidate
+  // list changes the fingerprint, re-arms the alert, and reaches this block normally.
+  if (seasonGrabCandidates && shouldNotify) {
+    const nonce = stashGrabOffer({ kind: 'season-pack-force', seriesId, seriesTitle, seasonNumber, candidates: seasonGrabCandidates });
+    seasonGrabOffer = { nonce, candidates: seasonGrabCandidates };
+    audit('season_pack_force_offered', {
+      seriesId, title: seriesTitle, season: seasonNumber, candidateCount: seasonGrabCandidates.length,
+      candidates: seasonGrabCandidates.map(candidate => ({ title: candidate.title, indexer: candidate.indexer, seeders: candidate.seeders, confidence: candidate.confidence })),
+    });
+  }
   if (nextStep) fields.push({ name: 'Next step', value: nextStep.slice(0, 1024), inline: false });
 
-  audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, fillMode: fill.mode, releaseCount: fill.releaseCount, packReleases: fill.packReleases, episodeReleases: fill.episodeReleases, interactiveSearched: interactive !== null || interactiveError !== null, interactiveReleaseCount: interactive?.releaseCount ?? null, interactivePackCount: interactive?.packCount ?? null, interactiveError, message: commandText.slice(0, 1000) || null });
+  audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, fillMode: fill.mode, releaseCount: fill.releaseCount, packReleases: fill.packReleases, episodeReleases: fill.episodeReleases, interactiveSearched: interactive !== null || interactiveError !== null, interactiveReleaseCount: interactive?.releaseCount ?? null, interactivePackCount: interactive?.packCount ?? null, interactiveError, alertPosted: shouldNotify, noGrabAttempts: alertDecision?.attemptCount ?? null, alertStoodDown: alertDecision?.stoodDown ?? false, message: commandText.slice(0, 1000) || null });
   const message = { embeds: [brandedEmbed(color)
     .setTitle(title.slice(0, 256))
     .setDescription(description.slice(0, 4000))
@@ -1175,8 +1209,8 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
         .setLabel(`Grab pack ${candidate.displayedRank}`)
         .setStyle(index === 0 ? ButtonStyle.Danger : ButtonStyle.Secondary)))];
   }
-  notifyChannel('downloads', message);
-  return { outcome, status, remaining, queued, downloaded, fill, interactive, interactiveError, seasonGrabOffer };
+  if (shouldNotify) notifyChannel('downloads', message);
+  return { outcome, status, remaining, queued, downloaded, fill, interactive, interactiveError, seasonGrabOffer: shouldNotify ? seasonGrabOffer : null, alerted: shouldNotify, alertDecision };
 }
 
 // Force-grab is intentionally a human-in-the-loop action. The offer carries only a short nonce;
@@ -1235,7 +1269,7 @@ function monitorSeasonSearch(args) {
   });
 }
 
-async function sweepSeasonPacks() {
+async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
   if (!tunable('SEASON_PACK_FIRST') || !CONFIG.SONARR_URL) return;
   const cfg = seasonPackConfig();
   const now = Date.now();
@@ -1279,6 +1313,7 @@ async function sweepSeasonPacks() {
         audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'season_search', seriesId: series.id, season: season.season });
         continue;
       }
+      if (rearmAlerts) clearSeasonAlertState(series.id, season.season);
       // Recorded only after the command is accepted, so a failed search retries next sweep
       // instead of sitting out the cooldown.
       recordSeasonSearch({ seriesId: series.id, seasonNumber: season.season, seriesTitle: series.title, missing: season.missing });
@@ -4111,7 +4146,7 @@ async function handleAutomationCommand(interaction) {
   const sweeps = {
     stuck: sweepStuckDownloads,
     escalation: sweepEscalations,
-    'season-pack': sweepSeasonPacks,
+    'season-pack': () => sweepSeasonPacks({ rearmAlerts: true }),
     'episode-recovery': runEpisodeRecoverySweep,
   };
   const outcome = await runGuardedSweep(name, sweeps[name]);
@@ -7515,6 +7550,16 @@ async function gatherIncompleteRequests({ queue = [], grabJobs = [], escalations
   return rankIncomplete(rows);
 }
 
+function seasonAlertDashboardItems(rows = []) {
+  return rows.map(item => ({
+    state: 'skip',
+    title: `${item.seriesTitle || `Sonarr series ${item.seriesId}`} S${pad(item.seasonNumber)}`,
+    sub: `alerts stood down after ${item.attemptCount} identical no-grab results · ${item.missingCount ?? '?'} aired missing · ${item.releaseCount == null ? 'release count unavailable' : `${item.releaseCount} interactive release(s)`}`,
+    right: item.lastAttemptedAt ? `last tried ${fmtAgo(item.lastAttemptedAt)}` : '',
+    actions: [{ label: 'Re-arm alerts', url: '/admin/action/search', body: { kind: 'rearm-alert', seriesId: item.seriesId, seasonNumber: item.seasonNumber } }],
+  }));
+}
+
 function startExpressServer() {
   const app = express();
   app.disable('x-powered-by');
@@ -8008,6 +8053,7 @@ function startExpressServer() {
           { label: 'Unpin', url: '/admin/action/priority', body: { operation: 'unpin', key: item.key } },
         ],
       }));
+      const seasonAlertItems = seasonAlertDashboardItems(listSeasonAlertStates({ stoodDownOnly: true }));
       const sweepItems = [
         ['stuck', 'Stuck-download sweep'],
         ['escalation', 'Escalation sweep'],
@@ -8122,6 +8168,10 @@ function startExpressServer() {
           <p class="panel-intro">These take effect on the next sweep — no redeploy. Compose stays the default:
             <strong>Reset to compose</strong> drops the override and the stack file's value applies again.
             ${overriddenCount ? `<strong>${overriddenCount}</strong> setting${overriddenCount === 1 ? ' is' : 's are'} currently overridden here.` : 'Nothing is overridden right now.'}</p>
+          <div class="card">
+            <h2>Season-search alert stand-downs<span class="sub">Searches still run. Only repeated identical no-release messages are muted.</span></h2>
+            ${renderItemList(seasonAlertItems, 'No season-search alerts are stood down.')}
+          </div>
           ${settingsGroups.map(renderSettingsGroup).join('')}
         </section>
 
@@ -8560,6 +8610,15 @@ function startExpressServer() {
       const seriesId = Number(req.body?.seriesId);
       const seasonNumber = Number(req.body?.seasonNumber);
       const episodeId = Number(req.body?.episodeId);
+      if (kind === 'rearm-alert') {
+        if (!Number.isInteger(seriesId) || seriesId < 1 || !Number.isInteger(seasonNumber) || seasonNumber < 0) {
+          audit('dashboard_season_alert_rearmed', { ...dashboardActor(req), ok: false, reason: 'invalid_request' });
+          return res.status(400).json({ ok: false, error: 'Valid series and season numbers are required.' });
+        }
+        const changed = clearSeasonAlertState(seriesId, seasonNumber);
+        audit('dashboard_season_alert_rearmed', { ...dashboardActor(req), ok: true, seriesId, seasonNumber, changed });
+        return res.json({ ok: true, message: changed ? 'Season-search alerts re-armed.' : 'Season-search alerts were already armed.' });
+      }
       if (!['season', 'episode'].includes(kind) || !Number.isInteger(seriesId)) {
         audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'invalid_request' });
         return res.status(400).json({ ok: false, error: 'Invalid search request.' });
@@ -8579,6 +8638,7 @@ function startExpressServer() {
             return res.status(409).json({ ok: false, error, nextEligible });
           }
           const command = await triggerSeasonSearch(seriesId, seasonNumber);
+          clearSeasonAlertState(seriesId, seasonNumber);
           recordSeasonSearch({ seriesId, seasonNumber, seriesTitle: series.title, missing: missing.length });
           monitorSeasonSearch({ seriesId, seriesTitle: series.title, seasonNumber, missingAtSearch: missing.length, commandId: command?.id });
           audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, seasonNumber, title: series.title, commandId: command?.id || null });
@@ -8650,7 +8710,7 @@ function startExpressServer() {
       const sweeps = {
         stuck: sweepStuckDownloads,
         escalation: sweepEscalations,
-        'season-pack': sweepSeasonPacks,
+        'season-pack': () => sweepSeasonPacks({ rearmAlerts: true }),
         'episode-recovery': runEpisodeRecoverySweep,
       };
       if (!sweeps[name]) {

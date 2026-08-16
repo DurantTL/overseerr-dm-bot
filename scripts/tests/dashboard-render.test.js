@@ -197,6 +197,21 @@ test('tier node setup: trims trailing slashes in linear time while preserving ro
   assert.deepStrictEqual(normalizeTierFolders([{ id: 'root', path: '/' }]), [{ id: 'root', path: '/' }]);
 });
 
+test('dashboard: stood-down season alerts remain visible and re-armable', () => {
+  const sandbox = loadSandbox(['seasonAlertDashboardItems'], {
+    pad: n => String(n).padStart(2, '0'),
+    fmtAgo: () => '2 hours ago',
+  });
+  const items = sandbox.seasonAlertDashboardItems([{
+    seriesId: 7, seasonNumber: 2, seriesTitle: 'Revenge', attemptCount: 4,
+    missingCount: 22, releaseCount: 0, lastAttemptedAt: 1000,
+  }]);
+  assert.strictEqual(items[0].title, 'Revenge S02');
+  assert.match(items[0].sub, /stood down after 4/);
+  assert.strictEqual(items[0].actions[0].url, '/admin/action/search');
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(items[0].actions[0].body)), { kind: 'rearm-alert', seriesId: 7, seasonNumber: 2 });
+});
+
 test('dashboard actions: arr response details are returned', () => {
   const sandbox = loadSandbox(['dashboardActionError']);
   assert.strictEqual(sandbox.dashboardActionError({ response: { data: { message: 'Sonarr rejected the command' } } }), 'Sonarr rejected the command');

@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { CONFIG } = require('./config');
 const { sha256, canonicalizeEmail, isSnowflake } = require('./util');
 const { upsertTrackedRequest, collapseStalePendingRequests, reconcileTrackedRequestStatuses } = require('./request-tracking');
+const { nextSeasonNoGrabAlert } = require('./season-alert');
 
 const DB_PATH = '/app/data/plex_invites.db';
 const db = new Database(DB_PATH);
@@ -361,6 +362,13 @@ function runMigrations() {
   ensureColumn('tier_nodes', 'plex_url', 'TEXT');
   ensureColumn('tier_nodes', 'plex_token', 'TEXT');
   ensureColumn('tier_nodes', 'atime_mask', 'TEXT');
+  // The generic alert-cooldown table also carries durable no-grab backoff state for season
+  // searches. Other scopes keep using only last_alerted_at and are unaffected by these defaults.
+  ensureColumn('alert_cooldowns', 'attempt_count', 'INTEGER DEFAULT 0');
+  ensureColumn('alert_cooldowns', 'last_attempted_at', 'INTEGER');
+  ensureColumn('alert_cooldowns', 'fingerprint', 'TEXT');
+  ensureColumn('alert_cooldowns', 'stood_down', 'INTEGER DEFAULT 0');
+  ensureColumn('alert_cooldowns', 'metadata_json', 'TEXT');
 
   // R2.1 multi-folder: older installs have tier_node_files keyed on (node, rel_path) with no
   // folder_id. Rebuild it under the new (node, folder_id, rel_path) key so the same relPath can
@@ -1147,6 +1155,65 @@ function pruneAlertCooldowns(scope, before) {
   return db.prepare('DELETE FROM alert_cooldowns WHERE scope = ? AND last_alerted_at < ?').run(scope, before).changes;
 }
 
+const SEASON_ALERT_SCOPE = 'season-pack:no-grab';
+function seasonAlertKey(seriesId, seasonNumber) {
+  return `${Number(seriesId)}:${Number(seasonNumber)}`;
+}
+
+function seasonAlertRow(row) {
+  if (!row) return null;
+  let metadata = {};
+  try { metadata = JSON.parse(row.metadata_json || '{}'); } catch (_err) {}
+  return {
+    key: row.alert_key,
+    fingerprint: row.fingerprint,
+    attemptCount: Number(row.attempt_count) || 0,
+    lastAttemptedAt: Number(row.last_attempted_at) || 0,
+    lastAlertedAt: Number(row.last_alerted_at) || 0,
+    stoodDown: !!row.stood_down,
+    ...metadata,
+  };
+}
+
+function getSeasonAlertState(seriesId, seasonNumber) {
+  return seasonAlertRow(db.prepare('SELECT * FROM alert_cooldowns WHERE scope = ? AND alert_key = ?')
+    .get(SEASON_ALERT_SCOPE, seasonAlertKey(seriesId, seasonNumber)));
+}
+
+function recordSeasonNoGrab({ seriesId, seasonNumber, seriesTitle, fingerprint, missingCount, releaseCount, now = Date.now() }) {
+  return db.transaction(() => {
+    const key = seasonAlertKey(seriesId, seasonNumber);
+    const previous = getSeasonAlertState(seriesId, seasonNumber);
+    const decision = nextSeasonNoGrabAlert(previous, { fingerprint, now });
+    const lastAlertedAt = decision.shouldAlert ? now : previous?.lastAlertedAt || now;
+    const metadata = JSON.stringify({ seriesId: Number(seriesId), seasonNumber: Number(seasonNumber), seriesTitle, missingCount, releaseCount });
+    db.prepare(`INSERT INTO alert_cooldowns
+        (scope, alert_key, last_alerted_at, attempt_count, last_attempted_at, fingerprint, stood_down, metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(scope, alert_key) DO UPDATE SET
+        last_alerted_at = excluded.last_alerted_at,
+        attempt_count = excluded.attempt_count,
+        last_attempted_at = excluded.last_attempted_at,
+        fingerprint = excluded.fingerprint,
+        stood_down = excluded.stood_down,
+        metadata_json = excluded.metadata_json`)
+      .run(SEASON_ALERT_SCOPE, key, lastAlertedAt, decision.attemptCount, now, fingerprint, decision.stoodDown ? 1 : 0, metadata);
+    return { ...decision, lastAlertedAt, key };
+  })();
+}
+
+function clearSeasonAlertState(seriesId, seasonNumber) {
+  return db.prepare('DELETE FROM alert_cooldowns WHERE scope = ? AND alert_key = ?')
+    .run(SEASON_ALERT_SCOPE, seasonAlertKey(seriesId, seasonNumber)).changes > 0;
+}
+
+function listSeasonAlertStates({ stoodDownOnly = false } = {}) {
+  const rows = stoodDownOnly
+    ? db.prepare('SELECT * FROM alert_cooldowns WHERE scope = ? AND stood_down = 1 ORDER BY last_attempted_at DESC').all(SEASON_ALERT_SCOPE)
+    : db.prepare('SELECT * FROM alert_cooldowns WHERE scope = ? ORDER BY last_attempted_at DESC').all(SEASON_ALERT_SCOPE);
+  return rows.map(seasonAlertRow);
+}
+
 // Records a webhook event key the first time it's seen. Returns true when this call recorded it
 // (i.e. process the event), false when the key was already present (a redelivery/replay).
 // Atomic claim-or-reject: a plain floor(now/window) bucket baked into the key would let two
@@ -1321,5 +1388,5 @@ function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k) {
   return null;
 }
 
-module.exports = { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
+module.exports = { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;

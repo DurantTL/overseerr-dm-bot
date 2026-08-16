@@ -9,6 +9,7 @@ const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSea
 const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('../../src/season-release');
 const runtimeSettings = require('../../src/runtime-settings');
 const { priorityKey, orderByPriority, isPinned } = require('../../src/priority');
+const { sha256 } = require('../../src/util');
 
 const DAY = 86400000;
 const NOW = Date.now();
@@ -42,6 +43,7 @@ function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = t
   const notices = [];
   const episodeFetches = [];
   const monitored = [];
+  const rearmed = [];
   const CONFIG = {
     SEASON_PACK_FIRST: seasonPackFirst,
     SONARR_URL: 'http://sonarr',
@@ -74,12 +76,13 @@ function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = t
     getSeasonSearchTimes: id => searchedAt[id] || {},
     listRequestedTvdbIds: () => new Set(requestedTvdbIds),
     recordSeasonSearch: row => recorded.push(row),
+    clearSeasonAlertState: (seriesId, seasonNumber) => rearmed.push(`${seriesId}:${seasonNumber}`),
     audit: () => {},
     notifyChannel: (channel, msg) => notices.push({ channel, msg }),
     COLORS: { INFO: 1 },
     brandedEmbed: () => ({ setTitle() { return this; }, setDescription(d) { this.description = d; return this; } }),
   });
-  return { sandbox, calls, recorded, notices, episodeFetches, monitored };
+  return { sandbox, calls, recorded, notices, episodeFetches, monitored, rearmed };
 }
 
 test('season-pack-sweep: old shows get season searches, airing shows are never touched', async () => {
@@ -121,6 +124,13 @@ test('season-pack-sweep: a requested show gets packs even while it is still airi
   h = build({ requestedTvdbIds: [104] });
   await h.sandbox.sweepSeasonPacks();
   assert.ok(!h.episodeFetches.includes(4), 'being requested does not override the has-everything filter');
+});
+
+test('season-pack-sweep: a manual run re-arms only seasons it actually retries', async () => {
+  const h = build({ maxPerRun: 2 });
+  await h.sandbox.sweepSeasonPacks({ rearmAlerts: true });
+  assert.deepStrictEqual(h.rearmed, ['1:1', '1:2']);
+  assert.deepStrictEqual(h.calls, ['1:1', '1:2'], 'manual re-arm does not expand the normal search cap');
 });
 
 test('season-pack-sweep: a season already downloading is left alone rather than raced', async () => {
@@ -246,11 +256,13 @@ test('season search history: keeps recent grabs/imports for the requested season
   assert.ok(result.every(row => row.fullSeason), 'S01 without an episode marker is a season pack');
 });
 
-function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], queue = [], history = [], interactive = [], interactiveError = null, interactiveEnabled = true }) {
+function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], queue = [], history = [], interactive = [], interactiveError = null, interactiveEnabled = true, alertDecision = null }) {
   const notices = [];
   const audits = [];
   const interactiveCalls = [];
   const offers = [];
+  const alertRecords = [];
+  const clearedAlerts = [];
   class FakeButton {
     setCustomId(value) { this.customId = value; return this; }
     setLabel(value) { this.label = value; return this; }
@@ -281,6 +293,12 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
     chooseSeasonPack,
     describeRejections,
     stashGrabOffer: payload => { offers.push(payload); return 'abc12345'; },
+    sha256,
+    recordSeasonNoGrab: detail => {
+      alertRecords.push(detail);
+      return alertDecision || { attemptCount: 1, changed: true, stoodDown: false, shouldAlert: true, nextAlertAttempt: 2 };
+    },
+    clearSeasonAlertState: (seriesId, seasonNumber) => { clearedAlerts.push({ seriesId, seasonNumber }); },
     summarizeSeasonFillActivity,
     audit: (action, detail) => audits.push({ action, detail }),
     notifyChannel: (channel, msg) => notices.push({ channel, msg }),
@@ -297,7 +315,7 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
       addFields(...values) { this.fields.push(...values); return this; },
     }),
   });
-  return { sandbox, notices, audits, interactiveCalls, offers };
+  return { sandbox, notices, audits, interactiveCalls, offers, alertRecords, clearedAlerts };
 }
 
 test('season search verification: reports ranked candidates and rejection reasons after no accepted release', async () => {
@@ -381,6 +399,21 @@ test('season search verification: interactive reporting can be disabled and fail
   assert.strictEqual(h.notices.length, 1, 'the result notification is still posted');
   assert.match(h.notices[0].msg.embeds[0].fields.find(field => field.name === 'Interactive search').value, /Sonarr timed out/);
   assert.strictEqual(h.audits.find(row => row.action === 'season_pack_search_result').detail.interactiveError, 'Sonarr timed out');
+});
+
+test('season search verification: suppresses an identical backed-off result but keeps auditing and searching', async () => {
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 0 reports downloaded.' },
+    interactive: [{ title: 'Winter.Sonata.S01.1080p', guid: 'pack-guid', indexerId: 7, size: 20 * 1024 ** 3, seeders: 12, indexer: 'Public', fullSeason: true, seasonNumber: 1 }],
+    alertDecision: { attemptCount: 3, changed: false, stoodDown: false, shouldAlert: false, nextAlertAttempt: 4 },
+  });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101 });
+  assert.strictEqual(result.outcome, 'no_grab');
+  assert.strictEqual(result.alerted, false);
+  assert.strictEqual(h.notices.length, 0, 'only the repeated Discord message is suppressed');
+  assert.strictEqual(h.alertRecords.length, 1, 'the attempted search still advances durable state');
+  assert.strictEqual(h.audits.find(row => row.action === 'season_pack_search_result').detail.noGrabAttempts, 3);
+  assert.strictEqual(h.offers.length, 0, 'a muted result does not create invisible force-grab buttons');
 });
 
 test('season search verification: records and labels pack versus episode fills', async () => {
