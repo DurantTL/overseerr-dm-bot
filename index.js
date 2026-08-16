@@ -1020,6 +1020,46 @@ function queuedSeasons(queue, seriesId) {
   return queue.filter(q => q.source.kind === 'tv' && q.seriesId === seriesId && q.seasonNumber != null).map(q => q.seasonNumber);
 }
 
+// Both the admin button and default-off automation must recheck live state immediately before
+// overriding Sonarr. Interactive-search results can be minutes old by the time verification runs,
+// and a different pipeline may have started covering the season in the meantime.
+async function seasonPackForceBlocker({ seriesId, seasonNumber, releaseTitle }) {
+  const duplicate = findActiveContentDuplicate({ releaseTitle, mediaType: 'tv', mediaId: null });
+  if (duplicate) return { reason: 'active_grab', duplicate };
+  const queue = await fetchArrQueues();
+  const queued = queue.find(item => item.source.kind === 'tv' && Number(item.seriesId) === Number(seriesId)
+    && Number(item.seasonNumber) === Number(seasonNumber));
+  return queued ? { reason: 'sonarr_queue', queued } : null;
+}
+
+async function autoForceSeasonPack({ seriesId, seriesTitle, seasonNumber, candidate }) {
+  let blocked;
+  try {
+    blocked = await seasonPackForceBlocker({ seriesId, seasonNumber, releaseTitle: candidate.title });
+  } catch (err) {
+    audit('season_pack_auto_force_failed', { seriesId, title: seriesTitle, season: seasonNumber, releaseTitle: candidate.title, stage: 'safety_check', error: err.message });
+    return { status: 'failed', error: err.message };
+  }
+  if (blocked) {
+    audit('season_pack_auto_force_refused', {
+      seriesId, title: seriesTitle, season: seasonNumber, releaseTitle: candidate.title, reason: blocked.reason,
+      jobId: blocked.duplicate?.job?.id ?? null,
+    });
+    return { status: 'covered', reason: blocked.reason, blocked };
+  }
+  try {
+    await forceGrabRelease({ guid: candidate.guid, indexerId: candidate.indexerId });
+  } catch (err) {
+    audit('season_pack_auto_force_failed', { seriesId, title: seriesTitle, season: seasonNumber, releaseTitle: candidate.title, stage: 'force_grab', error: err.message });
+    return { status: 'failed', error: err.message };
+  }
+  audit('season_pack_auto_force_grabbed', {
+    seriesId, title: seriesTitle, season: seasonNumber, releaseTitle: candidate.title,
+    indexer: candidate.indexer, seeders: candidate.seeders, confidence: candidate.confidence,
+  });
+  return { status: 'grabbed' };
+}
+
 async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, missingAtSearch, commandId, searchedAt = 0 }) {
   const command = await pollArrCommand({ url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY }, commandId, 10 * 60000);
   const status = command.status || 'unknown';
@@ -1083,13 +1123,14 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
   }
 
   // A completed search that made no (or only partial) progress is the one useful time to pay for
-  // Sonarr's interactive release query. The verifier never force-grabs by itself: it explains the
-  // rejection and, only for candidates inside the safety limits, leaves the decision to an admin.
+  // Sonarr's interactive release query. Eligible candidates are offered to an admin by default;
+  // the separate SEASON_PACK_FORCE_GRAB switch can opt into forcing the single best candidate.
   let interactive = null;
   let interactiveError = null;
   let interactiveFingerprint = null;
   let seasonGrabCandidates = null;
   let seasonGrabOffer = null;
+  let autoForceResult = null;
   if (['no_grab', 'partial'].includes(outcome) && tunable('SEASON_PACK_INTERACTIVE')) {
     try {
       const releases = await interactiveSeasonSearch(seriesId, seasonNumber);
@@ -1125,7 +1166,29 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
           displayedRank: ranked.indexOf(release) + 1,
         }));
       }
-      nextStep = eligible.length
+      if (seasonGrabCandidates?.length && tunable('SEASON_PACK_FORCE_GRAB')) {
+        const candidate = seasonGrabCandidates[0];
+        autoForceResult = await autoForceSeasonPack({ seriesId, seriesTitle, seasonNumber, candidate });
+        if (autoForceResult.status === 'grabbed') {
+          outcome = 'auto_forced';
+          title = `📥 Season Pack Auto-Forced — ${label}`;
+          description = `Sonarr's original search made incomplete progress, so the highest-ranked eligible full-season pack was automatically forced.`;
+          color = COLORS.SUCCESS;
+          nextStep = 'Import verification remains with Sonarr; the stuck-download watchdog reports a stalled queue item.';
+          seasonGrabCandidates = null;
+        } else if (autoForceResult.status === 'covered') {
+          outcome = 'grabbed';
+          title = `ℹ️ Season Already Covered — ${label}`;
+          description = autoForceResult.reason === 'active_grab'
+            ? 'Automatic force-grab was skipped because another active grab job already covers this season.'
+            : 'Automatic force-grab was skipped because Sonarr now has this season in its live queue.';
+          color = COLORS.INFO;
+          nextStep = 'The existing download remains responsible for filling the season.';
+          seasonGrabCandidates = null;
+        } else {
+          nextStep = `Automatic force-grab failed: ${autoForceResult.error}. An admin can retry an eligible pack below.`;
+        }
+      } else nextStep = eligible.length
         ? 'An admin can force one eligible pack below. This bypasses Sonarr’s rejection; review the reason first.'
         : ranked.length
           ? `No full-season candidate passed the force-grab safety limits: ${choice.why}`
@@ -1165,6 +1228,12 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
   } else if (interactiveError) {
     fields.push({ name: 'Interactive search', value: `Unavailable: ${interactiveError}`.slice(0, 1024), inline: false });
   }
+  if (autoForceResult) {
+    const autoText = autoForceResult.status === 'grabbed' ? 'Best eligible pack sent to Sonarr.'
+      : autoForceResult.status === 'covered' ? 'Skipped because another download already covers the season.'
+        : `Failed safely: ${autoForceResult.error}`;
+    fields.push({ name: 'Automatic force-grab', value: autoText.slice(0, 1024), inline: false });
+  }
   let alertDecision = null;
   let shouldNotify = true;
   if (outcome === 'no_grab') {
@@ -1197,7 +1266,7 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
   }
   if (nextStep) fields.push({ name: 'Next step', value: nextStep.slice(0, 1024), inline: false });
 
-  audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, fillMode: fill.mode, releaseCount: fill.releaseCount, packReleases: fill.packReleases, episodeReleases: fill.episodeReleases, interactiveSearched: interactive !== null || interactiveError !== null, interactiveReleaseCount: interactive?.releaseCount ?? null, interactivePackCount: interactive?.packCount ?? null, interactiveError, alertPosted: shouldNotify, noGrabAttempts: alertDecision?.attemptCount ?? null, alertStoodDown: alertDecision?.stoodDown ?? false, message: commandText.slice(0, 1000) || null });
+  audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, fillMode: fill.mode, releaseCount: fill.releaseCount, packReleases: fill.packReleases, episodeReleases: fill.episodeReleases, interactiveSearched: interactive !== null || interactiveError !== null, interactiveReleaseCount: interactive?.releaseCount ?? null, interactivePackCount: interactive?.packCount ?? null, interactiveError, autoForceStatus: autoForceResult?.status ?? null, autoForceReason: autoForceResult?.reason ?? null, autoForceError: autoForceResult?.error ?? null, alertPosted: shouldNotify, noGrabAttempts: alertDecision?.attemptCount ?? null, alertStoodDown: alertDecision?.stoodDown ?? false, message: commandText.slice(0, 1000) || null });
   const message = { embeds: [brandedEmbed(color)
     .setTitle(title.slice(0, 256))
     .setDescription(description.slice(0, 4000))
@@ -1210,11 +1279,11 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
         .setStyle(index === 0 ? ButtonStyle.Danger : ButtonStyle.Secondary)))];
   }
   if (shouldNotify) notifyChannel('downloads', message);
-  return { outcome, status, remaining, queued, downloaded, fill, interactive, interactiveError, seasonGrabOffer: shouldNotify ? seasonGrabOffer : null, alerted: shouldNotify, alertDecision };
+  return { outcome, status, remaining, queued, downloaded, fill, interactive, interactiveError, autoForceResult, seasonGrabOffer: shouldNotify ? seasonGrabOffer : null, alerted: shouldNotify, alertDecision };
 }
 
-// Force-grab is intentionally a human-in-the-loop action. The offer carries only a short nonce;
-// Sonarr's long guid stays in SQLite, and consuming it makes stale/double clicks harmless.
+// Manual fallback for the default-off automation. The offer carries only a short nonce; Sonarr's
+// long guid stays in SQLite, and consuming it makes stale/double clicks harmless.
 async function handleSeasonPackGrab(interaction, nonce, candidateIndex) {
   if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
   const offer = takeGrabOffer(nonce);
@@ -1229,18 +1298,16 @@ async function handleSeasonPackGrab(interaction, nonce, candidateIndex) {
   }
   await interaction.deferUpdate();
 
-  const duplicate = findActiveContentDuplicate({ releaseTitle: candidate.title, mediaType: 'tv', mediaId: null });
-  if (duplicate) {
+  const blocked = await seasonPackForceBlocker({ seriesId: offer.seriesId, seasonNumber: offer.seasonNumber, releaseTitle: candidate.title });
+  if (blocked?.reason === 'active_grab') {
+    const duplicate = blocked.duplicate;
     audit('season_pack_force_refused', { actorDiscordId: interaction.user.id, seriesId: offer.seriesId, title: offer.seriesTitle, season: offer.seasonNumber, reason: 'active_grab', jobId: duplicate.job.id, releaseTitle: candidate.title });
     return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
       .setTitle(`ℹ️ Season Already Covered — ${offer.seriesTitle} S${pad(offer.seasonNumber)}`.slice(0, 256))
       .setDescription(`Skipped **${candidate.title}** because ${duplicate.label} is already tracked as grab job #${duplicate.job.id} (${duplicate.job.state}).`)], components: [] });
   }
 
-  const queue = await fetchArrQueues();
-  const queued = queue.find(item => item.source.kind === 'tv' && Number(item.seriesId) === Number(offer.seriesId)
-    && Number(item.seasonNumber) === Number(offer.seasonNumber));
-  if (queued) {
+  if (blocked?.reason === 'sonarr_queue') {
     audit('season_pack_force_refused', { actorDiscordId: interaction.user.id, seriesId: offer.seriesId, title: offer.seriesTitle, season: offer.seasonNumber, reason: 'sonarr_queue', releaseTitle: candidate.title });
     return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
       .setTitle(`ℹ️ Season Already Downloading — ${offer.seriesTitle} S${pad(offer.seasonNumber)}`.slice(0, 256))

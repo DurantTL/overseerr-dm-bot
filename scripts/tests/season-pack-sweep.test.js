@@ -256,13 +256,15 @@ test('season search history: keeps recent grabs/imports for the requested season
   assert.ok(result.every(row => row.fullSeason), 'S01 without an episode marker is a season pack');
 });
 
-function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], queue = [], history = [], interactive = [], interactiveError = null, interactiveEnabled = true, alertDecision = null }) {
+function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], queue = [], history = [], interactive = [], interactiveError = null, interactiveEnabled = true, autoForce = false, duplicate = null, recheckQueue = null, forceError = null, alertDecision = null }) {
   const notices = [];
   const audits = [];
   const interactiveCalls = [];
   const offers = [];
   const alertRecords = [];
   const clearedAlerts = [];
+  const forced = [];
+  let queueCalls = 0;
   class FakeButton {
     setCustomId(value) { this.customId = value; return this; }
     setLabel(value) { this.label = value; return this; }
@@ -272,23 +274,26 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
     constructor() { this.components = []; }
     addComponents(...values) { this.components.push(...values); return this; }
   }
-  const sandbox = loadSandbox(['verifySeasonSearchCommand'], {
-    CONFIG: { SONARR_URL: 'http://sonarr', SONARR_API_KEY: 'key', SEASON_PACK_INTERACTIVE: interactiveEnabled },
+  const sandbox = loadSandbox(['seasonPackForceBlocker', 'autoForceSeasonPack', 'verifySeasonSearchCommand'], {
+    CONFIG: { SONARR_URL: 'http://sonarr', SONARR_API_KEY: 'key', SEASON_PACK_INTERACTIVE: interactiveEnabled, SEASON_PACK_FORCE_GRAB: autoForce },
     tunable: key => ({
       SEASON_PACK_INTERACTIVE: interactiveEnabled,
+      SEASON_PACK_FORCE_GRAB: autoForce,
       SEASON_PACK_MIN_SEEDERS: 1,
       SEASON_PACK_MAX_SIZE_GB: 200,
       SEASON_PACK_MIN_CONFIDENCE: 70,
     })[key],
     pollArrCommand: async () => command,
     getSeriesEpisodes: async () => episodes,
-    fetchArrQueues: async () => queue,
+    fetchArrQueues: async () => (++queueCalls === 1 ? queue : (recheckQueue ?? queue)),
     getSeasonDownloadHistory: async () => history,
     interactiveSeasonSearch: async (seriesId, seasonNumber) => {
       interactiveCalls.push({ seriesId, seasonNumber });
       if (interactiveError) throw interactiveError;
       return interactive;
     },
+    findActiveContentDuplicate: () => duplicate,
+    forceGrabRelease: async identity => { forced.push(identity); if (forceError) throw forceError; },
     rankSeasonReleases,
     chooseSeasonPack,
     describeRejections,
@@ -315,7 +320,7 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
       addFields(...values) { this.fields.push(...values); return this; },
     }),
   });
-  return { sandbox, notices, audits, interactiveCalls, offers, alertRecords, clearedAlerts };
+  return { sandbox, notices, audits, interactiveCalls, offers, alertRecords, clearedAlerts, forced, get queueCalls() { return queueCalls; } };
 }
 
 test('season search verification: reports ranked candidates and rejection reasons after no accepted release', async () => {
@@ -338,6 +343,7 @@ test('season search verification: reports ranked candidates and rejection reason
   assert.match(candidate.value, /Quality for existing file/);
   assert.match(embed.fields.at(-1).value, /admin can force one eligible pack/);
   assert.strictEqual(h.offers.length, 1);
+  assert.strictEqual(h.forced.length, 0, 'automatic forcing remains off by default');
   assert.strictEqual(h.offers[0].kind, 'season-pack-force');
   assert.deepStrictEqual(h.notices[0].msg.components[0].components.map(button => button.customId), ['season_grab:abc12345:0', 'season_grab:abc12345:1']);
   const resultAudit = h.audits.find(row => row.action === 'season_pack_search_result');
@@ -345,6 +351,52 @@ test('season search verification: reports ranked candidates and rejection reason
   assert.strictEqual(resultAudit.detail.interactiveReleaseCount, 3);
   assert.strictEqual(resultAudit.detail.interactivePackCount, 2);
   assert.ok(h.audits.some(row => row.action === 'season_pack_force_offered'));
+});
+
+test('season search verification: default-off auto-force grabs only the best eligible pack when enabled', async () => {
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 0 reports downloaded.' },
+    autoForce: true,
+    interactive: [
+      { title: 'Winter.Sonata.S01.1080p.WEB-DL', guid: 'best-guid', indexerId: 7, size: 20 * 1024 ** 3, seeders: 12, indexer: 'Public', fullSeason: true, seasonNumber: 1 },
+      { title: 'Winter.Sonata.S01.720p.WEB-DL', guid: 'runner-guid', indexerId: 8, size: 12 * 1024 ** 3, seeders: 5, indexer: 'Backup', fullSeason: true, seasonNumber: 1 },
+    ],
+  });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101 });
+  assert.strictEqual(result.outcome, 'auto_forced');
+  assert.strictEqual(JSON.stringify(h.forced), JSON.stringify([{ guid: 'best-guid', indexerId: 7 }]));
+  assert.strictEqual(h.offers.length, 0, 'a successful automatic grab does not leave stale manual buttons');
+  assert.ok(h.audits.some(row => row.action === 'season_pack_auto_force_grabbed'));
+  assert.strictEqual(h.audits.find(row => row.action === 'season_pack_search_result').detail.autoForceStatus, 'grabbed');
+  assert.match(h.notices[0].msg.embeds[0].title, /Auto-Forced/);
+});
+
+test('season search verification: auto-force rechecks live coverage and falls back to buttons on failure', async () => {
+  const candidate = [{ title: 'Winter.Sonata.S01.1080p', guid: 'pack-guid', indexerId: 7, size: 20 * 1024 ** 3, seeders: 12, indexer: 'Public', fullSeason: true, seasonNumber: 1 }];
+  let h = seasonVerifier({
+    command: { status: 'completed' }, autoForce: true, interactive: candidate,
+    duplicate: { job: { id: 44, state: 'downloading' }, label: 'season 1' },
+  });
+  let result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101 });
+  assert.strictEqual(result.outcome, 'grabbed');
+  assert.strictEqual(h.forced.length, 0);
+  assert.ok(h.audits.some(row => row.action === 'season_pack_auto_force_refused' && row.detail.reason === 'active_grab'));
+
+  h = seasonVerifier({
+    command: { status: 'completed' }, autoForce: true, interactive: candidate,
+    recheckQueue: [{ source: { kind: 'tv' }, seriesId: 1, seasonNumber: 1 }],
+  });
+  result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 102 });
+  assert.strictEqual(result.outcome, 'grabbed', 'a queue item appearing after the first snapshot wins the race');
+  assert.strictEqual(h.forced.length, 0);
+  assert.ok(h.audits.some(row => row.action === 'season_pack_auto_force_refused' && row.detail.reason === 'sonarr_queue'));
+
+  h = seasonVerifier({ command: { status: 'completed' }, autoForce: true, interactive: candidate, forceError: new Error('indexer unavailable') });
+  result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 103 });
+  assert.strictEqual(result.outcome, 'no_grab');
+  assert.strictEqual(h.offers.length, 1, 'a failed automatic grab still offers the safe manual retry');
+  assert.ok(h.audits.some(row => row.action === 'season_pack_auto_force_failed'));
+  assert.match(h.notices[0].msg.embeds[0].fields.at(-1).value, /Automatic force-grab failed/);
 });
 
 test('season search verification: distinguishes queued, verified, failed, and wedged outcomes', async () => {
@@ -457,7 +509,7 @@ function seasonGrabHarness({ admin = true, offer, duplicate = null, queue = [], 
     candidates: [{ guid: 'pack-guid', indexerId: 7, title: 'Winter.Sonata.S01.1080p', size: 20 * 1024 ** 3, seeders: 12, indexer: 'AvistaZ', confidence: 92 }],
   };
   const embed = () => ({ setTitle(value) { this.title = value; return this; }, setDescription(value) { this.description = value; return this; } });
-  const sandbox = loadSandbox(['handleSeasonPackGrab'], {
+  const sandbox = loadSandbox(['seasonPackForceBlocker', 'handleSeasonPackGrab'], {
     isAdminInteraction: () => admin,
     takeGrabOffer: () => { const value = cached; cached = null; return value; },
     restashGrabOffer: (nonce, value) => { restored.push({ nonce, value }); cached = value; },
