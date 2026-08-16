@@ -3,6 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 const installer = fs.readFileSync(path.join(__dirname, '..', '..', 'agent', 'install.sh.tmpl'), 'utf8');
 
@@ -29,4 +30,17 @@ test('tier installer: provisions and then verifies Node.js when 18+ is unavailab
   assert.match(installer, /yum install -y nodejs/);
   assert.match(installer, /Node\.js installation completed but node \$NODE_MAJOR was found/);
   assert.doesNotMatch(installer, /node not found —/);
+});
+
+test('tier installer: missing folder errors are actionable and omit a Node stack trace', () => {
+  const script = installer.match(/FOLDER_UNIT_LINES=\$\(node -e '\n([\s\S]*?)\n'\) \|\|/)[1];
+  const missingPath = path.join(__dirname, 'definitely-not-a-tier-folder');
+  const result = spawnSync(process.execPath, ['-e', script], {
+    encoding: 'utf8',
+    env: { ...process.env, TIER_FOLDERS: JSON.stringify([{ id: '4k', path: missingPath }]) },
+  });
+  assert.strictEqual(result.status, 1);
+  assert.match(result.stderr, new RegExp(`configured folder path does not exist: ${missingPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  assert.match(result.stderr, /Linux paths are case-sensitive/);
+  assert.doesNotMatch(result.stderr, /at Object\.statSync|node:fs:/);
 });

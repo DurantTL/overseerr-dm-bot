@@ -170,6 +170,8 @@ test('dashboard-render: tier setup contains no agent token', () => {
   assert.match(html, /movies/);
   assert.match(html, /\/mnt\/media\/TV Shows/);
   assert.match(html, /Add folder/);
+  assert.match(html, /existing local path/);
+  assert.match(html, /case-sensitive/);
   assert.doesNotMatch(html, /secret-token/);
 });
 

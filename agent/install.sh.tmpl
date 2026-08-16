@@ -78,6 +78,7 @@ fi
 # Parse the same JSON/compact multi-folder format as agent.js, validate every root before changing
 # the host, and pre-render systemd's write allowlist with correct quoting for paths containing spaces.
 FOLDER_UNIT_LINES=$(node -e '
+try {
 const fs = require("fs");
 const raw = String(process.env.TIER_FOLDERS || "").trim();
 let folders;
@@ -89,13 +90,29 @@ if (raw) {
   folders = [{ id: process.env.SYNCTHING_FOLDER_ID || "", root: process.env.TIER_FOLDER_ROOT || "" }];
 }
 if (!folders.length) throw new Error("no folders configured");
+const problems = [];
 for (const folder of folders) {
-  folder.root = folder.root.replace(/\/+$/, "");
-  if (!folder.id || !folder.root) throw new Error("every folder needs an id and path");
-  if (!fs.statSync(folder.root).isDirectory()) throw new Error(`${folder.root} is not a directory`);
+  folder.root = folder.root.replace(/\/+$/, "") || "/";
+  if (!folder.id || !folder.root) {
+    problems.push("every folder needs an id and path");
+    continue;
+  }
+  try {
+    if (!fs.statSync(folder.root).isDirectory()) problems.push(`configured folder path is not a directory: ${folder.root}`);
+  } catch (error) {
+    if (error && error.code === "ENOENT") problems.push(`configured folder path does not exist: ${folder.root} (Linux paths are case-sensitive)`);
+    else problems.push(`cannot inspect configured folder path ${folder.root}: ${error.message}`);
+  }
+}
+if (problems.length) throw new Error(problems.join("\n  - "));
+for (const folder of folders) {
   process.stdout.write(`ReadWritePaths=${JSON.stringify(folder.root)}\n`);
 }
-') || die "TIER_FOLDERS is invalid or one of its local paths does not exist"
+} catch (error) {
+  console.error(`folder validation failed:\n  - ${error.message}`);
+  process.exit(1);
+}
+') || die "correct the folder paths to their exact local Syncthing paths in the dashboard, then generate a new command"
 
 say "Installing the tier agent for node '$NODE_NAME' from $BOT_URL"
 
