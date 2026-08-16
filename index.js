@@ -7948,7 +7948,13 @@ function startExpressServer() {
     const webauthnBrowserPath = path.join(path.dirname(require.resolve('@simplewebauthn/browser')), '..', 'dist', 'bundle', 'index.es5.umd.min.js');
     const passkeyClientPath = path.join(__dirname, 'src', 'passkey-client.js');
 
-    app.get('/admin/passkey-client.js', (_req, res) => res.sendFile(passkeyClientPath, { headers: { 'Cache-Control': 'no-cache' } }));
+    app.get('/admin/passkey-client.js', rateLimit({
+      windowMs: 60000,
+      limit: 120,
+      keyGenerator: httpRateLimitKey,
+      standardHeaders: 'draft-8',
+      legacyHeaders: false,
+    }), (_req, res) => res.sendFile(passkeyClientPath, { headers: { 'Cache-Control': 'no-cache' } }));
     app.get('/admin/webauthn-browser.js', (_req, res) => res.sendFile(webauthnBrowserPath, { headers: { 'Cache-Control': 'public, max-age=31536000, immutable' } }));
 
     app.get('/admin/login', (req, res) => {
