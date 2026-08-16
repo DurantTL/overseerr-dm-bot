@@ -2,8 +2,8 @@
 tags:
   - project/overseerr-dm-bot
   - review
-reviewed: 2026-08-11
-source_commit: b656155
+reviewed: 2026-08-16
+source_commit: 1a803ac
 ---
 
 # Project review
@@ -12,31 +12,50 @@ source_commit: b656155
 
 ## Assessment
 
-The project has a clear product purpose and unusually explicit operational safety rules for a personal media automation system. The best design choices are the restart-persistent approval gate, hash-stored download and agent credentials, default dry-run deletion, tracker allowance controls, fail-closed tier application, mount guards, and behavior-focused tests around pure planning functions.
+The project has a clear Discord-first product boundary and strong safeguards around approvals,
+download tokens, destructive media actions, tracker allowance, edge mount validation, and tier
+planning. Recent work added durable rate limits and alert cooldowns, file-backed secrets,
+restorable backups, config-error health, sweep previews, extracted webhook handlers, and a guarded
+season-pack recovery path.
 
-The primary technical constraint is concentration in `index.js`. Service extraction has progressed, but Discord presentation, HTTP routing, orchestration, and many side effects still meet in one 7,763-line file. This raises the cost of testing and makes the most exposed behavior harder to change safely.
+The primary technical constraint remains concentration in `index.js`: Discord presentation, HTTP
+composition, orchestration, and many side effects meet in one 9,417-line file. The audited working
+tree reports 336 passing tests, but normal application routes still have little real HTTP boundary
+coverage.
 
-The primary product risk is silent failure. The current backlog repeatedly identifies states that appear successful while doing nothing or losing user feedback: placeholder configuration, fatal pre-bind startup errors, reset rate limits, unchecked backups, stale approvals, and failed requests without notification.
+The highest current risks are the public parser/authentication order (#176), fast password-derived
+session signing fallback (#177), unversioned database migrations (#179), lifecycle coupling between
+Discord readiness and HTTP availability (#188), and an incompletely provisioned public HTTPS
+contract (#190/#191).
 
 ## Recommended sequence
 
-1. Implement #122 and #125 together as the configuration-failure tranche. They address a proven live failure mode and establish visible startup diagnostics.
-2. Build #116 before adding more dashboard controls. Search gives operators a way to locate the object they need to act on.
-3. Build #117 with the planning split required by #134 in mind, so run-now and preview do not develop separate decision logic.
-4. Complete #127 before broadening approval surfaces. The current pending lifecycle can lose requests even if #119 adds another place to click them.
-5. Extract and test the webhook handlers under #133 before expanding the HTTP surface further. Preserve paths, status codes, and response bodies.
-6. Implement #118, then #119. Treat the headless approval operation as a behavior-preserving extraction with explicit actor identity and nonce semantics.
-7. Schedule #130, #131, and #129 as operational hardening. They reduce credential exposure and restart-related surprises.
+1. Close #176 and #177 before expanding public or administrative HTTP behavior.
+2. Establish the #178 app/server seam, then harden migrations under #179 and align the agent runtime
+   under #180.
+3. Define the #186 automation registry before expanding dashboard automation; fix dashboard
+   correctness under #187 and decouple HTTP health from Discord under #188.
+4. Coordinate #190 and #191 so strict passkey origin verification uses a verified public HTTPS
+   endpoint.
+5. Complete edge playback in dependency order: fallback verification (#181), California promotion
+   (#182), then season-level TV granularity (#183).
+6. Finish supply-chain/release work (#184), this documentation/governance issue (#185), and scoped
+   dashboard caching (#189).
 
-This ordering follows the live umbrella issue while adding one architectural constraint: plan/execution sharing should be decided before dashboard sweep actions are allowed to grow.
+## Repository policy
 
-## Decisions to make before implementation
+The repository is licensed under MIT, copyright 2026 Durant Logic. Vulnerabilities are reported
+through GitHub Private Vulnerability Reporting; public security issues and pull requests are not an
+accepted disclosure channel. Contribution expectations are documented in `CONTRIBUTING.md`.
 
-- #123 needs a decision between a separate ephemeral admin command and widening `/request-status`.
-- #125 needs a decision between remaining up in a config-error-only mode and exiting after a grace period.
-- #128 needs a member notification preference model before adding more proactive DMs.
-- #133 needs one consistent handler-test style: direct request/response doubles or an ephemeral real HTTP server.
+## Decisions that remain human-owned
+
+- Issue #181 requires live edge deployment evidence.
+- Issue #191 requires DNS, tunnel/proxy, and certificate verification.
+
+These decisions must not be inferred from engineering documentation or local configuration.
 
 ## Documentation note
 
-The existing roadmap documents contain useful historical status, but the live issue tracker is newer and should control current priorities. This vault therefore links to those documents for architectural detail and uses [[Backlog]] for current work status.
+[[Backlog]] is a dated issue snapshot; GitHub is authoritative. Historical reviews remain useful as
+design evidence only when they are clearly labeled with their date and implementation status.

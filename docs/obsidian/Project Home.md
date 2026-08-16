@@ -5,24 +5,32 @@ aliases:
 tags:
   - project/overseerr-dm-bot
   - map-of-content
-reviewed: 2026-08-11
-source_commit: b656155
+reviewed: 2026-08-16
+source_commit: 1a803ac
+github_snapshot: 17 open issues
 ---
 
-# Overseerr DM Bot project home
+# Durant Media Server Bot project home
 
-This vault maps the checked-out `DurantTL/overseerr-dm-bot` repository at commit `b656155` and the 19 open GitHub issues reviewed on 2026-08-11.
+This vault maps `DurantTL/overseerr-dm-bot` at commit `1a803ac` and the 17 open GitHub issues
+reviewed on 2026-08-16. GitHub remains authoritative after that dated snapshot.
 
-The product is a Discord-first concierge for private Plex communities. It links Discord members to Plex and Seerr, gates requests, reports request progress, and adds an operator layer for downloads, recovery, cleanup, staging, and regional media caches.
+The product is a Discord-first concierge for private Plex communities. It links Discord members
+to Plex and Seerr, gates requests, reports request progress, and adds an operator layer for
+downloads, recovery, cleanup, staging, and regional media caches.
 
 ## Start here
 
 - [[Project Graph]] gives the fastest visual orientation.
-- [[Architecture]] explains the runtime and repository boundaries.
+- [[Architecture]] explains the runtime, repository, and test boundaries.
 - [[Core Workflows]] follows the important member and media paths.
 - [[Data and Operations]] covers SQLite state, automation, deployment, and safety controls.
-- [[Backlog]] groups all open issues and records their dependencies.
-- [[Project Review]] gives the main conclusions and recommended work order.
+- [[Backlog]] is the dated view of the live #175–#191 work program.
+- [[Project Review]] summarizes the current risks and recommended order.
+
+Historical investigations are retained for context, not priority setting. In particular,
+[`season-search-review.md`](../season-search-review.md) is an archived review whose proposed work
+has since shipped.
 
 ## Source entry points
 
@@ -31,20 +39,32 @@ The product is a Discord-first concierge for private Plex communities. It links 
 - [Composition root](../../index.js)
 - [Bootstrap](../../bootstrap.js)
 - [Service modules](../../src)
+- [HTTP handler factories](../../src/routes)
 - [Edge agent](../../agent/README.md)
 - [Tests](../../scripts/tests)
+- [Contributor workflow](../../AGENTS.md)
+- [Shared engineering guide](../../CLAUDE.md)
+- [Contribution policy](../../CONTRIBUTING.md)
+- [Security reporting](../../SECURITY.md)
+- [MIT License](../../LICENSE)
 - [GitHub repository](https://github.com/DurantTL/overseerr-dm-bot)
 
 ## Current shape
 
-The application is one Node.js 24 process with three major responsibilities:
+The application targets Node.js 24 and currently combines three responsibilities:
 
 1. Discord commands, buttons, modals, onboarding, and notifications.
-2. Express routes for webhooks, downloads, health, the admin dashboard, and edge agents.
-3. Periodic automation for request reconciliation, search/recovery, transfers, retention, backups, and tiering.
+2. Express routes for health, webhooks, downloads, the admin dashboard, and edge agents.
+3. Periodic automation for request reconciliation, search/recovery, transfers, retention,
+   backups, staging, and tiering.
 
-SQLite is the durable coordination layer. External systems remain authoritative for their own domains: Seerr for requests, Plex for access and playback, Sonarr/Radarr for library and queue state, Prowlarr for indexers, and Syncthing or rclone for edge movement.
+At this working-tree audit, `index.js` is 9,417 lines. The test suite contains 53 `*.test.js`
+files and `npm test` reports 336 passing tests. SQLite is the durable coordination layer; external
+services remain authoritative for requests, libraries, queues, indexers, playback, and file
+movement.
 
 ## Graph conventions
 
-Open this folder as an Obsidian vault. Obsidian's graph view uses the internal links between these notes, while the Mermaid diagrams in [[Project Graph]] show explicit runtime and backlog relationships.
+Open this folder as an Obsidian vault. Obsidian's graph view uses the internal links between these
+notes, while the Mermaid diagrams in [[Project Graph]] show explicit runtime and backlog
+relationships.

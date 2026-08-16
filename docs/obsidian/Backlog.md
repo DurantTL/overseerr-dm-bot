@@ -3,36 +3,72 @@ tags:
   - project/overseerr-dm-bot
   - backlog
 reviewed: 2026-08-16
-source_commit: 5866460
-github_snapshot: 5 open issues
+source_commit: 1a803ac
+github_snapshot: 17 open issues
 ---
 
 # Backlog
 
 [[Project Home]] | [[Project Graph]] | [[Project Review]] | [[Architecture]]
 
-This is a snapshot of the live issue tracker on 2026-08-16. GitHub remains authoritative.
+This is a snapshot of the live issue tracker on 2026-08-16. GitHub remains authoritative. The
+open program contains umbrella issue [#175](https://github.com/DurantTL/overseerr-dm-bot/issues/175)
+and 16 child issues, #176–#191.
 
-## Active work
+## P0 — public HTTP security
 
-- [#124 Sonarr season search](https://github.com/DurantTL/overseerr-dm-bot/issues/124) is the oldest open issue and the current implementation track.
-  - Shipped in [#162](https://github.com/DurantTL/overseerr-dm-bot/pull/162): record pack-vs-episode fill detail and correct the partial-season summary claim.
-  - Shipped in [#163](https://github.com/DurantTL/overseerr-dm-bot/pull/163): add pure interactive-release classification/ranking and the thin Sonarr search/grab API calls.
-  - Shipped in [#164](https://github.com/DurantTL/overseerr-dm-bot/pull/164): report interactive-search candidates and Sonarr rejection reasons in Discord after partial/no-grab outcomes.
-  - This branch: add nonce-backed, admin-gated force-grab buttons with duplicate and queue checks.
-  - Next: add opt-in automatic forcing, default off.
+- [#176](https://github.com/DurantTL/overseerr-dm-bot/issues/176) — authenticate and throttle
+  public HTTP work before large body parsing.
+- [#177](https://github.com/DurantTL/overseerr-dm-bot/issues/177) — require an explicit,
+  high-entropy dashboard session signing secret.
 
-## Follow-up issues
+## P1 — reliability and testability
 
-- [#158 Season-search alert backoff](https://github.com/DurantTL/overseerr-dm-bot/issues/158): stand down repeated `no_grab` alerts per series/season while continuing searches and re-arm after a meaningful change.
-- [#159 Regional tier history dedupe](https://github.com/DurantTL/overseerr-dm-bot/issues/159): decide whether `rollHistoryByTitle` should be wired into tier planning or removed, then eliminate the unused-code warning.
-- [#160 Escalation preview coverage](https://github.com/DurantTL/overseerr-dm-bot/issues/160): prove previews remain side-effect free, use unsaved settings, cover every verdict, and avoid external calls when disabled.
-- [#161 Rate-limiter pattern](https://github.com/DurantTL/overseerr-dm-bot/issues/161): standardize on a CodeQL-visible package or document the deliberate hand-rolled design and dismissal process.
+- [#178](https://github.com/DurantTL/overseerr-dm-bot/issues/178) — extract and integration-test
+  the remaining HTTP surface.
+- [#179](https://github.com/DurantTL/overseerr-dm-bot/issues/179) — add versioned,
+  transactional SQLite migrations and upgrade fixtures.
+- [#180](https://github.com/DurantTL/overseerr-dm-bot/issues/180) — align the Node runtime contract
+  and bring the tier agent into CI.
 
-## Delivery order
+## P1 — automation and dashboard
 
-Work oldest-first unless a dependency or production incident changes priority:
+- [#186](https://github.com/DurantTL/overseerr-dm-bot/issues/186) — unify scheduler inventory,
+  run telemetry, and dashboard controls.
+- [#187](https://github.com/DurantTL/overseerr-dm-bot/issues/187) — correct dashboard refresh,
+  keyboard access, and client-side regressions.
+- [#188](https://github.com/DurantTL/overseerr-dm-bot/issues/188) — keep HTTP health and admin
+  control available while Discord is degraded.
+- [#190](https://github.com/DurantTL/overseerr-dm-bot/issues/190) — validate and expose the exact
+  public dashboard origin for passkeys.
+- [#191](https://github.com/DurantTL/overseerr-dm-bot/issues/191) — provision and verify the
+  external HTTPS path required by the dashboard.
 
-`#124` -> `#158` -> `#159` -> `#160` -> `#161`
+## P1 — edge playback completion
 
-#158 benefits from #124's interactive-search release count as a re-arm signal, so completing the #124 reporting path first preserves that dependency.
+- [#181](https://github.com/DurantTL/overseerr-dm-bot/issues/181) — verify the PH and California
+  merged remote-fallback rollout.
+- [#182](https://github.com/DurantTL/overseerr-dm-bot/issues/182) — implement California
+  play-triggered promotion.
+- [#183](https://github.com/DurantTL/overseerr-dm-bot/issues/183) — add season-level TV cache
+  planning and promotion granularity.
+
+## P2 — delivery and project hygiene
+
+- [#184](https://github.com/DurantTL/overseerr-dm-bot/issues/184) — add image security gates,
+  SBOM/provenance, and versioned releases.
+- [#185](https://github.com/DurantTL/overseerr-dm-bot/issues/185) — refresh documentation and
+  establish the human-approved public-repository policy.
+- [#189](https://github.com/DurantTL/overseerr-dm-bot/issues/189) — cache and scope dashboard data
+  with explicit freshness.
+
+## Dependency order
+
+Start #176 and #177 first. Establish the #178 HTTP seam before expanding route behavior, and
+define #186's automation registry before migrating dashboard automation. For edge playback,
+verify fallback under #181 before California promotion under #182; season-level planning under
+#183 should precede unrestricted TV promotion. Coordinate #190 with #191 so strict WebAuthn
+verification consumes a verified HTTPS origin.
+
+The earlier #116–#170 roadmap is complete history. It must not be used as the current delivery
+queue; the live #175 umbrella and its child issues control current priorities.
