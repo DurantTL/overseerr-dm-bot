@@ -149,8 +149,10 @@ const CONFIG = (() => {
   // one grab instead of N. Currently-airing shows are untouched (no pack exists for them yet).
   SEASON_PACK_FIRST: parseBool(process.env.SEASON_PACK_FIRST, true),
   // After a completed search makes no or partial progress, inspect Sonarr's rejected releases
-  // and report the best candidates. This never force-grabs a release.
+  // and report the best candidates. Automatic rejection overrides are a separate, default-off
+  // switch so operators can observe the human-in-the-loop buttons before trusting automation.
   SEASON_PACK_INTERACTIVE: parseBool(process.env.SEASON_PACK_INTERACTIVE, true),
+  SEASON_PACK_FORCE_GRAB: parseBool(process.env.SEASON_PACK_FORCE_GRAB, false),
   SEASON_PACK_MIN_SEEDERS: Number.parseInt(process.env.SEASON_PACK_MIN_SEEDERS || '1', 10),
   SEASON_PACK_MAX_SIZE_GB: Number.parseInt(process.env.SEASON_PACK_MAX_SIZE_GB || '200', 10),
   SEASON_PACK_MIN_CONFIDENCE: Number.parseInt(process.env.SEASON_PACK_MIN_CONFIDENCE || '70', 10),

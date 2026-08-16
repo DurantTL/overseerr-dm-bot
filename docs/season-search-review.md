@@ -216,8 +216,9 @@ So the recommended sequencing is human-in-the-loop first:
   `grab_dl` already uses. Note the 100-char custom-id limit: cache candidates under a nonce the way
   `mapimp_findm:` does — guids will not fit in a custom id.
 - **Phase 3 (default OFF).** Auto-force under a confidence bar, for admins who've watched Phase 2
-  make the right call for a few weeks. Gate it behind the existing `season_pack` group in
-  `src/runtime-settings.js` so it's dashboard-tunable and reversible without a redeploy.
+  make the right call for a few weeks. `SEASON_PACK_FORCE_GRAB` is dashboard-tunable and rechecks
+  active grab jobs plus Sonarr's live queue immediately before overriding a rejection. Failures
+  fall back to the existing admin buttons rather than silently losing the candidate.
 
 New settings, all in the existing `season_pack` group: `SEASON_PACK_INTERACTIVE` (bool, default on),
 `SEASON_PACK_FORCE_GRAB` (bool, default **off**), `SEASON_PACK_MIN_SEEDERS`,

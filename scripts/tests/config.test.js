@@ -18,6 +18,10 @@ const SECRET_CONFIG_KEYS = [
   'DASHBOARD_ADMIN_TOKEN', 'SESSION_SECRET', 'TIER_NODES_SEED',
 ];
 
+test('config: automatic season-pack rejection overrides default off', () => {
+  assert.strictEqual(CONFIG.SEASON_PACK_FORCE_GRAB, false);
+});
+
 test('config: every credential accepts _FILE and trims one trailing newline', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-secret-'));
   try {
