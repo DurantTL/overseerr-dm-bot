@@ -1104,8 +1104,9 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
       return [];
     }),
   ]);
-  const remaining = episodes.filter(ep => Number(ep.seasonNumber) === seasonNumber && ep.monitored && !ep.hasFile
-    && Date.parse(ep.airDateUtc || ep.airDate || '') <= Date.now()).length;
+  const missingEpisodes = episodes.filter(ep => Number(ep.seasonNumber) === seasonNumber && ep.monitored && !ep.hasFile
+    && Date.parse(ep.airDateUtc || ep.airDate || '') <= Date.now());
+  const remaining = missingEpisodes.length;
   const matchingQueue = queue.filter(item => item.source.kind === 'tv' && item.seriesId === seriesId && Number(item.seasonNumber) === seasonNumber);
   const queued = matchingQueue.length;
   const fill = summarizeSeasonFillActivity([...matchingQueue, ...history]);
@@ -1166,7 +1167,8 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
   let autoForceResult = null;
   if (['no_grab', 'partial'].includes(outcome) && tunable('SEASON_PACK_INTERACTIVE')) {
     try {
-      const releases = await interactiveSeasonSearch(seriesId, seasonNumber);
+      const anchorEpisode = missingEpisodes.find(episode => Number.isInteger(Number(episode.id)) && Number(episode.id) > 0);
+      const releases = await interactiveSeasonSearch(seriesId, seasonNumber, anchorEpisode?.id);
       const ranked = rankSeasonReleases(releases, { title: seriesTitle, season: seasonNumber });
       interactiveFingerprint = ranked.map(release => ({
         id: release.guid || `${release.indexerId ?? ''}:${release.title}`,
@@ -1180,6 +1182,7 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
         releaseCount: ranked.length,
         packCount: ranked.filter(release => release.isPack && release.coversSeason).length,
         candidates: ranked.slice(0, 3),
+        anchorEpisodeNumber: Number(anchorEpisode?.episodeNumber) || null,
       };
       const choice = chooseSeasonPack(ranked, {
         minSeeders: tunable('SEASON_PACK_MIN_SEEDERS'),
@@ -1246,7 +1249,7 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
   if (interactive) {
     fields.push({
       name: 'Interactive search',
-      value: `${interactive.releaseCount} release${interactive.releaseCount === 1 ? '' : 's'} · ${interactive.packCount} full-season pack${interactive.packCount === 1 ? '' : 's'}`,
+      value: `${interactive.releaseCount} release${interactive.releaseCount === 1 ? '' : 's'}${interactive.anchorEpisodeNumber != null ? ` via E${pad(interactive.anchorEpisodeNumber)}` : ''} · ${interactive.packCount} full-season pack${interactive.packCount === 1 ? '' : 's'}`,
       inline: false,
     });
     for (const [index, release] of interactive.candidates.entries()) {

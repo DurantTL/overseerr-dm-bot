@@ -17,6 +17,7 @@ const daysAgo = n => new Date(NOW - n * DAY).toISOString();
 const daysAhead = n => new Date(NOW + n * DAY).toISOString();
 
 const ep = (season, number, over = {}) => ({
+  id: season * 100 + number,
   seasonNumber: season, episodeNumber: number, monitored: true, hasFile: false,
   airDateUtc: daysAgo(900), ...over,
 });
@@ -287,8 +288,8 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
     getSeriesEpisodes: async () => episodes,
     fetchArrQueues: async () => (++queueCalls === 1 ? queue : (recheckQueue ?? queue)),
     getSeasonDownloadHistory: async () => history,
-    interactiveSeasonSearch: async (seriesId, seasonNumber) => {
-      interactiveCalls.push({ seriesId, seasonNumber });
+    interactiveSeasonSearch: async (seriesId, seasonNumber, episodeId) => {
+      interactiveCalls.push({ seriesId, seasonNumber, episodeId });
       if (interactiveError) throw interactiveError;
       return interactive;
     },
@@ -336,8 +337,8 @@ test('season search verification: reports ranked candidates and rejection reason
   assert.strictEqual(result.outcome, 'no_grab');
   const embed = h.notices[0].msg.embeds[0];
   assert.match(embed.description, /nothing entered its queue/);
-  assert.deepStrictEqual(h.interactiveCalls, [{ seriesId: 1, seasonNumber: 1 }]);
-  assert.match(embed.fields.find(field => field.name === 'Interactive search').value, /3 releases · 2 full-season packs/);
+  assert.deepStrictEqual(h.interactiveCalls, [{ seriesId: 1, seasonNumber: 1, episodeId: 101 }]);
+  assert.match(embed.fields.find(field => field.name === 'Interactive search').value, /3 releases via E01 · 2 full-season packs/);
   const candidate = embed.fields.find(field => field.name.startsWith('Candidate 1'));
   assert.match(candidate.value, /20\.0 GB · 12 seeders · AvistaZ/);
   assert.match(candidate.value, /Quality for existing file/);
@@ -425,6 +426,7 @@ test('season search verification: interactive lookup only runs for partial and n
   });
   assert.strictEqual((await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101 })).outcome, 'partial');
   assert.strictEqual(h.interactiveCalls.length, 1, 'partial progress gets release detail');
+  assert.strictEqual(h.interactiveCalls[0].episodeId, 102, 'the lookup anchors to the first episode that is still missing');
 
   h = seasonVerifier({
     command: { status: 'completed' },

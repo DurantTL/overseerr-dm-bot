@@ -300,18 +300,24 @@ async function triggerSeasonSearch(seriesId, seasonNumber) {
   return res.data;
 }
 
-// Sonarr's interactive search returns accepted and rejected candidates. Indexers can take tens
-// of seconds to answer, so this deliberately uses the same long timeout as the Prowlarr search.
-async function interactiveSeasonSearch(seriesId, seasonNumber) {
+// Sonarr's interactive search returns accepted and rejected candidates. Anchor the query to one
+// missing episode: older Sonarr versions ignore the newer seriesId + seasonNumber release-query
+// parameters and silently return the RSS feed instead. Episode searches still include matching
+// season packs (with Sonarr's rejection attached), which is what this fallback needs to inspect.
+async function interactiveSeasonSearch(seriesId, seasonNumber, episodeId) {
+  const scopedEpisodeId = Number(episodeId);
+  if (!Number.isInteger(scopedEpisodeId) || scopedEpisodeId <= 0) {
+    throw new TypeError('A missing Sonarr episode id is required for an interactive season search');
+  }
   try {
     const res = await axios.get(`${CONFIG.SONARR_URL}/api/v3/release`, {
-      params: { seriesId, seasonNumber },
+      params: { episodeId: scopedEpisodeId },
       headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY },
       timeout: 90000,
     });
     return res.data || [];
   } catch (err) {
-    audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'interactive_season_search', seriesId, season: seasonNumber });
+    audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'interactive_season_search', seriesId, season: seasonNumber, episodeId: scopedEpisodeId });
     throw err;
   }
 }
