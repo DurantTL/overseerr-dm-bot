@@ -94,11 +94,11 @@ test('season-release: Sonarr interactive search and force-grab calls use the exp
     CONFIG: { SONARR_URL: 'http://sonarr', SONARR_API_KEY: 'secret' },
     audit: (action, detail) => audits.push({ action, detail }),
   });
-  assert.deepStrictEqual(await sandbox.interactiveSeasonSearch(42, 3), [{ guid: 'one' }]);
+  assert.deepStrictEqual(await sandbox.interactiveSeasonSearch(42, 3, 9001), [{ guid: 'one' }]);
   assert.deepStrictEqual(await sandbox.forceGrabRelease({ guid: 'release-guid', indexerId: 9 }), { ok: true });
   assert.deepStrictEqual(JSON.parse(JSON.stringify(calls[0])), {
     method: 'GET', url: 'http://sonarr/api/v3/release',
-    options: { params: { seriesId: 42, seasonNumber: 3 }, headers: { 'X-Api-Key': 'secret' }, timeout: 90000 },
+    options: { params: { episodeId: 9001 }, headers: { 'X-Api-Key': 'secret' }, timeout: 90000 },
   });
   assert.deepStrictEqual(JSON.parse(JSON.stringify(calls[1])), {
     method: 'POST', url: 'http://sonarr/api/v3/release', body: { guid: 'release-guid', indexerId: 9 },
@@ -115,7 +115,18 @@ test('season-release: Sonarr API failures are audited and rethrown', async () =>
     CONFIG: { SONARR_URL: 'http://sonarr', SONARR_API_KEY: 'secret' },
     audit: (action, detail) => audits.push({ action, detail }),
   });
-  await assert.rejects(sandbox.interactiveSeasonSearch(42, 3), /indexer timeout/);
+  await assert.rejects(sandbox.interactiveSeasonSearch(42, 3, 9001), /indexer timeout/);
   await assert.rejects(sandbox.forceGrabRelease({ guid: 'g', indexerId: 9 }), /indexer timeout/);
   assert.deepStrictEqual(audits.map(row => row.detail.action), ['interactive_season_search', 'force_grab_release']);
+});
+
+test('season-release: interactive lookup refuses to fall back to Sonarr RSS without an episode id', async () => {
+  let calls = 0;
+  const sandbox = loadSandbox(['interactiveSeasonSearch'], {
+    axios: { get: async () => { calls += 1; return { data: [] }; } },
+    CONFIG: { SONARR_URL: 'http://sonarr', SONARR_API_KEY: 'secret' },
+    audit: () => {},
+  });
+  await assert.rejects(sandbox.interactiveSeasonSearch(42, 3), /episode id is required/);
+  assert.strictEqual(calls, 0, 'an unscoped release request must never be sent');
 });

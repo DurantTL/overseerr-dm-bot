@@ -120,7 +120,7 @@ thing a human opens when automation comes up empty — is a single unauthenticat
 have never called:
 
 ```
-GET  /api/v3/release?seriesId=<id>&seasonNumber=<n>
+GET  /api/v3/release?episodeId=<first-missing-episode-id>
 POST /api/v3/release   { guid, indexerId }
 ```
 
@@ -188,7 +188,7 @@ Each step maps onto an API call we aren't making:
 
 | Human step | API |
 | --- | --- |
-| 1. Interactive Search | `GET /api/v3/release?seriesId=&seasonNumber=` (blocks for the indexer query — needs the ~90s timeout `searchAvistaz` already uses, not the 10–15s default in `arr.js`) |
+| 1. Interactive Search | `GET /api/v3/release?episodeId=` using the first missing episode (blocks for the indexer query — needs the ~90s timeout `searchAvistaz` already uses, not the 10–15s default in `arr.js`). The episode anchor avoids older Sonarr versions silently returning their RSS feed when `seriesId` + `seasonNumber` are ignored; matching season packs are still present in episode-search results. |
 | 2. Read everything, rejections included | the `rejections[]` / `approved` fields on each row |
 | 3. Pick the pack | `fullSeason === true` + `seasonNumber` match, ranked by the `grab.js` scorer |
 | 4. Force the grab | `POST /api/v3/release { guid, indexerId }` |
@@ -213,7 +213,7 @@ Keep the repo's existing split — pure decisions in `src/`, I/O thin, Discord i
 
 **`src/arr.js`** (two thin additions):
 
-- `interactiveSeasonSearch(seriesId, seasonNumber)` — the GET, long timeout, `audit` on failure like
+- `interactiveSeasonSearch(seriesId, seasonNumber, episodeId)` — the episode-scoped GET, long timeout, `audit` on failure like
   its neighbours.
 - `forceGrabRelease({ guid, indexerId })` — the POST.
 
