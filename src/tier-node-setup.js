@@ -5,6 +5,15 @@ const hasControlCharacter = value => [...String(value)].some(character => {
   return code < 32 || code === 127;
 });
 
+// Avoid a backtracking expression on dashboard input. Keep the filesystem root intact while
+// removing redundant trailing separators from every other path in one linear pass.
+function trimTrailingSlashes(value) {
+  const path = String(value);
+  let end = path.length;
+  while (end > 1 && path.charCodeAt(end - 1) === 47) end -= 1;
+  return path.slice(0, end);
+}
+
 // One validation contract shared by the dashboard endpoint and command renderer. Syncthing folder
 // ids are user-defined, so keep the character policy broad while refusing control characters that
 // would corrupt the root-only env file or generated systemd unit.
@@ -12,7 +21,7 @@ function normalizeTierFolders(input, { max = 16 } = {}) {
   if (!Array.isArray(input)) throw new Error('Folders must be an array.');
   const folders = input.map((folder, index) => ({
     id: String(folder?.id ?? folder?.folderId ?? '').trim(),
-    path: String(folder?.path ?? folder?.folderRoot ?? '').trim().replace(/\/+$/, ''),
+    path: trimTrailingSlashes(String(folder?.path ?? folder?.folderRoot ?? '').trim()),
     index: index + 1,
   })).filter(folder => folder.id || folder.path);
   if (!folders.length) throw new Error('Add at least one Syncthing folder ID and path.');
@@ -38,7 +47,7 @@ const serializeTierFolders = folders => JSON.stringify(normalizeTierFolders(fold
 function prepareTierNodeInstall(input = {}) {
   const syncthingApiKey = String(input.syncthingApiKey || '').trim();
   const rawMountRoot = String(input.mountRoot || '').trim();
-  const mountRoot = rawMountRoot === '/' ? '/' : rawMountRoot.replace(/\/+$/, '');
+  const mountRoot = trimTrailingSlashes(rawMountRoot);
   const mountMarker = String(input.mountMarker || '').trim();
   if (!syncthingApiKey) throw new Error('Syncthing API key is required.');
   if ((mountRoot || mountMarker) && !(mountRoot && mountMarker)) throw new Error('Mount root and marker must be supplied together.');
@@ -53,4 +62,4 @@ function prepareTierNodeInstall(input = {}) {
   return { folders, syncthingApiKey, mountRoot, mountMarker };
 }
 
-module.exports = { normalizeTierFolders, serializeTierFolders, prepareTierNodeInstall };
+module.exports = { trimTrailingSlashes, normalizeTierFolders, serializeTierFolders, prepareTierNodeInstall };

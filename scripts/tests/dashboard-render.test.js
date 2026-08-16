@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { loadSandbox } = require('./extract');
-const { normalizeTierFolders, prepareTierNodeInstall } = require('../../src/tier-node-setup');
+const { trimTrailingSlashes, normalizeTierFolders, prepareTierNodeInstall } = require('../../src/tier-node-setup');
 const {
   escapeHtml,
   renderPage,
@@ -188,6 +188,13 @@ test('tier node setup: validates multi-folder pairs without arbitrary single-fol
   assert.throws(() => prepareTierNodeInstall({ syncthingApiKey: 'key', folders, mountRoot: '/srv/other', mountMarker: '.ok' }), /parent of every/);
   assert.throws(() => prepareTierNodeInstall({ syncthingApiKey: 'key', folders, mountRoot: '/mnt/media' }), /supplied together/);
   assert.throws(() => prepareTierNodeInstall({ syncthingApiKey: 'key', folders, mountRoot: '/mnt/media', mountMarker: '../unsafe' }), /relative path/);
+});
+
+test('tier node setup: trims trailing slashes in linear time while preserving root', () => {
+  assert.strictEqual(trimTrailingSlashes('/mnt/media////'), '/mnt/media');
+  assert.strictEqual(trimTrailingSlashes('/'), '/');
+  assert.strictEqual(trimTrailingSlashes(`/${'/'.repeat(100_000)}`), '/');
+  assert.deepStrictEqual(normalizeTierFolders([{ id: 'root', path: '/' }]), [{ id: 'root', path: '/' }]);
 });
 
 test('dashboard actions: arr response details are returned', () => {
