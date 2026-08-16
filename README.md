@@ -380,10 +380,13 @@ Checks include Discord, SQLite, Plex, Seerr/Overseerr, Radarr, Radarr-4K, Sonarr
 - Audit and download-access logs are pruned after `LOG_RETENTION_DAYS` (default 90; `0` disables).
 
 ### Rate limiting
-The `/download` command and public `/download/:token` route use SQLite-backed rolling-window
-counters, so a deploy, crash, or Watchtower restart does not reset an exhausted allowance. Expired
-hits are deleted on the next check. The lower-risk `/request`, `/stage`, and dashboard-login limits
-remain in-process because this app runs as one instance with one SQLite file and one Discord login.
+HTTP limits use `express-rate-limit`, so the protection is visible to CodeQL as well as to runtime
+tests. The public `/download/:token` route supplies a custom SQLite rolling-window store; like the
+`/download` command, a deploy, crash, or Watchtower restart does not reset an exhausted allowance,
+and blocked retries do not extend it. Expired hits are deleted on the next check. Admin password
+login, passkey authentication options, and automation previews use the package's in-process store
+because this app runs as one instance. Discord-only `/request` and `/stage` quotas keep their small
+in-process helper because they are not Express routes and are outside CodeQL's HTTP query.
 
 IP-based limiting depends on `TRUST_PROXY` being set correctly. The download route and dashboard
 login key their buckets on `req.ip`, which only reflects the real client address when
@@ -391,6 +394,16 @@ login key their buckets on `req.ip`, which only reflects the real client address
 setup above). Left at the default `false` behind a tunnel, every request can appear to come from
 the same upstream address, making the limiter too strict because one real user can consume the
 shared allowance.
+
+This package-based pattern is deliberate: new authorization or other abuse-sensitive Express
+routes should use `express-rate-limit` middleware instead of adding another hand-rolled HTTP
+bucket. That keeps genuine `js/missing-rate-limiting` findings distinguishable from regressions.
+
+The remaining `security/detect-unsafe-regex` lint warnings in release-name parsing are separately
+triaged false positives. Pathological 100 KB inputs targeting each reported quantifier complete in
+at most 1 ms, and the expressions do not contain nested quantifiers over overlapping character
+classes. Re-evaluate a warning when its expression changes; do not treat the existing warnings as
+evidence that all future regex findings are harmless.
 
 ## Testing Webhooks / Helpers
 - Seerr test webhook: send sample payload to `/webhook/overseerr`.

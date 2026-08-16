@@ -17,6 +17,7 @@ const {
 } = require('discord.js');
 
 const express = require('express');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const bodyParser = require('body-parser');
 const multer = require('multer');
 const axios = require('axios');
@@ -60,6 +61,7 @@ const { normalizeSearchQuery, searchDashboard } = require('./src/search');
 const { runEpisodeRecoverySweep, previewEpisodeRecoverySweep } = require('./src/episode-recovery');
 const { createRequestGate } = require('./src/request-gate');
 const { passkeyRp, createPasskeyService } = require('./src/passkeys');
+const { SqliteRollingWindowStore } = require('./src/rate-limit');
 const { prepareTierNodeInstall } = require('./src/tier-node-setup');
 
 // Centralized embed palette so every notification shares one consistent look.
@@ -380,6 +382,11 @@ function takeRateLimit(bucketMap, key, maxHits, periodMs) {
   hits.push(now);
   bucketMap.set(key, hits);
   return true;
+}
+
+function httpRateLimitKey(req) {
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+  return ip === 'unknown' ? ip : ipKeyGenerator(ip);
 }
 
 const plexWebhookAccountCache = { expiresAt: 0, emails: new Map() };
@@ -7707,11 +7714,18 @@ function startExpressServer() {
 
   app.post('/webhook/tautulli', webhookHandlers.tautulli);
 
-  app.get('/download/:token', async (req, res) => {
+  app.get('/download/:token', rateLimit({
+    windowMs: 60000,
+    limit: CONFIG.DOWNLOAD_ROUTE_MAX_PER_MINUTE,
+    keyGenerator: httpRateLimitKey,
+    store: new SqliteRollingWindowStore({
+      db, scope: 'download-route', limit: CONFIG.DOWNLOAD_ROUTE_MAX_PER_MINUTE, windowMs: 60000,
+    }),
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).send('Too many requests.'),
+  }), async (req, res) => {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    if (!takePersistentRateLimit('download-route', ip, CONFIG.DOWNLOAD_ROUTE_MAX_PER_MINUTE, 60000)) {
-      return res.status(429).send('Too many requests.');
-    }
     cleanExpiredTokens();
     const record = getDownloadRecordByRawToken(req.params.token);
     if (!record || record.revoked) {
@@ -7930,13 +7944,6 @@ function startExpressServer() {
   });
 
   if (CONFIG.DASHBOARD_ENABLED) {
-    const loginLimits = new Map();
-    RATE_LIMIT_MAPS.push(loginLimits);
-    // A preview is authenticated but expensive: it reads the whole Sonarr series list and then
-    // walks episodes series by series. Held-down Enter on the Preview button, or a stuck bit of
-    // dashboard JS, would hammer Sonarr harder than the sweep it is previewing ever does.
-    const previewLimits = new Map();
-    RATE_LIMIT_MAPS.push(previewLimits);
     const adminForm = express.urlencoded({ extended: false, limit: '16kb' });
     const webauthnBrowserPath = path.join(path.dirname(require.resolve('@simplewebauthn/browser')), '..', 'dist', 'bundle', 'index.es5.umd.min.js');
 
@@ -7947,9 +7954,15 @@ function startExpressServer() {
       res.type('html').send(renderLogin(!!req.query.error, null, { passkeyEnabled: listPasskeys().length > 0 }));
     });
 
-    app.get('/admin/passkey/authentication-options', async (req, res) => {
+    app.get('/admin/passkey/authentication-options', rateLimit({
+      windowMs: 15 * 60000,
+      limit: 10,
+      keyGenerator: httpRateLimitKey,
+      standardHeaders: 'draft-8',
+      legacyHeaders: false,
+      handler: (_req, res) => res.status(429).json({ error: 'Too many attempts. Try again in a few minutes.' }),
+    }), async (req, res) => {
       const ip = req.ip || req.socket.remoteAddress || 'unknown';
-      if (!takeRateLimit(loginLimits, `passkey:${ip}`, 10, 15 * 60000)) return res.status(429).json({ error: 'Too many attempts. Try again in a few minutes.' });
       if (!listPasskeys().length) return res.status(404).json({ error: 'No passkeys are enrolled.' });
       const binding = crypto.randomBytes(32).toString('base64url');
       const secure = req.secure || (req.headers['x-forwarded-proto'] || '').includes('https');
@@ -7978,11 +7991,19 @@ function startExpressServer() {
       }
     });
 
-    app.post('/admin/login', adminForm, (req, res) => {
+    app.post('/admin/login', adminForm, rateLimit({
+      windowMs: 15 * 60000,
+      limit: 5,
+      keyGenerator: httpRateLimitKey,
+      standardHeaders: 'draft-8',
+      legacyHeaders: false,
+      handler: (_req, res) => res.status(429).type('html').send(renderLogin(
+        false,
+        'Too many attempts. Try again in a few minutes.',
+        { passkeyEnabled: listPasskeys().length > 0 },
+      )),
+    }), (req, res) => {
       const ip = req.ip || req.socket.remoteAddress || 'unknown';
-      if (!takeRateLimit(loginLimits, ip, 5, 15 * 60000)) {
-        return res.status(429).type('html').send(renderLogin(false, 'Too many attempts. Try again in a few minutes.', { passkeyEnabled: listPasskeys().length > 0 }));
-      }
       const pwd = req.body?.password || '';
       const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && safeEqual(pwd, CONFIG.DASHBOARD_ADMIN_PASSWORD);
       const tokenOk = CONFIG.DASHBOARD_ADMIN_TOKEN && safeEqual(pwd, CONFIG.DASHBOARD_ADMIN_TOKEN);
@@ -8780,10 +8801,17 @@ function startExpressServer() {
       return res.json({ ok: true, message: operation === 'pin' ? 'Title pinned.' : operation === 'unpin' ? 'Title unpinned.' : 'Pinned order updated.' });
     });
 
-    app.post('/admin/action/sweep-preview', dashboardAuth, async (req, res) => {
-      if (!takeRateLimit(previewLimits, dashboardActor(req).actorIp, 20, 60000)) {
-        return res.status(429).json({ ok: false, error: 'Too many previews. Wait a moment and try again.' });
-      }
+    // A preview is authenticated but expensive: it reads the whole Sonarr series list and then
+    // walks episodes series by series. Held-down Enter on the Preview button, or a stuck bit of
+    // dashboard JS, would hammer Sonarr harder than the sweep it is previewing ever does.
+    app.post('/admin/action/sweep-preview', rateLimit({
+      windowMs: 60000,
+      limit: 20,
+      keyGenerator: httpRateLimitKey,
+      standardHeaders: 'draft-8',
+      legacyHeaders: false,
+      handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many previews. Wait a moment and try again.' }),
+    }), dashboardAuth, async (req, res) => {
       try {
         const items = await previewAutomation(req.body?.name, req.body?.values || {});
         return res.json({ ok: true, items });
