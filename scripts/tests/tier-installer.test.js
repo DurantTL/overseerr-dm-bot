@@ -44,3 +44,9 @@ test('tier installer: missing folder errors are actionable and omit a Node stack
   assert.match(result.stderr, /Linux paths are case-sensitive/);
   assert.doesNotMatch(result.stderr, /at Object\.statSync|node:fs:/);
 });
+
+test('tier installer: syntax-check staging file retains a JavaScript extension', () => {
+  assert.match(installer, /AGENT_TMP="\$INSTALL_DIR\/agent\.new\.js"/);
+  assert.match(installer, /node --check "\$AGENT_TMP"/);
+  assert.doesNotMatch(installer, /AGENT_TMP=.*agent\.js\.new/);
+});

@@ -124,10 +124,13 @@ install -d -m 755 "$INSTALL_DIR"
 install -d -m 750 "$STATE_DIR"
 
 say "→ fetching agent.js"
-curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" "$BOT_URL/agent/source/$NODE_NAME" -o "$INSTALL_DIR/agent.js.new" \
+# Keep .js as the final suffix: Node 22+ rejects `node --check` on the old agent.js.new staging name
+# because it interprets .new as an unknown module extension.
+AGENT_TMP="$INSTALL_DIR/agent.new.js"
+curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" "$BOT_URL/agent/source/$NODE_NAME" -o "$AGENT_TMP" \
   || die "could not download the agent — check the token and that $BOT_URL is reachable from here"
-node --check "$INSTALL_DIR/agent.js.new" || die "downloaded agent.js is not valid JavaScript — aborting rather than installing it"
-mv "$INSTALL_DIR/agent.js.new" "$INSTALL_DIR/agent.js"
+node --check "$AGENT_TMP" || die "downloaded agent.js is not valid JavaScript — aborting rather than installing it"
+mv "$AGENT_TMP" "$INSTALL_DIR/agent.js"
 chmod 755 "$INSTALL_DIR/agent.js"
 
 # The token lives here and nowhere else; 600 root-owned, written via a temp file so a reader can
