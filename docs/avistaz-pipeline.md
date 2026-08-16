@@ -151,6 +151,14 @@ Nothing in your Sonarr configuration is touched — no profiles, no custom forma
 profiles. The bot only issues search commands, so turning `SEASON_PACK_FIRST=false` back off
 returns Sonarr to exactly its previous behavior. Whatever Sonarr grabs imports normally.
 
+Repeated identical `no_grab` results do not repeat in Discord forever. The bot still performs
+every eligible search, but posts attempts 1, 2, and 4; attempt 4 announces that alerts are standing
+down. The durable state is per series and season and survives restarts. A changed aired-missing
+count, interactive release list, approval/rejection result, or quality/custom-format score starts a
+fresh alert sequence. A dashboard or `/automation` manual retry also re-arms the seasons it
+actually searches. Stood-down seasons remain visible under **Automation → Season-search alert
+stand-downs**, including attempt count, last try, and a manual re-arm action.
+
 The [episode recovery watchdog](episode-recovery.md) stands down on any season this path
 owns: recovering an old season one episode at a time is the waste this exists to prevent, and on
 AvistaZ the two would race for the same download slots. Seasons that fall below the pack
