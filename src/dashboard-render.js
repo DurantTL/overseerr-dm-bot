@@ -1,6 +1,7 @@
 'use strict';
 
 const { fmtDuration, fmtSpace } = require('./util');
+const { normalizeTierFolders, serializeTierFolders } = require('./tier-node-setup');
 
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
@@ -108,6 +109,12 @@ const DASHBOARD_CSS = `
   .setup-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:10px; }
   .setup-grid label { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:12px; }
   .setup-grid input, .setup-grid select { width:100%; padding:10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:14px; }
+  .setup-subheading { margin:16px 0 4px; font-size:14px; }
+  #tier-folder-list { display:flex; flex-direction:column; gap:8px; margin:10px 0; }
+  .tier-folder-row { display:grid; grid-template-columns:minmax(150px,.7fr) minmax(240px,1.3fr) auto; gap:8px; align-items:end; }
+  .tier-folder-row label { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:12px; }
+  .tier-folder-row input { width:100%; padding:10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:14px; }
+  .tier-folder-remove { min-height:39px; padding:8px 11px; }
   .setup-check { display:flex; align-items:center; gap:8px; color:var(--text); font-size:13px; margin:12px 0; }
   .setup-output { white-space:pre-wrap; overflow-wrap:anywhere; background:#131316; border:1px solid var(--border); border-radius:10px; padding:12px; font-size:12px; }
   .setup-warning { color:#fca5a5; font-size:12.5px; }
@@ -117,6 +124,8 @@ const DASHBOARD_CSS = `
     .item { flex-wrap:wrap; }
     .item-right { flex-basis:100%; max-width:none; text-align:left; margin-left:19px; margin-top:2px; }
     .actions .btn { flex:1 1 45%; }
+    .tier-folder-row { grid-template-columns:1fr; padding:10px; border:1px solid var(--border); border-radius:10px; }
+    .tier-folder-remove { justify-self:start; }
   }
   @media (max-width:640px) {
     table, tbody, tr, td { display:block; }
@@ -229,12 +238,12 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'"'"'`)}'`;
 }
 
-function tierInstallCommand({ botUrl, node, token, folderRoot, syncthingApiKey, syncthingFolderId, mountRoot, mountMarker }) {
+function tierInstallCommand({ botUrl, node, token, folders, folderRoot, syncthingApiKey, syncthingFolderId, mountRoot, mountMarker }) {
+  const normalizedFolders = normalizeTierFolders(folders || [{ id: syncthingFolderId, path: folderRoot }]);
   const env = [
     `TIER_AGENT_TOKEN="$TIER_AGENT_TOKEN"`,
-    `TIER_FOLDER_ROOT=${shellQuote(folderRoot)}`,
     `SYNCTHING_API_KEY=${shellQuote(syncthingApiKey)}`,
-    `SYNCTHING_FOLDER_ID=${shellQuote(syncthingFolderId)}`,
+    `TIER_FOLDERS=${shellQuote(serializeTierFolders(normalizedFolders))}`,
   ];
   if (mountRoot) env.push(`TIER_MOUNT_ROOT=${shellQuote(mountRoot)}`);
   if (mountMarker) env.push(`TIER_MOUNT_MARKER=${shellQuote(mountMarker)}`);
@@ -266,7 +275,16 @@ function tierNodeStatus(plan, report, now = Date.now()) {
 }
 
 function renderTierNodeSetup(nodes) {
-  const options = nodes.map(node => `<option value="${escapeHtml(node.name)}">${escapeHtml(node.name)}</option>`).join('');
+  const options = nodes.map(node => `<option value="${escapeHtml(node.name)}" data-folders="${escapeHtml(JSON.stringify(node.folders || []))}">${escapeHtml(node.name)}</option>`).join('');
+  const firstFolders = nodes[0]?.folders || [];
+  const folderRows = Array.from({ length: Math.max(4, firstFolders.length) }, (_, index) => {
+    const folder = firstFolders[index] || {};
+    return `<div class="tier-folder-row">
+      <label>Syncthing folder ID ${index + 1}<input name="folderId" value="${escapeHtml(folder.folderId || folder.id || '')}" placeholder="e.g. movies"></label>
+      <label>Local folder path ${index + 1}<input name="folderRoot" value="${escapeHtml(folder.folderRoot || folder.path || '')}" placeholder="/mnt/media/Media/Movies"></label>
+      <button class="btn tier-folder-remove" type="button" aria-label="Remove folder ${index + 1}">Remove</button>
+    </div>`;
+  }).join('');
   return `<div class="card" id="tier-node-setup">
     <h2>Tier Node Setup<span class="sub">Register a node, then generate its complete one-time install command.</span></h2>
     <form id="tier-register-form">
@@ -284,13 +302,15 @@ function renderTierNodeSetup(nodes) {
       <h2>Generate install command</h2>
       <div class="setup-grid">
         <label>Node<select name="node">${options}</select></label>
-        <label>TIER_FOLDER_ROOT<input name="folderRoot" placeholder="/mnt/media" required></label>
         <label>SYNCTHING_API_KEY<input name="syncthingApiKey" type="password" autocomplete="off" required></label>
-        <label>SYNCTHING_FOLDER_ID<input name="syncthingFolderId" required></label>
         <label>TIER_MOUNT_ROOT (optional)<input name="mountRoot" placeholder="/mnt/media"></label>
         <label>TIER_MOUNT_MARKER (optional)<input name="mountMarker" placeholder=".tier-media-ok"></label>
       </div>
-      <p class="setup-warning">Run the generated command in a root shell. Generating it rotates the node token immediately, so any existing agent using the old token will stop checking in.</p>
+      <h3 class="setup-subheading">Syncthing folders</h3>
+      <p class="muted">Enter every folder ID exactly as Syncthing shows it and the matching local path on this node. Four rows are ready; add more if needed.</p>
+      <div id="tier-folder-list">${folderRows}</div>
+      <button class="btn" id="tier-folder-add" type="button">Add folder</button>
+      <p class="setup-warning">Generating saves this complete folder list and rotates the node token immediately. Run the command in a root shell; any existing agent using the old token stops checking in.</p>
       <button class="btn danger" type="submit">Rotate token and generate command</button>
       <span class="save-note" id="tier-install-note"></span>
       <div id="tier-install-result" hidden><p class="setup-warning">This command is shown once. Copy it before leaving or reloading this page.</p><pre class="setup-output" id="tier-install-command"></pre><button class="btn" type="button" id="tier-copy-command">Copy command</button></div>

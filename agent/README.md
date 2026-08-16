@@ -34,13 +34,13 @@ Requires Node 18+ (uses global `fetch`). No other dependencies.
 
 ## Install (one command)
 
-`/tier-node token name:<node>` in Discord prints a ready-to-paste installer for that node. It looks
-like this — run it **on the edge node**, not on the bot host:
+The dashboard and `/tier-node token name:<node>` generate a ready-to-paste installer for that node.
+Run it **on the selected node**—edge or full master—not merely inside the bot container:
 
 ```sh
 export TIER_AGENT_TOKEN=<the token it just showed you>
 curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" https://<bot-domain>/agent/install/<node> \
-  | sudo -E env TIER_FOLDER_ROOT=/mnt/media SYNCTHING_API_KEY=... SYNCTHING_FOLDER_ID=... sh
+  | sudo -E env SYNCTHING_API_KEY=... TIER_FOLDERS='[{"id":"movies","path":"/mnt/media/Movies"}]' sh
 ```
 
 It installs `agent.js` to `/opt/tier-agent`, writes the token to root-only `/etc/tier-agent.env`,
@@ -50,8 +50,10 @@ so nothing new is exposed publicly.
 
 Config comes from the environment rather than prompts, because stdin is the script itself when
 piped — an interactive `read` would eat the rest of the file. Required in that `env` list:
-`TIER_FOLDER_ROOT`, `SYNCTHING_API_KEY`, `SYNCTHING_FOLDER_ID` (plus `TIER_AGENT_TOKEN`, exported
-above). Anything else from the table below can be added the same way; `TIER_MOUNT_ROOT` +
+`SYNCTHING_API_KEY`, either `TIER_FOLDERS` or the legacy single-folder pair `TIER_FOLDER_ROOT` +
+`SYNCTHING_FOLDER_ID`, and `TIER_AGENT_TOKEN` exported above. The dashboard generates
+`TIER_FOLDERS` directly from every folder row for the selected node. Anything else from the table
+below can be added the same way; `TIER_MOUNT_ROOT` +
 `TIER_MOUNT_MARKER` in particular if the media sits on an external drive.
 
 `sudo -E` matters — without it your environment does not survive into the script, and it will stop

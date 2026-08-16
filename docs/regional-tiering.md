@@ -12,6 +12,11 @@ Receive Only, writes ignores, rescans and prunes each folder every run. Manage a
 with `/tier-node folder add|remove|list`; the agent lists them in `TIER_FOLDERS`. Single-folder
 nodes (one `folder_root`, one `SYNCTHING_FOLDER_ID`) are unchanged.
 
+The dashboard installer shows four folder ID/path rows immediately (and can add more), preloads the
+saved mappings when switching nodes, atomically replaces that node's complete folder registry, and
+generates `TIER_FOLDERS` without hand-editing. Use the same setup for edge nodes and the `full`
+master so inventory and folder-relative manifests agree everywhere.
+
 For this deployment, California is an edge node even though its viewers belong to **Main**. Its
 3 TB budget should be the tier node's usable media capacity. Philippines should count only the
 5 TB external media drive as usable capacity; the 1 TB system SSD is not part of the media pool.
