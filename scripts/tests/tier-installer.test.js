@@ -18,3 +18,15 @@ test('tier installer: persists one TIER_FOLDERS value and grants every root writ
   assert.match(installer, /ReadWritePaths=\$\{JSON\.stringify\(folder\.root\)\}/);
   assert.match(installer, /FOLDER_UNIT_LINES/);
 });
+
+test('tier installer: provisions and then verifies Node.js when 18+ is unavailable', () => {
+  assert.match(installer, /NODE_MAJOR=\$\(node_major\)/);
+  assert.match(installer, /if \[ "\$NODE_MAJOR" -lt 18 \]; then\s+install_node/);
+  assert.match(installer, /https:\/\/deb\.nodesource\.com\/setup_22\.x/);
+  assert.match(installer, /https:\/\/rpm\.nodesource\.com\/setup_22\.x/);
+  assert.match(installer, /apt-get install -y nodejs/);
+  assert.match(installer, /dnf install -y nodejs/);
+  assert.match(installer, /yum install -y nodejs/);
+  assert.match(installer, /Node\.js installation completed but node \$NODE_MAJOR was found/);
+  assert.doesNotMatch(installer, /node not found —/);
+});

@@ -34,10 +34,46 @@ done
 Re-run with them set, e.g.
   sudo -E env SYNCTHING_API_KEY=abc TIER_FOLDERS='[{\"id\":\"movies\",\"path\":\"/mnt/media/Movies\"}]' sh"
 
-command -v node >/dev/null 2>&1 || die "node not found — the agent needs Node 18+ (it uses global fetch)"
-NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]')
-[ "$NODE_MAJOR" -ge 18 ] || die "node $NODE_MAJOR is too old — the agent needs Node 18+"
 command -v curl >/dev/null 2>&1 || die "curl not found"
+
+node_major() {
+  command -v node >/dev/null 2>&1 || { printf '0\n'; return; }
+  node -p 'process.versions.node.split(".")[0]' 2>/dev/null || printf '0\n'
+}
+
+install_node() {
+  setup_file=$(mktemp) || die "could not create a temporary file for Node.js setup"
+  if command -v apt-get >/dev/null 2>&1; then
+    say "→ installing Node.js 22 from NodeSource (apt)"
+    curl -fsSL https://deb.nodesource.com/setup_22.x -o "$setup_file" \
+      && sh "$setup_file" \
+      && DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs \
+      || { rm -f "$setup_file"; die "could not install Node.js 22 with apt"; }
+  elif command -v dnf >/dev/null 2>&1; then
+    say "→ installing Node.js 22 from NodeSource (dnf)"
+    curl -fsSL https://rpm.nodesource.com/setup_22.x -o "$setup_file" \
+      && sh "$setup_file" \
+      && dnf install -y nodejs \
+      || { rm -f "$setup_file"; die "could not install Node.js 22 with dnf"; }
+  elif command -v yum >/dev/null 2>&1; then
+    say "→ installing Node.js 22 from NodeSource (yum)"
+    curl -fsSL https://rpm.nodesource.com/setup_22.x -o "$setup_file" \
+      && sh "$setup_file" \
+      && yum install -y nodejs \
+      || { rm -f "$setup_file"; die "could not install Node.js 22 with yum"; }
+  else
+    rm -f "$setup_file"
+    die "Node.js 18+ is missing and this Linux package manager is unsupported (expected apt, dnf, or yum)"
+  fi
+  rm -f "$setup_file"
+}
+
+NODE_MAJOR=$(node_major)
+if [ "$NODE_MAJOR" -lt 18 ]; then
+  install_node
+  NODE_MAJOR=$(node_major)
+fi
+[ "$NODE_MAJOR" -ge 18 ] || die "Node.js installation completed but node $NODE_MAJOR was found; version 18+ is required"
 
 # Parse the same JSON/compact multi-folder format as agent.js, validate every root before changing
 # the host, and pre-render systemd's write allowlist with correct quoting for paths containing spaces.
