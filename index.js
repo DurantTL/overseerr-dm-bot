@@ -63,6 +63,7 @@ const { createRequestGate } = require('./src/request-gate');
 const { passkeyRp, createPasskeyService } = require('./src/passkeys');
 const { SqliteRollingWindowStore } = require('./src/rate-limit');
 const { prepareTierNodeInstall } = require('./src/tier-node-setup');
+const { OPERATOR_EMBED_LIMITS, boundOperatorLabel, formatOperatorError } = require('./src/operator-error');
 
 // Centralized embed palette so every notification shares one consistent look.
 const COLORS = {
@@ -1810,11 +1811,15 @@ async function pumpGrabTransfers() {
   try {
     for (let job = nextTransferableGrabJob(); job; job = nextTransferableGrabJob()) {
       await runGrabTransfer(job).catch(err => {
+        const operatorError = formatOperatorError(err);
+        const embedTitle = boundOperatorLabel(`❌ Seedbox Transfer Failed — ${job.title}`, OPERATOR_EMBED_LIMITS.title);
+        const releaseTitle = boundOperatorLabel(job.release_title);
         setGrabJobState(job.id, 'failed', err.message);
+        log.error(`Seedbox transfer failed for job #${job.id}:`, err);
         audit('avistaz_transfer_failed', { jobId: job.id, title: job.title, error: String(err.message).slice(0, 500) });
         notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.DANGER)
-          .setTitle(`❌ Seedbox Transfer Failed — ${job.title}`)
-          .setDescription(`**${job.release_title}**\n\`\`\`${String(err.message).slice(0, 800)}\`\`\`\nThe torrent is still on the seedbox — Retry re-runs the copy (already-transferred files are skipped).`)],
+          .setTitle(embedTitle)
+          .setDescription(`**Release:** ${releaseTitle}\n**Cause:** ${operatorError.cause}\n**Attempts:** ${operatorError.attempts}\n**Diagnostic:**\n\`\`\`text\n${operatorError.diagnostic}\n\`\`\`\n**Next step:** The torrent is still on the seedbox. Retry re-runs the copy; already-transferred files are skipped.`)],
           components: [new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId(`grab_retry:${job.id}`).setLabel('Retry Transfer').setStyle(ButtonStyle.Primary),
           )] });
@@ -2937,11 +2942,13 @@ async function runStageJob(job) {
 
   const result = await stageCopy(src.srcPath, src.destSubPath, CONFIG.STAGE_JOB_TIMEOUT_MINUTES * 60000);
   if (!result.ok) {
+    const operatorError = formatOperatorError(result.error);
+    const embedTitle = boundOperatorLabel(`❌ Stage Failed — ${job.title}`, OPERATOR_EMBED_LIMITS.title);
     finishStageJob(job.id, 'failed', result.error);
-    audit('stage_job_failed', { mediaId: job.media_id, title: job.title, error: String(result.error).slice(0, 500) });
+    audit('stage_job_failed', { jobId: job.id, mediaId: job.media_id, title: job.title, error: String(result.error).slice(0, 500) });
     notifyChannel('system', { embeds: [brandedEmbed(COLORS.DANGER)
-      .setTitle(`❌ Stage Failed — ${job.title}`)
-      .setDescription(`rclone copy to the PH cache failed:\n\`\`\`${String(result.error).slice(0, 800)}\`\`\``)],
+      .setTitle(embedTitle)
+      .setDescription(`**Cause:** ${operatorError.cause}\n**Attempts:** ${operatorError.attempts}\n**Diagnostic:**\n\`\`\`text\n${operatorError.diagnostic}\n\`\`\`\n**Next step:** Fix the remote or cache issue, then use Retry Stage to resume the copy.`)],
       components: [new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`stage_retry:${job.id}`).setLabel('Retry Stage').setStyle(ButtonStyle.Primary),
       )] });
