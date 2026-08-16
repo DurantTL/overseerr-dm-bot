@@ -104,7 +104,11 @@ async function botApi(ctx, method, route, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(ctx.timeoutMs),
   });
-  if (!res.ok) throw new Error(`${method} ${route} → HTTP ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(`${method} ${route} → HTTP ${res.status}`);
+    error.status = res.status;
+    throw error;
+  }
   return res.json();
 }
 
@@ -434,7 +438,21 @@ async function runOnce(ctx) {
   // recovered — force a report through even on the no-op fast path so the bot can clear its
   // drive-missing state and alert recovery.
   const recovered = !!state.driveMissing;
-  const manifest = await botApi(ctx, 'GET', `/agent/manifest/${encodeURIComponent(ctx.node)}`);
+  let manifest;
+  try {
+    manifest = await botApi(ctx, 'GET', `/agent/manifest/${encodeURIComponent(ctx.node)}`);
+  } catch (err) {
+    if (err.status !== 404) throw err;
+    ctx.log('no manifest published yet — waiting for /tier apply');
+    try {
+      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, awaitingManifest: true });
+      return { skipped: true, heartbeat: true, awaitingManifest: true };
+    } catch (reportErr) {
+      ctx.log(`waiting-for-manifest heartbeat failed: ${reportErr.message}`);
+      process.exitCode = 1;
+      return { skipped: true, heartbeat: false, awaitingManifest: true, error: reportErr.message };
+    }
+  }
   const planChanged = manifest.planHash !== state.planHash;
   const folderPlans = resolveFolderPlans(ctx, manifest);
 

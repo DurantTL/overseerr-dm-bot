@@ -12,6 +12,37 @@ const path = require('path');
 const { buildCtx, runOnce } = require('../../agent/agent');
 const { renderSyncthingStignore, computePlanHash } = require('../../src/tier');
 
+test('tier-agent: a registered node waits cleanly until its first manifest is published', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tier-agent-awaiting-plan-'));
+  const folderRoot = path.join(tmp, 'media');
+  fs.mkdirSync(folderRoot);
+  let report;
+  const bot = express();
+  bot.use(express.json());
+  bot.get('/agent/manifest/:node', (_req, res) => res.status(404).json({ error: 'No manifest published' }));
+  bot.post('/agent/report/:node', (req, res) => { report = req.body; res.json({ ok: true }); });
+  const botSrv = await new Promise(resolve => { const server = bot.listen(0, () => resolve(server)); });
+  const ctx = buildCtx({
+    TIER_BOT_URL: `http://127.0.0.1:${botSrv.address().port}`,
+    TIER_NODE: 'new-edge',
+    TIER_AGENT_TOKEN: 'test-token',
+    TIER_FOLDER_ROOT: folderRoot,
+    SYNCTHING_FOLDER_ID: 'media',
+    TIER_STATE_DIR: path.join(tmp, 'state'),
+  });
+  const logs = [];
+  ctx.log = message => logs.push(message);
+
+  const result = await runOnce(ctx);
+
+  assert.deepStrictEqual(result, { skipped: true, heartbeat: true, awaitingManifest: true });
+  assert.deepStrictEqual(report, { heartbeat: true, awaitingManifest: true });
+  assert.ok(logs.some(line => line.includes('waiting for /tier apply')));
+  assert.notStrictEqual(process.exitCode, 1, 'an unpublished first plan is not a systemd failure');
+  await new Promise(resolve => botSrv.close(resolve));
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
 test('tier-agent: ignore-before-prune ordering, receive-only abort, path confinement, inventory, no-op skip', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tier-agent-test-'));
   const folderRoot = path.join(tmp, 'media');
