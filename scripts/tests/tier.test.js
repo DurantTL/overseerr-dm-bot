@@ -724,6 +724,7 @@ test('tier: §1.6 indexHistory — id-keyed and title-keyed lookups, conservativ
     { mediaId: 'tmdb:603', title: 'The Matrix', mediaType: 'movie', plays: 2, lastPlayed: daysAgo(3), distinctUsers: 1 },
     { mediaId: 'tmdb:603', title: 'The Matrix (1999)', mediaType: 'movie', plays: 1, lastPlayed: daysAgo(1), distinctUsers: 2 },
     { mediaId: null, title: 'No Guid Movie', mediaType: 'movie', plays: 5, lastPlayed: daysAgo(2), distinctUsers: 3 },
+    { mediaId: null, title: 'No Guid Movie (2020)', mediaType: 'movie', plays: 2, lastPlayed: daysAgo(1), distinctUsers: 5 },
   ];
   const idx = indexHistory(hist);
   const byId = idx.byId.get('tmdb:603');
@@ -731,7 +732,10 @@ test('tier: §1.6 indexHistory — id-keyed and title-keyed lookups, conservativ
   assert.strictEqual(byId.distinctUsers, 2, 'distinctUsers takes the max on merge');
   assert.strictEqual(byId.lastPlayed, daysAgo(1), 'lastPlayed takes the newest');
   assert.ok(!idx.byId.has(null) && idx.byId.size === 1, 'null-id rows never enter byId');
-  assert.ok(idx.byTitle.get(titleKey('No Guid Movie', 'movie')), 'unresolved row indexed by title');
+  const byTitle = idx.byTitle.get(titleKey('No Guid Movie', 'movie'));
+  assert.strictEqual(byTitle.plays, 7, 'unresolved duplicate rating keys merge by normalized title');
+  assert.strictEqual(byTitle.distinctUsers, 5, 'title merge takes max users instead of adding duplicate audiences');
+  assert.strictEqual(byTitle.lastPlayed, daysAgo(1), 'title merge keeps the newest play');
   assert.ok(!idx.byTitle.has(titleKey('The Matrix', 'movie')), 'GUID-resolved rows stay out of byTitle (no namesake leak)');
 });
 

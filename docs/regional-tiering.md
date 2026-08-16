@@ -44,6 +44,15 @@ How each node is curated:
     backstop, set the node's `atime_mask` (`HH:MM-HH:MM`, UTC, may wrap midnight) to the
     maintenance window: reads landing in that window are laundered at report ingest — the
     previously stored atime (the last plausible human read) is carried forward instead.
+
+Watch-history normalization is deliberate and happens before scoring. The Tautulli and Plex
+adapters first aggregate raw playback events per Plex rating key. The planner's `indexHistory`
+then merges GUID-resolved rows by stable `tmdb:`/`tvdb:` ID and unresolved rows by normalized
+title. Merged rows sum plays (each playback belongs to one rating key), take the maximum distinct
+user count rather than adding overlapping audiences, and keep the newest playback time. The
+universal core likewise sums real play totals across normalized titles and enabled nodes; a 4K
+edition or library rescan therefore contributes its actual watches without duplicating users.
+
 - **Tier 2 (member pins, `restricted` nodes only):** requests by the node's member set
   (`/tier-member`) pin for `TIER_REQUEST_GRACE_DAYS` — cold-start before Tautulli has signal.
   `open` nodes never pin (a requester could stream from any node), and on `restricted` nodes
