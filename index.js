@@ -7946,7 +7946,15 @@ function startExpressServer() {
   if (CONFIG.DASHBOARD_ENABLED) {
     const adminForm = express.urlencoded({ extended: false, limit: '16kb' });
     const webauthnBrowserPath = path.join(path.dirname(require.resolve('@simplewebauthn/browser')), '..', 'dist', 'bundle', 'index.es5.umd.min.js');
+    const passkeyClientPath = path.join(__dirname, 'src', 'passkey-client.js');
 
+    app.get('/admin/passkey-client.js', rateLimit({
+      windowMs: 60000,
+      limit: 120,
+      keyGenerator: httpRateLimitKey,
+      standardHeaders: 'draft-8',
+      legacyHeaders: false,
+    }), (_req, res) => res.sendFile(passkeyClientPath, { headers: { 'Cache-Control': 'no-cache' } }));
     app.get('/admin/webauthn-browser.js', (_req, res) => res.sendFile(webauthnBrowserPath, { headers: { 'Cache-Control': 'public, max-age=31536000, immutable' } }));
 
     app.get('/admin/login', (req, res) => {
@@ -8317,6 +8325,7 @@ function startExpressServer() {
           </div>
         </section>
 
+        <script src="/admin/passkey-client.js"></script>
         <script src="/admin/webauthn-browser.js"></script>
         <script>
           async function revokeAll() {
@@ -8361,13 +8370,19 @@ function startExpressServer() {
           (function () {
             var enroll = document.getElementById('passkey-enroll');
             var note = document.getElementById('passkey-note');
+            var passkeyReady = !enroll || (!!window.PasskeyClient && window.PasskeyClient.preparePasskeyAction(enroll, note, window));
+            if (enroll && !window.PasskeyClient) {
+              enroll.disabled = true;
+              note.textContent = 'Passkey support could not be checked. Open this HTTPS dashboard in Safari, Chrome, Edge, or another WebAuthn-capable browser.';
+              note.className = 'save-note bad';
+            }
             var post = async function (url, body) {
               var response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
               var result = await response.json().catch(function () { return {}; });
               if (!response.ok) throw new Error(result.error || 'Passkey request failed.');
               return result;
             };
-            if (enroll) enroll.addEventListener('click', async function () {
+            if (enroll && passkeyReady) enroll.addEventListener('click', async function () {
               var label = document.getElementById('passkey-label').value.trim();
               if (!label) { note.textContent = 'Enter a device label.'; note.className = 'save-note bad'; return; }
               enroll.disabled = true;
@@ -8378,7 +8393,7 @@ function startExpressServer() {
                 location.hash = 'overview';
                 location.reload();
               } catch (error) {
-                note.textContent = error.message || String(error);
+                note.textContent = window.PasskeyClient ? window.PasskeyClient.passkeyErrorMessage(error, window) : (error.message || String(error));
                 note.className = 'save-note bad';
                 enroll.disabled = false;
               }

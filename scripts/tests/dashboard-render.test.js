@@ -65,8 +65,12 @@ test('dashboard-render: renderLogin', () => {
   assert.match(renderLogin(false, 'custom msg'), /custom msg/);
   const passkey = renderLogin(false, null, { passkeyEnabled: true });
   assert.match(passkey, /Sign in with a passkey/);
+  assert.match(passkey, /\/admin\/passkey-client\.js/);
+  assert.match(passkey, /preparePasskeyAction/);
+  assert.match(passkey, /Password login still works below/);
   assert.match(passkey, /startAuthentication/);
   assert.match(passkey, /password fallback/);
+  assert.match(passkey, /<form method="post" action="\/admin\/login">/, 'password login remains available');
 });
 
 test('dashboard-render: passkey management escapes credential metadata', () => {
@@ -75,6 +79,8 @@ test('dashboard-render: passkey management escapes credential metadata', () => {
   assert.match(html, /data-passkey="id&lt;1"/);
   assert.match(html, /never used/);
   assert.match(html, /admin\.example\.com/);
+  assert.match(html, /id="passkey-enroll" aria-describedby="passkey-note"/);
+  assert.match(html, /id="passkey-note" role="status" aria-live="polite"/);
 });
 
 test('dashboard-render: renderStat', () => {
