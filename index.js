@@ -8804,14 +8804,14 @@ function startExpressServer() {
     // A preview is authenticated but expensive: it reads the whole Sonarr series list and then
     // walks episodes series by series. Held-down Enter on the Preview button, or a stuck bit of
     // dashboard JS, would hammer Sonarr harder than the sweep it is previewing ever does.
-    app.post('/admin/action/sweep-preview', dashboardAuth, rateLimit({
+    app.post('/admin/action/sweep-preview', rateLimit({
       windowMs: 60000,
       limit: 20,
-      keyGenerator: req => dashboardActor(req).actorIp,
+      keyGenerator: httpRateLimitKey,
       standardHeaders: 'draft-8',
       legacyHeaders: false,
       handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many previews. Wait a moment and try again.' }),
-    }), async (req, res) => {
+    }), dashboardAuth, async (req, res) => {
       try {
         const items = await previewAutomation(req.body?.name, req.body?.values || {});
         return res.json({ ok: true, items });
