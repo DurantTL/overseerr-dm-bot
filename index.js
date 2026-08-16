@@ -6311,6 +6311,19 @@ async function handleTierCommand(interaction) {
       : `❌ Nothing to plan.\n${(plans.warnings || []).map(w => `• ${w}`).join('\n')}`);
   }
 
+  const routingErrors = (plans.routingErrors || []).filter(issue => names.includes(issue.node));
+  if (sub === 'apply' && routingErrors.length) {
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle('🛑 Apply Blocked — Folder Routing Mismatch')
+      .setDescription([
+        'The planner could not map some Arr inventory paths to the selected node’s Syncthing folders. Publishing would assign those titles to the first folder, so nothing was written.',
+        '',
+        ...routingErrors.map(issue => `• \`${issue.node}\`: ${issue.count} unmatched title(s)${issue.examples.length ? ` — examples: ${issue.examples.map(v => `\`${v}\``).join(', ')}` : ''}`),
+        '',
+        'Configure the enabled full master with its Syncthing folder IDs and source-side roots, and make sure each edge has the same IDs. Local paths and folder order may differ. Then re-run `/tier preview`.',
+      ].join('\n').slice(0, 4000))] });
+  }
+
   // §1.5 apply-impact per node (real removals / new downloads vs the node's last physical
   // inventory) — computed for both preview and apply so the same numbers and confirm code show in
   // the dry run. Full masters never prune and aren't edge caches, so they skip the guardrail.

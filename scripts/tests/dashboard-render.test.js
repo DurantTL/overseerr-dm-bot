@@ -146,6 +146,8 @@ test('dashboard-render: tier install command is complete and shell quoted', () =
   assert.deepStrictEqual(JSON.parse(encoded), folders);
   assert.match(command, /TIER_MOUNT_ROOT='\/mnt'/);
   assert.match(command, /TIER_MOUNT_MARKER='\.mounted'/);
+  assert.match(command, /\| sudo -E env /, 'installer runs as root while preserving its environment');
+  assert.doesNotMatch(command, /\| env /, 'installer must not run as the invoking non-root user');
   assert.doesNotMatch(command, /CHANGEME/);
 });
 
@@ -168,6 +170,8 @@ test('dashboard-render: tier setup contains no agent token', () => {
   assert.match(html, /movies/);
   assert.match(html, /\/mnt\/media\/TV Shows/);
   assert.match(html, /Add folder/);
+  assert.match(html, /existing local path/);
+  assert.match(html, /case-sensitive/);
   assert.doesNotMatch(html, /secret-token/);
 });
 

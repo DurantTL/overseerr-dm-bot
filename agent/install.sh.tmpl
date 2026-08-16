@@ -34,14 +34,51 @@ done
 Re-run with them set, e.g.
   sudo -E env SYNCTHING_API_KEY=abc TIER_FOLDERS='[{\"id\":\"movies\",\"path\":\"/mnt/media/Movies\"}]' sh"
 
-command -v node >/dev/null 2>&1 || die "node not found — the agent needs Node 18+ (it uses global fetch)"
-NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]')
-[ "$NODE_MAJOR" -ge 18 ] || die "node $NODE_MAJOR is too old — the agent needs Node 18+"
 command -v curl >/dev/null 2>&1 || die "curl not found"
+
+node_major() {
+  command -v node >/dev/null 2>&1 || { printf '0\n'; return; }
+  node -p 'process.versions.node.split(".")[0]' 2>/dev/null || printf '0\n'
+}
+
+install_node() {
+  setup_file=$(mktemp) || die "could not create a temporary file for Node.js setup"
+  if command -v apt-get >/dev/null 2>&1; then
+    say "→ installing Node.js 22 from NodeSource (apt)"
+    curl -fsSL https://deb.nodesource.com/setup_22.x -o "$setup_file" \
+      && sh "$setup_file" \
+      && DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs \
+      || { rm -f "$setup_file"; die "could not install Node.js 22 with apt"; }
+  elif command -v dnf >/dev/null 2>&1; then
+    say "→ installing Node.js 22 from NodeSource (dnf)"
+    curl -fsSL https://rpm.nodesource.com/setup_22.x -o "$setup_file" \
+      && sh "$setup_file" \
+      && dnf install -y nodejs \
+      || { rm -f "$setup_file"; die "could not install Node.js 22 with dnf"; }
+  elif command -v yum >/dev/null 2>&1; then
+    say "→ installing Node.js 22 from NodeSource (yum)"
+    curl -fsSL https://rpm.nodesource.com/setup_22.x -o "$setup_file" \
+      && sh "$setup_file" \
+      && yum install -y nodejs \
+      || { rm -f "$setup_file"; die "could not install Node.js 22 with yum"; }
+  else
+    rm -f "$setup_file"
+    die "Node.js 18+ is missing and this Linux package manager is unsupported (expected apt, dnf, or yum)"
+  fi
+  rm -f "$setup_file"
+}
+
+NODE_MAJOR=$(node_major)
+if [ "$NODE_MAJOR" -lt 18 ]; then
+  install_node
+  NODE_MAJOR=$(node_major)
+fi
+[ "$NODE_MAJOR" -ge 18 ] || die "Node.js installation completed but node $NODE_MAJOR was found; version 18+ is required"
 
 # Parse the same JSON/compact multi-folder format as agent.js, validate every root before changing
 # the host, and pre-render systemd's write allowlist with correct quoting for paths containing spaces.
 FOLDER_UNIT_LINES=$(node -e '
+try {
 const fs = require("fs");
 const raw = String(process.env.TIER_FOLDERS || "").trim();
 let folders;
@@ -53,13 +90,29 @@ if (raw) {
   folders = [{ id: process.env.SYNCTHING_FOLDER_ID || "", root: process.env.TIER_FOLDER_ROOT || "" }];
 }
 if (!folders.length) throw new Error("no folders configured");
+const problems = [];
 for (const folder of folders) {
-  folder.root = folder.root.replace(/\/+$/, "");
-  if (!folder.id || !folder.root) throw new Error("every folder needs an id and path");
-  if (!fs.statSync(folder.root).isDirectory()) throw new Error(`${folder.root} is not a directory`);
+  folder.root = folder.root.replace(/\/+$/, "") || "/";
+  if (!folder.id || !folder.root) {
+    problems.push("every folder needs an id and path");
+    continue;
+  }
+  try {
+    if (!fs.statSync(folder.root).isDirectory()) problems.push(`configured folder path is not a directory: ${folder.root}`);
+  } catch (error) {
+    if (error && error.code === "ENOENT") problems.push(`configured folder path does not exist: ${folder.root} (Linux paths are case-sensitive)`);
+    else problems.push(`cannot inspect configured folder path ${folder.root}: ${error.message}`);
+  }
+}
+if (problems.length) throw new Error(problems.join("\n  - "));
+for (const folder of folders) {
   process.stdout.write(`ReadWritePaths=${JSON.stringify(folder.root)}\n`);
 }
-') || die "TIER_FOLDERS is invalid or one of its local paths does not exist"
+} catch (error) {
+  console.error(`folder validation failed:\n  - ${error.message}`);
+  process.exit(1);
+}
+') || die "correct the folder paths to their exact local Syncthing paths in the dashboard, then generate a new command"
 
 say "Installing the tier agent for node '$NODE_NAME' from $BOT_URL"
 
@@ -71,10 +124,13 @@ install -d -m 755 "$INSTALL_DIR"
 install -d -m 750 "$STATE_DIR"
 
 say "→ fetching agent.js"
-curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" "$BOT_URL/agent/source/$NODE_NAME" -o "$INSTALL_DIR/agent.js.new" \
+# Keep .js as the final suffix: Node 22+ rejects `node --check` on the old agent.js.new staging name
+# because it interprets .new as an unknown module extension.
+AGENT_TMP="$INSTALL_DIR/agent.new.js"
+curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" "$BOT_URL/agent/source/$NODE_NAME" -o "$AGENT_TMP" \
   || die "could not download the agent — check the token and that $BOT_URL is reachable from here"
-node --check "$INSTALL_DIR/agent.js.new" || die "downloaded agent.js is not valid JavaScript — aborting rather than installing it"
-mv "$INSTALL_DIR/agent.js.new" "$INSTALL_DIR/agent.js"
+node --check "$AGENT_TMP" || die "downloaded agent.js is not valid JavaScript — aborting rather than installing it"
+mv "$AGENT_TMP" "$INSTALL_DIR/agent.js"
 chmod 755 "$INSTALL_DIR/agent.js"
 
 # The token lives here and nowhere else; 600 root-owned, written via a temp file so a reader can

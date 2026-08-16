@@ -77,6 +77,12 @@ shown once). Env knobs: `TIER_CORE_TOP_K`, `TIER_HALF_LIFE_DAYS`, `TIER_WARM_DAY
 `TIER_FRESH_DAYS`, `TIER_REQUEST_GRACE_DAYS`, `TIER_HISTORY_DAYS`, `TIER_SOURCE_ROOT`,
 `TIER_NODES_SEED` (JSON seed applied only when the `tier_nodes` table is empty).
 
+Multi-folder routing uses the Syncthing folder ID, not node folder order or edge paths. The full
+master's folder map classifies each Arr title into a canonical folder ID; every edge then resolves
+that ID to its own local path. `/mnt/raid/Media/Movies` on the master can therefore be
+`/mnt/media/Media/Movies`, `/srv/cinema`, or anything else on an edge. A missing master map or an
+ID absent from either side blocks apply instead of silently falling into the first folder.
+
 **Apply is blocked on an incomplete inventory.** If any *arr fails to answer while the plan is
 being built, the titles it serves appear in neither `keep` nor `drop` — so their folder's
 `.stignore` renders **empty** and the node re-downloads everything the previous plan was holding
