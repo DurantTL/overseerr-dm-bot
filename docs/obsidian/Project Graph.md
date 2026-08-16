@@ -2,13 +2,14 @@
 tags:
   - project/overseerr-dm-bot
   - graph
-reviewed: 2026-08-11
-source_commit: b656155
+reviewed: 2026-08-16
+source_commit: 1a803ac
 ---
 
 # Project graph
 
-This note joins the architectural map in [[Architecture]], the behavior in [[Core Workflows]], the durable state in [[Data and Operations]], and the delivery plan in [[Backlog]].
+This note joins the architectural map in [[Architecture]], the behavior in [[Core Workflows]], the
+durable state in [[Data and Operations]], and the dated delivery plan in [[Backlog]].
 
 ## Runtime topology
 
@@ -25,8 +26,10 @@ flowchart LR
     EdgeAgents[Regional edge agents] <--> AgentAPI[Agent API]
 
     subgraph Bot[Node.js bot process]
-        Discord --> Index[index.js orchestration]
-        Webhooks --> Index
+        Bootstrap[bootstrap.js validation] --> Index[index.js composition]
+        Discord --> Index
+        Webhooks --> Routes[src/routes handlers]
+        Routes --> Index
         Dashboard --> Index
         AgentAPI --> Index
         Sweeps[Scheduled sweeps] --> Index
@@ -45,44 +48,34 @@ flowchart LR
     EdgeAgents <--> Syncthing[Syncthing and local media]
 ```
 
-## Delivery graph
+## Current delivery graph
 
-Solid arrows are explicit dependencies. Dashed arrows are the sequence recommended by the live tracking issue rather than hard technical blockers.
+Solid arrows are explicit dependencies; grouped issues can otherwise proceed independently.
 
 ```mermaid
 flowchart TD
-    I122[#122 Placeholder config] -.-> I125[#125 Diagnosable fatal config]
-    I125 -.-> I116[#116 Dashboard search]
-    I116 -.-> I117[#117 Dashboard actions]
-    I117 -.-> I127[#127 Pending approval expiry]
-    I127 -.-> I133[#133 Extract route handlers]
+    Review[#175 Repository review] --> Security[#176 HTTP admission]
+    Review --> Sessions[#177 Session signing]
+    Review --> AppFactory[#178 HTTP extraction]
+    Review --> Migrations[#179 Versioned migrations]
+    Review --> Runtime[#180 Runtime and agent CI]
+    AppFactory --> DashboardCache[#189 Dashboard caching]
 
-    I118[#118 Headless approval gate] -->|blocks| I119[#119 Dashboard approve or deny]
-    I116 -.->|coordinates with| I123[#123 Who requested]
-    I117 -.->|pairs with| I134[#134 Sweep preview]
-    I119 -.->|shares pending list| I127
+    Review --> Registry[#186 Automation registry]
+    Registry --> DashboardOps[#187 Dashboard correctness]
+    Registry --> HttpLifecycle[#188 HTTP during Discord outage]
 
-    Reliability[Silent failure] --> I122
-    Reliability --> I125
-    Reliability --> I129[#129 Persistent limits]
-    Reliability --> I131[#131 Verified backups]
+    Review --> Origin[#190 Dashboard origin]
+    Review --> HTTPS[#191 Public HTTPS]
+    HTTPS --> Origin
 
-    DashboardParity[Dashboard parity] --> I116
-    DashboardParity --> I117
-    DashboardParity --> I120[#120 Tier setup]
-    DashboardParity --> I118
-    DashboardParity --> I119
-    DashboardParity --> I121[#121 Passkeys]
-    DashboardParity --> I134
+    Review --> Fallback[#181 Fallback verification]
+    Fallback --> California[#182 California promotion]
+    Review --> TVGranularity[#183 Season-level TV planning]
+    TVGranularity -.->|before unrestricted TV promotion| California
 
-    MemberExperience[Member experience] --> I123
-    MemberExperience --> I126[#126 Cross-source dedupe]
-    MemberExperience --> I127
-    MemberExperience --> I128[#128 Failure and stall notices]
-
-    Foundations[Foundations] --> I130[#130 File-backed secrets]
-    Foundations --> I133
-    StoragePlanning[Storage planning] --> I132[#132 Capacity forecast]
+    Review --> Delivery[#184 Supply-chain and releases]
+    Review --> Docs[#185 Docs and repository policy]
 ```
 
 ## Request and recovery pipeline
@@ -91,7 +84,7 @@ flowchart TD
 flowchart LR
     Request[Member request] --> Gate{Admin or trusted?}
     Gate -->|No| Pending[SQLite pending gate]
-    Pending --> Approval[Discord approval]
+    Pending --> Approval[Discord or dashboard approval]
     Gate -->|Yes| SeerrRequest[Create attributed Seerr request]
     Approval --> SeerrRequest
     SeerrRequest --> Public[Public indexers through arr]
@@ -103,7 +96,7 @@ flowchart LR
     Stage --> Import[Sonarr or Radarr import]
     Download --> Available[Plex availability]
     Import --> Available
-    Available --> Notify[Requester DM and subscribers]
+    Available --> Notify[Requester and subscriber notices]
 ```
 
 See [[Core Workflows]] for the conditions and safety gates behind these edges.

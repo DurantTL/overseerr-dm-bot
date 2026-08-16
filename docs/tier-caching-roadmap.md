@@ -1,9 +1,15 @@
-# Regional tiering / edge cache — remaining work
+---
+reviewed: 2026-08-16
+source_commit: 1a803ac
+---
 
-A backlog of the review items **not** covered by PR #42
-(`claude/plex-atime-fallback-bug-kuo15q`). Point a session at this file (or a
-single section of it) to pick up the next piece. Every item has code pointers so
-work can start without re-deriving context.
+# Regional tiering / edge cache — implementation record and remaining work
+
+This document retains the detailed implementation record that began after PR #42. Current
+delivery is tracked by GitHub issues
+[#181](https://github.com/DurantTL/overseerr-dm-bot/issues/181) through
+[#183](https://github.com/DurantTL/overseerr-dm-bot/issues/183); completed phase notes below are
+historical evidence, not an active queue.
 
 ## Status snapshot
 
@@ -53,10 +59,10 @@ Already done (in the codebase / PR #42):
   estimates freed bytes from the planner's inventory `sizeBytes` instead of a synchronous recursive
   stat — only falling back to an async walk when a drop entry carries no size.
 
-The mergerfs mount / Plex-test-library operational steps of Phases 2–3 are captured as a runbook in
-[`mergerfs-plex-operational.md`](mergerfs-plex-operational.md) (infra stand-up, not bot code).
-
-Not yet done — Phase 4 (season-level TV).
+The mergerfs mount / Plex-test-library steps are documented in
+[`mergerfs-plex-operational.md`](mergerfs-plex-operational.md), but live PH and California
+stand-up remains unverified external work under #181. California play-triggered promotion remains
+bot work under #182. Season-level TV planning remains under #183.
 
 ---
 
@@ -230,15 +236,15 @@ series require admin confirmation.
   `sizeBytes` rather than a synchronous recursive stat — falling back to an async
   walk only when a drop entry carries no size.
 
-## Documentation status to reflect
+## Current component status
 
-`docs/edge-playback-architecture.md` should read:
+Use this wording consistently across the edge documents:
 
 ```
 PH play-triggered promotion:        implemented, off by default
-PH merged fallback mount:           not implemented
+PH merged fallback mount:           runbook ready; stand-up unverified/pending (#181)
 California tiering:                 implemented
-California play promotion:          not implemented
-California merged fallback mount:   not implemented
-Season-level TV planning:           not implemented
+California play promotion:          not implemented (#182)
+California merged fallback mount:   runbook ready; stand-up unverified/pending (#181)
+Season-level TV planning:           not implemented (#183)
 ```

@@ -4,11 +4,11 @@
 
 ```
 PH play-triggered promotion:        implemented, off by default
-PH merged fallback mount:           infra runbook ready (mergerfs-plex-operational.md), stand-up pending
+PH merged fallback mount:           runbook ready; stand-up unverified/pending (#181)
 California tiering:                 implemented
-California play promotion:          not implemented (needs §2.2 bot work)
-California merged fallback mount:   infra runbook ready (mergerfs-plex-operational.md), stand-up pending
-Season-level TV planning:           not implemented
+California play promotion:          not implemented (#182)
+California merged fallback mount:   runbook ready; stand-up unverified/pending (#181)
+Season-level TV planning:           not implemented (#183)
 ```
 
 The merged-library *mount* work (mergerfs, Plex test library) is infra outside this repo — the
@@ -22,9 +22,11 @@ are in place, as are the operational agent-heartbeat and async-deletion items.
 promotes it to that edge's local storage → future plays are local → the tier system later evicts
 cold local copies while everything stays visible."
 
-This document explains why that behaviour does not exist today, what the missing pieces are, and
-how to build them so **both** edge servers behave the same way. It is grounded in the code as it
-stands (`src/tier.js`, `src/staging.js`, the webhook handlers in `index.js`, `agent/`).
+This document explains why the complete end-to-end behavior does not exist today, what the missing
+pieces are, and how to build them so **both** edge servers behave the same way. PH promotion code
+exists but is off by default; fallback stand-up, California promotion, and season-level planning
+remain open. The design is grounded in `src/tier.js`, `src/staging.js`, the webhook handlers in
+`index.js`, and `agent/`.
 
 ---
 
@@ -64,13 +66,14 @@ boxes and they do not share a playback story.
   * `/stage <title>` (a user), `/stage-bulk` (admin),
   * auto-stage when a **PH-assigned** requester's title reaches `MEDIA_AVAILABLE`
     (`handleOverseerrWebhook` → `enqueueStageJob(... origin:'auto')`).
-* Playback webhooks (`handlePhWatchedEvent`) only handle **finished-watching / eviction** of a
-  title that is *already staged* — the very first line is `if (!staged) return;`. A title that
-  isn't in the cache produces no action.
+* Play-start webhooks route through `handlePhPlayStart`. With `EDGE_PROMOTE_ON_PLAY=true`, the bot
+  applies the durable watcher/title limits and either audits or queues PH staging; the flag remains
+  off by default. Finished-watching events still drive the staged-item LRU and eviction prompt.
 
-### The gap (identical on both boxes)
+### The remaining end-to-end gap
 
-Neither model implements *"play a title that isn't here yet."* On an edge Plex:
+Neither edge has a verified merged fallback deployment under #181. Without that fallback, an
+uncached title still cannot reliably produce the successful play event that promotion needs:
 
 1. User presses Play on a title whose file is absent.
 2. Plex tries to open the file, fails, playback errors out.
@@ -78,11 +81,13 @@ Neither model implements *"play a title that isn't here yet."* On an edge Plex:
    could not open — so there is nothing for the bot to react to.
 
 `src/staging.js` even documents PH as "a curation system, not an on-demand file gateway." Correct.
-Getting the intended behaviour needs **two** new capabilities, one infra, one bot:
+Getting the intended behavior needs the infra capability on both boxes and the remaining bot
+capability on California:
 
 * **A remote fallback** so the edge Plex can *always* open the file (and thus emit a real play
   event), even before it is local.
-* **Play-triggered promotion** so that play event copies the title local for next time.
+* **Play-triggered promotion** so that play event copies the title local for next time. PH has this
+  code behind flags; California remains #182.
 
 ---
 
@@ -124,19 +129,18 @@ Syncthing. Syncthing keeps managing the local branch exactly as now (Receive-Onl
 prunes). mergerfs must be configured so the remote branch is **never a create target** — new local
 files (promotions) only ever land in the local branch, which is what Syncthing owns.
 
-### 2.2 Bot layer — play-triggered promotion (this repo, not yet built)
+### 2.2 Bot layer — PH implemented; California remains #182
 
-Four pieces, all additive to existing code:
+The shared ingestion and PH path are implemented. The California-specific planner pin, pin-aware
+ignore generation, and immediate agent convergence described below are not.
 
-#### (a) Ingest a play-*start* event
+#### (a) Ingest a play-*start* event — ✅ DONE
 
-Today `handlePlexWebhook` early-returns on anything but `media.scrobble`, and
-`handleTautulliWebhook` only acts on `event === 'watched'`. Add handling for the **start** of
-playback:
+`handlePlexWebhook` accepts `media.play` and `media.resume`; `handleTautulliWebhook` accepts the
+Tautulli `play` event. Both retain their finished-watching paths:
 
 * Plex webhook: `media.play` and `media.resume`.
-* Tautulli webhook: the `play` event (configure a Tautulli "Playback Start" notification with the
-  same JSON payload that already carries `server_name` / `machine_id`).
+* Tautulli webhook: `play`, using the payload that carries `server_name` / `machine_id`.
 
 `classifyServerIdentity({serverName, machineId})` now fails safe (`'unknown'` events are dropped)
 and recognizes California through `CA_EDGE_SERVER_NAMES` separately from `PH_SERVER_NAMES` and
@@ -145,7 +149,7 @@ before deletion/staging; the remaining promotion work is resolving that origin t
 A future general `EDGE_SERVER_NAMES=identity:node` map can replace the dedicated California key
 if more tier Plex nodes are added.
 
-#### (b) Decide "is this title already local on that node?"
+#### (b) Decide "is this title already local on that node?" — PH done, California pending
 
 Promotion should fire **only** when the play is being served by the remote fallback (i.e. the file
 is not local yet). Crucially, three states must be distinguished — conflating them is a bug:
@@ -161,7 +165,8 @@ published the plan but not yet converged — in every one of those cases playbac
 remote fallback, so suppressing promotion because it's "kept" would strand it on the fallback
 forever. Per transport:
 
-* **PH (staging):** `getStagedItem(mediaId)` records a completed copy — absent ⇒ promote. (Partial
+* **PH (staging, implemented):** `getStagedItem(mediaId)` records a completed copy — absent ⇒
+  promote. (Partial
   copies are already retried by the stage worker, so "present" and "synchronized" coincide here.)
 * **California (tier):** do **not** decide from `getTierPlan(node).keep` alone. Check *presence and
   completion* against the node's real state:
@@ -176,7 +181,8 @@ forever. Per transport:
 
 #### (c) Promote — by transport
 
-* **PH:** `enqueueStageJob({ mediaId, mediaType, title, discordId, origin: 'play' })`. The existing
+* **PH (implemented, off by default):**
+  `enqueueStageJob({ mediaId, mediaType, title, discordId, origin: 'play' })`. The existing
   stage worker (`processStageQueue` → `stageCopy`) copies the folder into the cache. Playback is
   already happening through the fallback; the copy just makes the *next* play local. The
   disk-pressure guard (`planCacheSpace`) and per-user/day cap already apply.
@@ -221,17 +227,11 @@ forever. Per transport:
 > the pull starts now. The scheduled tier cycle remains the *fallback/backstop*, not the normal
 > promotion path.
 
-> **Path layout must match the remote tree (PH).** mergerfs only prefers the local copy when it
-> sits at the **same relative path** as the file Plex discovered on the remote branch. Today
-> `resolveStageSource` copies to `movies/<basename>` and `tv/<basename>` (`src/staging.js`), but the
-> master library exposes folders like `Movies` / `TV Shows`. Left as-is, the promoted file lands at
-> a *different* path than the one Plex indexed via the fallback, so Plex keeps opening the remote
-> item and the local copy is an orphaned duplicate. **Before relying on mergerfs local-first for PH,
-> change the stage destination layout (or add a remap) so cached paths are identical to the master's
-> relative paths** — e.g. stage into `Movies/<basename>` / `TV Shows/<basename>` so
-> `/mnt/plex-library/Movies/<basename>` resolves to the local branch. The California tier path is
-> unaffected: Syncthing already replicates the master's exact folder tree, so promoted files match by
-> construction.
+> **Path layout must match the remote tree (PH) — ✅ DONE.** `resolveStageSource` now uses
+> `STAGE_MOVIES_SUBDIR` / `STAGE_TV_SUBDIR`, defaulting to `Movies` / `TV Shows`, so the local and
+> remote branches resolve the same relative path. Older lowercase `movies/` / `tv/` copies may be
+> orphaned and should be reconciled during rollout. California already receives the master's exact
+> folder tree through Syncthing.
 
 #### (c′) TV promotion granularity
 
@@ -248,10 +248,9 @@ inherit "whole series":
 (`TIER_TV_PROMOTE_GRANULARITY = episode|season|series`, default `season`). This has a real cost on
 the tier side: the planner currently reasons in **whole titles** (one series = one keep/drop unit),
 and season/episode promotion requires **sub-folder inventory and ignore rules** (`.stignore`
-entries and keep/atime tracking below the series-folder level). PH's staging path can already target
-a season subfolder with a narrower `resolveStageSource`; California's planner needs season-level
-granularity added before season promotion is meaningful there. Until that exists, document the
-interim behaviour honestly (whole-series) and gate large series behind an admin confirm.
+entries and keep/atime tracking below the series-folder level). PH also currently stages the whole
+series folder. Issue #183 owns season-level behavior for both paths; until it lands, the documented
+interim behavior is whole-series and large automatic TV promotion must remain bounded.
 
 #### (d) Guardrails (shared)
 
@@ -263,17 +262,10 @@ interim behaviour honestly (whole-series) and gate large series behind an admin 
 * **WAN contention:** a fallback *stream* and a promotion *copy* share the Tailscale link. Keep
   `STAGE_RCLONE_FLAGS`/`GRAB_RCLONE_FLAGS` `--bwlimit` in place, and consider deferring the copy
   slightly so the live stream wins the pipe.
-* **Respect existing budgets — but add the missing rate-limit accounting.** The cache guard
-  (`planCacheSpace`) and California's node budget + eviction gate run inside the copy/plan paths, so
-  promotion inherits them for free. **The per-user daily cap does *not* come for free:**
-  `STAGE_MAX_PER_USER_PER_DAY` is enforced only in `handleStageCommand` via the in-memory
-  `stageCommandLimits` map (`index.js`), *before* `enqueueStageJob` — `enqueueStageJob` and the stage
-  worker only dedupe active jobs and check disk space. A `origin:'play'` path that calls
-  `enqueueStageJob` directly would let one viewer queue unlimited distinct missing titles. So the
-  play-promotion handler **must apply its own rate-limit/attribution** (attribute to the watcher's
-  linked Discord id, then `takeRateLimit(stageCommandLimits, watcherId, STAGE_MAX_PER_USER_PER_DAY,
-  …)` or an equivalent persistent per-day counter) before enqueuing. Promotion is an *admission
-  request*, not an override of the budget.
+* **Respect existing budgets and durable admission limits.** PH promotion attributes the watcher,
+  uses `edge_promote_log` for its restart-persistent daily cap, records a token only on an actual
+  enqueue, and retains `planCacheSpace`. California promotion must preserve equivalent attribution
+  and the tier planner's node budget when #182 lands.
 
 ### 2.3 Tiering + eviction (already built — steps 5 & 6)
 
@@ -285,8 +277,9 @@ Once a title is promoted and local:
   keeps it while hot and evicts it when it goes cold — and because of the remote fallback, eviction
   no longer makes the title disappear, it just returns it to "visible, plays remotely."
 
-So the tier system we already have **is** steps 5 and 6. The remote fallback (2.1) and the
-play-triggered promotion (2.2) are the only missing links.
+So the tier system already supplies steps 5 and 6. The remote fallback rollout remains missing on
+both boxes (#181); play-triggered promotion is implemented for PH and remains missing for
+California (#182).
 
 ---
 
@@ -296,15 +289,15 @@ play-triggered promotion (2.2) are the only missing links.
 |---|---|---|
 | Full library visible in Plex | mergerfs: local Syncthing branch + RO remote branch | mergerfs: local cache branch + RO remote branch |
 | Remote fallback transport | RO rclone/sshfs mount of master over Tailscale | RO rclone/sshfs mount of master over Tailscale |
-| Play event source | Plex/Tautulli on the CA box (add its identity to the node) | already have `PH_SERVER_NAMES` + webhook payload |
+| Play event source | Plex/Tautulli identity is observed through `CA_EDGE_SERVER_NAMES`; promotion stops before tier action | `PH_SERVER_NAMES` routes the implemented start handler |
 | "Is it local?" check | inventory presence (`listTierNodeFiles`) **+ Syncthing completion**, not keep alone | `getStagedItem(mediaId)` |
 | Promotion mechanism | play-pin → planner keeps → **overlay subtracts pin** → agent converges → Syncthing pulls | `enqueueStageJob(origin:'play')` → `stageCopy` |
 | Persistent ignore overlay | **must subtract active pins** (`extra-ignores/<folderId>.txt`) — else pinned titles never pull | n/a (no Syncthing) |
 | Immediate convergence | republish plan + kick agent + Syncthing scan **now**, not on the 6 h timer | stage worker picks it up on its short interval |
 | TV granularity | needs season-level inventory/ignores (planner is whole-title today) | narrow `resolveStageSource` to season subfolder |
-| Rate limit | own watcher-attributed cap | own watcher-attributed cap (not the command-layer one) |
+| Rate limit | watcher-attributed durable cap required by #182 | durable `edge_promote_log` watcher cap implemented |
 | Eviction / budget | existing `planNode` LRU + node budget | existing `planCacheSpace` + `STAGE_CACHE_MAX_GB` |
-| Already-built? | tiering ✅ / fallback ✗ / play-promote ✗ | staging ✅ / fallback ✗ / play-promote ✗ |
+| Already-built? | tiering ✅ / fallback rollout ✗ / play-promote ✗ | staging ✅ / fallback rollout ✗ / play-promote ✅ (off by default) |
 
 The upshot: **the two boxes converge to one behaviour** and reuse the code each already has for
 steps 5–6. Only the front half (fallback mount + play event → promotion) is new. But note the

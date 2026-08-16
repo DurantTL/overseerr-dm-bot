@@ -316,9 +316,10 @@ branch before unmounting.
 ## Status this runbook leaves in place
 
 ```
-PH merged fallback mount:           runbook ready — infra stand-up (this doc)
-PH play promotion:                  code ready, gated by EDGE_PROMOTE_ON_PLAY (enable per §2.7)
-California merged fallback mount:    runbook ready — infra stand-up (this doc, §3)
-California play promotion:           needs bot work (edge-playback §2.2 / roadmap Phase 3) before enabling
-Season-level TV planning:            Phase 4, untouched
+PH play-triggered promotion:        implemented, off by default
+PH merged fallback mount:           runbook ready; stand-up unverified/pending (#181)
+California tiering:                 implemented
+California play promotion:          not implemented (#182)
+California merged fallback mount:   runbook ready; stand-up unverified/pending (#181)
+Season-level TV planning:           not implemented (#183)
 ```

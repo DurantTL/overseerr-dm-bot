@@ -28,6 +28,7 @@ advanced-infrastructure layer lives in `docs/`:
 - [Episode recovery watchdog](docs/episode-recovery.md)
 - [Tier caching roadmap](docs/tier-caching-roadmap.md)
 - [Production readiness / rollout gate](docs/production-readiness.md)
+- [Project map and current backlog](docs/obsidian/Project%20Home.md)
 
 ## Features
 - Discord onboarding workflow with admin approval buttons.
@@ -153,8 +154,9 @@ See `.env.example` for full values.
   `DOWNLOADS_CHANNEL_ID` (stuck downloads, large download started), `CLEANUP_CHANNEL_ID`
   (finished-watching prompts, janitor/retention reports), `AUDIT_CHANNEL_ID` (linked/unlinked,
   member left, Plex revoked), `DEPLOY_CHANNEL_ID` (post-restart "Bot online" ping — **no
-  fallback**, sends only when set), `PLAYBACK_CHANNEL_ID` (reserved for future Tautulli
-  playback alerts). Onboarding access-request embeds always go to `ADMIN_CHANNEL_ID`.
+  fallback**, sends only when set), `PLAYBACK_CHANNEL_ID` (heavy video-transcode alerts from
+  Tautulli, falling back to `ADMIN_CHANNEL_ID`). Onboarding access-request embeds always go to
+  `ADMIN_CHANNEL_ID`.
 
 ### Optional (compose-only)
 - `MEDIA_HOST_PATH` (host path mounted to `/mnt/raid` in container)
@@ -371,6 +373,8 @@ Checks include Discord, SQLite, Plex, Seerr/Overseerr, Radarr, Radarr-4K, Sonarr
 - Configure the cookie signing secret with `SESSION_SECRET` (optional; derived from your admin credentials if unset). Changing `TUNNEL_DOMAIN` requires enrolling new passkeys for the new hostname.
 
 ## Security Notes
+- Report suspected vulnerabilities privately through [`SECURITY.md`](SECURITY.md); do not disclose
+  them in a public issue or pull request.
 - Raw download tokens are never stored in SQLite.
 - Download requests are rate limited and logged.
 - Download streaming validates path containment under `RAID_PATH`.
@@ -405,12 +409,47 @@ at most 1 ms, and the expressions do not contain nested quantifiers over overlap
 classes. Re-evaluate a warning when its expression changes; do not treat the existing warnings as
 evidence that all future regex findings are harmless.
 
+## Contributor and agent guidance
+
+This project is available under the [`MIT License`](LICENSE), copyright 2026 Durant Logic. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for how changes are proposed and accepted, and report suspected
+vulnerabilities privately through [`SECURITY.md`](SECURITY.md).
+
+Before changing the repository, read [`AGENTS.md`](AGENTS.md), then use
+[`CLAUDE.md`](CLAUDE.md) as the shared source of truth for architecture, commands, validation, and
+security invariants. The live GitHub issue and its numbered packet define the scope for
+issue-driven work.
+
 ## Testing Webhooks / Helpers
 - Seerr test webhook: send sample payload to `/webhook/overseerr`.
 - Plex test webhook: POST multipart `payload` to `/webhook/plex`.
 - Tautulli test webhook: POST JSON to `/webhook/tautulli`.
 - Health test: `curl http://localhost:3000/health`.
 - Smoke test: `./scripts/smoke-test.sh`.
+
+### Automated Codex issue routing
+
+Open review issues carry a `model:luna`, `model:terra`, or `model:sol` label and a
+numbered low-usage execution guide. The repository runner reads the selected packet and chooses
+the packet's model automatically, including mixed issues whose primary label differs from a
+mechanical documentation packet.
+
+```bash
+# Safe default: inspect the route without starting an agent.
+npm run issue:codex -- 185 --packet 1
+
+# Execute exactly that packet in the current clean worktree.
+npm run issue:codex -- 185 --packet 1 --execute
+```
+
+Execution refuses closed issues, missing or ambiguous model labels, human-only packets, unknown
+packet numbers, and dirty worktrees. Use `--allow-dirty` only when preserving existing changes is
+intentional. The runner grants workspace-write access but instructs the agent not to commit, push,
+open a pull request, or mutate GitHub.
+
+Interactive subagent workflows can use the project-scoped `luna_worker`, `terra_worker`, and
+`sol_architect` agents in `.codex/agents/`. Each agent pins the corresponding model and reasoning
+effort, so you can ask Codex to delegate a named packet without changing the composer model.
 
 ## AvistaZ Private-Tracker Fallback & Direct Grab
 For content public indexers can't find, the bot can escalate a title to the AvistaZ private

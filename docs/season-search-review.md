@@ -1,4 +1,29 @@
-# Review: Roadmap, Sonarr Season Search, and the Discord Response
+---
+status: archived
+reviewed: 2026-08-15
+archived: 2026-08-16
+source_commit: 81d383c
+---
+
+# Archived review: roadmap, Sonarr season search, and the Discord response
+
+> **Historical document.** This review captured the season-search state before PRs #162–#170.
+> It is retained as design history and must not drive current priorities. The live backlog is
+> tracked in [the project map](obsidian/Backlog.md).
+
+## Implementation update
+
+All proposed season-search work below has shipped:
+
+- PR #162 records pack-versus-episode fill detail and corrects the partial-season wording.
+- PRs #163–#164 add interactive Sonarr release queries, ranking, candidate counts, and rejection
+  reasons.
+- PR #165 adds nonce-backed, admin-gated force-grab buttons with duplicate and live-queue checks.
+- PR #167 adds durable alert backoff and re-arming for repeated no-grab results.
+- PR #170 adds guarded automatic force-grab behind `SEASON_PACK_FORCE_GRAB`, default off.
+- Issue #134's side-effect-free sweep previews shipped in PR #157.
+
+The analysis that follows is intentionally unchanged so the design rationale remains available.
 
 Two things in one document, because they turned out to be connected: an audit of the tracking
 roadmap against `main`, and a deep dive into the season-pack path — specifically the question
