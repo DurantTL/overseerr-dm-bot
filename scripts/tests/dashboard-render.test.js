@@ -146,6 +146,8 @@ test('dashboard-render: tier install command is complete and shell quoted', () =
   assert.deepStrictEqual(JSON.parse(encoded), folders);
   assert.match(command, /TIER_MOUNT_ROOT='\/mnt'/);
   assert.match(command, /TIER_MOUNT_MARKER='\.mounted'/);
+  assert.match(command, /\| sudo -E env /, 'installer runs as root while preserving its environment');
+  assert.doesNotMatch(command, /\| env /, 'installer must not run as the invoking non-root user');
   assert.doesNotMatch(command, /CHANGEME/);
 });
 
