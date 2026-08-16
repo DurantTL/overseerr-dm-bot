@@ -240,7 +240,12 @@ function describeContentClaim(c) {
 // ctx = { title, year, mediaType, season } (year/season optional).
 function scoreAvistazResult(result, ctx) {
   const parsed = parseReleaseName(result.title);
-  const flags = (result.indexerFlags || []).map(f => String(f).toLowerCase());
+  // Prowlarr returns flag labels as an array, while Sonarr's ReleaseResource exposes the
+  // same field as an integer bitmask. Season-release ranking reuses this scorer, so accept
+  // either representation; scalar values cannot carry a label for the freeleech bonus but
+  // must not make an otherwise valid interactive search fail.
+  const rawFlags = Array.isArray(result.indexerFlags) ? result.indexerFlags : [result.indexerFlags];
+  const flags = rawFlags.filter(f => f != null).map(f => String(f).toLowerCase());
   const freeleech = flags.some(f => f.includes('freeleech'));
   const notes = [];
   let score = 0;

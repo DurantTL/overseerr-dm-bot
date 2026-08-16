@@ -327,7 +327,7 @@ test('season search verification: reports ranked candidates and rejection reason
   const h = seasonVerifier({
     command: { status: 'completed', message: 'Season search completed. 0 reports downloaded.' },
     interactive: [
-      { title: 'Winter.Sonata.S01.1080p.WEB-DL', guid: 'pack-guid', indexerId: 7, size: 20 * 1024 ** 3, seeders: 12, indexer: 'AvistaZ', fullSeason: true, seasonNumber: 1, approved: false, rejections: [{ reason: 'Quality for existing file on disk is of equal or higher preference' }] },
+      { title: 'Winter.Sonata.S01.1080p.WEB-DL', guid: 'pack-guid', indexerId: 7, indexerFlags: 8, size: 20 * 1024 ** 3, seeders: 12, indexer: 'AvistaZ', fullSeason: true, seasonNumber: 1, approved: false, rejections: [{ reason: 'Quality for existing file on disk is of equal or higher preference' }] },
       { title: 'Winter.Sonata.S01.720p.WEB-DL', guid: 'pack-guid-2', indexerId: 8, size: 12 * 1024 ** 3, seeders: 5, indexer: 'Public', fullSeason: true, seasonNumber: 1, approved: false, rejections: [{ reason: 'Custom format score too low' }] },
       { title: 'Winter.Sonata.S01E01.1080p.WEB-DL', size: 2 * 1024 ** 3, seeders: 30, indexer: 'Public', fullSeason: false, approved: true },
     ],

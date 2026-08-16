@@ -92,6 +92,9 @@ test('grab: scoreAvistazResult / rankAvistazResults', () => {
   const freeleech = scoreAvistazResult(mk('Great.Movie.2019.1080p.WEB-DL', { size: 8 * 1024 ** 3, indexerFlags: ['FreeLeech'] }), movieCtx);
   assert.ok(freeleech.confidence > rightYear.confidence, 'freeleech adds points');
   assert.strictEqual(freeleech.freeleech, true, 'freeleech flag detected case-insensitively');
+  const sonarrFlags = scoreAvistazResult(mk('Great.Movie.2019.1080p.WEB-DL', { size: 8 * 1024 ** 3, indexerFlags: 8 }), movieCtx);
+  assert.strictEqual(sonarrFlags.confidence, rightYear.confidence, 'Sonarr integer indexerFlags are accepted without inventing a label bonus');
+  assert.strictEqual(sonarrFlags.freeleech, false, 'an opaque Sonarr bitmask is not mistaken for a freeleech label');
 
   // Same-titled shows: "Full House" is a 1987 US sitcom AND a 2004 Korean drama. The TV branches
   // never looked at the year, so both scored identically and the wrong show could win a plan.
