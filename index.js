@@ -723,6 +723,11 @@ function previewRuntimeValue(values, key) {
   return parsed.value;
 }
 
+// Previewing should be useful without allowing one dashboard click to walk an unbounded remote
+// library or watch list. Individual preview functions may stop sooner when their own result set
+// is complete, but none should perform more than this many per-item lookups.
+const PREVIEW_ITEM_LIMIT = 60;
+
 async function previewStuckDownloads(values = {}) {
   const items = await fetchArrQueues();
   const now = Date.now();
@@ -802,39 +807,46 @@ async function resolveAvistazFit(row, { persist = true } = {}) {
   return verdict;
 }
 
+function escalationPreviewReason(action, row, facts, now, cfg) {
+  const arrName = row.media_type === 'movie' ? 'Radarr' : 'Sonarr';
+  switch (action) {
+    case 'wait':
+      if (now - row.approved_at < cfg.delayMinutes * 60000) {
+        return `waiting on delay until ${new Date(row.approved_at + cfg.delayMinutes * 60000).toISOString()}`;
+      }
+      if (facts.inArr === false && row.arr_missing_alerted) return `already alerted that title is missing from ${arrName}`;
+      if (facts.inArr === false) return `waiting for ${arrName} hand-off grace period`;
+      return 'waiting for the public pipeline';
+    case 'escalate': return 'pre-authorized and eligible for AvistaZ now';
+    case 'alert': return 'ready for administrator approval now';
+    case 'resolve': return 'public pipeline already has the title';
+    case 'expire': return `older than ${cfg.maxAgeDays} days`;
+    case 'alert_missing': return `missing from ${arrName}`;
+    default: throw new Error(`Unmapped escalation preview action: ${action}`);
+  }
+}
+
 async function previewEscalations(values = {}) {
   if (!previewRuntimeValue(values, 'ESCALATION_ENABLED')) return [];
-  const rows = getWatchingEscalations().map(row => ({ ...row }));
-  if (!rows.length) return [];
-  const queue = await fetchArrQueues();
-  const now = Date.now();
   const cfg = {
     delayMinutes: previewRuntimeValue(values, 'ESCALATION_DELAY_MINUTES'),
     maxAgeDays: previewRuntimeValue(values, 'ESCALATION_MAX_AGE_DAYS'),
     arrGraceMinutes: CONFIG.ESCALATION_ARR_GRACE_MINUTES,
   };
+  const rows = getWatchingEscalations().map(row => ({ ...row }));
+  if (!rows.length) return [];
+  const queue = await fetchArrQueues();
+  const now = Date.now();
   const items = [];
   for (const row of rows) {
+    if (items.length >= PREVIEW_ITEM_LIMIT) break;
     const facts = await gatherEscalationFacts(row, queue, { persist: false });
     const age = now - row.approved_at;
     if (!facts.isAvailable && !facts.hasQueueItem && !facts.hasFile && age >= cfg.delayMinutes * 60000) {
       facts.avistazFit = await resolveAvistazFit(row, { persist: false });
     }
     const action = decideEscalationAction(row, facts, now, cfg);
-    let reason = action;
-    if (action === 'wait' && age < cfg.delayMinutes * 60000) {
-      reason = `waiting on delay until ${new Date(row.approved_at + cfg.delayMinutes * 60000).toISOString()}`;
-    } else if (action === 'escalate') {
-      reason = 'pre-authorized and eligible for AvistaZ now';
-    } else if (action === 'alert') {
-      reason = 'ready for administrator approval now';
-    } else if (action === 'resolve') {
-      reason = 'public pipeline already has the title';
-    } else if (action === 'expire') {
-      reason = `older than ${cfg.maxAgeDays} days`;
-    } else if (action === 'alert_missing') {
-      reason = `missing from ${row.media_type === 'movie' ? 'Radarr' : 'Sonarr'}`;
-    }
+    const reason = escalationPreviewReason(action, row, facts, now, cfg);
     items.push({ title: row.title, reason, stage: action });
   }
   return items;
@@ -1403,11 +1415,6 @@ async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
   }
   return { searched: searched.length };
 }
-
-// How far past the per-run cap a preview keeps looking. The sweep stops at the cap; the preview
-// has to go further — "which seasons the cap is holding back" is half the point of previewing —
-// but it must not walk an entire library one /episode call at a time on every button click.
-const PREVIEW_ITEM_LIMIT = 60;
 
 async function previewSeasonPacks(values = {}) {
   if (!previewRuntimeValue(values, 'SEASON_PACK_FIRST') || !CONFIG.SONARR_URL) return [];

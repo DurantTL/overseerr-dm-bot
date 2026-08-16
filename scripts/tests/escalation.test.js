@@ -7,6 +7,7 @@ const assert = require('node:assert');
 const express = require('express');
 const axios = require('axios');
 const { loadSandbox } = require('./extract');
+const runtimeSettings = require('../../src/runtime-settings');
 
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('../../src/escalation');
 const MIN = 60000;
@@ -90,6 +91,127 @@ test('escalation: escalationEligible', () => {
   assert.strictEqual(escalationEligible({ mediaType: 'movie', is4k: false }, { ...eCfg, enabled: false }), false, 'disabled never eligible');
   assert.strictEqual(escalationEligible({ mediaType: 'movie', is4k: false }, { ...eCfg, radarrConfigured: false }), false, 'movie needs radarr');
   assert.strictEqual(escalationEligible({ mediaType: 'tv', is4k: false }, { ...eCfg, sonarrConfigured: false }), false, 'tv needs sonarr');
+});
+
+// ---- Preview (#160) ----
+
+const PREVIEW_NOW = Date.now();
+const previewRow = (id, over = {}) => ({
+  id, media_id: `tmdb:${id}`, title: `Title ${id}`, media_type: 'movie', tmdb_id: id,
+  tvdb_id: null, approved_at: PREVIEW_NOW - HOUR, pre_authorized: 0,
+  arr_missing_alerted: 0, avistaz_fit: null, ...over,
+});
+
+function escalationPreviewBed({
+  rows = [], itemLimit = 60, available = [], movies = {}, series = {}, tvdbIds = {}, origins = {},
+  config = {},
+} = {}) {
+  const calls = { watching: 0, queue: 0, movie: 0, series: 0, tvdb: 0, origin: 0 };
+  const writes = [];
+  const CONFIG = {
+    ESCALATION_ENABLED: true,
+    ESCALATION_DELAY_MINUTES: 45,
+    ESCALATION_MAX_AGE_DAYS: 14,
+    ESCALATION_ARR_GRACE_MINUTES: 10,
+    ...config,
+  };
+  const sandbox = loadSandbox(
+    ['previewEscalations', 'previewRuntimeValue', 'gatherEscalationFacts', 'resolveAvistazFit', 'escalationPreviewReason'],
+    {
+      CONFIG,
+      PREVIEW_ITEM_LIMIT: itemLimit,
+      runtimeSettings,
+      tunable: key => CONFIG[key],
+      decideEscalationAction,
+      getWatchingEscalations: () => { calls.watching++; return rows; },
+      fetchArrQueues: async () => { calls.queue++; return []; },
+      db: {
+        prepare: () => ({ get: mediaId => available.includes(mediaId) ? { found: 1 } : undefined }),
+      },
+      getMovieByTmdbId: async id => { calls.movie++; return Object.prototype.hasOwnProperty.call(movies, id) ? movies[id] : null; },
+      getSeriesByTvdbId: async id => { calls.series++; return Object.prototype.hasOwnProperty.call(series, id) ? series[id] : null; },
+      fetchSeerrTvdbId: async id => { calls.tvdb++; return tvdbIds[id] || null; },
+      fetchSeerrMediaOrigin: async (_type, id) => { calls.origin++; return origins[id] || null; },
+      assessAsianOrigin: meta => ({ verdict: meta?.verdict || 'unknown', reasons: meta?.reasons || [] }),
+      setEscalationTvdbId: (...args) => writes.push(['tvdb', ...args]),
+      setEscalationAvistazFit: (...args) => writes.push(['fit', ...args]),
+      audit: (...args) => writes.push(['audit', ...args]),
+    },
+  );
+  return { sandbox, calls, writes };
+}
+
+test('escalation preview: every verdict has a stable reason and preview lookups never persist', async () => {
+  const rows = [
+    previewRow(1, { title: 'Delivered' }),
+    previewRow(2, { title: 'Waiting', approved_at: PREVIEW_NOW - 20 * MIN }),
+    previewRow(3, { title: 'Auto show', media_type: 'tv', pre_authorized: 1 }),
+    previewRow(4, { title: 'Manual movie' }),
+    previewRow(5, { title: 'Expired', approved_at: PREVIEW_NOW - 15 * 24 * HOUR, avistaz_fit: 'non_asian' }),
+    previewRow(6, { title: 'Lost show', media_type: 'tv', tvdb_id: 606 }),
+  ];
+  const bed = escalationPreviewBed({
+    rows,
+    available: ['tmdb:1'],
+    movies: { 2: { hasFile: false }, 4: { hasFile: false }, 5: { hasFile: false } },
+    series: { 303: { statistics: { episodeFileCount: 0 } }, 606: null },
+    tvdbIds: { 3: 303 },
+    origins: { 3: { verdict: 'asian' }, 4: { verdict: 'non_asian' }, 6: { verdict: 'asian' } },
+  });
+
+  const items = [...await bed.sandbox.previewEscalations({})];
+  const byTitle = new Map(items.map(item => [item.title, item]));
+  assert.deepStrictEqual(items.map(item => item.stage), ['resolve', 'wait', 'escalate', 'alert', 'expire', 'alert_missing']);
+  assert.strictEqual(byTitle.get('Delivered').reason, 'public pipeline already has the title');
+  assert.match(byTitle.get('Waiting').reason, /^waiting on delay until .*Z$/);
+  assert.strictEqual(byTitle.get('Auto show').reason, 'pre-authorized and eligible for AvistaZ now');
+  assert.strictEqual(byTitle.get('Manual movie').reason, 'ready for administrator approval now');
+  assert.strictEqual(byTitle.get('Expired').reason, 'older than 14 days');
+  assert.strictEqual(byTitle.get('Lost show').reason, 'missing from Sonarr');
+  assert.strictEqual(bed.calls.tvdb, 1, 'the TVDB backfill path was exercised');
+  assert.ok(bed.calls.origin > 0, 'the Seerr origin path was exercised');
+  assert.deepStrictEqual(bed.writes, [], 'preview passes persist:false through both lookup helpers');
+  assert.throws(
+    () => bed.sandbox.escalationPreviewReason('new_verdict', rows[0], {}, PREVIEW_NOW, { delayMinutes: 45, maxAgeDays: 14 }),
+    /Unmapped escalation preview action: new_verdict/,
+    'a new decision verdict cannot silently leak its internal name into the UI',
+  );
+});
+
+test('escalation preview: unsaved thresholds drive verdicts and invalid values stop before external calls', async () => {
+  let bed = escalationPreviewBed({
+    rows: [previewRow(20, { title: 'Threshold title', approved_at: PREVIEW_NOW - 30 * MIN })],
+    movies: { 20: { hasFile: false } }, origins: { 20: { verdict: 'non_asian' } },
+  });
+  assert.strictEqual((await bed.sandbox.previewEscalations({}))[0].stage, 'wait', 'saved 45-minute delay still waits');
+  assert.strictEqual((await bed.sandbox.previewEscalations({ ESCALATION_DELAY_MINUTES: '15' }))[0].stage, 'alert', 'unsaved 15-minute delay applies');
+
+  bed = escalationPreviewBed({
+    rows: [previewRow(21, { approved_at: PREVIEW_NOW - 2 * 24 * HOUR, avistaz_fit: 'non_asian' })],
+    movies: { 21: { hasFile: false } },
+  });
+  assert.strictEqual((await bed.sandbox.previewEscalations({}))[0].stage, 'alert', 'saved 14-day age still alerts');
+  assert.strictEqual((await bed.sandbox.previewEscalations({ ESCALATION_MAX_AGE_DAYS: '1' }))[0].stage, 'expire', 'unsaved one-day age expires');
+
+  const invalid = escalationPreviewBed({ rows: [previewRow(22)] });
+  await assert.rejects(
+    () => invalid.sandbox.previewEscalations({ ESCALATION_DELAY_MINUTES: 'nonsense' }),
+    /ESCALATION_DELAY_MINUTES must be a whole number/,
+  );
+  assert.deepStrictEqual(invalid.calls, { watching: 0, queue: 0, movie: 0, series: 0, tvdb: 0, origin: 0 },
+    'invalid settings are rejected before the watch list or external services are touched');
+});
+
+test('escalation preview: disabled costs no external calls and enabled previews are bounded', async () => {
+  let bed = escalationPreviewBed({ rows: [previewRow(30)] });
+  assert.deepStrictEqual([...await bed.sandbox.previewEscalations({ ESCALATION_ENABLED: 'false' })], []);
+  assert.deepStrictEqual(bed.calls, { watching: 0, queue: 0, movie: 0, series: 0, tvdb: 0, origin: 0 });
+
+  const rows = Array.from({ length: 5 }, (_, i) => previewRow(40 + i, { avistaz_fit: 'non_asian' }));
+  const movies = Object.fromEntries(rows.map(row => [row.tmdb_id, { hasFile: false }]));
+  bed = escalationPreviewBed({ rows, movies, itemLimit: 2 });
+  assert.strictEqual((await bed.sandbox.previewEscalations({})).length, 2, 'the shared preview item cap bounds the result');
+  assert.strictEqual(bed.calls.movie, 2, 'rows beyond the cap spend no arr or Seerr lookups');
 });
 
 test('escalation: arr tag/search helpers against a mock Radarr/Sonarr', async () => {
