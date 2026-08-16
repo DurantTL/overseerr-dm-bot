@@ -54,6 +54,12 @@ rate-limit middleware. Most normal application routes still lack app-level HTTP 
 so it is inaccurate to say there are no route tests while equally inaccurate to call the HTTP
 surface comprehensively covered.
 
+`src/health.js` owns health labels, bounded transport diagnostics, path capability checks, and the
+integration checker used by Discord status, the dashboard, and JSON health routes. Plex.tv account
+authentication and friends-list access are separate capabilities; Byparr liveness uses its fast
+OpenAPI route rather than its browser-backed deep health check. `src/request-reconcile.js` owns the
+bounded retry and stage labeling used by request reconciliation.
+
 ## External ownership
 
 The bot coordinates systems rather than replacing them:

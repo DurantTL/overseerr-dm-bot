@@ -2,6 +2,7 @@
 
 const { fmtDuration, fmtSpace } = require('./util');
 const { normalizeTierFolders, serializeTierFolders } = require('./tier-node-setup');
+const { HEALTH_KEYS, healthLabel } = require('./health');
 
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
@@ -390,11 +391,10 @@ function healthClass(v) {
 }
 
 function renderHealthBadges(health) {
-  const keys = ['discord', 'sqlite', 'backup', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'prowlarr', 'byparr', 'raidPath', 'tunnelDomain'];
-  return keys.filter(k => health[k] !== undefined)
+  return HEALTH_KEYS.filter(k => health[k] !== undefined)
     .map(k => {
       const age = k === 'backup' && health.backupLastSuccessfulAt ? ` · ${fmtAgo(health.backupLastSuccessfulAt)}` : '';
-      return `<span class="badge"><span class="dot ${healthClass(health[k])}"></span>${escapeHtml(k)}: ${escapeHtml(String(health[k]))}${escapeHtml(age)}</span>`;
+      return `<span class="badge"><span class="dot ${healthClass(health[k])}"></span>${escapeHtml(healthLabel(k))}: ${escapeHtml(String(health[k]))}${escapeHtml(age)}</span>`;
     })
     .join('');
 }
