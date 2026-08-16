@@ -4,6 +4,7 @@ const { CONFIG } = require('./config');
 const { audit } = require('./db');
 const { pad } = require('./util');
 const { normalizeTitle, parseReleaseName } = require('./grab');
+const { healthErrorDetail } = require('./health');
 
 async function radarrGetFrom(url, apiKey, endpoint) {
   const res = await axios.get(`${url}/api/v3${endpoint}`, { params: { apikey: apiKey }, timeout: 10000 });
@@ -74,9 +75,10 @@ async function fetchArrQueues() {
 }
 
 // Free/total space of every volume the *arrs can see, deduped by path across instances.
-async function fetchDiskSpace() {
+async function fetchDiskSpaceReport() {
   const seen = new Map();
   const sources = arrSources();
+  const errors = {};
   for (const s of sources) {
     try {
       const res = await axios.get(`${s.url}/api/v3/diskspace`, { headers: { 'X-Api-Key': s.key }, timeout: 8000 });
@@ -84,10 +86,12 @@ async function fetchDiskSpace() {
         if (!seen.has(d.path)) seen.set(d.path, d);
       }
     } catch (err) {
+      errors[s.label] = healthErrorDetail(err);
       audit('external_api_error', { provider: s.label, error: err.message, action: 'diskspace' });
     }
   }
   let disks = [...seen.values()].filter(d => (d.totalSpace || 0) > 10 * 1024 ** 3);
+  const reportedCount = disks.length;
   // Optional allowlist: keep only mounts an admin cares about, and relabel a mount with the more
   // specific media folder (the *arr diskspace API reports the `/share` mount, but the real media
   // lives at `/share/media` — show that instead). Unset = report every mount.
@@ -102,7 +106,11 @@ async function fetchDiskSpace() {
         return moreSpecific ? { ...d, displayPath: norm(moreSpecific) } : d;
       });
   }
-  return disks;
+  return { disks, errors, sourceCount: sources.length, reportedCount };
+}
+
+async function fetchDiskSpace() {
+  return (await fetchDiskSpaceReport()).disks;
 }
 
 async function searchMovies(title) {
@@ -610,4 +618,4 @@ function remapPath(hostPath) {
   return hostPath;
 }
 
-module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, interactiveSeasonSearch, forceGrabRelease, getSeriesEpisodes, getSeasonDownloadHistory, listSonarrSeries, resolveSonarrSeriesIdentity, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };
+module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, interactiveSeasonSearch, forceGrabRelease, getSeriesEpisodes, getSeasonDownloadHistory, listSonarrSeries, resolveSonarrSeriesIdentity, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };

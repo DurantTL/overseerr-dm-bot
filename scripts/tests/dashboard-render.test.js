@@ -99,7 +99,8 @@ test('dashboard-render: healthClass', () => {
 
 test('dashboard-render: renderHealthBadges', () => {
   assert.match(renderHealthBadges({ discord: 'ok', plex: 'down' }), /discord: ok/);
-  assert.match(renderHealthBadges({ discord: 'ok', plex: 'down' }), /plex: down/);
+  assert.match(renderHealthBadges({ discord: 'ok', plex: 'down' }), /plex\.tv account: down/);
+  assert.match(renderHealthBadges({ plexFriends: 'down' }), /plex\.tv friends: down/);
   assert.match(renderHealthBadges({ backup: 'ok', backupLastSuccessfulAt: Date.now() - 60000 }), /backup: ok · 1m ago/);
 });
 

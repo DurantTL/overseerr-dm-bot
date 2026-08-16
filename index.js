@@ -35,7 +35,7 @@ const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
-const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
+const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('./src/escalation');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('./src/season-pack');
 const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('./src/season-release');
@@ -64,6 +64,8 @@ const { passkeyRp, createPasskeyService } = require('./src/passkeys');
 const { SqliteRollingWindowStore } = require('./src/rate-limit');
 const { prepareTierNodeInstall } = require('./src/tier-node-setup');
 const { OPERATOR_EMBED_LIMITS, boundOperatorLabel, formatOperatorError } = require('./src/operator-error');
+const { HEALTH_KEYS, healthLabel, statusOverall, createHealthChecker } = require('./src/health');
+const { fetchRequestInventoryWithRetry, requestReconcileStage } = require('./src/request-reconcile');
 
 // Centralized embed palette so every notification shares one consistent look.
 const COLORS = {
@@ -150,7 +152,6 @@ const passkeyService = createPasskeyService({
   store: { listPasskeys, getPasskey, savePasskey, updatePasskeyUse },
   ...PASSKEY_RP,
 });
-
 // A sweep whose cadence and on/off state are runtime-tunable. setInterval is wrong for these:
 // its period is fixed when it is created, so a cadence changed from the dashboard would not take
 // effect until the process restarted, and a sweep whose env value was 0 at boot would never exist
@@ -435,6 +436,18 @@ const client = new Client({
     GatewayIntentBits.MessageContent,
   ],
   partials: [Partials.Channel, Partials.Message],
+});
+const gatherHealth = createHealthChecker({
+  config: CONFIG,
+  client,
+  db,
+  fs,
+  axios,
+  audit,
+  getSetting,
+  backupState,
+  getPlexToken,
+  plexApiGet,
 });
 
 // Seerr request ids the bot already announced in Discord (admin /request creates and gate
@@ -3209,8 +3222,8 @@ async function registerSlashCommands() {
 }
 
 async function sweepRequestStatuses() {
-  const remoteRequests = await fetchSeerrRequests();
-  const result = reconcileRequestStatuses(remoteRequests);
+  const remoteRequests = await requestReconcileStage('Seerr request inventory', () => fetchRequestInventoryWithRetry(fetchSeerrRequests));
+  const result = await requestReconcileStage('local request reconciliation', () => reconcileRequestStatuses(remoteRequests));
   for (const change of result.changed.filter(row => row.to === 'failed')) {
     const request = db.prepare('SELECT * FROM requests WHERE id = ?').get(change.id);
     if (!request?.requested_by_discord_id || !requestProgressDmEnabled(request.requested_by_discord_id) || getSetting(`request_failure_notified:${change.id}`)) continue;
@@ -3227,7 +3240,7 @@ async function sweepRequestStatuses() {
   if (result.changed.length || result.repaired.length) {
     log.info(`Reconciled request tracking: ${result.changed.length} status update(s), ${result.repaired.length} stale pending row(s) removed`);
   }
-  const notifications = await sweepRequestProgressNotifications(remoteRequests);
+  const notifications = await requestReconcileStage('request progress notifications', () => sweepRequestProgressNotifications(remoteRequests));
   return { ...result, notifications };
 }
 
@@ -3310,9 +3323,12 @@ client.once('ready', async () => {
   scheduleTunableSweep({ label: 'Pending-approval sweep', minutesKey: 'PENDING_APPROVAL_CHECK_MINUTES', fn: () => runGuardedSweep('pending-approvals', sweepPendingApprovals) });
   log.ok(`Pending-approval sweep every ${tunable('PENDING_APPROVAL_CHECK_MINUTES')} min (nudge ${tunable('PENDING_APPROVAL_NUDGE_HOURS')}h, requester update ${tunable('PENDING_APPROVAL_REQUESTER_HOURS')}h, expire ${tunable('PENDING_APPROVAL_EXPIRE_DAYS')}d)`);
   if (CONFIG.REQUEST_RECONCILE_MINUTES > 0) {
-    runGuardedSweep('request-reconcile', sweepRequestStatuses).catch(err => log.warn(`Request reconciliation failed: ${err.message}`));
+    // Seerr often starts alongside the bot. Give it one minute to bind its port, then let the
+    // inventory reader retry transient connection failures before recording a failed run.
+    setTimeout(() => runGuardedSweep('request-reconcile', sweepRequestStatuses)
+      .catch(err => log.warn(`Request reconciliation failed: ${err.message}`)), 60000).unref();
     setInterval(() => runGuardedSweep('request-reconcile', sweepRequestStatuses).catch(err => log.warn(`Request reconciliation failed: ${err.message}`)), CONFIG.REQUEST_RECONCILE_MINUTES * 60000).unref();
-    log.ok(`Seerr request reconciliation running every ${CONFIG.REQUEST_RECONCILE_MINUTES} min`);
+    log.ok(`Seerr request reconciliation starts after 1 min and runs every ${CONFIG.REQUEST_RECONCILE_MINUTES} min`);
   }
   // The arr URLs are a static prerequisite (no arrs configured, nothing to watch); the cadence and
   // thresholds are runtime-tunable, so the timer is armed either way and decides per tick.
@@ -4268,7 +4284,6 @@ async function handleStatusCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
   await interaction.deferReply({ ephemeral: true });
   const health = await gatherHealth();
-  const invitedUsers = db.prepare('SELECT COUNT(*) AS c FROM users WHERE invited = 1').get().c;
   const pendingRequests = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get().c;
   const activeLinks = db.prepare('SELECT COUNT(*) AS c FROM download_tokens WHERE revoked = 0 AND expires_at > ?').get(Date.now()).c;
   const warnings = configWarnings();
@@ -4290,6 +4305,7 @@ async function handleStatusCommand(interaction) {
     ['stage-reconcile', stagingConfigured() ? CONFIG.STAGE_RECONCILE_MINUTES : 0],
     ['tunnel', CONFIG.PH_TUNNEL_HEALTH_URL ? CONFIG.PH_TUNNEL_CHECK_MINUTES : 0],
   ];
+  let automationDegraded = false;
   const automationLines = automationConfig.map(([name, minutes]) => {
     if (minutes <= 0) return `⏭️ ${name}: disabled`;
     let run = automationRuns.get(name);
@@ -4300,9 +4316,14 @@ async function handleStatusCommand(interaction) {
       }
     }
     if (!run) return `❔ ${name}: every ${minutes}m · not run since boot`;
-    if (run.status === 'running') return `⏳ ${name}: running since ${discordTimestamp(run.startedAt)}`;
+    if (run.status === 'running') {
+      const runningOverdue = run.startedAt && Date.now() - run.startedAt > Math.max(minutes * 2, minutes + 5) * 60000;
+      if (runningOverdue) automationDegraded = true;
+      return `${runningOverdue ? '⚠️' : '⏳'} ${name}: ${runningOverdue ? 'running unusually long' : 'running'} since ${discordTimestamp(run.startedAt)}`;
+    }
     const detail = run.status === 'failed' ? ` · ${String(run.error).slice(0, 100)}` : '';
     const overdue = run.finishedAt && Date.now() - run.finishedAt > Math.max(minutes * 2, minutes + 5) * 60000;
+    if (run.status === 'failed' || overdue) automationDegraded = true;
     return `${run.status === 'ok' && !overdue ? '✅' : run.status === 'failed' ? '❌' : '⚠️'} ${name}: ${overdue ? 'overdue · last ' : `${run.status} `}${run.finishedAt ? discordTimestamp(run.finishedAt, 'R') : 'unknown'}${detail}`;
   });
 
@@ -4322,19 +4343,19 @@ async function handleStatusCommand(interaction) {
       : `⚠️ Backup directory has not been created yet: \`${CONFIG.BACKUP_DIR}\``);
   }
 
-  const integrationKeys = ['discord', 'sqlite', 'backup', 'plex', 'overseerr', 'radarr', 'radarr4k', 'sonarr', 'prowlarr', 'byparr', 'raidPath', 'tunnelDomain'];
-  const integrationLines = integrationKeys.filter(k => health[k] !== undefined).map(k => {
+  const integrationLines = HEALTH_KEYS.filter(k => health[k] !== undefined).map(k => {
     const age = k === 'backup' && health.backupLastSuccessfulAt ? ` · last success ${discordTimestamp(health.backupLastSuccessfulAt)}` : '';
     const status = k === 'backup' && health[k] === 'disabled' ? 'skipped' : health[k];
-    return `${statusEmoji(status)} ${k}: ${health[k]}${age}`;
+    const error = health.errors?.[k] ? ` · ${String(health.errors[k]).slice(0, 120)}` : '';
+    return `${statusEmoji(status)} ${healthLabel(k)}: ${health[k]}${age}${error}`;
   });
 
   // Categorize DB rows: real Discord-linked, plex_-only synthetic, and @plex.local placeholders
   // (collapsed to a count once acknowledged). Also tally fixable issues so admins know to run /sync-fix.
-  const allUsers = db.prepare('SELECT discord_id, email FROM users').all().filter(u => u.discord_id !== CONFIG.DISCORD_CLIENT_ID);
+  const allUsers = db.prepare('SELECT discord_id, email, invited FROM users').all().filter(u => u.discord_id !== CONFIG.DISCORD_CLIENT_ID);
   const canonCounts = new Map();
   const dbCanon = new Set();
-  let discordLinked = 0; let plexOnly = 0; let placeholderCount = 0; let placeholderAcked = 0;
+  let discordLinked = 0; let discordInvited = 0; let plexOnly = 0; let placeholderCount = 0; let placeholderAcked = 0;
   for (const u of allUsers) {
     const key = canonicalizeEmail(u.email);
     if (key.startsWith('__placeholder__:')) {
@@ -4344,7 +4365,11 @@ async function handleStatusCommand(interaction) {
     }
     dbCanon.add(key);
     canonCounts.set(key, (canonCounts.get(key) || 0) + 1);
-    if (u.discord_id.startsWith('plex_')) plexOnly++; else discordLinked++;
+    if (u.discord_id.startsWith('plex_')) plexOnly++;
+    else {
+      discordLinked++;
+      if (u.invited) discordInvited++;
+    }
   }
   const placeholderUnacked = placeholderCount - placeholderAcked;
   const duplicateCount = Array.from(canonCounts.values()).filter(n => n > 1).length;
@@ -4369,28 +4394,43 @@ async function handleStatusCommand(interaction) {
   }
 
   const usersSummary = [
-    `**Discord-linked:** ${discordLinked} (${invitedUsers} invited)`,
+    `**Discord-linked:** ${discordLinked} (${discordInvited} invited)`,
     `**Plex-only:** ${plexOnly}`,
     `**Placeholder:** ${placeholderCount}${placeholderCount ? ` (${placeholderAcked} acknowledged)` : ''}`,
   ].join('\n');
 
-  const disks = forecastDisks(db, await fetchDiskSpace().catch(() => []), Date.now());
+  const diskReport = await fetchDiskSpaceReport().catch(error => ({ disks: [], errors: { unknown: error.message }, sourceCount: arrSources().length, reportedCount: 0 }));
+  const disks = forecastDisks(db, diskReport.disks, Date.now());
   const storageLines = disks.map(d => {
     const lowFlag = tunable('DISK_SPACE_WARN_GB') > 0 && gb(d.freeSpace || 0) < tunable('DISK_SPACE_WARN_GB') ? ' ⚠️' : '';
     const pctUsed = d.totalSpace ? Math.round(((d.totalSpace - d.freeSpace) / d.totalSpace) * 100) : 0;
     return `\`${d.root}\` — ${fmtSpace(d.freeSpace)} free of ${fmtSpace(d.totalSpace)} (${pctUsed}% used)${lowFlag} · ${forecastLabel(d.forecast)}`;
   });
 
-  const overall = health.overall === 'ok' && !warnings.length && !deploymentChecks.some(line => line.startsWith('❌')) ? 'ok' : 'degraded';
+  let emptyStorage = 'No *arr instances configured';
+  const diskErrors = Object.entries(diskReport.errors || {});
+  if (diskErrors.length) {
+    const diskFailureLine = `⚠️ Disk-space query failed: ${diskErrors.map(([name, error]) => `${name}: ${error}`).join(' · ')}`.slice(0, 1024);
+    emptyStorage = diskFailureLine;
+    if (storageLines.length) storageLines.push(diskFailureLine);
+  } else if (diskReport.reportedCount > 0 && !diskReport.disks.length) {
+    emptyStorage = `No reported disks matched \`DISK_SPACE_PATHS\` (the *arrs returned ${diskReport.reportedCount})`;
+  } else if (diskReport.sourceCount > 0) {
+    emptyStorage = 'The configured *arr instances reported no eligible disks';
+  }
+
+  // Configuration warnings remain prominent below, but informational/risk warnings do not make
+  // a reachable system unhealthy. Actual integration, deployment, and automation failures do.
+  const overall = statusOverall({ health, automationDegraded, diskErrors, deploymentChecks });
   const embed = brandedEmbed(overall === 'ok' ? COLORS.SUCCESS : COLORS.WARN)
     .setTitle('📊 Durant Media Server Status')
     .setDescription(`Overall: **${overall.toUpperCase()}**`)
     .addFields(
-      { name: 'Integrations', value: integrationLines.join('\n') || 'none', inline: false },
+      { name: 'Integrations', value: integrationLines.join('\n').slice(0, 1024) || 'none', inline: false },
       { name: 'Users', value: usersSummary, inline: true },
       { name: 'Pending requests', value: `${pendingRequests}`, inline: true },
       { name: 'Active download links', value: `${activeLinks}`, inline: true },
-      { name: 'Storage', value: storageLines.join('\n') || 'No *arr diskspace data', inline: false },
+      { name: 'Storage', value: (storageLines.join('\n') || emptyStorage).slice(0, 1024), inline: false },
       { name: 'DB ↔ Overseerr', value: reconcileLine, inline: false },
       { name: 'Fixable sync issues', value: fixableLine, inline: false },
       { name: 'Configuration and Compose', value: [...deploymentChecks, ...warnings.map(w => `⚠️ ${w}`)].join('\n').slice(0, 1024) || '✅ No configuration warnings', inline: false },
@@ -7458,42 +7498,6 @@ async function handleButton(interaction) {
     audit('keep_delete_decision_made', { actorDiscordId: interaction.user.id, requestorId, mediaId, decision: 'remind_later' });
     await interaction.update({ content: `⏰ Reminder set for later.`, components: [] });
   }
-}
-
-async function gatherHealth() {
-  const checks = { overall: 'ok', timestamp: new Date().toISOString(), errors: {} };
-  checks.discord = client.isReady() ? 'ok' : 'down';
-  try { db.prepare('SELECT 1').get(); checks.sqlite = 'ok'; } catch (e) { checks.sqlite = 'down'; checks.errors.sqlite = e.message; }
-  const backup = backupState(getSetting('backup_last_success'), CONFIG.BACKUP_INTERVAL_HOURS);
-  checks.backup = backup.status;
-  checks.backupLastSuccessfulAt = backup.lastSuccessfulAt;
-  checks.backupAgeMs = backup.ageMs;
-  checks.raidPath = fs.existsSync(CONFIG.RAID_PATH) ? 'ok' : 'down';
-  checks.tunnelDomain = CONFIG.TUNNEL_DOMAIN ? 'configured' : 'missing';
-
-  async function apiCheck(name, fn) {
-    try {
-      const out = await fn();
-      checks[name] = out === 'skipped' ? 'skipped' : 'ok';
-    } catch (e) {
-      checks[name] = 'down';
-      checks.errors[name] = String(e.response?.data?.message || e.code || e.message || 'unknown error').slice(0, 240);
-      audit('external_api_error', { provider: name, error: e.message });
-    }
-  }
-  await Promise.all([
-    apiCheck('plex', async () => { const t = await getPlexToken(); await plexApiGet('/api/v2/friends', t); }),
-    apiCheck('overseerr', async () => { await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/status`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY }, timeout: 5000 }); }),
-    apiCheck('radarr', async () => { if (!CONFIG.RADARR_URL) return 'skipped'; await axios.get(`${CONFIG.RADARR_URL}/api/v3/system/status`, { params: { apikey: CONFIG.RADARR_API_KEY }, timeout: 5000 }); }),
-    apiCheck('radarr4k', async () => { if (!CONFIG.RADARR_4K_URL) return 'skipped'; await axios.get(`${CONFIG.RADARR_4K_URL}/api/v3/system/status`, { params: { apikey: CONFIG.RADARR_4K_API_KEY }, timeout: 5000 }); }),
-    apiCheck('sonarr', async () => { if (!CONFIG.SONARR_URL) return 'skipped'; await axios.get(`${CONFIG.SONARR_URL}/api/v3/system/status`, { params: { apikey: CONFIG.SONARR_API_KEY }, timeout: 5000 }); }),
-    apiCheck('prowlarr', async () => { if (!CONFIG.PROWLARR_URL) return 'skipped'; await axios.get(`${CONFIG.PROWLARR_URL}/api/v1/system/status`, { headers: { 'X-Api-Key': CONFIG.PROWLARR_API_KEY }, timeout: 5000 }); }),
-    apiCheck('byparr', async () => { if (!CONFIG.BYPARR_URL) return 'skipped'; await axios.get(`${CONFIG.BYPARR_URL}/health`, { timeout: 5000 }); }),
-  ]);
-
-  const failed = Object.entries(checks).filter(([k, v]) => !['overall', 'timestamp', 'tunnelDomain', 'errors', 'backupLastSuccessfulAt', 'backupAgeMs'].includes(k) && !['ok','configured','skipped','disabled'].includes(v));
-  checks.overall = failed.length ? 'degraded' : 'ok';
-  return checks;
 }
 
 function dashboardAuth(req, res, next) {

@@ -120,7 +120,9 @@ See `.env.example` for full values.
 - `RADARR_4K_URL`, `RADARR_4K_API_KEY`
 - `SONARR_URL`, `SONARR_API_KEY`
 - `PROWLARR_URL`, `PROWLARR_API_KEY` — adds Prowlarr to `/status` and dashboard health checks, and powers `/indexers` (per-indexer health with failure/backoff states)
-- `BYPARR_URL` — adds Byparr (`/health` endpoint) to health checks and `/indexers`
+- `BYPARR_URL` — adds Byparr to health checks and `/indexers`; general status uses the fast
+  `/openapi.json` liveness route, while `/indexers` keeps the slower browser-backed `/health`
+  deep check
 - `TAUTULLI_URL`, `TAUTULLI_API_KEY` — enables `/watching` (live Plex sessions) and the heavy-transcode watchdog: every `PLAYBACK_CHECK_MINUTES` (default `5`, `0` disables) sessions that are **video**-transcoding trigger an alert to `PLAYBACK_CHANNEL_ID` (fallback admin channel), at most once per user+media per `TRANSCODE_ALERT_COOLDOWN_MINUTES` (default `60`)
 - `PREMIUMIZE_API_KEY` — enables `/debrid` (fair-use %, cloud storage, active/failed transfers, plus **Clear Stuck/0%** and **Clear Finished** buttons) and the **stuck-transfer watchdog**: every `PREMIUMIZE_CHECK_MINUTES` (default `15`, `0` disables) transfers that are errored or whose progress hasn't moved for `PREMIUMIZE_STUCK_AFTER_MINUTES` (default `45` — catches "0% forever") alert the downloads channel with **Retry / Clear Transfer / Ignore** buttons, at most once per transfer per `PREMIUMIZE_ALERT_COOLDOWN_HOURS` (default `6`)
 - `STUCK_CHECK_MINUTES` (default `10`), `STUCK_AFTER_MINUTES` (default `45`), `STUCK_ALERT_COOLDOWN_HOURS` (default `6`) — stuck-download watchdog: when a queue item makes no progress for `STUCK_AFTER_MINUTES` (e.g. no seeders), the admin channel gets an alert with **Remove & Try Another Release** (blocklist + auto re-search), **Remove Only**, and **Ignore** buttons. TV episodes are consolidated **per season** — a whole season stalling (from either download path, public indexers or the AvistaZ fallback) is one alert listing every stuck episode, and its buttons act on all of them at once, instead of one message per episode. Set `STUCK_CHECK_MINUTES=0` to disable.
@@ -360,7 +362,23 @@ Recommended cron (host):
 - Public JSON: `GET /health`
 - Authenticated JSON: `GET /admin/health`
 
-Checks include Discord, SQLite, Plex, Seerr/Overseerr, Radarr, Radarr-4K, Sonarr, RAID path, and tunnel domain configuration. `/doctor` additionally performs read-only source, rclone remote, cache listing/free-space, tunnel, transfer queue, and tier-agent checks.
+Checks include Discord, SQLite, backups, the Plex.tv account and friends-list capabilities
+separately, Seerr service and request-inventory endpoints separately, Radarr, Radarr-4K, Sonarr,
+Prowlarr, Byparr liveness, readable media mount, writable seedbox staging (including an existing
+`.incoming` directory), and tunnel-domain configuration. The report names capability failures
+precisely: a failed `plex.tv friends` check does not claim the Plex Media Server itself is down.
+
+`/status` marks the overall system degraded for live integration failures, unreadable/writable
+paths, failed or overdue enabled automations, disk-space query failures, and deployment errors.
+Configuration warnings remain visible but do not alone change runtime health. Storage failures and
+`DISK_SPACE_PATHS` filters are reported distinctly instead of both appearing as “no data.”
+`/doctor` additionally performs read-only source, rclone remote, cache listing/free-space, tunnel,
+transfer queue, and tier-agent checks.
+
+Request reconciliation waits one minute after startup before its first run and retries transient
+network failures three times. A stored failure includes the failing stage (for example, `Seerr
+request inventory`) so an unavailable dependency is distinguishable from local reconciliation or
+notification processing.
 
 ## Admin Dashboard
 - Route: `GET /admin` (themed, dark UI).
