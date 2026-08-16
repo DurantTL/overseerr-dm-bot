@@ -352,21 +352,6 @@ function resolveTitleFolder(title, folders, diag = null) {
 
 const folderKey = e => `${e.folderId || e.folder_id || ''}\u0000${e.relPath}`;
 
-// Roll a node's watch history (Tautulli or Plex rows) up to one entry per titleKey — the same
-// title seen under two rating keys (library rescan, movie vs 4k edition) merges conservatively.
-function rollHistoryByTitle(history) {
-  const byKey = new Map();
-  for (const r of history) {
-    const key = titleKey(r.title, r.mediaType);
-    const prev = byKey.get(key);
-    if (prev) {
-      prev.plays += r.plays; prev.distinctUsers = Math.max(prev.distinctUsers, r.distinctUsers);
-      prev.lastPlayed = Math.max(prev.lastPlayed, r.lastPlayed);
-    } else byKey.set(key, { ...r });
-  }
-  return byKey;
-}
-
 // §1.6 Index a node's history for lookup by stable id (tmdb:/tvdb:) with normalized title as a
 // fallback. A row Plex resolved to a GUID goes ONLY into byId — it must match its exact title and
 // never leak demand to a namesake (remake, edition) via title text. A row Plex could NOT resolve

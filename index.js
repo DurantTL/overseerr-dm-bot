@@ -34,7 +34,7 @@ const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
-const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
+const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('./src/escalation');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('./src/season-pack');
 const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('./src/season-release');
@@ -6482,7 +6482,7 @@ async function handleTierCommand(interaction) {
       embed.addFields({ name: '🔎 Details', value: 'Add `node:<name>` to see the per-title change list for one node.', inline: false });
     } else {
       const name = names[0];
-      const detail = renderTierDetailBlock(plans.manifests[name], actions[name], filesByNode[name] || []);
+      const detail = renderTierDetailBlock(plans.manifests[name], actions[name]);
       if (detail) embed.addFields({ name: `🔎 ${name} — per-title changes`, value: detail.slice(0, 1024), inline: false });
     }
   }
@@ -6493,7 +6493,7 @@ async function handleTierCommand(interaction) {
 // physical action (download / remove / still-syncing / already-gone) and lists each with its folder,
 // size, demand score, and current on-disk state. Fully-synced kept titles are summarized, not listed
 // (they're the quiet majority). Capped to fit a Discord field; overflow is counted.
-function renderTierDetailBlock(manifest, actions, files) {
+function renderTierDetailBlock(manifest, actions) {
   if (!actions) return null;
   const scoreOf = e => (typeof e.value === 'number' ? e.value : null);
   const line = (e, tag) => {
