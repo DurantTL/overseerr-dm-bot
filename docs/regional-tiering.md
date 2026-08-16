@@ -77,6 +77,12 @@ shown once). Env knobs: `TIER_CORE_TOP_K`, `TIER_HALF_LIFE_DAYS`, `TIER_WARM_DAY
 `TIER_FRESH_DAYS`, `TIER_REQUEST_GRACE_DAYS`, `TIER_HISTORY_DAYS`, `TIER_SOURCE_ROOT`,
 `TIER_NODES_SEED` (JSON seed applied only when the `tier_nodes` table is empty).
 
+Multi-folder nodes may mount the same Syncthing folders under a different absolute prefix than
+the bot's Arr inventory (`/mnt/raid/Media/Movies` on the bot versus
+`/mnt/media/Media/Movies` on an edge). Exact absolute matches win; otherwise the planner matches
+the longest shared source-relative suffix (`Media/Movies`) to the node folder ID. Any title that
+still cannot be routed blocks apply instead of silently falling into the first folder.
+
 **Apply is blocked on an incomplete inventory.** If any *arr fails to answer while the plan is
 being built, the titles it serves appear in neither `keep` nor `drop` — so their folder's
 `.stignore` renders **empty** and the node re-downloads everything the previous plan was holding

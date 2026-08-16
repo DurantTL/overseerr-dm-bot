@@ -384,6 +384,30 @@ test('tier: resolveTitleFolder — longest-prefix match, folder-relative path, f
   assert.strictEqual(miss.folderId, 'mov', 'unmatched title assigned to first folder (fallback)');
 });
 
+test('tier: resolveTitleFolder maps different host mount prefixes by longest source-relative suffix', () => {
+  const movie = resolveTitleFolder({
+    path: '/mnt/raid/Media/Movies/Alpha (2020)',
+    relPath: 'Media/Movies/Alpha (2020)',
+  }, caliFolders);
+  assert.deepStrictEqual(movie, { folderId: 'mov', relPath: 'Alpha (2020)' });
+
+  const fourk = resolveTitleFolder({
+    path: '/mnt/raid/Media/4k/Beta (2021)',
+    relPath: 'Media/4k/Beta (2021)',
+  }, caliFolders);
+  assert.deepStrictEqual(fourk, { folderId: 'fourk', relPath: 'Beta (2021)' });
+});
+
+test('tier: unresolved multi-folder routes are surfaced as apply-blocking diagnostics', () => {
+  const inventory = [mfTitle('tmdb:1', 'movie', '/unrelated/source/Alpha (2020)')];
+  inventory[0].relPath = 'unrelated/source/Alpha (2020)';
+  const cali = { name: 'cali', enabled: 1, usable_bytes: 20 * GB, headroom_pct: 0, access: 'open', demand_source: 'atime', folders: caliFolders };
+  const result = planTier({ nodes: [homeFull, cali], inventory, now: NOW });
+  assert.strictEqual(result.routingErrors.length, 1);
+  assert.deepStrictEqual(result.routingErrors[0], { node: 'cali', count: 1, examples: ['/unrelated/source/Alpha (2020)'] });
+  assert.ok(result.warnings.some(w => w.includes('could not route 1 title')));
+});
+
 test('tier: R2.1 multi-folder planning — single-pool LRU, per-folder manifest split, per-folder stignore', () => {
   const inv = [
     mfTitle('tmdb:1', 'movie', '/mnt/media/Media/Movies/Alpha (2020)'),

@@ -313,7 +313,7 @@ function nodeFolders(node) {
 // title's absolute (remapped) path against each folder root, longest prefix wins; a legacy
 // single folder (one row, empty id, no explicit root matching) keeps the precomputed
 // source-root-relative relPath untouched — that's the backward-compatible path.
-function resolveTitleFolder(title, folders) {
+function resolveTitleFolder(title, folders, diag = null) {
   const useRoots = folders.length > 1 || folders.some(f => f.folderId);
   if (useRoots && title.path) {
     const abs = String(title.path).replace(/\/+$/, '');
@@ -323,6 +323,29 @@ function resolveTitleFolder(title, folders) {
       if ((abs === f.folderRoot || abs.startsWith(`${f.folderRoot}/`)) && (!best || f.folderRoot.length > best.folderRoot.length)) best = f;
     }
     if (best) return { folderId: best.folderId, relPath: toRelPath(abs, best.folderRoot) };
+
+    // The planner sees paths in the bot container's namespace (for example /mnt/raid/Media/Movies)
+    // while an edge node may mount the same Syncthing folder elsewhere
+    // (/mnt/media/Media/Movies). Match the longest local-root suffix against the source-relative
+    // inventory path so the shared Media/Movies portion routes by folder id without requiring the
+    // two hosts to use identical absolute mount points. Exact absolute matches above always win.
+    const rel = String(title.relPath || '').replace(/^\/+|\/+$/g, '');
+    let suffixBest = null;
+    for (const f of folders) {
+      const parts = String(f.folderRoot || '').split('/').filter(Boolean);
+      for (let i = 0; i < parts.length; i += 1) {
+        const prefix = parts.slice(i).join('/');
+        if ((rel === prefix || rel.startsWith(`${prefix}/`)) && (!suffixBest || prefix.length > suffixBest.prefix.length)) {
+          suffixBest = { folder: f, prefix };
+        }
+      }
+    }
+    if (suffixBest) return { folderId: suffixBest.folder.folderId, relPath: toRelPath(rel, suffixBest.prefix) };
+  }
+  if (diag && useRoots) {
+    diag.folderFallbacks = (diag.folderFallbacks || 0) + 1;
+    if (!diag.folderFallbackExamples) diag.folderFallbackExamples = [];
+    if (diag.folderFallbackExamples.length < 5) diag.folderFallbackExamples.push(String(title.path || title.relPath || title.mediaId));
   }
   return { folderId: folders[0]?.folderId || '', relPath: title.relPath };
 }
@@ -627,6 +650,7 @@ function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, m
   const cfg = { ...TIER_DEFAULTS, ...config };
   const enabled = nodes.filter(n => n.enabled);
   const warnings = [];
+  const routingErrors = [];
 
   // §4.1 master coverage: without an enabled full node NOTHING may be dropped anywhere.
   // Individual titles can also be flagged onFullNode:false by the caller.
@@ -652,11 +676,11 @@ function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, m
     // root; single-folder/legacy nodes keep the source-root-relative relPath. Both the scoring
     // (atime file→title matching) and the manifest split then run over the same resolved set.
     const folders = nodeFolders(node);
+    const diag = {};
     const resolvedInventory = inventoryMarked.map(t => {
-      const { folderId, relPath } = resolveTitleFolder(t, folders);
+      const { folderId, relPath } = resolveTitleFolder(t, folders, diag);
       return { ...t, folderId, relPath };
     });
-    const diag = {};
     const values = computeNodeValues({
       node,
       inventory: resolvedInventory,
@@ -701,6 +725,11 @@ function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, m
     if (!node.full && resolvedInventory.length && values.size === 0) {
       warnings.push(`"${node.name}" has no demand signal (source: ${node.demand_source || 'tautulli'}) — scoring falls back to freshness only and eviction order is otherwise arbitrary. Check ${node.demand_source === 'atime' ? "the agent's inventory report and that the media mount records atime (relatime, not noatime)" : node.demand_source === 'plex' ? "the node's PMS reachability/token and the agent's atime fallback" : 'Tautulli reachability and its API key'}.`);
     }
+    if (folders.length > 1 && diag.folderFallbacks) {
+      const issue = { node: node.name, count: diag.folderFallbacks, examples: diag.folderFallbackExamples || [] };
+      routingErrors.push(issue);
+      warnings.push(`🛑 "${node.name}" could not route ${issue.count} title(s) to a Syncthing folder from their source-relative paths; they fell back to the first folder in this preview. Fix the node folder roots or path remap before applying. Examples: ${issue.examples.join(', ')}`);
+    }
     // §1.6: a Plex node that leaned on title matching for some titles (no stable GUID resolved) may
     // miscredit demand across remakes/editions. Only meaningful when GUID resolution partly worked
     // (some id matches) — otherwise the PMS metadata route is simply unavailable, already implied by
@@ -709,7 +738,7 @@ function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, m
       warnings.push(`"${node.name}" matched ${diag.titleOnlyMatches} title(s) by name only (Plex returned no stable GUID) while ${diag.idMatches} matched by tmdb/tvdb id — remakes, editions, or "(4K)" labels may be miscredited for the name-only ones.`);
     }
   }
-  return { manifests, warnings, coreIds: [...coreIds] };
+  return { manifests, warnings, coreIds: [...coreIds], routingErrors };
 }
 
 // Best-effort per-node history gathering, routed by demand_source:
