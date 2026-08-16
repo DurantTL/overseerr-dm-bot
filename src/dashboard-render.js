@@ -319,22 +319,30 @@ function renderTierNodeSetup(nodes) {
 }
 
 function renderLogin(isError, message, { passkeyEnabled = false } = {}) {
-  const banner = message ? `<div class="error">${escapeHtml(message)}</div>`
-    : (isError ? '<div class="error">Incorrect password. Please try again.</div>' : '');
+  const banner = message ? `<div class="error" id="login-error">${escapeHtml(message)}</div>`
+    : (isError ? '<div class="error" id="login-error">Incorrect password. Please try again.</div>' : '');
   const body = `<div class="login-wrap"><div class="login-card">
     <h1><span class="brand">Durant</span> Media Server</h1>
     <p>Admin dashboard login</p>
     ${banner}
-    ${passkeyEnabled ? '<button class="btn primary passkey" type="button" id="passkey-login">Sign in with a passkey</button><div class="login-divider">password fallback</div>' : ''}
+    ${passkeyEnabled ? '<button class="btn primary passkey" type="button" id="passkey-login" aria-describedby="passkey-support">Sign in with a passkey</button><div class="error" id="passkey-support" role="status" hidden></div><div class="login-divider">password fallback</div>' : ''}
     <form method="post" action="/admin/login">
       <label for="password">Password</label>
       <input type="password" id="password" name="password"${passkeyEnabled ? '' : ' autofocus'} autocomplete="current-password webauthn" required>
       <button class="btn primary" type="submit">Log in</button>
     </form>
-  </div></div>${passkeyEnabled ? `<script src="/admin/webauthn-browser.js"></script><script>
-    document.getElementById('passkey-login').addEventListener('click', async function () {
+  </div></div>${passkeyEnabled ? `<script src="/admin/passkey-client.js"></script><script src="/admin/webauthn-browser.js"></script><script>
+    var passkeyButton = document.getElementById('passkey-login');
+    var supportNote = document.getElementById('passkey-support');
+    var passkeyReady = !!window.PasskeyClient && window.PasskeyClient.preparePasskeyAction(passkeyButton, supportNote, window, ' Password login still works below.');
+    if (!window.PasskeyClient) {
+      passkeyButton.disabled = true;
+      supportNote.hidden = false;
+      supportNote.textContent = 'Passkey support could not be checked. Open this HTTPS dashboard in Safari, Chrome, Edge, or another WebAuthn-capable browser. Password login still works below.';
+    }
+    if (passkeyReady) passkeyButton.addEventListener('click', async function () {
       var button = this;
-      var banner = document.querySelector('.error');
+      var banner = document.getElementById('login-error');
       button.disabled = true;
       try {
         var optionsResponse = await fetch('/admin/passkey/authentication-options', { cache: 'no-store' });
@@ -346,8 +354,8 @@ function renderLogin(isError, message, { passkeyEnabled = false } = {}) {
         if (!verificationResponse.ok || !result.verified) throw new Error(result.error || 'Passkey sign-in failed.');
         location.assign('/admin');
       } catch (error) {
-        if (!banner) { banner = document.createElement('div'); banner.className = 'error'; document.querySelector('.login-card p').after(banner); }
-        banner.textContent = error.message || String(error);
+        if (!banner) { banner = document.createElement('div'); banner.id = 'login-error'; banner.className = 'error'; document.querySelector('.login-card p').after(banner); }
+        banner.textContent = window.PasskeyClient ? window.PasskeyClient.passkeyErrorMessage(error, window) : (error.message || String(error));
         button.disabled = false;
       }
     });
@@ -366,7 +374,7 @@ function renderPasskeyManagement(passkeys, rpID) {
   return `<div class="card" id="passkeys">
     <h2>Passkeys<span class="sub">Platform passkeys for ${escapeHtml(rpID)}. The tunnel hostname is the relying-party ID and cannot be changed without enrolling again.</span></h2>
     ${rows}
-    <div class="setting-foot"><input type="text" id="passkey-label" maxlength="64" placeholder="Device label, e.g. Caleb's iPhone" aria-label="New passkey label"><button class="btn primary" type="button" id="passkey-enroll">Enroll passkey</button><span class="save-note" id="passkey-note"></span></div>
+    <div class="setting-foot"><input type="text" id="passkey-label" maxlength="64" placeholder="Device label, e.g. Caleb's iPhone" aria-label="New passkey label"><button class="btn primary" type="button" id="passkey-enroll" aria-describedby="passkey-note">Enroll passkey</button><span class="save-note" id="passkey-note" role="status" aria-live="polite"></span></div>
   </div>`;
 }
 
