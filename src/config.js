@@ -174,6 +174,12 @@ const CONFIG = (() => {
   // Ceiling on season searches per sweep, so a first run over a large library doesn't fire
   // hundreds of indexer searches at once.
   SEASON_PACK_MAX_PER_RUN: Number.parseInt(process.env.SEASON_PACK_MAX_PER_RUN || '5', 10),
+  // When interactive evidence confirms Sonarr has an approved single-episode result but no
+  // eligible pack, stage EpisodeSearch commands without hiding an unbounded indexer fan-out.
+  SEASON_PACK_EPISODE_FALLBACK: parseBool(process.env.SEASON_PACK_EPISODE_FALLBACK, true),
+  SEASON_PACK_EPISODE_BATCH_SIZE: Number.parseInt(process.env.SEASON_PACK_EPISODE_BATCH_SIZE || '25', 10),
+  SEASON_PACK_EPISODE_MAX_PER_RUN: Number.parseInt(process.env.SEASON_PACK_EPISODE_MAX_PER_RUN || '50', 10),
+  SEASON_PACK_EPISODE_RETRY_MINUTES: Number.parseInt(process.env.SEASON_PACK_EPISODE_RETRY_MINUTES || '180', 10),
   // ---- AvistaZ direct grab: Prowlarr search → seedbox rTorrent → rclone → arr import ----
   // Full rTorrent XML-RPC endpoint incl. credentials, e.g.
   // https://user:pass@server.rapidseedbox.com/plugins/rpc/rpc.php

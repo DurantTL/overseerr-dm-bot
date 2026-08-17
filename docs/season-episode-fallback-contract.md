@@ -317,9 +317,9 @@ presented as fully handled.
 | Preview of any fixture | same plan and counts, zero writes/commands |
 | Preview without cached evidence | `evidence_not_observed`; zero `/release` calls |
 
-## Packet boundary
+## Implementation status
 
-This packet freezes policy and failure behavior only. Packet 2 owns the pure planner and the thin
-Arr `triggerEpisodeSearch(episodeIds)` helper with focused tests. Packet 3 owns SQLite migration,
-guarded execution, preview, runtime settings, command monitoring, audit, and Discord wiring. Packet
-4 updates environment and operator documentation after the verified defaults exist in code.
+Packets 2–4 implement this contract through `src/season-episode-fallback.js`, the thin Arr command
+helper, restart-safe SQLite state, the guarded season-pack sweep, command monitoring, preview,
+runtime settings, Discord/audit reporting, `.env.example`, and the focused operator guide. The
+fixture matrix above is covered by focused tests and the repository gates.

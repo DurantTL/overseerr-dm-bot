@@ -300,6 +300,25 @@ async function triggerSeasonSearch(seriesId, seasonNumber) {
   return res.data;
 }
 
+async function triggerEpisodeSearch(episodeIds) {
+  const ids = [...new Set((episodeIds || []).map(Number))];
+  if (!ids.length || ids.some(id => !Number.isInteger(id) || id <= 0)) {
+    throw new TypeError('At least one positive Sonarr episode id is required for an episode search');
+  }
+  const res = await axios.post(`${CONFIG.SONARR_URL}/api/v3/command`, { name: 'EpisodeSearch', episodeIds: ids },
+    { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 15000 });
+  return res.data;
+}
+
+async function getSonarrCommand(commandId) {
+  const id = Number(commandId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const res = await axios.get(`${CONFIG.SONARR_URL}/api/v3/command/${id}`, {
+    headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 10000,
+  });
+  return res.data || null;
+}
+
 // Sonarr's interactive search returns accepted and rejected candidates. Anchor the query to one
 // missing episode: older Sonarr versions ignore the newer seriesId + seasonNumber release-query
 // parameters and silently return the RSS feed instead. Episode searches still include matching
@@ -624,4 +643,4 @@ function remapPath(hostPath) {
   return hostPath;
 }
 
-module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, interactiveSeasonSearch, forceGrabRelease, getSeriesEpisodes, getSeasonDownloadHistory, listSonarrSeries, resolveSonarrSeriesIdentity, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };
+module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, interactiveSeasonSearch, forceGrabRelease, getSeriesEpisodes, getSeasonDownloadHistory, listSonarrSeries, resolveSonarrSeriesIdentity, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };
