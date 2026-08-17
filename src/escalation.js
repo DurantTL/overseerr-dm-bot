@@ -26,18 +26,22 @@ function decideEscalationAction(row, facts, now, cfg) {
 
 // May this title escalate to AvistaZ with nobody in the loop? AvistaZ carries Asian movies and
 // TV only, so an automatic escalation is worth it exactly when the title obviously belongs
-// there. Two deliberate narrowings on top of the pre-authorization flag:
-//   - Movies never auto-escalate. A film is one shot at one release, hard to tell apart from
-//     its many same-titled cousins, and a wrong automatic grab spends a metered download slot
-//     on a file somebody has to notice and delete. Films always get the button.
-//   - Shows auto-escalate only on an 'asian' verdict from src/asian.js. 'non_asian' (a US
-//     network drama) and 'unknown' (Seerr unreachable, sparse TMDB record) both mean "not
-//     obvious", and not-obvious means ask.
+// there. Movies are safe to include because their automatic path stays inside Radarr: the bot
+// adds the tag and triggers MoviesSearch, leaving release acceptance to Radarr's decision engine.
+// 'non_asian' (a US network drama) and 'unknown' (Seerr unreachable, sparse TMDB record) both
+// mean "not obvious", and not-obvious means ask.
 // avistazFit is the stored verdict: 'asian' | 'non_asian' | 'unknown' (or null when never
 // assessed, which is treated as unknown).
 function autoEscalateAllowed({ media_type: mediaType }, avistazFit) {
-  if (mediaType !== 'tv') return false;
+  if (!['movie', 'tv'].includes(mediaType)) return false;
   return avistazFit === 'asian';
+}
+
+// TV can use the bot's direct AvistaZ/seedbox planner before falling back to Sonarr. Movies stay
+// in Radarr so its quality profile, custom formats, blocklist, and release matching remain the
+// final acceptance boundary. Manual /avistaz searches are a separate, explicit admin workflow.
+function usesDirectGrabEscalation({ media_type: mediaType }) {
+  return mediaType === 'tv';
 }
 
 // Whether a request can be escalated to AvistaZ at all. 4K is excluded by design (the fallback
@@ -50,4 +54,4 @@ function escalationEligible({ mediaType, is4k }, cfg) {
   return false;
 }
 
-module.exports = { decideEscalationAction, escalationEligible, autoEscalateAllowed };
+module.exports = { decideEscalationAction, escalationEligible, autoEscalateAllowed, usesDirectGrabEscalation };
