@@ -54,7 +54,8 @@ const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentSt
 const { runBackup, rotateBackups, backupState, rehearseLatestBackup } = require('./scripts/backup-db');
 const { recordDiskSamples, pruneDiskSamples, forecastDisks, pathIsOnRoot, forecastLabel } = require('./src/capacity');
 const { webhookEventKey } = require('./src/webhook-events');
-const { createWebhookHandlers } = require('./src/routes/webhooks');
+const { createWebhookHandlers, requireWebhookSecret } = require('./src/routes/webhooks');
+const { createTierAgentAuth } = require('./src/routes/tier-agent-auth');
 const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
@@ -7982,11 +7983,12 @@ function startExpressServer() {
   app.set('trust proxy', CONFIG.TRUST_PROXY ? 1 : false);
   const upload = multer({ limits: { fileSize: 5 * 1024 * 1024, files: 5 } });
   // Agent reports can carry a full atime inventory (thousands of file rows), so /agent/ gets a
-  // larger JSON limit than the webhook/dashboard routes.
+  // larger JSON limit than the webhook/dashboard routes. Parsing is applied per-route (after
+  // tierAgentAuth) below instead of here, so an unauthenticated caller can't force a 25 MB parse.
   const agentJsonParser = bodyParser.json({ limit: '25mb' });
   app.use((req, res, next) => {
     if (req.is('multipart/form-data')) return next();
-    if (req.path.startsWith('/agent/')) return agentJsonParser(req, res, next);
+    if (req.path.startsWith('/agent/')) return next();
     bodyParser.json({ limit: '1mb' })(req, res, next);
   });
 
@@ -8028,9 +8030,9 @@ function startExpressServer() {
     handleTautulliWebhook,
     log,
   });
-  app.post('/webhook/overseerr', upload.any(), webhookHandlers.overseerr);
+  app.post('/webhook/overseerr', requireWebhookSecret(() => CONFIG.WEBHOOK_SECRET), upload.any(), webhookHandlers.overseerr);
 
-  app.post('/webhook/plex', upload.any(), webhookHandlers.plex);
+  app.post('/webhook/plex', requireWebhookSecret(() => CONFIG.WEBHOOK_SECRET, { allowQuery: true }), upload.any(), webhookHandlers.plex);
 
   app.post('/webhook/tautulli', webhookHandlers.tautulli);
 
@@ -8126,18 +8128,7 @@ function startExpressServer() {
   });
 
   // ---- Regional tiering: per-node sync-agent API ----
-  // Same auth style as download links: only a hash of each node's bearer token is stored;
-  // compare in constant time. A node's token only unlocks that node's manifest/report.
-  const tierAgentAuth = (req, res, next) => {
-    const node = String(req.params.node || '').toLowerCase();
-    const m = /^Bearer\s+(\S+)$/.exec(String(req.headers.authorization || ''));
-    const storedHash = getTierAgentTokenHash(node);
-    if (!m || !storedHash || !safeEqual(sha256(m[1]), storedHash)) {
-      audit('tier_agent_auth_failed', { node, ip: req.ip || req.socket.remoteAddress || 'unknown' });
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-    next();
-  };
+  const tierAgentAuth = createTierAgentAuth({ getTierAgentTokenHash, sha256, safeEqual, audit });
 
   // One-liner install for a node's sync agent. Both routes sit behind the node's own bearer token:
   // no new public surface, and a token that can already read the manifest can hardly be harmed by
@@ -8161,7 +8152,7 @@ function startExpressServer() {
     res.type('json').send(raw);
   });
 
-  app.post('/agent/report/:node', tierAgentAuth, (req, res) => {
+  app.post('/agent/report/:node', tierAgentAuth, agentJsonParser, (req, res) => {
     const node = String(req.params.node).toLowerCase();
     const body = req.body || {};
     // Heartbeat fast-path: the agent posts { heartbeat:true } on a clean no-op run (plan + inventory
