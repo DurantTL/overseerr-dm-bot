@@ -22,6 +22,13 @@ test('config: automatic season-pack rejection overrides default off', () => {
   assert.strictEqual(CONFIG.SEASON_PACK_FORCE_GRAB, false);
 });
 
+test('config: episode fallback defaults are enabled and explicitly bounded', () => {
+  assert.strictEqual(CONFIG.SEASON_PACK_EPISODE_FALLBACK, true);
+  assert.strictEqual(CONFIG.SEASON_PACK_EPISODE_BATCH_SIZE, 25);
+  assert.strictEqual(CONFIG.SEASON_PACK_EPISODE_MAX_PER_RUN, 50);
+  assert.strictEqual(CONFIG.SEASON_PACK_EPISODE_RETRY_MINUTES, 180);
+});
+
 test('config: every credential accepts _FILE and trims one trailing newline', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'config-secret-'));
   try {

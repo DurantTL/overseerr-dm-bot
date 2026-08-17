@@ -7,6 +7,7 @@ const assert = require('node:assert');
 const { loadSandbox } = require('./extract');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('../../src/season-pack');
 const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('../../src/season-release');
+const { classifyEpisodeFallbackEvidence } = require('../../src/season-episode-fallback');
 const runtimeSettings = require('../../src/runtime-settings');
 const { priorityKey, orderByPriority, isPinned } = require('../../src/priority');
 const { sha256 } = require('../../src/util');
@@ -71,6 +72,8 @@ function build({ maxPerRun = 5, queue = [], searchedAt = {}, seasonPackFirst = t
     describeSeasonSearch,
     listSonarrSeries: async () => SERIES,
     fetchArrQueues: async () => queue,
+    drainSeasonEpisodeFallbacks: async () => ({ submitted: 0, items: [] }),
+    listSeasonEpisodeFallbacks: () => [],
     getSeriesEpisodes: async id => { episodeFetches.push(id); return EPISODES[id] || []; },
     triggerSeasonSearch: async (seriesId, seasonNumber) => { calls.push(`${seriesId}:${seasonNumber}`); return { id: seriesId * 100 + seasonNumber }; },
     monitorSeasonSearch: row => { monitored.push(row); },
@@ -263,6 +266,7 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
   const interactiveCalls = [];
   const offers = [];
   const alertRecords = [];
+  const fallbackRecords = [];
   const clearedAlerts = [];
   const forced = [];
   let queueCalls = 0;
@@ -283,6 +287,9 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
       SEASON_PACK_MIN_SEEDERS: 1,
       SEASON_PACK_MAX_SIZE_GB: 200,
       SEASON_PACK_MIN_CONFIDENCE: 70,
+      SEASON_PACK_EPISODE_FALLBACK: true,
+      SEASON_PACK_EPISODE_BATCH_SIZE: 25,
+      SEASON_PACK_EPISODE_MAX_PER_RUN: 50,
     })[key],
     pollArrCommand: async () => command,
     getSeriesEpisodes: async () => episodes,
@@ -294,10 +301,14 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
       return interactive;
     },
     findActiveContentDuplicate: () => duplicate,
+    getSeasonEpisodeFallback: () => null,
     forceGrabRelease: async identity => { forced.push(identity); if (forceError) throw forceError; },
     rankSeasonReleases,
     chooseSeasonPack,
+    classifyEpisodeFallbackEvidence,
     describeRejections,
+    recordSeasonEpisodeFallbackEvidence: detail => fallbackRecords.push(detail),
+    clearSeasonEpisodeFallback: () => {},
     stashGrabOffer: payload => { offers.push(payload); return 'abc12345'; },
     sha256,
     recordSeasonNoGrab: detail => {
@@ -321,8 +332,21 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
       addFields(...values) { this.fields.push(...values); return this; },
     }),
   });
-  return { sandbox, notices, audits, interactiveCalls, offers, alertRecords, clearedAlerts, forced, get queueCalls() { return queueCalls; } };
+  return { sandbox, notices, audits, interactiveCalls, offers, alertRecords, fallbackRecords, clearedAlerts, forced, get queueCalls() { return queueCalls; } };
 }
+
+test('season search verification: approved Revenge-like episode evidence records bounded fallback work', async () => {
+  const h = seasonVerifier({
+    command: { status: 'completed' },
+    interactive: [{ title: 'Revenge S01E01 720p HDTV X264 DIMENSION', approved: true, downloadAllowed: true, seeders: 108 }],
+  });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Revenge', seasonNumber: 1, missingAtSearch: 3, commandId: 101 });
+  assert.strictEqual(result.outcome, 'no_grab');
+  assert.strictEqual(h.fallbackRecords.length, 1);
+  assert.strictEqual(h.fallbackRecords[0].evidence.status, 'approved_episode');
+  assert.match(h.notices[0].msg.embeds[0].fields.find(field => field.name === 'Episode fallback').value, /capped at 25/);
+  assert.ok(h.audits.some(row => row.action === 'episode_fallback_pending'));
+});
 
 test('season search verification: reports ranked candidates and rejection reasons after no accepted release', async () => {
   const h = seasonVerifier({
@@ -515,8 +539,10 @@ function seasonGrabHarness({ admin = true, offer, duplicate = null, queue = [], 
     isAdminInteraction: () => admin,
     takeGrabOffer: () => { const value = cached; cached = null; return value; },
     restashGrabOffer: (nonce, value) => { restored.push({ nonce, value }); cached = value; },
+    getSeasonEpisodeFallback: () => null,
     findActiveContentDuplicate: () => duplicate,
     fetchArrQueues: async () => queue,
+    clearSeasonEpisodeFallback: () => {},
     forceGrabRelease: async identity => { forced.push(identity); if (forceError) throw forceError; },
     audit: (action, detail) => audits.push({ action, detail }),
     brandedEmbed: embed,
@@ -597,6 +623,8 @@ function previewBed({ values = {}, searchedAt = {}, queue = [], maxPerRun = 5, e
     pad: n => String(n).padStart(2, '0'),
     listSonarrSeries: async () => SERIES,
     fetchArrQueues: async () => queue,
+    drainSeasonEpisodeFallbacks: async () => ({ submitted: 0, items: [] }),
+    listSeasonEpisodeFallbacks: () => [],
     getSeriesEpisodes: async id => {
       if (episodeError && id === episodeError) throw new Error('Sonarr timed out');
       return episodes[id] || [];

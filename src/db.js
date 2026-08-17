@@ -231,6 +231,34 @@ function runMigrations() {
       PRIMARY KEY (series_id, season_number)
     );
 
+    -- Positive interactive evidence and the high-water cursor for bounded episode fallback.
+    -- The unique season key makes scheduler retries and restart reconciliation idempotent.
+    CREATE TABLE IF NOT EXISTS season_episode_fallbacks (
+      series_id INTEGER NOT NULL,
+      season_number INTEGER NOT NULL,
+      series_title TEXT,
+      state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','submitted','cooldown')),
+      evidence_status TEXT NOT NULL,
+      evidence_fingerprint TEXT NOT NULL,
+      evidence_observed_at INTEGER NOT NULL,
+      anchor_episode_id INTEGER,
+      anchor_episode_number INTEGER,
+      last_command_id INTEGER,
+      cursor_episode_number INTEGER,
+      cursor_episode_id INTEGER,
+      submitted_count INTEGER NOT NULL DEFAULT 0,
+      deferred_count INTEGER NOT NULL DEFAULT 0,
+      last_attempt_at INTEGER,
+      next_eligible_at INTEGER,
+      last_outcome TEXT,
+      last_error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (series_id, season_number)
+    );
+    CREATE INDEX IF NOT EXISTS idx_season_episode_fallback_due
+      ON season_episode_fallbacks(state, next_eligible_at, last_attempt_at);
+
     CREATE TABLE IF NOT EXISTS staged_items (
       media_id TEXT PRIMARY KEY,
       media_type TEXT,
@@ -848,6 +876,78 @@ function recordSeasonSearch({ seriesId, seasonNumber, seriesTitle, missing }) {
 const listRecentSeasonSearches = (sinceMs = 7 * 86400000) =>
   db.prepare('SELECT * FROM season_searches WHERE last_searched_at >= ? ORDER BY last_searched_at DESC').all(Date.now() - sinceMs);
 
+function recordSeasonEpisodeFallbackEvidence({ seriesId, seasonNumber, seriesTitle, evidence, now = Date.now() }) {
+  if (evidence?.status !== 'approved_episode' || !evidence.fingerprint) return null;
+  db.prepare(`INSERT INTO season_episode_fallbacks
+      (series_id, season_number, series_title, state, evidence_status, evidence_fingerprint,
+       evidence_observed_at, anchor_episode_id, anchor_episode_number, created_at, updated_at)
+    VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(series_id, season_number) DO UPDATE SET
+      series_title = excluded.series_title,
+      evidence_status = excluded.evidence_status,
+      evidence_fingerprint = excluded.evidence_fingerprint,
+      evidence_observed_at = excluded.evidence_observed_at,
+      anchor_episode_id = excluded.anchor_episode_id,
+      anchor_episode_number = excluded.anchor_episode_number,
+      state = CASE WHEN season_episode_fallbacks.state = 'submitted' THEN 'submitted' ELSE 'pending' END,
+      next_eligible_at = CASE WHEN season_episode_fallbacks.state = 'submitted' THEN season_episode_fallbacks.next_eligible_at ELSE NULL END,
+      updated_at = excluded.updated_at`)
+    .run(seriesId, seasonNumber, seriesTitle || null, evidence.status, evidence.fingerprint,
+      Number(evidence.observedAt) || now, evidence.anchorEpisodeId || null,
+      evidence.anchorEpisodeNumber || null, now, now);
+  return getSeasonEpisodeFallback(seriesId, seasonNumber);
+}
+
+function getSeasonEpisodeFallback(seriesId, seasonNumber) {
+  return db.prepare('SELECT * FROM season_episode_fallbacks WHERE series_id = ? AND season_number = ?').get(seriesId, seasonNumber);
+}
+
+function listSeasonEpisodeFallbacks() {
+  return db.prepare(`SELECT * FROM season_episode_fallbacks
+    ORDER BY COALESCE(next_eligible_at, 0), COALESCE(last_attempt_at, 0), series_id, season_number`).all();
+}
+
+function markSeasonEpisodeFallbackSubmitted({ seriesId, seasonNumber, commandId, cursorEpisodeNumber,
+  cursorEpisodeId, submittedCount, deferredCount, nextEligibleAt, now = Date.now() }) {
+  return db.prepare(`UPDATE season_episode_fallbacks SET
+      state = 'submitted', last_command_id = ?, cursor_episode_number = ?, cursor_episode_id = ?,
+      submitted_count = ?, deferred_count = ?, last_attempt_at = ?, next_eligible_at = ?,
+      last_outcome = 'accepted', last_error = NULL, updated_at = ?
+    WHERE series_id = ? AND season_number = ? AND state != 'submitted'`)
+    .run(commandId || null, cursorEpisodeNumber || null, cursorEpisodeId || null,
+      submittedCount || 0, deferredCount || 0, now, nextEligibleAt || null, now, seriesId, seasonNumber).changes > 0;
+}
+
+function attachSeasonEpisodeFallbackCommand(seriesId, seasonNumber, commandId, now = Date.now()) {
+  return db.prepare(`UPDATE season_episode_fallbacks SET last_command_id = ?, updated_at = ?
+    WHERE series_id = ? AND season_number = ? AND state = 'submitted' AND last_command_id IS NULL`)
+    .run(commandId || null, now, seriesId, seasonNumber).changes > 0;
+}
+
+function finishSeasonEpisodeFallback({ seriesId, seasonNumber, outcome, error = null, nextEligibleAt = null,
+  resetCursor = false, now = Date.now() }) {
+  return db.prepare(`UPDATE season_episode_fallbacks SET
+      state = 'cooldown', last_outcome = ?, last_error = ?, next_eligible_at = ?,
+      last_command_id = NULL,
+      cursor_episode_number = CASE WHEN ? THEN NULL ELSE cursor_episode_number END,
+      cursor_episode_id = CASE WHEN ? THEN NULL ELSE cursor_episode_id END,
+      updated_at = ?
+    WHERE series_id = ? AND season_number = ?`)
+    .run(outcome, error ? String(error).slice(0, 500) : null, nextEligibleAt,
+      resetCursor ? 1 : 0, resetCursor ? 1 : 0, now, seriesId, seasonNumber).changes > 0;
+}
+
+function deferSubmittedSeasonEpisodeFallback(seriesId, seasonNumber, nextEligibleAt, now = Date.now()) {
+  return db.prepare(`UPDATE season_episode_fallbacks SET next_eligible_at = ?, updated_at = ?
+    WHERE series_id = ? AND season_number = ? AND state = 'submitted'`)
+    .run(nextEligibleAt, now, seriesId, seasonNumber).changes > 0;
+}
+
+function clearSeasonEpisodeFallback(seriesId, seasonNumber) {
+  return db.prepare('DELETE FROM season_episode_fallbacks WHERE series_id = ? AND season_number = ?')
+    .run(seriesId, seasonNumber).changes > 0;
+}
+
 function recordStagedItem({ mediaId, mediaType, title, destPath, sizeBytes, discordId }) {
   db.prepare(`INSERT INTO staged_items (media_id, media_type, title, dest_path, size_bytes, staged_by_discord_id, staged_at, last_streamed_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
@@ -1390,3 +1490,13 @@ function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k) {
 
 module.exports = { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;
+Object.assign(module.exports, {
+  recordSeasonEpisodeFallbackEvidence,
+  getSeasonEpisodeFallback,
+  listSeasonEpisodeFallbacks,
+  markSeasonEpisodeFallbackSubmitted,
+  attachSeasonEpisodeFallbackCommand,
+  finishSeasonEpisodeFallback,
+  deferSubmittedSeasonEpisodeFallback,
+  clearSeasonEpisodeFallback,
+});

@@ -32,13 +32,17 @@ const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTy
 const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
+const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeasonEpisodeFallbacks,
+  markSeasonEpisodeFallbackSubmitted, attachSeasonEpisodeFallbackCommand, finishSeasonEpisodeFallback, deferSubmittedSeasonEpisodeFallback,
+  clearSeasonEpisodeFallback } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
-const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
+const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed, usesDirectGrabEscalation } = require('./src/escalation');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('./src/season-pack');
 const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('./src/season-release');
+const { classifyEpisodeFallbackEvidence, planEpisodeFallback, orderPendingFallbacks } = require('./src/season-episode-fallback');
 const { assessAsianOrigin, describeAvistazFit } = require('./src/asian');
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
@@ -1053,6 +1057,8 @@ function queuedSeasons(queue, seriesId) {
 // overriding Sonarr. Interactive-search results can be minutes old by the time verification runs,
 // and a different pipeline may have started covering the season in the meantime.
 async function seasonPackForceBlocker({ seriesId, seasonNumber, releaseTitle }) {
+  const fallback = getSeasonEpisodeFallback(seriesId, seasonNumber);
+  if (fallback?.state === 'submitted') return { reason: 'episode_fallback', fallback };
   const duplicate = findActiveContentDuplicate({ releaseTitle, mediaType: 'tv', mediaId: null });
   if (duplicate) return { reason: 'active_grab', duplicate };
   const queue = await fetchArrQueues();
@@ -1076,6 +1082,7 @@ async function autoForceSeasonPack({ seriesId, seriesTitle, seasonNumber, candid
     });
     return { status: 'covered', reason: blocked.reason, blocked };
   }
+  clearSeasonEpisodeFallback(seriesId, seasonNumber);
   try {
     await forceGrabRelease({ guid: candidate.guid, indexerId: candidate.indexerId });
   } catch (err) {
@@ -1161,6 +1168,7 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
   let seasonGrabCandidates = null;
   let seasonGrabOffer = null;
   let autoForceResult = null;
+  let episodeFallbackEvidence = null;
   if (['no_grab', 'partial'].includes(outcome) && tunable('SEASON_PACK_INTERACTIVE')) {
     try {
       const anchorEpisode = missingEpisodes.find(episode => Number.isInteger(Number(episode.id)) && Number(episode.id) > 0);
@@ -1185,6 +1193,26 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
         maxSizeGb: tunable('SEASON_PACK_MAX_SIZE_GB'),
         minConfidence: tunable('SEASON_PACK_MIN_CONFIDENCE'),
       });
+      episodeFallbackEvidence = classifyEpisodeFallbackEvidence({
+        ranked,
+        packChoice: choice,
+        anchorEpisode,
+      });
+      if (episodeFallbackEvidence.status === 'approved_episode') {
+        recordSeasonEpisodeFallbackEvidence({
+          seriesId, seasonNumber, seriesTitle, evidence: episodeFallbackEvidence,
+        });
+        audit('episode_fallback_pending', {
+          seriesId, title: seriesTitle, season: seasonNumber,
+          anchorEpisodeId: episodeFallbackEvidence.anchorEpisodeId,
+          anchorEpisodeNumber: episodeFallbackEvidence.anchorEpisodeNumber,
+          evidenceFingerprint: episodeFallbackEvidence.fingerprint,
+          evidenceObservedAt: episodeFallbackEvidence.observedAt,
+          remaining,
+        });
+      } else if (episodeFallbackEvidence.status === 'eligible_pack') {
+        clearSeasonEpisodeFallback(seriesId, seasonNumber);
+      }
       const eligible = [choice.pick, ...choice.runnersUp].filter(Boolean);
       if (eligible.length) {
         seasonGrabCandidates = eligible.map(release => ({
@@ -1213,7 +1241,9 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
           title = `ℹ️ Season Already Covered — ${label}`;
           description = autoForceResult.reason === 'active_grab'
             ? 'Automatic force-grab was skipped because another active grab job already covers this season.'
-            : 'Automatic force-grab was skipped because Sonarr now has this season in its live queue.';
+            : autoForceResult.reason === 'episode_fallback'
+              ? 'Automatic force-grab was skipped because a bounded episode fallback command already owns this season.'
+              : 'Automatic force-grab was skipped because Sonarr now has this season in its live queue.';
           color = COLORS.INFO;
           nextStep = 'The existing download remains responsible for filling the season.';
           seasonGrabCandidates = null;
@@ -1222,6 +1252,8 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
         }
       } else nextStep = eligible.length
         ? 'An admin can force one eligible pack below. This bypasses Sonarr’s rejection; review the reason first.'
+        : episodeFallbackEvidence.status === 'approved_episode' && tunable('SEASON_PACK_EPISODE_FALLBACK')
+          ? `Approved episode evidence recorded. The guarded sweep will search up to ${tunable('SEASON_PACK_EPISODE_BATCH_SIZE')} live missing episodes in the next bounded batch.`
         : ranked.length
           ? `No full-season candidate passed the force-grab safety limits: ${choice.why}`
           : 'No interactive releases were returned. Check Sonarr indexers or retry after the cooldown.';
@@ -1260,6 +1292,15 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
   } else if (interactiveError) {
     fields.push({ name: 'Interactive search', value: `Unavailable: ${interactiveError}`.slice(0, 1024), inline: false });
   }
+  if (episodeFallbackEvidence?.status === 'approved_episode') {
+    fields.push({
+      name: 'Episode fallback',
+      value: tunable('SEASON_PACK_EPISODE_FALLBACK')
+        ? `Pending · capped at ${tunable('SEASON_PACK_EPISODE_BATCH_SIZE')} episode searches for this season and ${tunable('SEASON_PACK_EPISODE_MAX_PER_RUN')} per guarded run.`
+        : 'Eligible evidence recorded, but the fallback is disabled.',
+      inline: false,
+    });
+  }
   if (autoForceResult) {
     const autoText = autoForceResult.status === 'grabbed' ? 'Best eligible pack sent to Sonarr.'
       : autoForceResult.status === 'covered' ? 'Skipped because another download already covers the season.'
@@ -1272,6 +1313,7 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
     const fingerprint = sha256(JSON.stringify({
       missing: remaining,
       releases: interactiveFingerprint ?? (interactiveError ? 'unavailable' : 'disabled'),
+      episodeFallback: episodeFallbackEvidence?.status || null,
     }));
     alertDecision = recordSeasonNoGrab({
       seriesId, seasonNumber, seriesTitle, fingerprint, missingCount: remaining,
@@ -1285,6 +1327,7 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
     }
   } else {
     clearSeasonAlertState(seriesId, seasonNumber);
+    if (outcome !== 'partial') clearSeasonEpisodeFallback(seriesId, seasonNumber);
   }
   // Do not create an offer that nobody can see during a backed-off alert. A changed candidate
   // list changes the fingerprint, re-arms the alert, and reaches this block normally.
@@ -1298,7 +1341,7 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
   }
   if (nextStep) fields.push({ name: 'Next step', value: nextStep.slice(0, 1024), inline: false });
 
-  audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, fillMode: fill.mode, releaseCount: fill.releaseCount, packReleases: fill.packReleases, episodeReleases: fill.episodeReleases, interactiveSearched: interactive !== null || interactiveError !== null, interactiveReleaseCount: interactive?.releaseCount ?? null, interactivePackCount: interactive?.packCount ?? null, interactiveError, autoForceStatus: autoForceResult?.status ?? null, autoForceReason: autoForceResult?.reason ?? null, autoForceError: autoForceResult?.error ?? null, alertPosted: shouldNotify, noGrabAttempts: alertDecision?.attemptCount ?? null, alertStoodDown: alertDecision?.stoodDown ?? false, message: commandText.slice(0, 1000) || null });
+  audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, fillMode: fill.mode, releaseCount: fill.releaseCount, packReleases: fill.packReleases, episodeReleases: fill.episodeReleases, interactiveSearched: interactive !== null || interactiveError !== null, interactiveReleaseCount: interactive?.releaseCount ?? null, interactivePackCount: interactive?.packCount ?? null, interactiveError, episodeFallbackEvidence: episodeFallbackEvidence?.status ?? null, episodeFallbackFingerprint: episodeFallbackEvidence?.fingerprint ?? null, autoForceStatus: autoForceResult?.status ?? null, autoForceReason: autoForceResult?.reason ?? null, autoForceError: autoForceResult?.error ?? null, alertPosted: shouldNotify, noGrabAttempts: alertDecision?.attemptCount ?? null, alertStoodDown: alertDecision?.stoodDown ?? false, message: commandText.slice(0, 1000) || null });
   const message = { embeds: [brandedEmbed(color)
     .setTitle(title.slice(0, 256))
     .setDescription(description.slice(0, 4000))
@@ -1346,6 +1389,14 @@ async function handleSeasonPackGrab(interaction, nonce, candidateIndex) {
       .setDescription('Sonarr now has a matching queue item, so the rejected pack was not forced.')], components: [] });
   }
 
+  if (blocked?.reason === 'episode_fallback') {
+    audit('season_pack_force_refused', { actorDiscordId: interaction.user.id, seriesId: offer.seriesId, title: offer.seriesTitle, season: offer.seasonNumber, reason: 'episode_fallback', releaseTitle: candidate.title });
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle(`ℹ️ Episode Fallback Already Submitted — ${offer.seriesTitle} S${pad(offer.seasonNumber)}`.slice(0, 256))
+      .setDescription('A bounded Sonarr episode command already owns this season, so the pack was not forced alongside it.')], components: [] });
+  }
+
+  clearSeasonEpisodeFallback(offer.seriesId, offer.seasonNumber);
   try {
     await forceGrabRelease({ guid: candidate.guid, indexerId: candidate.indexerId });
   } catch (err) {
@@ -1368,11 +1419,260 @@ function monitorSeasonSearch(args) {
   });
 }
 
+function episodeFallbackRetryMs() {
+  return tunable('SEASON_PACK_EPISODE_RETRY_MINUTES') * 60000;
+}
+
+function episodeFallbackEvidenceFromRow(row) {
+  return row ? {
+    status: row.evidence_status,
+    fingerprint: row.evidence_fingerprint,
+    observedAt: row.evidence_observed_at,
+    anchorEpisodeId: row.anchor_episode_id,
+    anchorEpisodeNumber: row.anchor_episode_number,
+  } : null;
+}
+
+function episodeFallbackPendingState(row) {
+  return row ? {
+    cursorEpisodeNumber: row.cursor_episode_number,
+    cursorEpisodeId: row.cursor_episode_id,
+    nextEligibleAt: row.next_eligible_at,
+  } : null;
+}
+
+function episodeFallbackCoverage({ series, seasonNumber, episodes, queue }) {
+  const seasonQueue = (queue || []).filter(item => item.source.kind === 'tv'
+    && Number(item.seriesId) === Number(series.id)
+    && Number(item.seasonNumber) === Number(seasonNumber));
+  const episodeByNumber = new Map((episodes || []).filter(ep => Number(ep.seasonNumber) === Number(seasonNumber))
+    .map(ep => [Number(ep.episodeNumber), Number(ep.id)]));
+  const queuedEpisodeIds = new Set();
+  let seasonQueued = false;
+  for (const item of seasonQueue) {
+    const numbers = new Set([item.episodeNumber, ...(item.episodeNumbers || [])].map(Number).filter(Number.isFinite));
+    if (item.fullSeason || numbers.size > 1 || !numbers.size) seasonQueued = true;
+    for (const number of numbers) {
+      const id = episodeByNumber.get(number);
+      if (id) queuedEpisodeIds.add(id);
+    }
+  }
+
+  const claimedEpisodeIds = new Set();
+  let seasonClaimed = false;
+  const wantedSeries = normalizeTitle(series.title);
+  for (const job of listActiveGrabJobs().filter(row => row.media_type === 'tv')) {
+    const claim = releaseContentClaim(job.release_title);
+    if (!claim || claim.series !== wantedSeries) continue;
+    if (claim.whole || claim.seasons.has(Number(seasonNumber))) seasonClaimed = true;
+    for (const key of claim.episodes) {
+      const [season, episode] = key.split('.').map(Number);
+      if (season !== Number(seasonNumber)) continue;
+      const id = episodeByNumber.get(episode);
+      if (id) claimedEpisodeIds.add(id);
+    }
+  }
+  return { queuedEpisodeIds, claimedEpisodeIds, seasonQueued, seasonClaimed };
+}
+
+async function finishEpisodeFallbackCommand(row, command) {
+  const status = command?.status || 'unknown';
+  const now = Date.now();
+  const episodes = await getSeriesEpisodes(row.series_id);
+  const queue = await fetchArrQueues();
+  const remaining = episodes.filter(ep => Number(ep.seasonNumber) === Number(row.season_number)
+    && ep.monitored && !ep.hasFile && Date.parse(ep.airDateUtc || ep.airDate || '') <= now).length;
+  const queued = queue.filter(item => item.source.kind === 'tv' && Number(item.seriesId) === Number(row.series_id)
+    && Number(item.seasonNumber) === Number(row.season_number)).length;
+  let outcome;
+  let color = COLORS.INFO;
+  if (!['completed', 'failed', 'aborted'].includes(status)) outcome = 'timed_out';
+  else if (status !== 'completed') { outcome = 'failed'; color = COLORS.DANGER; }
+  else if (!remaining) outcome = 'filled';
+  else if (queued) outcome = 'grabbed';
+  else outcome = 'no_episode_release';
+
+  let nextEligibleAt = null;
+  if (outcome === 'filled') clearSeasonEpisodeFallback(row.series_id, row.season_number);
+  else {
+    const completedCycle = Number(row.deferred_count) === 0;
+    nextEligibleAt = now + (completedCycle ? CONFIG.SEASON_PACK_COOLDOWN_HOURS * 3600000 : episodeFallbackRetryMs());
+    finishSeasonEpisodeFallback({
+      seriesId: row.series_id,
+      seasonNumber: row.season_number,
+      outcome,
+      error: outcome === 'failed' ? [command?.message, command?.exception].filter(Boolean).join(' ').slice(0, 500) : null,
+      nextEligibleAt,
+      resetCursor: completedCycle,
+      now,
+    });
+  }
+  if (['filled', 'grabbed'].includes(outcome)) clearSeasonAlertState(row.series_id, row.season_number);
+  let shouldNotify = true;
+  let alertDecision = null;
+  if (outcome === 'no_episode_release') {
+    alertDecision = recordSeasonNoGrab({
+      seriesId: row.series_id,
+      seasonNumber: row.season_number,
+      seriesTitle: row.series_title,
+      fingerprint: sha256(JSON.stringify({ phase: 'episode_fallback', status, remaining, queued,
+        submitted: row.submitted_count, deferred: row.deferred_count, cursor: row.cursor_episode_number })),
+      missingCount: remaining,
+      releaseCount: 0,
+    });
+    shouldNotify = alertDecision.shouldAlert;
+  }
+  const auditAction = outcome === 'filled' ? 'episode_fallback_complete'
+    : outcome === 'grabbed' ? 'episode_fallback_partial'
+      : outcome === 'no_episode_release' ? 'episode_fallback_no_grab'
+        : outcome === 'timed_out' ? 'episode_fallback_timed_out'
+          : 'episode_fallback_failed';
+  audit(auditAction, {
+    seriesId: row.series_id, title: row.series_title, season: row.season_number,
+    commandId: row.last_command_id, status, outcome, submitted: row.submitted_count,
+    deferred: row.deferred_count, remaining, queued, nextRetryAt: nextEligibleAt,
+    alertPosted: shouldNotify, noGrabAttempts: alertDecision?.attemptCount ?? null,
+  });
+  if (shouldNotify) notifyChannel('downloads', { embeds: [brandedEmbed(color)
+    .setTitle(`${outcome === 'failed' ? '❌' : outcome === 'filled' ? '✅' : '🔎'} Episode Fallback ${outcome === 'filled' ? 'Filled Season' : outcome === 'grabbed' ? 'Grabbed Releases' : outcome === 'failed' ? 'Failed' : 'Completed'} — ${row.series_title} S${pad(row.season_number)}`.slice(0, 256))
+    .setDescription(`Sonarr command \`${status}\`. Submitted **${row.submitted_count}**, deferred **${row.deferred_count}**, live missing **${remaining}**, in queue **${queued}**.${outcome === 'filled' ? '' : ` Next retry: ${new Date(nextEligibleAt).toISOString()}.`}`.slice(0, 4000))] });
+  return { outcome, status, remaining, queued };
+}
+
+function monitorEpisodeFallback(row) {
+  pollArrCommand({ url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY }, row.last_command_id, 10 * 60000)
+    .then(command => finishEpisodeFallbackCommand(row, command))
+    .catch(err => {
+      finishSeasonEpisodeFallback({
+        seriesId: row.series_id, seasonNumber: row.season_number, outcome: 'verification_failed',
+        error: err.message, nextEligibleAt: Date.now() + episodeFallbackRetryMs(),
+      });
+      audit('episode_fallback_failed', { seriesId: row.series_id, title: row.series_title, season: row.season_number, commandId: row.last_command_id, outcome: 'verification_failed', error: err.message });
+    });
+}
+
+async function drainSeasonEpisodeFallbacks({ seriesList, queue, preview = false, values = {} } = {}) {
+  const setting = key => preview ? previewRuntimeValue(values, key) : tunable(key);
+  const enabled = setting('SEASON_PACK_EPISODE_FALLBACK');
+  const perSeason = setting('SEASON_PACK_EPISODE_BATCH_SIZE');
+  let remainingGlobal = setting('SEASON_PACK_EPISODE_MAX_PER_RUN');
+  const now = Date.now();
+  const rows = orderPendingFallbacks(listSeasonEpisodeFallbacks());
+  const items = [];
+  for (const row of rows) {
+    if (row.state === 'submitted') {
+      if (preview) {
+        items.push({ title: `${row.series_title} S${pad(row.season_number)}`, reason: `episode fallback command ${row.last_command_id || 'unknown'} is still submitted`, stage: 'episode fallback monitoring' });
+        continue;
+      }
+      if (Number(row.next_eligible_at) > now) continue;
+      let command = null;
+      try { command = await getSonarrCommand(row.last_command_id); } catch (_err) {}
+      if (command && ['completed', 'failed', 'aborted'].includes(command.status)) {
+        await finishEpisodeFallbackCommand(row, command);
+      } else if (command) {
+        deferSubmittedSeasonEpisodeFallback(row.series_id, row.season_number, now + episodeFallbackRetryMs());
+      } else {
+        finishSeasonEpisodeFallback({
+          seriesId: row.series_id, seasonNumber: row.season_number, outcome: 'command_unknown',
+          nextEligibleAt: now + episodeFallbackRetryMs(),
+        });
+        audit('episode_fallback_timed_out', { seriesId: row.series_id, title: row.series_title, season: row.season_number, commandId: row.last_command_id, outcome: 'command_unknown' });
+      }
+      continue;
+    }
+
+    const series = (seriesList || []).find(item => Number(item.id) === Number(row.series_id));
+    if (!series || !series.monitored) {
+      if (!preview) clearSeasonEpisodeFallback(row.series_id, row.season_number);
+      continue;
+    }
+    let episodes;
+    try { episodes = await getSeriesEpisodes(row.series_id); } catch (err) {
+      items.push({ title: `${row.series_title} S${pad(row.season_number)}`, reason: `episodes could not be read: ${err.message}`, stage: 'unknown' });
+      continue;
+    }
+    const coverage = episodeFallbackCoverage({ series, seasonNumber: row.season_number, episodes, queue });
+    let decision = planEpisodeFallback({
+      seasonNumber: row.season_number,
+      episodes,
+      evidence: episodeFallbackEvidenceFromRow(row),
+      ...coverage,
+      pendingState: episodeFallbackPendingState(row),
+      enabled,
+      now,
+      budget: { perSeason, remainingGlobal },
+    });
+    items.push({
+      title: `${row.series_title} S${pad(row.season_number)}`,
+      reason: `${decision.reason}; ${decision.submitted} submit, ${decision.deferred} deferred; evidence observed ${new Date(row.evidence_observed_at).toISOString()}`,
+      stage: decision.action === 'submit' ? (preview ? 'episode fallback search' : 'episode fallback submitted') : `episode fallback ${decision.action}`,
+    });
+    if (preview) {
+      if (decision.action === 'submit') remainingGlobal -= decision.submitted;
+      continue;
+    }
+    if (decision.reason === 'season_complete') {
+      clearSeasonEpisodeFallback(row.series_id, row.season_number);
+      continue;
+    }
+    if (decision.reason === 'cycle_complete') {
+      finishSeasonEpisodeFallback({ seriesId: row.series_id, seasonNumber: row.season_number, outcome: 'cycle_complete', nextEligibleAt: now + CONFIG.SEASON_PACK_COOLDOWN_HOURS * 3600000, resetCursor: true });
+      continue;
+    }
+    if (decision.action !== 'submit') continue;
+
+    // Final live race check. A pack/manual grab or import may have landed since the first read.
+    const liveRow = getSeasonEpisodeFallback(row.series_id, row.season_number);
+    if (!liveRow || liveRow.state === 'submitted') continue;
+    const [liveEpisodes, liveQueue] = await Promise.all([getSeriesEpisodes(row.series_id), fetchArrQueues()]);
+    decision = planEpisodeFallback({
+      seasonNumber: row.season_number,
+      episodes: liveEpisodes,
+      evidence: episodeFallbackEvidenceFromRow(liveRow),
+      ...episodeFallbackCoverage({ series, seasonNumber: row.season_number, episodes: liveEpisodes, queue: liveQueue }),
+      pendingState: episodeFallbackPendingState(liveRow),
+      enabled,
+      now: Date.now(),
+      budget: { perSeason, remainingGlobal },
+    });
+    if (decision.action !== 'submit') continue;
+    const nextEligibleAt = Date.now() + episodeFallbackRetryMs();
+    const claimed = markSeasonEpisodeFallbackSubmitted({
+      seriesId: row.series_id, seasonNumber: row.season_number, commandId: null,
+      cursorEpisodeNumber: decision.cursorEpisodeNumber, cursorEpisodeId: decision.cursorEpisodeId,
+      submittedCount: decision.submitted, deferredCount: decision.deferred, nextEligibleAt,
+    });
+    if (!claimed) continue;
+    let command;
+    try { command = await triggerEpisodeSearch(decision.episodeIds); } catch (err) {
+      finishSeasonEpisodeFallback({ seriesId: row.series_id, seasonNumber: row.season_number, outcome: 'command_failed', error: err.message, nextEligibleAt: Date.now() + episodeFallbackRetryMs() });
+      audit('episode_fallback_failed', { seriesId: row.series_id, title: row.series_title, season: row.season_number, submitted: decision.submitted, deferred: decision.deferred, outcome: 'command_failed', error: err.message });
+      continue;
+    }
+    attachSeasonEpisodeFallbackCommand(row.series_id, row.season_number, command?.id);
+    const submittedRow = getSeasonEpisodeFallback(row.series_id, row.season_number);
+    remainingGlobal -= decision.submitted;
+    audit('episode_fallback_submitted', { seriesId: row.series_id, title: row.series_title, season: row.season_number, commandId: command?.id || null, submitted: decision.submitted, deferred: decision.deferred, cursorEpisodeNumber: decision.cursorEpisodeNumber, evidenceFingerprint: liveRow.evidence_fingerprint, nextRetryAt: nextEligibleAt });
+    notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle(`🔎 Episode Fallback Submitted — ${row.series_title} S${pad(row.season_number)}`.slice(0, 256))
+      .setDescription(`Sonarr accepted a bounded search for **${decision.submitted}** live missing episode${decision.submitted === 1 ? '' : 's'}; **${decision.deferred}** remain deferred. Command: \`${command?.id || 'unknown'}\`. Next eligible retry: ${new Date(nextEligibleAt).toISOString()}.`.slice(0, 4000))] });
+    if (submittedRow) monitorEpisodeFallback(submittedRow);
+  }
+  return { submitted: setting('SEASON_PACK_EPISODE_MAX_PER_RUN') - remainingGlobal, items };
+}
+
 async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
   if (!tunable('SEASON_PACK_FIRST') || !CONFIG.SONARR_URL) return;
   const cfg = seasonPackConfig();
   const now = Date.now();
   const [seriesList, queue] = await Promise.all([listSonarrSeries(), fetchArrQueues()]);
+  const fallback = await drainSeasonEpisodeFallbacks({ seriesList, queue });
+  const fallbackSeasons = new Map();
+  for (const row of listSeasonEpisodeFallbacks()) {
+    if (!fallbackSeasons.has(Number(row.series_id))) fallbackSeasons.set(Number(row.series_id), []);
+    fallbackSeasons.get(Number(row.series_id)).push(Number(row.season_number));
+  }
   // Shows somebody actually asked for get the pack treatment whatever their age — most releases
   // are "S01" packs regardless of how old the show is, and a requester is waiting on this one.
   const requestedTvdbIds = tunable('SEASON_PACK_REQUESTED') ? listRequestedTvdbIds() : new Set();
@@ -1399,7 +1699,9 @@ async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
       continue;
     }
     const { eligible, reason, seasons } = seasonSearchTargets({
-      series, episodes, requested, inQueue: queuedSeasons(queue, series.id), searchedAt: getSeasonSearchTimes(series.id),
+      series, episodes, requested,
+      inQueue: [...queuedSeasons(queue, series.id), ...(fallbackSeasons.get(Number(series.id)) || [])],
+      searchedAt: getSeasonSearchTimes(series.id),
     }, now, cfg);
     if (!eligible) continue;
     for (const season of seasons) {
@@ -1433,7 +1735,7 @@ async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
           + `${CONFIG.SEASON_PACK_COOLDOWN_HOURS}h.`,
       ].join('\n').slice(0, 4000))] });
   }
-  return { searched: searched.length };
+  return { searched: searched.length, episodeFallbackSubmitted: fallback.submitted };
 }
 
 async function previewSeasonPacks(values = {}) {
@@ -1447,10 +1749,16 @@ async function previewSeasonPacks(values = {}) {
   const maxPerRun = previewRuntimeValue(values, 'SEASON_PACK_MAX_PER_RUN');
   const now = Date.now();
   const [seriesList, queue] = await Promise.all([listSonarrSeries(), fetchArrQueues()]);
+  const fallbackPreview = await drainSeasonEpisodeFallbacks({ seriesList, queue, preview: true, values });
+  const fallbackSeasons = new Map();
+  for (const row of listSeasonEpisodeFallbacks()) {
+    if (!fallbackSeasons.has(Number(row.series_id))) fallbackSeasons.set(Number(row.series_id), []);
+    fallbackSeasons.get(Number(row.series_id)).push(Number(row.season_number));
+  }
   const requestedTvdbIds = cfg.includeRequested ? listRequestedTvdbIds() : new Set();
   const priority = mediaPriorityMap();
   const ordered = orderByPriority(seriesList || [], { keyFor: series => priorityKey({ tvdbId: series.tvdbId }), priority });
-  const items = [];
+  const items = [...fallbackPreview.items];
   let eligibleCount = 0;
   for (const series of ordered) {
     if (items.length >= PREVIEW_ITEM_LIMIT) break;
@@ -1469,7 +1777,9 @@ async function previewSeasonPacks(values = {}) {
       continue;
     }
     const { eligible, reason, seasons, held } = seasonSearchTargets({
-      series, episodes, requested, inQueue: queuedSeasons(queue, series.id), searchedAt: getSeasonSearchTimes(series.id),
+      series, episodes, requested,
+      inQueue: [...queuedSeasons(queue, series.id), ...(fallbackSeasons.get(Number(series.id)) || [])],
+      searchedAt: getSeasonSearchTimes(series.id),
     }, now, cfg);
     if (!eligible) continue;
     for (const season of held || []) {
@@ -1483,7 +1793,7 @@ async function previewSeasonPacks(values = {}) {
       eligibleCount++;
       items.push({
         title: `${series.title} S${pad(season.season)}`,
-        reason: `${reason}; ${season.missing} of ${season.aired} aired episode(s) missing`,
+        reason: `${reason}; ${season.missing} of ${season.aired} aired episode(s) missing; episode fallback evidence_not_observed until a real search completes`,
         stage: eligibleCount <= maxPerRun ? 'search' : `held by per-run cap ${maxPerRun}`,
       });
     }
@@ -8764,6 +9074,12 @@ function startExpressServer() {
           const missing = episodes.filter(ep => Number(ep.seasonNumber) === seasonNumber && ep.monitored && !ep.hasFile
             && Date.parse(ep.airDateUtc || ep.airDate || '') <= Date.now());
           if (!Number.isInteger(seasonNumber) || !missing.length) throw new Error(`Sonarr season ${seasonNumber} has no aired missing episodes`);
+          const fallback = getSeasonEpisodeFallback(seriesId, seasonNumber);
+          if (fallback) {
+            const error = `A bounded episode fallback already owns this season (${fallback.state})`;
+            audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'episode_fallback_active', seriesId, seasonNumber, fallbackState: fallback.state });
+            return res.status(409).json({ ok: false, error });
+          }
           const { cooling, nextEligible } = seasonSearchCooldown(getSeasonSearchTimes(seriesId)[seasonNumber]);
           if (cooling) {
             const error = `Season search is cooling down until ${new Date(nextEligible).toISOString()}`;
@@ -8780,8 +9096,7 @@ function startExpressServer() {
         const episode = episodes.find(ep => Number(ep.id) === episodeId && ep.monitored && !ep.hasFile
           && Date.parse(ep.airDateUtc || ep.airDate || '') <= Date.now());
         if (!Number.isInteger(episodeId) || !episode) throw new Error(`Sonarr episode ${episodeId} is not an aired missing episode in this series`);
-        await axios.post(`${CONFIG.SONARR_URL}/api/v3/command`, { name: 'EpisodeSearch', episodeIds: [episodeId] },
-          { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 15000 });
+        await triggerEpisodeSearch([episodeId]);
         audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, episodeId, title: series.title, seasonNumber: episode.seasonNumber, episodeNumber: episode.episodeNumber });
         return res.json({ ok: true, message: `Sonarr accepted the S${pad(episode.seasonNumber)}E${pad(episode.episodeNumber)} search for ${series.title}.` });
       } catch (err) {

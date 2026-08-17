@@ -114,6 +114,9 @@ the call is an informed one.
   grab that blocklists a private-tracker release.
 
 ## Season-Pack-First Searching (old shows, every indexer)
+The bounded no-pack episode fallback is specified separately in
+[Sonarr season-to-episode fallback contract](season-episode-fallback-contract.md).
+
 Sonarr looks for missing episodes **one at a time**. For a show that's still airing that's
 right — episode 8 aired last night and no season pack exists yet. For a drama that finished in
 2007 it's the expensive way to get something that exists as a single torrent: 30 searches, 30
@@ -155,6 +158,36 @@ posted to the downloads channel and audited as `season_pack_search`.
 Nothing in your Sonarr configuration is touched — no profiles, no custom formats, no release
 profiles. The bot only issues search commands, so turning `SEASON_PACK_FIRST=false` back off
 returns Sonarr to exactly its previous behavior. Whatever Sonarr grabs imports normally.
+
+If a completed season search makes no progress and its episode-scoped Interactive Search shows
+no eligible pack but does show a clean, Sonarr-approved release for the anchor episode,
+`SEASON_PACK_EPISODE_FALLBACK` (default on) records that positive evidence. The same guarded
+season-pack sweep then asks Sonarr to search the live aired, monitored, file-less episodes. Sonarr
+still applies its own profiles, custom formats, blocklist, and release rules to every episode; the
+bot does not force an individual result. Rejected, wrong-series, unknown-series,
+`downloadAllowed: false`, empty, or failed Interactive Search results never authorize this path.
+
+An `EpisodeSearch` API command looks like one request but Sonarr performs one indexer search for
+each episode ID. `SEASON_PACK_EPISODE_BATCH_SIZE` (default 25) caps one season's command and
+`SEASON_PACK_EPISODE_MAX_PER_RUN` (default 50) caps all episode IDs across one guarded run. Long
+seasons retain a durable high-water cursor, so a 72-episode gap runs as 25, 25, and 22 rather than
+one hidden 72-search burst, and unavailable early episodes cannot starve later ones. Deferred work
+uses `SEASON_PACK_EPISODE_RETRY_MINUTES` (default 180), independently of the 24-hour pack-search
+cooldown. When a full cursor cycle still leaves gaps, that season rests for the normal pack
+cooldown before beginning another cycle.
+
+Immediately before submitting a batch, the sweep re-reads Sonarr episodes and queue state and
+active content claims. Files that imported, episodes that became unmonitored or queued, unaired
+episodes, whole-season downloads, and active pack/episode claims are removed or block the batch.
+An eligible pack remains preferred, and pending fallback state suppresses another SeasonSearch.
+The dashboard's Preview uses persisted evidence plus the same live planner and caps; it never
+calls Interactive Search, submits a command, writes state, or audits a result.
+
+Discord and audit entries call this an **episode fallback**, show submitted and deferred counts,
+the Sonarr command status, live queue/import progress, and the next retry. The durable row survives
+restarts. A still-running command is left alone; a terminal command is verified; an unknown
+command cools down before it can be retried. Disable `SEASON_PACK_EPISODE_FALLBACK` to leave
+recorded work visible but prevent new episode commands.
 
 Repeated identical `no_grab` results do not repeat in Discord forever. The bot still performs
 every eligible search, but posts attempts 1, 2, and 4; attempt 4 announces that alerts are standing

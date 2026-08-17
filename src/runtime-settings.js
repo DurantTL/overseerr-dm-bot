@@ -79,6 +79,14 @@ const RUNTIME_SETTINGS = [
     label: 'Max season searches per run' },
   { key: 'SEASON_PACK_DORMANT_DAYS', group: 'season_pack', type: 'int', min: 1, max: 3650, source: 'config',
     label: 'Treat a continuing series as old after', unit: 'days' },
+  { key: 'SEASON_PACK_EPISODE_FALLBACK', group: 'season_pack', type: 'bool', source: 'config',
+    label: 'Fall back to approved episode searches', help: 'Uses Sonarr’s normal decision engine; individual releases are never force-grabbed.' },
+  { key: 'SEASON_PACK_EPISODE_BATCH_SIZE', group: 'season_pack', type: 'int', min: 1, max: 100, source: 'config',
+    label: 'Max episode searches per season batch', unit: 'eps' },
+  { key: 'SEASON_PACK_EPISODE_MAX_PER_RUN', group: 'season_pack', type: 'int', min: 1, max: 500, source: 'config',
+    label: 'Max episode searches per guarded run', unit: 'eps' },
+  { key: 'SEASON_PACK_EPISODE_RETRY_MINUTES', group: 'season_pack', type: 'int', min: 5, max: 10080, source: 'config',
+    label: 'Retry deferred episode fallback after', unit: 'min' },
 
   // ---- Episode recovery worker (src/episode-recovery.js parses these from env itself) ----
   { key: 'EPISODE_RECOVERY_ENABLED', group: 'episode_recovery', type: 'bool', source: 'env', fallback: false,
