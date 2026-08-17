@@ -9,11 +9,11 @@ const axios = require('axios');
 const { loadSandbox } = require('./extract');
 const runtimeSettings = require('../../src/runtime-settings');
 
-const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('../../src/escalation');
+const { decideEscalationAction, escalationEligible, autoEscalateAllowed, usesDirectGrabEscalation } = require('../../src/escalation');
 const MIN = 60000;
 const HOUR = 3600000;
 const cfg = { delayMinutes: 45, maxAgeDays: 14 };
-// Auto-escalation is TV-only and Asian-only, so the baseline row/facts here are an
+// Auto-escalation is Asian-only, so the baseline row/facts here are an
 // obviously-Asian show — the case where 'escalate' is still the right answer.
 const row = (over = {}) => ({ approved_at: 0, pre_authorized: 0, media_type: 'tv', ...over });
 const noFacts = { isAvailable: false, hasQueueItem: false, hasFile: false, avistazFit: 'asian' };
@@ -40,17 +40,21 @@ test('escalation: decideEscalationAction state machine', () => {
 
 test('escalation: autoEscalateAllowed gate, and the same rules through the state machine', () => {
   // Auto-escalation gate: AvistaZ only carries Asian movies and TV, so firing without a human
-  // is limited to shows that obviously belong there. Everything else falls back to the button.
+  // is limited to titles that obviously belong there. Everything else falls back to the button.
   assert.strictEqual(autoEscalateAllowed({ media_type: 'tv' }, 'asian'), true, 'asian show auto-escalates');
   assert.strictEqual(autoEscalateAllowed({ media_type: 'tv' }, 'non_asian'), false, 'non-asian show asks first');
   assert.strictEqual(autoEscalateAllowed({ media_type: 'tv' }, 'unknown'), false, 'unknown origin asks first');
   assert.strictEqual(autoEscalateAllowed({ media_type: 'tv' }, null), false, 'unassessed show asks first');
-  assert.strictEqual(autoEscalateAllowed({ media_type: 'movie' }, 'asian'), false, 'movies never auto-escalate, asian or not');
+  assert.strictEqual(autoEscalateAllowed({ media_type: 'movie' }, 'asian'), true, 'asian movie can auto-escalate through Radarr');
+  assert.strictEqual(autoEscalateAllowed({ media_type: 'movie' }, 'non_asian'), false, 'non-asian movie asks first');
+  assert.strictEqual(autoEscalateAllowed({ media_type: 'movie' }, 'unknown'), false, 'unknown movie asks first');
+  assert.strictEqual(usesDirectGrabEscalation({ media_type: 'movie' }), false, 'movie escalation stays inside Radarr');
+  assert.strictEqual(usesDirectGrabEscalation({ media_type: 'tv' }), true, 'TV retains the direct-grab fallback');
 
   // ...and the same rules through the state machine, which is what the sweep actually calls.
   const past = 46 * MIN;
   const preAuth = over => row({ pre_authorized: 1, ...over });
-  assert.strictEqual(decideEscalationAction(preAuth({ media_type: 'movie' }), noFacts, past, cfg), 'alert', 'pre-authorized movie alerts instead of escalating');
+  assert.strictEqual(decideEscalationAction(preAuth({ media_type: 'movie' }), noFacts, past, cfg), 'escalate', 'pre-authorized Asian movie escalates through Radarr');
   assert.strictEqual(decideEscalationAction(preAuth(), { ...noFacts, avistazFit: 'non_asian' }, past, cfg), 'alert', 'pre-authorized non-asian show alerts');
   assert.strictEqual(decideEscalationAction(preAuth(), { ...noFacts, avistazFit: 'unknown' }, past, cfg), 'alert', 'pre-authorized show of unknown origin alerts');
   assert.strictEqual(decideEscalationAction(preAuth(), { ...noFacts, avistazFit: undefined }, past, cfg), 'alert', 'missing verdict never auto-escalates');
@@ -59,6 +63,27 @@ test('escalation: autoEscalateAllowed gate, and the same rules through the state
   assert.strictEqual(decideEscalationAction(row(), noFacts, past, cfg), 'alert', 'asian show without pre-auth still alerts');
   assert.strictEqual(decideEscalationAction(preAuth({ media_type: 'movie' }), { ...noFacts, hasFile: true }, past, cfg), 'resolve', 'resolve still beats the gate');
   assert.strictEqual(decideEscalationAction(preAuth({ media_type: 'movie' }), noFacts, 15 * 24 * HOUR, cfg), 'expire', 'expiry still beats the gate');
+});
+
+test('escalation: movies bypass direct candidates and use Radarr tag/search', async () => {
+  const calls = [];
+  const sandbox = loadSandbox(['runEscalation'], {
+    usesDirectGrabEscalation,
+    grabConfigured: () => true,
+    runDirectGrabEscalation: async () => { throw new Error('movie must not enter direct grab'); },
+    escalateMediaToAvistaz: async meta => {
+      calls.push(['arr', meta]);
+      return { ok: true, detail: "Tagged Radarr movie #42 'asian' and triggered a search." };
+    },
+    setEscalationState: (id, state) => calls.push(['state', id, state]),
+    applyAvistazTag: async () => ({ ok: true }),
+    audit: (...args) => calls.push(['audit', ...args]),
+  });
+  const result = await sandbox.run("runEscalation({ id: 7, media_id: 'tmdb:603', media_type: 'movie', tmdb_id: 603, tvdb_id: null, title: 'The General Daughter' })");
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(JSON.stringify(calls[0]), JSON.stringify(['arr', { mediaType: 'movie', tmdbId: 603, tvdbId: null }]));
+  assert.deepStrictEqual(calls[1], ['state', 7, 'escalated']);
+  assert.match(result.detail, /Radarr movie/);
 });
 
 test('escalation: assessAsianOrigin (src/asian.js)', () => {

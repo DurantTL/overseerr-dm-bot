@@ -36,7 +36,7 @@ const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPl
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
-const { decideEscalationAction, escalationEligible, autoEscalateAllowed } = require('./src/escalation');
+const { decideEscalationAction, escalationEligible, autoEscalateAllowed, usesDirectGrabEscalation } = require('./src/escalation');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('./src/season-pack');
 const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('./src/season-release');
 const { assessAsianOrigin, describeAvistazFit } = require('./src/asian');
@@ -474,9 +474,7 @@ const escalationDelayLabel = () => fmtDuration(tunable('ESCALATION_DELAY_MINUTES
 // What pre-authorization actually buys, per media type — auto-escalation is narrower than the
 // flag (see autoEscalateAllowed in src/escalation.js), so the approval embeds have to promise
 // the narrower thing or an admin reads the later button prompt as a bug.
-const preAuthOutcomeLabel = mediaType => (mediaType === 'tv'
-  ? 'escalates on its own if the show looks like Asian content (AvistaZ carries nothing else), otherwise it asks first'
-  : 'still asks first — films never escalate on their own');
+const preAuthOutcomeLabel = () => 'escalates on its own if the title looks like Asian content (AvistaZ carries nothing else), otherwise it asks first';
 
 // Whether this request could be escalated to AvistaZ (feature on, right media type, arr present).
 function canEscalate({ mediaType, is4k }) {
@@ -874,11 +872,11 @@ async function previewEscalations(values = {}) {
 }
 
 async function runEscalation(row) {
-  // Direct-grab pipeline first when configured: the bot searches AvistaZ itself and either
-  // auto-grabs or posts scored candidates. The state moves to 'escalated' either way — the
-  // grab job (or the posted buttons) owns the follow-through from here. Falls back to the
-  // tag-based arr escalation when the search fails or finds nothing.
-  if (grabConfigured()) {
+  // TV can use the direct-grab pipeline first: the bot searches AvistaZ itself and either
+  // auto-grabs or posts scored candidates, then falls back to the tag-based Sonarr path when
+  // the search finds nothing. Movies deliberately skip this branch and go straight to Radarr's
+  // tag + MoviesSearch path so Radarr remains responsible for accepting the release.
+  if (usesDirectGrabEscalation(row) && grabConfigured()) {
     const direct = await runDirectGrabEscalation(row).catch(err => ({ ok: false, why: err.message }));
     if (direct.ok) {
       setEscalationState(row.id, 'escalated');
@@ -1000,13 +998,11 @@ async function sweepEscalations() {
     // Escalating a title that isn't out yet is pointless — surface the release timing so the
     // admin can tell "no seeders" apart from "not released".
     const eta = releaseEtaInfo(await fetchReleaseEta({ mediaType: row.media_type, tmdbId: row.tmdb_id, tvdbId: row.tvdb_id }));
-    // A pre-authorized row that lands here was held back on purpose: it's a film, or a show
-    // AvistaZ probably doesn't carry. Say so — otherwise "I pre-authorized this" and "it's
-    // asking me anyway" look like a bug.
+    // A pre-authorized row that lands here was held back because its origin was not clearly in
+    // AvistaZ's remit. Say so — otherwise "I pre-authorized this" and "it's asking me anyway"
+    // look like a bug.
     const heldBack = row.pre_authorized
-      ? `\n🔐 The AvistaZ fallback was pre-authorized, but ${row.media_type === 'movie'
-        ? 'films never escalate on their own — AvistaZ is an Asian-content tracker and a wrong automatic grab costs a download slot'
-        : 'this doesn\'t look like Asian content, and only obviously-Asian shows escalate on their own'}. Your call:`
+      ? '\n🔐 The AvistaZ fallback was pre-authorized, but this does not clearly look like Asian content, and only obviously-Asian titles escalate on their own. Your call:'
       : '';
     const alertEmbed = brandedEmbed(COLORS.WARN)
       .setTitle(`⏳ Nothing Found Yet — ${row.title}`)
@@ -8889,8 +8885,9 @@ function startExpressServer() {
         audit('dashboard_escalation', { ...dashboardActor(req), ok: false, id, reason: 'already_handled' });
         return res.status(409).json({ ok: false, error: 'This escalation was already handled.' });
       }
+      const directGrab = usesDirectGrabEscalation(row) && grabConfigured();
       const before = grabDailyAllowance();
-      if (before.exhausted) {
+      if (directGrab && before.exhausted) {
         audit('dashboard_escalation', { ...dashboardActor(req), ok: false, id, reason: 'allowance_exhausted', remaining: before.remaining });
         return res.status(409).json({ ok: false, error: 'The daily AvistaZ allowance is exhausted.', remaining: before.remaining });
       }

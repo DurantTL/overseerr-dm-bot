@@ -15,9 +15,9 @@ Public indexers (→ Premiumize) always get first crack at every request. Avista
 per-title fallback, which conserves its download slots / ratio and keeps private grabs seeding on a
 seedbox instead of Premiumize.
 
-> When the **direct grab** pipeline (next section) is fully configured, escalation routes through
-> it instead — the tag mechanism below stays as the fallback for when the direct search fails or
-> finds nothing.
+> When the **direct grab** pipeline (next section) is fully configured, TV escalation routes
+> through it first. Movie escalation stays on the tag + Radarr search path; TV falls back to the
+> tag mechanism when the direct search fails or finds nothing.
 
 **Why not Prowlarr priority?** Priority is only a tie-breaker — Radarr/Sonarr grab the
 best-scoring release regardless of which indexer returned it. The strict mechanism is **indexer
@@ -36,7 +36,9 @@ Auto-escalation is therefore narrower than pre-authorization:
 | TV, obviously Asian | yes | **escalates automatically** |
 | TV, obviously Asian | no | button alert |
 | TV, not obviously Asian | either | button alert |
-| Movie (any origin) | either | button alert |
+| Movie, obviously Asian | yes | **tags the movie and triggers Radarr automatically** |
+| Movie, obviously Asian | no | button alert |
+| Movie, not obviously Asian | either | button alert |
 
 "Obviously Asian" is decided from the title's TMDB record, which Overseerr already serves: an
 Asian **original language**, an Asian **production/origin country**, or an **original title in an
@@ -49,9 +51,11 @@ The verdict is three-valued, and only a decided one is cached on the watch row. 
 unreachable or the TMDB record is bare, the answer is **unknown** — which asks a human rather than
 guessing in either direction, and is re-checked on the next sweep.
 
-**Movies never auto-escalate, whatever their origin.** A film is one shot at one release, hard to
-tell apart from its same-titled cousins, and a wrong automatic grab is expensive to undo. Films
-always get the button.
+**Clearly Asian movies can auto-escalate when pre-authorized, but they stay inside Radarr.** The
+bot adds the AvistaZ tag and triggers Radarr's normal movie search; it does not run the direct
+candidate/seedbox pipeline for movies. Radarr's quality profile, custom formats, blocklist, and
+release matching therefore remain the acceptance boundary. Non-Asian or unknown-origin films
+still get the button.
 
 Being asked isn't a dead end — the **Escalate to AvistaZ** button does exactly what the automatic
 path would have done, and the alert embed carries an **AvistaZ fit** line explaining the verdict so
@@ -61,13 +65,14 @@ the call is an informed one.
 - The approval embed gets a third button, **Approve + AvistaZ Fallback**, which pre-authorizes the
   fallback: the `avistaz` tag goes onto the title in Radarr/Sonarr right at approval (it's
   definitely AvistaZ-bound), and if nothing public has been grabbed within
-  `ESCALATION_DELAY_MINUTES` the bot escalates — automatically for an obviously-Asian show, via
+  `ESCALATION_DELAY_MINUTES` the bot escalates — automatically for an obviously-Asian title, via
   the button for anything else (see the table above).
 - Plain **Approve** gets the watchdog flavor instead: after the delay, the downloads channel gets
   a **⏳ Nothing Found Yet** embed with **Escalate to AvistaZ / Ignore** buttons.
 - Admin self-requests skip the gate entirely (no button to click), so they're pre-authorized
-  automatically — tagged at request time, and subject to the same auto-escalation rules as
-  **Approve + AvistaZ Fallback**.
+  automatically — tagged at request time, and subject to the same Asian-origin auto-escalation
+  rule as **Approve + AvistaZ Fallback**. Movies trigger Radarr's search; TV may use the direct
+  seedbox planner before falling back to Sonarr's search.
 - A watch row resolves automatically the moment the media turns available, starts downloading, or
   the request is declined; unresolved rows expire after `ESCALATION_MAX_AGE_DAYS`.
 - If an approved request never lands in Radarr/Sonarr at all — Seerr can accept a request and
