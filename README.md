@@ -388,7 +388,7 @@ notification processing.
 - Login is rate limited (5 attempts / 15 min per IP) to slow brute-force guessing.
 - The old `?password=` / `?token=` query-string auth has been **removed** (it leaked credentials into history and logs). For scripts/automation, use the `x-admin-password` or `x-admin-token` request headers — these still work.
 - Shows overall status, summary stat cards, color-coded integration health badges, and readable tables for pending users/requests, linked users, recent downloads, keep/delete decisions, and audit logs, plus safe action buttons (revoke-all asks for confirmation).
-- Configure the cookie signing secret with `SESSION_SECRET` (optional; derived from your admin credentials if unset). Changing `TUNNEL_DOMAIN` requires enrolling new passkeys for the new hostname.
+- Sessions are signed with `SESSION_SECRET`, which is **required** whenever `DASHBOARD_ENABLED=true` — the bot refuses to start without it, so it can never fall back to deriving a signing key from your admin password/token (a captured cookie would otherwise be guessable offline). Generate one with `openssl rand -hex 32`. If you're upgrading an existing deployment, add `SESSION_SECRET` to your `.env`/`stack.env` and restart; every existing dashboard session is invalidated and users just log back in. Changing `SESSION_SECRET` later rotates sessions the same way. Changing `TUNNEL_DOMAIN` requires enrolling new passkeys for the new hostname.
 
 ## Security Notes
 - Report suspected vulnerabilities privately through [`SECURITY.md`](SECURITY.md); do not disclose
