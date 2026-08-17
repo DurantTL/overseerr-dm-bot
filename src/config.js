@@ -364,6 +364,10 @@ const CONFIG = (() => {
   // agent's atime report as automatic per-title/whole-node fallback. Use "atime" only when the
   // node's PMS is unreachable from the bot.
   TIER_NODES_SEED: process.env.TIER_NODES_SEED || '',
+  // Bounds how often an authenticated node can post a full report (each carries up to a 25 MB
+  // JSON body and up to 200k inventory rows). The systemd timer runs the agent every 15 minutes,
+  // so this only needs headroom for manual re-runs/retries, not the steady-state cadence.
+  AGENT_REPORT_MAX_PER_MINUTE: Number.parseInt(process.env.AGENT_REPORT_MAX_PER_MINUTE || '12', 10),
   DELETION_GRACE_HOURS: Number.parseInt(process.env.DELETION_GRACE_HOURS || '24', 10),
   DELETION_REMINDER_COOLDOWN_HOURS: Number.parseInt(process.env.DELETION_REMINDER_COOLDOWN_HOURS || '12', 10),
   KEEP_LIST_DEFAULT_DAYS: Number.parseInt(process.env.KEEP_LIST_DEFAULT_DAYS || '90', 10),

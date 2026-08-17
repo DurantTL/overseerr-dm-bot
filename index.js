@@ -56,6 +56,7 @@ const { recordDiskSamples, pruneDiskSamples, forecastDisks, pathIsOnRoot, foreca
 const { webhookEventKey } = require('./src/webhook-events');
 const { createWebhookHandlers, requireWebhookSecret } = require('./src/routes/webhooks');
 const { createTierAgentAuth } = require('./src/routes/tier-agent-auth');
+const { createTierAgentReportLimiter } = require('./src/routes/tier-agent-report-limit');
 const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
@@ -8152,7 +8153,8 @@ function startExpressServer() {
     res.type('json').send(raw);
   });
 
-  app.post('/agent/report/:node', tierAgentAuth, agentJsonParser, (req, res) => {
+  const tierAgentReportLimiter = createTierAgentReportLimiter({ limit: CONFIG.AGENT_REPORT_MAX_PER_MINUTE });
+  app.post('/agent/report/:node', tierAgentAuth, tierAgentReportLimiter, agentJsonParser, (req, res) => {
     const node = String(req.params.node).toLowerCase();
     const body = req.body || {};
     // Heartbeat fast-path: the agent posts { heartbeat:true } on a clean no-op run (plan + inventory
