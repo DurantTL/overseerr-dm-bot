@@ -114,6 +114,9 @@ the call is an informed one.
   grab that blocklists a private-tracker release.
 
 ## Season-Pack-First Searching (old shows, every indexer)
+The bounded no-pack episode fallback is specified separately in
+[Sonarr season-to-episode fallback contract](season-episode-fallback-contract.md).
+
 Sonarr looks for missing episodes **one at a time**. For a show that's still airing that's
 right — episode 8 aired last night and no season pack exists yet. For a drama that finished in
 2007 it's the expensive way to get something that exists as a single torrent: 30 searches, 30
