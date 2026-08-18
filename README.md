@@ -145,6 +145,12 @@ See `.env.example` for full values.
      the container's own `/` and `/config` disks and relabels a mount with the more specific media
      folder (e.g. shows `/share/media` for the `/share` mount). Unset reports every *arr mount.
   3. **Retention rules** — with `RETENTION_ENFORCEMENT=true`, enforces the `media_retention_rules` table (`movie_4k`/`movie_1080p` → matching Radarr, `tv_episode` → Sonarr) every `RETENTION_CHECK_HOURS` (default `24`), deleting oldest-first, at most `RETENTION_MAX_DELETES_PER_RUN` (default `10`) per run. Dry-run posts a "would delete" digest instead.
+- `TAILSCALE_ENABLED` (default `false`) — adds an **Approve + Tailscale (PH)** button next to
+  Approve/Deny on new access requests, for viewers who need to reach the PH box (CGNAT + no
+  IPv6, and the Cloudflare tunnel is HTTP-only — never media). Opt-in per person; the admin still
+  clicks it deliberately and still invites that person to the tailnet manually. `TAILSCALE_SETUP_URL`
+  (default the Tailscale download page) and `TAILSCALE_SERVER_ADDRESS` (blank by default) are
+  included in the DM. See [Plex Home staging](docs/plex-home-staging.md#reaching-the-ph-box-tailscale-optional-per-person).
 - `PATH_REMAP_FROM`, `PATH_REMAP_TO`
 - `DOWNLOAD_*`, `ENABLE_DELETION`, `KEEP_LIST_DEFAULT_DAYS`, `NEVER_DELETE_MEDIA_IDS`
 - `DELETION_DRY_RUN` (default `true`) — when deletion is confirmed, logs the exact file paths and API call that would fire and skips the real delete API. Flip to `false` only after reviewing real prompts.

@@ -335,6 +335,14 @@ const CONFIG = (() => {
   PH_TUNNEL_HEALTH_URL: omitPlaceholder(process.env.PH_TUNNEL_HEALTH_URL),
   PH_TUNNEL_CHECK_MINUTES: Number.parseInt(process.env.PH_TUNNEL_CHECK_MINUTES || '5', 10),
   PH_TUNNEL_FAILS_BEFORE_ALERT: Number.parseInt(process.env.PH_TUNNEL_FAILS_BEFORE_ALERT || '3', 10),
+  // Tailscale as an *optional* reachability path for PH viewers: CGNAT + no IPv6 means normal
+  // Plex remote access can't reach the box, and the Cloudflare tunnel is reserved for the bot's
+  // own HTTP routes (never media, per Plex's ToS). Nothing here invites anyone automatically —
+  // it only controls whether the "Approve + Tailscale" button appears, so an admin can opt a
+  // specific person in by hand instead of every PH request getting one.
+  TAILSCALE_ENABLED: parseBool(process.env.TAILSCALE_ENABLED, false),
+  TAILSCALE_SETUP_URL: process.env.TAILSCALE_SETUP_URL || 'https://tailscale.com/download',
+  TAILSCALE_SERVER_ADDRESS: process.env.TAILSCALE_SERVER_ADDRESS || '',
   // ---- Regional tiering ("edge cache"): per-node curation of the replicated library ----
   // Planner knobs; per-node overrides (warm/fresh days) live in the tier_nodes table.
   TIER_CORE_TOP_K: Number.parseInt(process.env.TIER_CORE_TOP_K || '25', 10),

@@ -59,6 +59,31 @@ Setup:
 5. Run `npm run doctor:edge` on the bot host (or `/doctor` in Discord). Do not enable automatic
    promotion until the Main source, Philippines cache read, tunnel, and free-space checks pass.
 
+## Reaching the PH box: Tailscale (optional, per-person)
+The Cloudflare tunnel covers the bot's own HTTP routes (dashboard, webhooks, downloads) — it is
+never used for media, per Plex's ToS. That leaves the PH box's actual playback traffic with no
+reachable path for a remote viewer: it's behind CGNAT and has no IPv6, so Plex's normal remote
+access can't punch through either.
+
+Tailscale solves that at the network layer instead of proxying media through a CDN: the PH box
+joins your tailnet, viewers install Tailscale and join too, and their Plex client talks to the
+box's stable `100.x.x.x` tailnet address directly (peer-to-peer when possible, relayed only as a
+NAT-traversal fallback).
+
+This is opt-in per person, not a default part of onboarding — most admins will only want it for
+the handful of people actually assigned to the PH box:
+
+1. Set `TAILSCALE_ENABLED=true`. This adds a third **Approve + Tailscale (PH)** button next to
+   Approve/Deny on new access-request DMs — nothing changes for the plain **Approve** button.
+2. Optionally set `TAILSCALE_SERVER_ADDRESS` to the PH box's tailnet hostname/IP so the bot can
+   include it directly in the DM; leave it blank to tell the user an admin will send it.
+3. When a request comes in from someone who needs the PH box, click **Approve + Tailscale (PH)**
+   instead of **Approve**. The bot assigns them to `home_server=ph` (same as `/assign-server`),
+   runs the normal Plex/Seerr invite chain, and appends Tailscale setup steps to their DM.
+4. Separately (outside the bot — there's no Tailscale API integration here), invite that person
+   to your tailnet from the Tailscale admin console, since you're deciding this case by case
+   anyway.
+
 ## One server per person
 Plex does **not** sync watch state between servers — separate Continue Watching, separate watched
 marks, separate Tautulli history. So each person belongs to exactly one server:
