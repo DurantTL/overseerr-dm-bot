@@ -3785,6 +3785,11 @@ async function postAccessRequestToAdmins(user, email) {
     new ButtonBuilder().setCustomId(`plex_approve:${user.id}`).setLabel('Approve').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`plex_deny:${user.id}`).setLabel('Deny').setStyle(ButtonStyle.Danger),
   );
+  // Optional third button (env-gated): approves onto the PH/travel server and adds Tailscale
+  // setup instructions to their DM. Admin picks this per-person — regular Approve is unchanged.
+  if (CONFIG.TAILSCALE_ENABLED) {
+    row.addComponents(new ButtonBuilder().setCustomId(`plex_approve_ts:${user.id}`).setLabel('Approve + Tailscale (PH)').setStyle(ButtonStyle.Primary));
+  }
   const requestEmbed = brandedEmbed(COLORS.INFO)
     .setTitle('🔐 New Plex Access Request')
     .addFields({ name: 'User', value: `<@${user.id}>`, inline: true }, { name: 'Email', value: `\`${email}\``, inline: true });
@@ -7108,7 +7113,7 @@ async function handleButton(interaction) {
     return interaction.showModal(modal);
   }
 
-  if (['plex_approve', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'trust_undo', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'season_grab', 'adopt_do', 'adopt_bulk', 'adopt_cancel'].includes(action) && !isAdminInteraction(interaction)) {
+  if (['plex_approve', 'plex_approve_ts', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'trust_undo', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'season_grab', 'adopt_do', 'adopt_bulk', 'adopt_cancel'].includes(action) && !isAdminInteraction(interaction)) {
     return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
   }
 
@@ -7137,32 +7142,41 @@ async function handleButton(interaction) {
       .setDescription(`Undone by <@${interaction.user.id}>. <@${targetDiscordId}>'s trust was reset.`)], components: [] });
   }
 
-  if (action === 'plex_approve' || action === 'plex_deny') {
+  if (action === 'plex_approve' || action === 'plex_approve_ts' || action === 'plex_deny') {
     const targetDiscordId = parts[0];
     if (plexGateInFlight.has(targetDiscordId)) {
       return interaction.reply({ content: '⏳ Already being processed by another click — hang tight.', ephemeral: true });
     }
     plexGateInFlight.add(targetDiscordId);
     try {
-      if (action === 'plex_approve') {
+      if (action === 'plex_approve' || action === 'plex_approve_ts') {
         await interaction.deferUpdate();
         const user = getUserByDiscordId(targetDiscordId);
         if (!user) return interaction.editReply({ content: 'User not found.', components: [] });
+        const wantsTailscale = action === 'plex_approve_ts';
+        if (wantsTailscale && (user.home_server || 'primary') !== 'ph') {
+          setUserHomeServer(targetDiscordId, 'ph');
+          audit('user_home_server_changed', { actorDiscordId: interaction.user.id, targetDiscordId, from: user.home_server || 'primary', to: 'ph' });
+        }
         const discordUser = await client.users.fetch(targetDiscordId).catch(() => null);
         const { plexStatus, seerrStatus, plexOk, seerrOk } = await applyFullChainLink(targetDiscordId, user.email, discordUser?.username);
         const complete = plexOk && seerrOk;
-        audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: 'plex_approve', plexOk, seerrOk });
+        audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: wantsTailscale ? 'plex_approve_ts' : 'plex_approve', plexOk, seerrOk });
+        const tailscaleNote = wantsTailscale
+          ? `\n\n🌐 **You're on the Philippines/travel server**, which sits behind CGNAT with no IPv6 — normal Plex remote access can't reach it. To watch, you'll need **Tailscale**:\n1. Install it: ${CONFIG.TAILSCALE_SETUP_URL}\n2. An admin will send you a tailnet invite separately — accept it once it arrives.\n3. In Plex, add the server manually using ${CONFIG.TAILSCALE_SERVER_ADDRESS ? `\`${CONFIG.TAILSCALE_SERVER_ADDRESS}\`` : 'the tailnet address an admin sends you'}.`
+          : '';
         await dmUser(targetDiscordId, { embeds: [brandedEmbed(plexOk ? COLORS.SUCCESS : COLORS.WARN)
           .setTitle(plexOk ? '🎉 You\'re In!' : '⚠️ Your Setup Needs Attention')
-          .setDescription(plexOk
+          .setDescription((plexOk
             ? `Your access request was approved. Check \`${user.email}\` for the Plex invite, then use \`/help\` here to see what the bot can do.`
-            : `The Plex invite to \`${user.email}\` failed. An admin has the failure details and can retry your approval.`)] });
+            : `The Plex invite to \`${user.email}\` failed. An admin has the failure details and can retry your approval.`) + tailscaleNote)] });
         await interaction.editReply({ embeds: [brandedEmbed(complete ? COLORS.SUCCESS : COLORS.WARN)
           .setTitle(complete ? '✅ Access Approved' : '⚠️ Access Setup Incomplete')
           .addFields(
             { name: 'User', value: `<@${targetDiscordId}>`, inline: true },
             { name: 'Plex', value: plexStatus, inline: true },
             { name: 'Seerr', value: seerrStatus, inline: true },
+            ...(wantsTailscale ? [{ name: 'Server', value: '🌐 Philippines (Tailscale)', inline: true }] : []),
           )], components: complete ? [] : interaction.message.components });
         return;
       }
