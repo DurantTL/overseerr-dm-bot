@@ -7,7 +7,9 @@ const { sha256, canonicalizeEmail, isSnowflake } = require('./util');
 const { upsertTrackedRequest, collapseStalePendingRequests, reconcileTrackedRequestStatuses } = require('./request-tracking');
 const { nextSeasonNoGrabAlert } = require('./season-alert');
 
-const DB_PATH = '/app/data/plex_invites.db';
+// Overridable so tests (which can't assume write access to /app/data) can point at a scratch
+// file instead; production is unaffected since DB_PATH is never set in the container.
+const DB_PATH = process.env.DB_PATH || '/app/data/plex_invites.db';
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 

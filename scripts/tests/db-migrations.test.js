@@ -2,24 +2,31 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
-// src/db.js opens a fixed on-disk path (matching the production container's data volume) rather
-// than taking one as a parameter — no test currently requires it. Reset that file to a clean
-// slate before each scenario here so the two tests below don't see each other's state; a later
-// #179 packet is expected to make the path configurable for a proper fixture harness.
-const DB_PATH = '/app/data/plex_invites.db';
+// src/db.js honors DB_PATH from the environment (defaulting to the production container's data
+// volume, which a test runner won't have write access to). Point it at a scratch file per test so
+// the two scenarios below don't see each other's state; a later #179 packet is expected to build
+// a proper fixture harness on top of this.
 const DB_MODULE = require.resolve('../../src/db');
 
 function freshDb() {
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  for (const suffix of ['', '-wal', '-shm']) fs.rmSync(DB_PATH + suffix, { force: true });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'db-migrations-test-'));
+  process.env.DB_PATH = path.join(dir, 'test.db');
   delete require.cache[DB_MODULE];
-  return require('../../src/db');
+  return { ...require('../../src/db'), dir };
+}
+
+function cleanup({ db, dir }) {
+  db.close();
+  delete process.env.DB_PATH;
+  fs.rmSync(dir, { recursive: true, force: true });
 }
 
 test('runMigrations is idempotent and records the schema version', () => {
-  const { db, runMigrations, schemaVersion } = freshDb();
+  const handle = freshDb();
+  const { db, runMigrations, schemaVersion } = handle;
   try {
     runMigrations();
     const version = schemaVersion();
@@ -35,12 +42,13 @@ test('runMigrations is idempotent and records the schema version', () => {
     assert.ok(tables.includes('users'));
     assert.ok(tables.includes('tier_node_files'));
   } finally {
-    db.close();
+    cleanup(handle);
   }
 });
 
 test('a failed migration step rolls back the whole transaction, including the version stamp', () => {
-  const { db, runMigrations, schemaVersion } = freshDb();
+  const handle = freshDb();
+  const { db, runMigrations, schemaVersion } = handle;
   try {
     // Force the very first statement inside runMigrations (CREATE TABLE IF NOT EXISTS users) to
     // fail: SQLite rejects creating a table over an existing object of any kind with that name,
@@ -57,6 +65,6 @@ test('a failed migration step rolls back the whole transaction, including the ve
     const objects = db.prepare('SELECT name, type FROM sqlite_master').all();
     assert.deepStrictEqual(objects, [{ name: 'users', type: 'view' }]);
   } finally {
-    db.close();
+    cleanup(handle);
   }
 });
