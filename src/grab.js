@@ -50,6 +50,75 @@ async function fetchTorrentFile(downloadUrl) {
 // ---- Release parsing & scoring ----
 const normalizeTitle = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
+// Seerr/escalation titles often carry a trailing year — "My Title (2017)" — which hurts
+// tracker search recall; split it into query + year for scoring instead. Moved here from
+// index.js so the season-pack sweep (src/grab.js's only other module-level consumer, via
+// index.js) can strip Sonarr's "Full House (2004)"-style titles before they become a
+// required token in normalizeTitle.
+function splitTitleYear(title) {
+  const m = /^(.*?)\s*\(((?:19|20)\d{2})\)\s*$/.exec(String(title || ''));
+  return m ? { query: m[1], year: Number(m[2]) } : { query: String(title || ''), year: null };
+}
+
+// ---- Series identity: accepted aliases + the alias gate ----
+// Tokens that may legitimately differ between a release head and an accepted alias without
+// meaning "different show": leading articles, country/edition qualifiers. Deliberately small —
+// every token added here widens what counts as the same show.
+const ALIAS_NOISE_TOKENS = new Set(['the', 'a', 'an', 'us', 'uk', 'au', 'ca', 'kr', 'jp', 'cn', 'tw', 'hk', 'th', 'ph', 'aka']);
+
+// Every normalized, year-stripped title this series legitimately answers to: primary title,
+// Sonarr-style alternateTitles ([{title}] or plain strings), clean/original title, and any
+// caller-supplied extras. Deduped, empties dropped.
+function buildSeriesAliases({ title = '', alternateTitles = [], cleanTitle = '', originalTitle = '', extra = [] } = {}) {
+  const raw = [title, cleanTitle, originalTitle, ...extra,
+    ...(alternateTitles || []).map(t => (typeof t === 'string' ? t : t?.title))];
+  const set = new Set();
+  for (const t of raw) {
+    const { query } = splitTitleYear(t);
+    const norm = normalizeTitle(query);
+    if (norm) set.add(norm);
+  }
+  return [...set];
+}
+
+// Does a release's parsed series head (see seriesToken, below) name this series? `head` and
+// `aliases` are both already-normalized strings. Conservative by design:
+//   - exact:  head === some alias
+//   - loose:  every head token not in the matched alias is ALIAS_NOISE_TOKENS-only extra
+//   - else:   rejected, with the offending extra tokens reported
+// An empty alias list or an unparseable head fails OPEN (ok:true, alias:null) — the gate only
+// fires on positive evidence of a different show, matching releaseContentClaim's philosophy
+// that an unparseable name is never blocked.
+function seriesAliasMatch(head, aliases) {
+  const h = normalizeTitle(head);
+  if (!h || !aliases || !aliases.length) return { ok: true, exact: false, alias: null, extraTokens: [] };
+  if (aliases.includes(h)) return { ok: true, exact: true, alias: h, extraTokens: [] };
+  const headTokens = h.split(' ').filter(Boolean);
+  let best = null;
+  for (const alias of aliases) {
+    const aliasTokens = new Set(alias.split(' ').filter(Boolean));
+    const extraTokens = headTokens.filter(t => !aliasTokens.has(t));
+    // Every head token accounted for either by the alias itself or by noise, and the alias
+    // isn't just noise words matching nothing real in the head.
+    if (extraTokens.every(t => ALIAS_NOISE_TOKENS.has(t)) && extraTokens.length < headTokens.length) {
+      if (!best || extraTokens.length < best.extraTokens.length) best = { ok: true, exact: false, alias, extraTokens };
+    }
+  }
+  if (best) return best;
+  // Nothing matched even loosely — report the extras against the closest (shortest) alias for
+  // a useful note.
+  const closest = [...aliases].sort((a, b) => a.length - b.length)[0] || '';
+  const closestTokens = new Set(closest.split(' ').filter(Boolean));
+  return { ok: false, exact: false, alias: null, extraTokens: headTokens.filter(t => !closestTokens.has(t)) };
+}
+
+// Alias-less precision fallback: release-head tokens that aren't in the wanted title and aren't
+// noise. Used by the score's precision penalty when no alias list was supplied.
+function headExtraTokens(head, wantTokens) {
+  const wanted = new Set(wantTokens);
+  return normalizeTitle(head).split(' ').filter(Boolean).filter(t => !wanted.has(t) && !ALIAS_NOISE_TOKENS.has(t));
+}
+
 function parseReleaseName(name) {
   const n = String(name || '');
   const resolution = (n.match(/\b(2160p|1080p|720p|480p)\b/i) || [])[1]?.toLowerCase() || null;
@@ -185,17 +254,24 @@ function claimCoversSeason(claim, season) {
 // already covers those episodes. trimmed = dropped by the `max` cap (allowance/config), i.e.
 // real episodes left on the table — callers surface that so nobody thinks it grabbed everything.
 // `exclude` takes release titles already in flight (active grab jobs) so a re-run adds only gaps.
-function planSeriesGrab(candidates, { season = null, minConfidence = 0, max = 8, exclude = [] } = {}) {
+function planSeriesGrab(candidates, { season = null, minConfidence = 0, max = 8, exclude = [], aliases = null } = {}) {
   const taken = (exclude || []).map(releaseContentClaim).filter(Boolean);
   const eligible = (candidates || [])
     .map(c => ({ c, claim: releaseContentClaim(c.releaseTitle) }))
-    .filter(x => x.claim && Number(x.c.confidence) >= minConfidence && claimCoversSeason(x.claim, season))
+    .filter(x => x.claim && Number(x.c.confidence) >= minConfidence && claimCoversSeason(x.claim, season)
+      && (!aliases || !aliases.length || seriesAliasMatch(x.claim.series, aliases).ok))
     .sort((a, b) => claimBreadth(b.claim) - claimBreadth(a.claim) || b.c.confidence - a.c.confidence);
   // A tracker search for one show also returns other shows, and two different series never
-  // overlap — so without this anchor the planner would happily grab all of them. The
-  // highest-confidence result decides which series the plan is about; breadth must not pick the
-  // series, or a complete pack of the wrong show would anchor a plan over an exact-title match.
-  const series = eligible.reduce((best, x) => (best && best.c.confidence >= x.c.confidence ? best : x), null)?.claim.series || null;
+  // overlap — so without this anchor the planner would happily grab all of them. When the
+  // caller knows the requested series (aliases), an exact-alias match wins outright rather than
+  // competing on confidence — otherwise one mis-scored wrong-show pack could still anchor the
+  // plan. Breadth must not pick the series either, or a complete pack of the wrong show would
+  // anchor a plan over an exact-title match.
+  const byConfidence = eligible.reduce((best, x) => (best && best.c.confidence >= x.c.confidence ? best : x), null);
+  const anchor = aliases && aliases.length
+    ? eligible.find(x => seriesAliasMatch(x.claim.series, aliases).exact) || byConfidence
+    : byConfidence;
+  const series = anchor?.claim.series || null;
   const picks = [];
   let covered = 0;
   let trimmed = 0;
@@ -250,11 +326,46 @@ function scoreAvistazResult(result, ctx) {
   const notes = [];
   let score = 0;
 
+  // Series-identity gate (TV only): when the caller knows every title this series legitimately
+  // answers to, a release whose parsed series head doesn't match any of them is a different
+  // show wearing the same word — "The Law of Revenge" for a "Revenge" request — and is rejected
+  // outright rather than merely scored down. Fails open (no gate) when aliases weren't supplied,
+  // so callers that don't yet know the series (free-text /avistaz search) are unaffected.
+  const head = ctx.mediaType !== 'movie' ? seriesToken(result.title) : '';
+  const aliasMatch = ctx.mediaType !== 'movie' && ctx.aliases && ctx.aliases.length
+    ? seriesAliasMatch(head, ctx.aliases) : null;
+  if (aliasMatch && !aliasMatch.ok) {
+    return {
+      confidence: 0,
+      rejected: true,
+      rejectReason: 'series_mismatch',
+      notes: [`different series (${head || 'unrecognized'})`],
+      parsed,
+      freeleech,
+      titleMatch: aliasMatch,
+    };
+  }
+
   const wantTokens = normalizeTitle(ctx.title).split(' ').filter(Boolean);
   const haystack = ` ${normalizeTitle(result.title)} `;
   const matched = wantTokens.filter(t => haystack.includes(` ${t} `)).length;
   score += wantTokens.length ? Math.round(40 * (matched / wantTokens.length)) : 0;
   if (matched < wantTokens.length) notes.push('partial title match');
+
+  // Precision: a release whose parsed series head carries extra, non-noise words beyond the
+  // wanted title is probably a different, similarly-named show ("Revenge" matching inside "The
+  // Law of Revenge") even though every wanted word was found. Recall alone can't see this — it
+  // only checks that wanted words are present, never that the release doesn't also claim more.
+  // Capped, never a rejection on its own: a release with a longer *legitimate* title (a caller
+  // that didn't have aliases handy) should lose points, not be thrown out.
+  if (ctx.mediaType !== 'movie' && head) {
+    const extraTokens = aliasMatch ? aliasMatch.extraTokens
+      : headExtraTokens(head, wantTokens);
+    if (extraTokens.length) {
+      score -= Math.min(20, 7 * extraTokens.length);
+      notes.push(`extra title words (${extraTokens.slice(0, 3).join(' ')})`);
+    }
+  }
 
   if (ctx.mediaType === 'movie') {
     if (!ctx.year || !parsed.year) score += 8;
@@ -315,12 +426,15 @@ function scoreAvistazResult(result, ctx) {
 }
 
 // Score, sort, and normalize the raw Prowlarr results into what the embeds and grab flow
-// need. Results with no downloadUrl (nothing to grab) are dropped.
-function rankAvistazResults(results, ctx, { limit = 3 } = {}) {
+// need. Results with no downloadUrl (nothing to grab) are dropped. A result the alias gate
+// rejects as a different series is dropped too, unless includeRejected is set — a caller like
+// /avistaz search can show an admin *why* a plausible-looking title vanished, without ever
+// making it clickable (callers must check `.rejected` before offering a Download button).
+function rankAvistazResults(results, ctx, { limit = 3, includeRejected = false } = {}) {
   return (results || [])
     .filter(r => r.downloadUrl)
     .map(r => {
-      const { confidence, notes, parsed, freeleech } = scoreAvistazResult(r, ctx);
+      const { confidence, notes, parsed, freeleech, rejected, rejectReason } = scoreAvistazResult(r, ctx);
       return {
         releaseTitle: r.title,
         downloadUrl: r.downloadUrl,
@@ -332,6 +446,8 @@ function rankAvistazResults(results, ctx, { limit = 3 } = {}) {
         confidence,
         notes,
         freeleech,
+        rejected: !!rejected,
+        rejectReason: rejectReason || null,
         resolution: parsed.resolution,
         source: parsed.source,
         seasonPack: parsed.seasonPack,
@@ -340,6 +456,7 @@ function rankAvistazResults(results, ctx, { limit = 3 } = {}) {
         seasonEnd: parsed.seasonEnd,
       };
     })
+    .filter(c => includeRejected || !c.rejected)
     .sort((a, b) => b.confidence - a.confidence)
     .slice(0, limit);
 }
@@ -369,4 +486,4 @@ function decideGrabJobAction(row, facts, now, cfg) {
   return row.state === 'sent' ? 'mark_downloading' : 'wait';
 }
 
-module.exports = { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, parseReleaseName, seriesToken, releaseContentClaim, contentClaimsOverlap, describeContentClaim, claimCoversSeason, planSeriesGrab, describeGrabPlan, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction };
+module.exports = { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, releaseContentClaim, contentClaimsOverlap, describeContentClaim, claimCoversSeason, planSeriesGrab, describeGrabPlan, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction, buildSeriesAliases, seriesAliasMatch, ALIAS_NOISE_TOKENS };

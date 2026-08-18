@@ -38,7 +38,8 @@ const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeaso
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
-const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity } = require('./src/arr');
+const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases,
+  getArrTagId } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed, usesDirectGrabEscalation } = require('./src/escalation');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('./src/season-pack');
 const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('./src/season-release');
@@ -49,7 +50,7 @@ const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, par
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
-const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, parseReleaseName, seriesToken, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction } = require('./src/grab');
+const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
 const { runBackup, rotateBackups, backupState, rehearseLatestBackup } = require('./scripts/backup-db');
 const { recordDiskSamples, pruneDiskSamples, forecastDisks, pathIsOnRoot, forecastLabel } = require('./src/capacity');
@@ -58,7 +59,7 @@ const { createWebhookHandlers, requireWebhookSecret } = require('./src/routes/we
 const { createTierAgentAuth } = require('./src/routes/tier-agent-auth');
 const { createApp } = require('./src/app');
 const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
-const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
+const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate, planStuckTransferActions } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
 const { summarizeSeriesGaps, describeGaps, describeActivity, rankIncomplete } = require('./src/incomplete');
 const { priorityKey, orderByPriority, isPinned, nextRank } = require('./src/priority');
@@ -1092,7 +1093,7 @@ async function autoForceSeasonPack({ seriesId, seriesTitle, seasonNumber, candid
   return { status: 'grabbed' };
 }
 
-async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, missingAtSearch, commandId, searchedAt = 0 }) {
+async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = null, seriesAliases = null, seasonNumber, missingAtSearch, commandId, searchedAt = 0 }) {
   const command = await pollArrCommand({ url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY }, commandId, 10 * 60000);
   const status = command.status || 'unknown';
   const [episodes, queue, history] = await Promise.all([
@@ -1169,7 +1170,12 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seasonNumber, 
     try {
       const anchorEpisode = missingEpisodes.find(episode => Number.isInteger(Number(episode.id)) && Number(episode.id) > 0);
       const releases = await interactiveSeasonSearch(seriesId, seasonNumber, anchorEpisode?.id);
-      const ranked = rankSeasonReleases(releases, { title: seriesTitle, season: seasonNumber });
+      // Sonarr titles can carry a trailing year ("Full House (2004)"), which would otherwise
+      // become a required token in the title score.
+      const { query: seriesQuery, year: parsedYear } = splitTitleYear(seriesTitle);
+      const ranked = rankSeasonReleases(releases, {
+        title: seriesQuery, season: seasonNumber, year: seriesYear ?? parsedYear, aliases: seriesAliases,
+      });
       interactiveFingerprint = ranked.map(release => ({
         id: release.guid || `${release.indexerId ?? ''}:${release.title}`,
         approved: release.approved,
@@ -1456,10 +1462,13 @@ function episodeFallbackCoverage({ series, seasonNumber, episodes, queue }) {
 
   const claimedEpisodeIds = new Set();
   let seasonClaimed = false;
-  const wantedSeries = normalizeTitle(series.title);
+  // Sonarr titles routinely carry a trailing year ("Full House (2004)"), which
+  // normalizeTitle would turn into a required token no release claim can ever equal —
+  // compare through the alias gate instead of a bare string match.
+  const wantedAliases = sonarrSeriesAliases(series);
   for (const job of listActiveGrabJobs().filter(row => row.media_type === 'tv')) {
     const claim = releaseContentClaim(job.release_title);
-    if (!claim || claim.series !== wantedSeries) continue;
+    if (!claim || !seriesAliasMatch(claim.series, wantedAliases).ok) continue;
     if (claim.whole || claim.seasons.has(Number(seasonNumber))) seasonClaimed = true;
     for (const key of claim.episodes) {
       const [season, episode] = key.split('.').map(Number);
@@ -1669,6 +1678,20 @@ async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
     if (!fallbackSeasons.has(Number(row.series_id))) fallbackSeasons.set(Number(row.series_id), []);
     fallbackSeasons.get(Number(row.series_id)).push(Number(row.season_number));
   }
+  // Season search only runs against series carrying AVISTAZ_TAG — otherwise SeasonSearch/
+  // EpisodeSearch hits every configured Sonarr indexer (public trackers included) and routes to
+  // whatever download client those indexers use, which is how a season search ends up grabbing
+  // dozens of dead public releases. Untagged series can opt back into the old all-indexer
+  // behavior via SEASON_PACK_SONARR_UNTAGGED.
+  const source = { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, label: 'sonarr' };
+  const tagId = await getArrTagId(source, CONFIG.AVISTAZ_TAG).catch(() => null);
+  const allowUntagged = tunable('SEASON_PACK_SONARR_UNTAGGED');
+  if (tagId == null && !allowUntagged) {
+    audit('season_pack_skipped', { reason: 'tag_missing', tag: CONFIG.AVISTAZ_TAG });
+    return { searched: 0, skipped: 'tag_missing', episodeFallbackSubmitted: fallback.submitted };
+  }
+  const directEnabled = tunable('SEASON_PACK_AVISTAZ_DIRECT') && grabConfigured();
+  const indexer = directEnabled ? await findAvistazIndexer().catch(() => null) : null;
   // Shows somebody actually asked for get the pack treatment whatever their age — most releases
   // are "S01" packs regardless of how old the show is, and a requester is waiting on this one.
   const requestedTvdbIds = tunable('SEASON_PACK_REQUESTED') ? listRequestedTvdbIds() : new Set();
@@ -1677,9 +1700,19 @@ async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
   const priority = mediaPriorityMap();
   const ordered = orderByPriority(seriesList || [], { keyFor: series => priorityKey({ tvdbId: series.tvdbId }), priority });
   const searched = [];
+  let avistazAllowanceExhausted = false;
   for (const series of ordered) {
     if (searched.length >= tunable('SEASON_PACK_MAX_PER_RUN')) break;
     if (!series.monitored) continue;
+    const tagged = tagId != null && (series.tags || []).includes(tagId);
+    if (!tagged && !allowUntagged) continue;
+    // A tagged series with direct grab enabled must never fall back to Sonarr's all-indexer
+    // search — that fallback is exactly the public-indexer fan-out this scope exists to remove.
+    if (tagged && directEnabled && !indexer) {
+      audit('season_pack_skipped', { reason: 'indexer_missing', seriesId: series.id, title: series.title });
+      continue;
+    }
+    const route = tagged && directEnabled ? 'avistaz' : 'sonarr';
     // Cheap pre-filters before spending an /episode call per series: a show that's complete has
     // no gaps to fill, and one that's neither old nor requested isn't eligible whatever its
     // episodes say.
@@ -1694,14 +1727,35 @@ async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
       audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'season_pack_episodes', seriesId: series.id });
       continue;
     }
+    const activeGrabSeasons = route === 'avistaz' ? activeGrabSeasonsFor(series, episodes) : [];
     const { eligible, reason, seasons } = seasonSearchTargets({
       series, episodes, requested,
-      inQueue: [...queuedSeasons(queue, series.id), ...(fallbackSeasons.get(Number(series.id)) || [])],
+      inQueue: [...queuedSeasons(queue, series.id), ...(fallbackSeasons.get(Number(series.id)) || []), ...activeGrabSeasons],
       searchedAt: getSeasonSearchTimes(series.id),
     }, now, cfg);
     if (!eligible) continue;
     for (const season of seasons) {
       if (searched.length >= tunable('SEASON_PACK_MAX_PER_RUN')) break;
+      const pinned = isPinned(series, { keyFor: x => priorityKey({ tvdbId: x.tvdbId }), priority });
+
+      if (route === 'avistaz') {
+        if (avistazAllowanceExhausted) continue;
+        const allowance = grabDailyAllowance();
+        if (allowance.exhausted) { avistazAllowanceExhausted = true; continue; }
+        const result = await runSeasonDirectGrab({ series, season, indexer, allowance });
+        // Recorded only for a completed attempt — not for an allowance defer or a transient
+        // search error — so a failed search retries next sweep instead of sitting out the
+        // cooldown, same as the Sonarr route below.
+        if (result.status !== 'allowance' && result.status !== 'error') {
+          recordSeasonSearch({ seriesId: series.id, seasonNumber: season.season, seriesTitle: series.title, missing: season.missing });
+        }
+        if (result.status === 'allowance') { avistazAllowanceExhausted = true; continue; }
+        if (rearmAlerts || result.status === 'grabbed') clearSeasonAlertState(series.id, season.season);
+        audit('season_pack_search', { seriesId: series.id, title: series.title, season: season.season, missing: season.missing, aired: season.aired, reason, requested, route, status: result.status });
+        searched.push({ series, season, reason, pinned, route, detail: result.detail || result.status });
+        continue;
+      }
+
       let command;
       const searchedAt = Date.now();
       try {
@@ -1714,22 +1768,26 @@ async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
       // Recorded only after the command is accepted, so a failed search retries next sweep
       // instead of sitting out the cooldown.
       recordSeasonSearch({ seriesId: series.id, seasonNumber: season.season, seriesTitle: series.title, missing: season.missing });
-      audit('season_pack_search', { seriesId: series.id, title: series.title, season: season.season, missing: season.missing, aired: season.aired, reason, requested, commandId: command?.id || null });
-      monitorSeasonSearch({ seriesId: series.id, seriesTitle: series.title, seasonNumber: season.season, missingAtSearch: season.missing, commandId: command?.id, searchedAt });
-      searched.push({ series, season, reason, pinned: isPinned(series, { keyFor: x => priorityKey({ tvdbId: x.tvdbId }), priority }) });
+      audit('season_pack_search', { seriesId: series.id, title: series.title, season: season.season, missing: season.missing, aired: season.aired, reason, requested, route, commandId: command?.id || null });
+      monitorSeasonSearch({ seriesId: series.id, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber: season.season, missingAtSearch: season.missing, commandId: command?.id, searchedAt });
+      searched.push({ series, season, reason, pinned, route });
     }
   }
   if (searched.length) {
+    const avistazCount = searched.filter(s => s.route === 'avistaz').length;
     notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.INFO)
       .setTitle(`📦 Season-Pack Search — ${searched.length} season(s)`)
       .setDescription([
-        'Sonarr was asked to search each listed season. Fully missing seasons can use one pack; partially missing seasons may still be searched episode by episode:',
+        avistazCount
+          ? `${avistazCount} tagged season(s) were searched directly on AvistaZ; the rest went through Sonarr's own search. Fully missing Sonarr seasons can use one pack; partially missing seasons may still be searched episode by episode:`
+          : 'Sonarr was asked to search each listed season. Fully missing seasons can use one pack; partially missing seasons may still be searched episode by episode:',
         '',
-        ...searched.map(s => `${s.pinned ? '📌 ' : ''}${describeSeasonSearch(s.series.title, s.season)} _(${s.reason})_`),
+        ...searched.map(s => `${s.pinned ? '📌 ' : ''}${s.route === 'avistaz' ? `📦 AvistaZ — ${s.series.title} S${pad(s.season.season)}: ${s.detail}` : `🔍 ${describeSeasonSearch(s.series.title, s.season)}`} _(${s.reason})_`),
         '',
+        avistazAllowanceExhausted ? '⚠️ Today\'s AvistaZ allowance ran out partway through this run — the remaining tagged seasons will retry next sweep.' : null,
         'Whatever Sonarr grabs still imports normally. Seasons with nothing available are retried after '
           + `${CONFIG.SEASON_PACK_COOLDOWN_HOURS}h.`,
-      ].join('\n').slice(0, 4000))] });
+      ].filter(Boolean).join('\n').slice(0, 4000))] });
   }
   return { searched: searched.length, episodeFallbackSubmitted: fallback.submitted };
 }
@@ -1756,9 +1814,21 @@ async function previewSeasonPacks(values = {}) {
   const ordered = orderByPriority(seriesList || [], { keyFor: series => priorityKey({ tvdbId: series.tvdbId }), priority });
   const items = [...fallbackPreview.items];
   let eligibleCount = 0;
+  // Mirror the real sweep's tag gate so the preview never promises a search the sweep would
+  // actually skip. Best-effort — a lookup failure reports 'unknown' rather than throwing.
+  const source = { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, label: 'sonarr' };
+  const tagId = await getArrTagId(source, CONFIG.AVISTAZ_TAG).catch(() => null);
+  const allowUntagged = previewRuntimeValue(values, 'SEASON_PACK_SONARR_UNTAGGED');
+  const directEnabled = previewRuntimeValue(values, 'SEASON_PACK_AVISTAZ_DIRECT') && grabConfigured();
+  if (tagId == null && !allowUntagged) {
+    return [...items, { title: '(all)', reason: `the \`${CONFIG.AVISTAZ_TAG}\` tag does not exist in Sonarr — nothing is eligible until it does, or SEASON_PACK_SONARR_UNTAGGED is enabled`, stage: 'unknown' }];
+  }
   for (const series of ordered) {
     if (items.length >= PREVIEW_ITEM_LIMIT) break;
     if (!series.monitored) continue;
+    const tagged = tagId != null && (series.tags || []).includes(tagId);
+    if (!tagged && !allowUntagged) continue;
+    const route = tagged && directEnabled ? 'avistaz season grab' : 'season search';
     const stats = series.statistics || {};
     if (stats.episodeCount != null && stats.episodeFileCount != null && stats.episodeFileCount >= stats.episodeCount) continue;
     const requested = requestedTvdbIds.has(Number(series.tvdbId));
@@ -1772,9 +1842,10 @@ async function previewSeasonPacks(values = {}) {
       items.push({ title: series.title, reason: `episodes could not be read: ${err.message}`, stage: 'unknown' });
       continue;
     }
+    const activeGrabSeasons = route === 'avistaz season grab' ? activeGrabSeasonsFor(series, episodes) : [];
     const { eligible, reason, seasons, held } = seasonSearchTargets({
       series, episodes, requested,
-      inQueue: [...queuedSeasons(queue, series.id), ...(fallbackSeasons.get(Number(series.id)) || [])],
+      inQueue: [...queuedSeasons(queue, series.id), ...(fallbackSeasons.get(Number(series.id)) || []), ...activeGrabSeasons],
       searchedAt: getSeasonSearchTimes(series.id),
     }, now, cfg);
     if (!eligible) continue;
@@ -1789,8 +1860,10 @@ async function previewSeasonPacks(values = {}) {
       eligibleCount++;
       items.push({
         title: `${series.title} S${pad(season.season)}`,
-        reason: `${reason}; ${season.missing} of ${season.aired} aired episode(s) missing; episode fallback evidence_not_observed until a real search completes`,
-        stage: eligibleCount <= maxPerRun ? 'search' : `held by per-run cap ${maxPerRun}`,
+        reason: route === 'avistaz season grab'
+          ? `${reason}; ${season.missing} of ${season.aired} aired episode(s) missing; would search AvistaZ directly`
+          : `${reason}; ${season.missing} of ${season.aired} aired episode(s) missing; episode fallback evidence_not_observed until a real search completes`,
+        stage: eligibleCount <= maxPerRun ? route : `held by per-run cap ${maxPerRun}`,
       });
     }
   }
@@ -1813,13 +1886,6 @@ async function previewAutomation(name, values = {}) {
 // Falls back to the tag-based arr escalation when the pipeline isn't configured or the
 // search comes up empty.
 
-// Seerr/escalation titles often carry a trailing year — "My Title (2017)" — which hurts
-// tracker search recall; split it into query + year for scoring instead.
-function splitTitleYear(title) {
-  const m = /^(.*?)\s*\(((?:19|20)\d{2})\)\s*$/.exec(String(title || ''));
-  return m ? { query: m[1], year: Number(m[2]) } : { query: String(title || ''), year: null };
-}
-
 const grabDailyAllowance = () => grabAllowance(countGrabJobsToday(), CONFIG.AVISTAZ_DAILY_GRAB_LIMIT);
 
 // How many releases a whole-series grab may take right now: the config ceiling, tightened by
@@ -1832,7 +1898,7 @@ function seriesGrabBudget(allowance = grabDailyAllowance()) {
 // The whole-series plan for a TV offer, or null when the feature is off, the media isn't TV,
 // or there's nothing beyond the single best release to add. Releases already in flight are
 // excluded, so re-running a search after a partial grab only plans the gaps.
-function buildSeriesPlan({ candidates, mediaType, season = null, allowance = grabDailyAllowance() }) {
+function buildSeriesPlan({ candidates, mediaType, season = null, allowance = grabDailyAllowance(), aliases = null }) {
   if (!CONFIG.GRAB_TV_COMPLETE || mediaType !== 'tv') return null;
   const max = seriesGrabBudget(allowance);
   if (max < 1) return null;
@@ -1841,6 +1907,7 @@ function buildSeriesPlan({ candidates, mediaType, season = null, allowance = gra
     max,
     minConfidence: CONFIG.GRAB_TV_COMPLETE_MIN_CONFIDENCE,
     exclude: listActiveGrabJobs().filter(j => j.media_type === 'tv').map(j => j.release_title || j.title),
+    aliases,
   });
   if (!plan.picks.length) return null;
   return { ...plan, coverage: describeGrabPlan(plan.picks) };
@@ -2039,13 +2106,22 @@ async function runDirectGrabEscalation(row) {
   const indexer = await findAvistazIndexer();
   if (!indexer) return { ok: false, why: 'no AvistaZ indexer found in Prowlarr' };
   const { query, year } = splitTitleYear(row.title);
+  // Resolve the real Sonarr record when we have a tvdbId, so the scorer can gate on every
+  // title this series actually answers to — not just the requested string — and so a
+  // same-titled different show ("Full House" 1987 vs 2004) can be told apart by year.
+  let aliases;
+  let seriesYear = year;
+  if (row.media_type === 'tv' && row.tvdb_id) {
+    const series = await getSeriesByTvdbId(row.tvdb_id).catch(() => null);
+    if (series) { aliases = sonarrSeriesAliases(series); seriesYear = series.year || year; }
+  }
   const results = await searchAvistaz({ query, mediaType: row.media_type, indexerId: indexer.id });
   // A show needs a wider pool than the three shown: the whole-series plan is built from every
   // usable release (a pack per season), not just the podium.
-  const ranked = rankAvistazResults(results, { title: query, year, mediaType: row.media_type }, { limit: avistazRankLimit(row.media_type) });
+  const ranked = rankAvistazResults(results, { title: query, year: seriesYear, mediaType: row.media_type, aliases }, { limit: avistazRankLimit(row.media_type) });
   if (!ranked.length) return { ok: false, why: 'no AvistaZ results' };
   const candidates = ranked.slice(0, 3);
-  const plan = buildSeriesPlan({ candidates: ranked, mediaType: row.media_type, allowance });
+  const plan = buildSeriesPlan({ candidates: ranked, mediaType: row.media_type, allowance, aliases });
 
   const top = ranked[0];
   const meta = { mediaId: row.media_id, mediaType: row.media_type, title: row.title, discordId: row.requested_by_discord_id, origin: 'escalation-auto' };
@@ -2070,7 +2146,7 @@ async function runDirectGrabEscalation(row) {
 
   // The full ranked list is stashed, not just the three shown: Grab Everything re-plans from it
   // against live state on click, so an offer that outlived a restart can't re-grab what landed.
-  const nonce = stashGrabOffer({ mediaId: row.media_id, mediaType: row.media_type, title: row.title, discordId: row.requested_by_discord_id, origin: 'escalation', candidates: ranked });
+  const nonce = stashGrabOffer({ mediaId: row.media_id, mediaType: row.media_type, title: row.title, discordId: row.requested_by_discord_id, origin: 'escalation', candidates: ranked, aliases });
   notifyChannel('downloads', grabCandidatesMessage({
     heading: `🔎 AvistaZ Matches — ${row.title}`,
     candidates, nonce, allowance, plan,
@@ -2082,6 +2158,70 @@ async function runDirectGrabEscalation(row) {
 // How deep to rank a search. Movies only ever need the podium; a series is planned across every
 // usable release, so the pool has to be big enough to hold a pack per season.
 const avistazRankLimit = mediaType => (mediaType === 'tv' && CONFIG.GRAB_TV_COMPLETE ? 25 : 3);
+
+// One tagged season through the AvistaZ pipeline instead of Sonarr's own SeasonSearch — search
+// scoped to the AvistaZ indexer, rank gated to this series by alias, plan, then either auto-grab
+// (GRAB_MODE=auto at high confidence) or post the candidates for a click. Mirrors
+// runDirectGrabEscalation's shape but scoped to one season instead of a whole request. Never
+// throws — every failure path returns a status the sweep can log and summarize.
+async function runSeasonDirectGrab({ series, season, indexer, allowance }) {
+  if (allowance.exhausted) return { status: 'allowance' };
+  // Sonarr titles can carry a trailing year ("Full House (2004)"), which would otherwise become
+  // a required token in the title score.
+  const { query, year } = splitTitleYear(series.title);
+  const aliases = sonarrSeriesAliases(series);
+  let results;
+  try {
+    results = await searchAvistaz({ query, mediaType: 'tv', indexerId: indexer.id });
+  } catch (err) {
+    audit('external_api_error', { provider: 'prowlarr', error: err.message, action: 'season_pack_avistaz_search', seriesId: series.id, season: season.season });
+    return { status: 'error', error: err.message };
+  }
+  const ranked = rankAvistazResults(results, { title: query, year: series.year || year, mediaType: 'tv', season: season.season, aliases }, { limit: avistazRankLimit('tv') });
+  if (!ranked.length) return { status: 'no_results' };
+  const plan = buildSeriesPlan({ candidates: ranked, mediaType: 'tv', season: season.season, allowance, aliases });
+  const top = ranked[0];
+  const mediaId = series.tvdbId ? `tvdb:${series.tvdbId}` : null;
+  const meta = { mediaId, mediaType: 'tv', title: series.title, origin: 'season-pack' };
+  if (CONFIG.GRAB_MODE === 'auto' && top.confidence >= CONFIG.GRAB_AUTO_CONFIDENCE) {
+    if (plan && plan.picks.length > 1) {
+      const outcome = await executeSeriesGrab(plan.picks, meta);
+      if (outcome.sent.length || outcome.dup.length) {
+        return { status: 'grabbed', detail: `auto-grabbed **${plan.coverage}** (${top.confidence}% confidence)` };
+      }
+      // Every release failed (rTorrent down, bad torrents) — fall through to human approval.
+    } else {
+      const grab = await executeGrab(top, meta);
+      if (grab.ok) return { status: 'grabbed', detail: `auto-grabbed **${top.releaseTitle}** (${top.confidence}% confidence)` };
+      if (grab.dup) return { status: 'grabbed', detail: `already grabbing this season — ${grab.why}` };
+      // Grab itself failed (rTorrent down, bad torrent) — fall through to human approval.
+    }
+  }
+  const nonce = stashGrabOffer({ mediaId, mediaType: 'tv', title: series.title, origin: 'season-pack', candidates: ranked, season: season.season, aliases });
+  notifyChannel('downloads', grabCandidatesMessage({
+    heading: `📦 AvistaZ Season Pack — ${series.title} S${pad(season.season)}`,
+    candidates: ranked.slice(0, 3), nonce, allowance, plan,
+    footnote: 'Found while filling this season from the AvistaZ-tagged library sweep.',
+  }));
+  return { status: 'offered', detail: `posted ${ranked.length} candidate(s) for approval (best: ${top.confidence}% confidence)` };
+}
+
+// Seasons an active AvistaZ grab job already covers for this series — the direct-grab
+// counterpart of the Sonarr queue that queuedSeasons() reads, so the sweep doesn't re-search
+// (and re-spend the metered allowance on) a season it already sent to the seedbox last cycle.
+// Only whole-series and explicit season claims count; a lone in-flight episode doesn't cover the
+// rest of the season, so it must not suppress a real search for the remaining gaps.
+function activeGrabSeasonsFor(series, episodes) {
+  const aliases = sonarrSeriesAliases(series);
+  const seasons = new Set();
+  for (const job of listActiveGrabJobs().filter(j => j.media_type === 'tv')) {
+    const claim = releaseContentClaim(job.release_title);
+    if (!claim || !seriesAliasMatch(claim.series, aliases).ok) continue;
+    if (claim.whole) { for (const ep of episodes || []) seasons.add(Number(ep.seasonNumber)); continue; }
+    for (const s of claim.seasons) seasons.add(s);
+  }
+  return [...seasons];
+}
 
 // Watch active grab jobs against rTorrent and act on the state machine's verdicts.
 async function sweepGrabJobs() {
@@ -2886,28 +3026,72 @@ async function sweepPremiumizeTransfers() {
   }
 
   const stuck = findStuckTransfers(transfers, pmTracker, { stuckAfterMs: CONFIG.PREMIUMIZE_STUCK_AFTER_MINUTES * 60000, now });
-  for (const t of stuck) {
+  const ignored = new Set(stuck.filter(t => getSetting(`pm_ignore:${t.id}`)).map(t => String(t.id)));
+  const alertedAt = new Map(stuck.map(t => [String(t.id), getAlertedAt('premiumize', String(t.id))]));
+  const { deletes, alerts } = planStuckTransferActions(stuck, {
+    autoDelete: tunable('PREMIUMIZE_AUTO_CLEAR_DEAD'),
+    maxProgress: tunable('PREMIUMIZE_AUTO_CLEAR_MAX_PROGRESS') / 100,
+    ignored, alertedAt, cooldownMs: CONFIG.PREMIUMIZE_ALERT_COOLDOWN_HOURS * 3600000, now,
+  });
+
+  const cleared = [];
+  const failed = [];
+  for (const t of deletes) {
     const id = String(t.id);
-    if (getSetting(`pm_ignore:${id}`)) continue;
-    if (now - getAlertedAt('premiumize', id) < CONFIG.PREMIUMIZE_ALERT_COOLDOWN_HOURS * 3600000) continue;
-    setAlertedAt('premiumize', id, now);
-    const pct = Math.round(Number(t.progress || 0) * 100);
-    const embed = brandedEmbed(COLORS.WARN)
-      .setTitle('🧊 Premiumize Transfer Stuck')
-      .setDescription(`**${String(t.name || 'unnamed').slice(0, 200)}**`)
-      .addFields(
-        { name: 'Status', value: String(t.status || 'unknown'), inline: true },
-        { name: 'Progress', value: `${progressBar(pct)} ${pct}%`, inline: true },
-      );
-    if (t.message) embed.addFields({ name: 'Message', value: String(t.message).slice(0, 500), inline: false });
-    const row = new ActionRowBuilder().addComponents(
+    try {
+      await deleteTransfer(id);
+      pmTracker.delete(id);
+      clearAlertCooldown('premiumize', id);
+      cleared.push(t);
+      audit('premiumize_transfer_auto_cleared', { transferId: id, name: t.name, status: t.status, progress: t.progress });
+    } catch (err) {
+      failed.push({ t, err });
+      audit('external_api_error', { provider: 'premiumize', error: err.message, action: 'premiumize_auto_clear', transferId: id });
+    }
+  }
+  for (const t of alerts) setAlertedAt('premiumize', String(t.id), now);
+
+  // One batched embed instead of one alert per transfer — a bad night of public-indexer grabs
+  // can produce dozens of dead transfers at once, and a wall of near-identical alerts is worse
+  // than a summary with the bulk buttons this channel already has.
+  if (!cleared.length && !alerts.length && !failed.length) return;
+  const lines = [];
+  if (cleared.length) {
+    lines.push(`**🧹 Auto-cleared (${cleared.length}):**`, ...cleared.slice(0, 10).map(t => `• ${String(t.name || 'unnamed').slice(0, 100)}`));
+    if (cleared.length > 10) lines.push(`• _+${cleared.length - 10} more_`);
+  }
+  if (failed.length) {
+    lines.push('', `**⚠️ Failed to clear (${failed.length}):**`, ...failed.slice(0, 5).map(({ t, err }) => `• ${String(t.name || 'unnamed').slice(0, 100)} — ${err.message}`));
+  }
+  if (alerts.length) {
+    lines.push('', `**🧊 Still stuck (${alerts.length}):**`);
+    for (const t of alerts.slice(0, 10)) {
+      const pct = Math.round(Number(t.progress || 0) * 100);
+      lines.push(`• ${String(t.name || 'unnamed').slice(0, 100)} — ${String(t.status || 'unknown')} ${pct}%${t.message ? ` (${String(t.message).slice(0, 120)})` : ''}`);
+    }
+    if (alerts.length > 10) lines.push(`• _+${alerts.length - 10} more_`);
+  }
+  const embed = brandedEmbed(alerts.length ? COLORS.WARN : COLORS.INFO)
+    .setTitle(`🧊 Premiumize — ${alerts.length} stuck, ${cleared.length} auto-cleared`)
+    .setDescription(lines.join('\n').slice(0, 4000));
+  // Per-transfer Retry/Clear/Ignore buttons only make sense for exactly one alerted transfer —
+  // Discord's 5-button row can't carry them for a batch, so the bulk buttons stand in instead.
+  const components = [];
+  if (alerts.length === 1) {
+    const id = String(alerts[0].id);
+    components.push(new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`pm_retry:${id}`).setLabel('Retry').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`pm_clear:${id}`).setLabel('Clear Transfer').setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId(`pm_ignore:${id}`).setLabel('Ignore').setStyle(ButtonStyle.Secondary),
-    );
-    notifyChannel('downloads', { embeds: [embed], components: [row] });
-    audit('premiumize_transfer_stuck', { transferId: id, name: t.name, status: t.status, progress: t.progress });
+    ));
+  } else if (alerts.length > 1) {
+    components.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('pm_clearstuck').setLabel('Clear All 0% Stuck').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('pm_clearfinished').setLabel('Clear Finished').setStyle(ButtonStyle.Secondary),
+    ));
   }
+  notifyChannel('downloads', { embeds: [embed], components });
+  audit('premiumize_transfer_stuck', { cleared: cleared.length, failed: failed.length, alerted: alerts.length });
 }
 
 // Enforce the "Auto-deletes in N hours unless you choose Keep" promise. Every guard rail is
@@ -5858,18 +6042,31 @@ async function handleAvistazCommand(interaction) {
   try {
     const indexer = await findAvistazIndexer();
     if (!indexer) return interaction.editReply(`❌ No Prowlarr indexer matching \`${CONFIG.AVISTAZ_INDEXER_NAME}\` — add AvistaZ in Prowlarr first.`);
+    // Best-effort: only gate on aliases when the typed title resolves unambiguously to a real
+    // Sonarr series. An admin free-typing a title Sonarr doesn't know yet (not added, or a
+    // movie) keeps today's alias-less scoring rather than being blocked.
+    let aliases;
+    if (mediaType === 'tv') {
+      const resolved = await resolveSonarrSeriesIdentity({ title: split.query, year }).catch(() => null);
+      if (resolved?.series) aliases = sonarrSeriesAliases(resolved.series);
+    }
     const results = await searchAvistaz({ query: split.query, mediaType, indexerId: indexer.id });
-    const ranked = rankAvistazResults(results, { title: split.query, year, mediaType, season }, { limit: avistazRankLimit(mediaType) });
-    if (!ranked.length) return interaction.editReply(`🔍 No AvistaZ results for **${split.query}**${season != null ? ` S${pad(season)}` : ''}. Try alternate spellings or the show's original title.`);
-    const candidates = ranked.slice(0, 3);
+    // includeRejected only to explain an empty result set below — the offer itself (what's
+    // stashed, planned, and clickable) is built from `accepted` alone, so a button's index
+    // always lines up with the same position in offer.candidates.
+    const withRejected = rankAvistazResults(results, { title: split.query, year, mediaType, season, aliases }, { limit: avistazRankLimit(mediaType), includeRejected: true });
+    if (!withRejected.length) return interaction.editReply(`🔍 No AvistaZ results for **${split.query}**${season != null ? ` S${pad(season)}` : ''}. Try alternate spellings or the show's original title.`);
+    const accepted = withRejected.filter(c => !c.rejected);
+    if (!accepted.length) return interaction.editReply(`🔍 AvistaZ returned ${withRejected.length} result(s) for **${split.query}**, but none matched this series by name — they looked like a different, similarly-titled show.`);
+    const candidates = accepted.slice(0, 3);
     const allowance = grabDailyAllowance();
     // An explicit `season:` scopes the whole-series plan to that season; without one it plans
     // across every season the search turned up.
-    const plan = buildSeriesPlan({ candidates: ranked, mediaType, season, allowance });
-    const nonce = stashGrabOffer({ mediaType, title: rawTitle, discordId: interaction.user.id, origin: 'manual', candidates: ranked, season });
+    const plan = buildSeriesPlan({ candidates: accepted, mediaType, season, allowance, aliases });
+    const nonce = stashGrabOffer({ mediaType, title: rawTitle, discordId: interaction.user.id, origin: 'manual', candidates: accepted, season, aliases });
     audit('avistaz_search', { actorDiscordId: interaction.user.id, query: split.query, mediaType, season, results: results.length, shown: candidates.length, planned: plan?.picks.length || 0 });
     return interaction.editReply(grabCandidatesMessage({
-      heading: `🔎 Found ${ranked.length} AvistaZ match${ranked.length === 1 ? '' : 'es'} — ${split.query}`,
+      heading: `🔎 Found ${accepted.length} AvistaZ match${accepted.length === 1 ? '' : 'es'} — ${split.query}`,
       candidates, nonce, allowance, plan,
     }));
   } catch (err) {
@@ -7546,7 +7743,7 @@ async function handleButton(interaction) {
       restashGrabOffer(parts[0], offer);
       return interaction.reply({ content: `❌ Daily AvistaZ allowance is used up (${CONFIG.AVISTAZ_DAILY_GRAB_LIMIT}/day) — the buttons will work again tomorrow (UTC).`, ephemeral: true });
     }
-    const plan = buildSeriesPlan({ candidates, mediaType: offer.mediaType, season: offer.season ?? null, allowance });
+    const plan = buildSeriesPlan({ candidates, mediaType: offer.mediaType, season: offer.season ?? null, allowance, aliases: offer.aliases });
     if (!plan) {
       // A null plan is not always "nothing left": buildSeriesPlan also returns null when
       // GRAB_TV_COMPLETE is off or the day's budget is spent. Only the first case means the
@@ -9084,7 +9281,7 @@ function startExpressServer() {
           const command = await triggerSeasonSearch(seriesId, seasonNumber);
           clearSeasonAlertState(seriesId, seasonNumber);
           recordSeasonSearch({ seriesId, seasonNumber, seriesTitle: series.title, missing: missing.length });
-          monitorSeasonSearch({ seriesId, seriesTitle: series.title, seasonNumber, missingAtSearch: missing.length, commandId: command?.id });
+          monitorSeasonSearch({ seriesId, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber, missingAtSearch: missing.length, commandId: command?.id });
           audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, seasonNumber, title: series.title, commandId: command?.id || null });
           return res.json({ ok: true, message: `Sonarr accepted the S${pad(seasonNumber)} season search for ${series.title}.` });
         }

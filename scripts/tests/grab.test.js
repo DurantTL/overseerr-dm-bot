@@ -8,7 +8,7 @@ const assert = require('node:assert');
 const crypto = require('crypto');
 const express = require('express');
 
-const { parseReleaseName, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction, grabImportTarget, findAvistazIndexer, searchAvistaz, releaseContentClaim, contentClaimsOverlap, describeContentClaim, claimCoversSeason, planSeriesGrab, describeGrabPlan } = require('../../src/grab');
+const { parseReleaseName, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction, grabImportTarget, findAvistazIndexer, searchAvistaz, releaseContentClaim, contentClaimsOverlap, describeContentClaim, claimCoversSeason, planSeriesGrab, describeGrabPlan, buildSeriesAliases, seriesAliasMatch, splitTitleYear } = require('../../src/grab');
 const { serializeXmlRpcCall, parseXmlRpcResponse, computeInfoHash } = require('../../src/rtorrent');
 
 test('grab: parseReleaseName', () => {
@@ -348,4 +348,89 @@ test('grab: whole-series planning (planSeriesGrab / describeGrabPlan)', () => {
   assert.strictEqual(plan([['Great.Movie.2019.2160p.BluRay.REMUX', 96]]).picks.length, 0, 'movies yield no series plan');
   assert.strictEqual(planSeriesGrab([]).picks.length, 0, 'an empty result set plans nothing');
   assert.strictEqual(describeGrabPlan([]), 'this title', 'an empty plan degrades to a generic label');
+});
+
+test('grab: series alias gate and title precision (the "Revenge" / "The Law of Revenge" bug)', () => {
+  const mk = (title, over = {}) => ({ title, size: 20 * 1024 ** 3, seeders: 8, downloadUrl: 'http://x', ...over });
+
+  // Recall alone (no aliases): a superset title still contains every wanted word, so it used to
+  // score the full 40/40 title points with no warning. Precision now costs it points and leaves
+  // a visible note, even without knowing the accepted aliases.
+  const wrongShow = scoreAvistazResult(mk('The.Law.of.Revenge.S01E01.1080p.WEB-DL'), { title: 'Revenge', mediaType: 'tv', season: 1 });
+  const rightShow = scoreAvistazResult(mk('Revenge.S01E01.1080p.WEB-DL'), { title: 'Revenge', mediaType: 'tv', season: 1 });
+  assert.ok(rightShow.confidence - wrongShow.confidence >= 10, `the true match clearly outranks the superset title (${rightShow.confidence} vs ${wrongShow.confidence})`);
+  assert.match(wrongShow.notes.join(' '), /extra title words/, 'the superset title is flagged, not silently accepted');
+
+  // With the requested series' accepted aliases supplied, the gate rejects the wrong show
+  // outright — confidence 0, never auto-grabbable, never silently offered.
+  const gated = scoreAvistazResult(mk('The.Law.of.Revenge.S01E01.1080p.WEB-DL'), { title: 'Revenge', mediaType: 'tv', season: 1, aliases: ['revenge'] });
+  assert.strictEqual(gated.confidence, 0, 'a release for a different series is rejected outright when aliases are known');
+  assert.strictEqual(gated.rejected, true);
+  assert.strictEqual(gated.rejectReason, 'series_mismatch');
+  assert.match(gated.notes.join(' '), /different series/);
+
+  // The true match is unaffected by supplying aliases — it's an exact alias match.
+  const trueMatchGated = scoreAvistazResult(mk('Revenge.S01E01.1080p.WEB-DL'), { title: 'Revenge', mediaType: 'tv', season: 1, aliases: ['revenge'] });
+  assert.strictEqual(trueMatchGated.confidence, rightShow.confidence, 'the real match scores identically whether or not aliases are supplied');
+  assert.strictEqual(trueMatchGated.rejected, undefined);
+
+  // The gate fails open: an empty/absent alias list, or an empty release title (no series head
+  // to compare at all), never rejects. A movie is never gated (seriesToken doesn't apply).
+  assert.strictEqual(scoreAvistazResult(mk('The.Law.of.Revenge.S01E01.1080p.WEB-DL'), { title: 'Revenge', mediaType: 'tv', season: 1, aliases: [] }).rejected, undefined);
+  assert.strictEqual(scoreAvistazResult(mk(''), { title: 'Revenge', mediaType: 'tv', aliases: ['revenge'] }).rejected, undefined, 'no series head to compare — nothing to reject');
+  assert.strictEqual(scoreAvistazResult(mk('The.Law.of.Revenge.2019.1080p.BluRay'), { title: 'Revenge', mediaType: 'movie', year: 2019, aliases: ['revenge'] }).rejected, undefined, 'movies are never alias-gated');
+
+  // rankAvistazResults drops rejected candidates by default, and can surface them for the
+  // "none of these matched" message without ever making them clickable.
+  const ranked = rankAvistazResults([
+    mk('Revenge.S01E01.1080p.WEB-DL'),
+    mk('The.Law.of.Revenge.S01E01.1080p.WEB-DL'),
+  ], { title: 'Revenge', mediaType: 'tv', season: 1, aliases: ['revenge'] });
+  assert.strictEqual(ranked.length, 1, 'the mismatched release is dropped by default');
+  assert.match(ranked[0].releaseTitle, /^Revenge\.S01E01/);
+  const withRejected = rankAvistazResults([
+    mk('Revenge.S01E01.1080p.WEB-DL'),
+    mk('The.Law.of.Revenge.S01E01.1080p.WEB-DL'),
+  ], { title: 'Revenge', mediaType: 'tv', season: 1, aliases: ['revenge'] }, { includeRejected: true });
+  assert.strictEqual(withRejected.length, 2);
+  assert.strictEqual(withRejected.some(c => c.rejected), true);
+
+  // planSeriesGrab: an exact-alias match anchors the plan even when a wrong-show pack would
+  // otherwise have won on confidence alone — this is the fix to the "hijacked plan" risk.
+  const candidates = [
+    { releaseTitle: 'The.Law.of.Revenge.Complete.Series.1080p.WEB-DL', confidence: 95 },
+    { releaseTitle: 'Revenge.S01.1080p.WEB-DL', confidence: 85 },
+  ];
+  const plan = planSeriesGrab(candidates, { minConfidence: 0, aliases: ['revenge'] });
+  assert.strictEqual(plan.series, 'revenge', 'the requested series wins the anchor over a higher-confidence wrong-show pack');
+  assert.deepStrictEqual(plan.picks.map(p => p.releaseTitle), ['Revenge.S01.1080p.WEB-DL'], 'only the real series is picked');
+  // Without aliases, the old confidence-anchored behavior is unchanged (regression guard).
+  const planNoAliases = planSeriesGrab(candidates, { minConfidence: 0 });
+  assert.strictEqual(planNoAliases.series, 'the law of revenge', 'no aliases supplied — falls back to confidence anchoring as before');
+});
+
+test('grab: buildSeriesAliases / seriesAliasMatch', () => {
+  const aliases = buildSeriesAliases({
+    title: 'Full House (2004)',
+    alternateTitles: [{ title: 'Ppappa' }, 'Bare String Title'],
+    cleanTitle: 'fullhouse2004',
+  });
+  assert.ok(aliases.includes('full house'), 'the trailing year is stripped from the primary title');
+  assert.ok(aliases.includes('ppappa'), 'Sonarr-shaped alternateTitles entries are read');
+  assert.ok(aliases.includes('bare string title'), 'a plain-string alternate title is accepted too');
+  assert.strictEqual(new Set(aliases).size, aliases.length, 'aliases are deduplicated');
+
+  assert.strictEqual(seriesAliasMatch('full house', ['full house']).ok, true);
+  assert.strictEqual(seriesAliasMatch('full house', ['full house']).exact, true);
+  assert.strictEqual(seriesAliasMatch('the full house', ['full house']).ok, true, 'a leading article is noise, not a mismatch');
+  assert.strictEqual(seriesAliasMatch('the law of revenge', ['revenge']).ok, false, 'real extra words are a mismatch');
+  assert.deepStrictEqual(seriesAliasMatch('the law of revenge', ['revenge']).extraTokens, ['the', 'law', 'of']);
+  assert.strictEqual(seriesAliasMatch('', ['revenge']).ok, true, 'an unparseable/empty head fails open');
+  assert.strictEqual(seriesAliasMatch('anything', []).ok, true, 'no aliases supplied fails open');
+});
+
+test('grab: splitTitleYear', () => {
+  assert.deepStrictEqual(splitTitleYear('Full House (2004)'), { query: 'Full House', year: 2004 });
+  assert.deepStrictEqual(splitTitleYear('Full House'), { query: 'Full House', year: null });
+  assert.deepStrictEqual(splitTitleYear(''), { query: '', year: null });
 });

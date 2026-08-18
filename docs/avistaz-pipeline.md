@@ -113,7 +113,7 @@ the call is an informed one.
 - The stuck-download **Remove & Try Another Release** button blocklists the release; on an AvistaZ
   grab that blocklists a private-tracker release.
 
-## Season-Pack-First Searching (old shows, every indexer)
+## Season-Pack-First Searching (AvistaZ-tagged shows, by default)
 The bounded no-pack episode fallback is specified separately in
 [Sonarr season-to-episode fallback contract](season-episode-fallback-contract.md).
 
@@ -124,9 +124,22 @@ grabs, 30 release groups, and on a metered private tracker 30 download slots for
 would have cost.
 
 `SEASON_PACK_FIRST` (default on) sweeps Sonarr every `SEASON_PACK_CHECK_MINUTES` (default 180)
-and asks for a **SeasonSearch** on each incomplete season of each old show — one search for the
-whole season, so a pack can satisfy every gap at once. This runs against whatever indexers
-Sonarr already has; it is not AvistaZ-specific and needs none of the direct-grab pipeline.
+looking for incomplete seasons of old shows. **Only series carrying the AvistaZ tag are
+eligible** — the same tag episode recovery already gates on (`AVISTAZ_TAG`, see above). A tagged
+series' incomplete season is searched **directly against AvistaZ** (Prowlarr search → the same
+scorer/planner as `/avistaz search` → seedbox rTorrent), not through Sonarr's `SeasonSearch`
+command, so the search never touches a public indexer or a public download client. This is the
+default (`SEASON_PACK_AVISTAZ_DIRECT=true`) and requires the AvistaZ direct-grab pipeline below
+to be configured; a tagged series is skipped (not silently searched through Sonarr) if it isn't.
+
+Sonarr's own `SeasonSearch` — which asks the indexers for the season as a whole but still uses
+**every configured indexer**, public trackers included, and routes to whatever download client
+each indexer points at — is now opt-in rather than the default. Set
+`SEASON_PACK_SONARR_UNTAGGED=true` to season-search untagged series through Sonarr as before; a
+tagged series with `SEASON_PACK_AVISTAZ_DIRECT=false` also falls back to this route. This was the
+only behavior before the AvistaZ scope existed, and it's why an untagged library used to see
+season searches fan out to dozens of public-tracker grabs (and, on Premiumize, dozens of dead
+0%-forever transfers) for a single request.
 
 A show counts as **old** when Sonarr marks it `ended`, or when nothing has aired in
 `SEASON_PACK_DORMANT_DAYS` (default 365) and nothing is scheduled. A scheduled next airing always
@@ -156,8 +169,16 @@ over a large library from firing hundreds of indexer searches at once. Searched 
 posted to the downloads channel and audited as `season_pack_search`.
 
 Nothing in your Sonarr configuration is touched — no profiles, no custom formats, no release
-profiles. The bot only issues search commands, so turning `SEASON_PACK_FIRST=false` back off
-returns Sonarr to exactly its previous behavior. Whatever Sonarr grabs imports normally.
+profiles. Turning `SEASON_PACK_FIRST=false` back off returns to no season-pack sweeping at all.
+Whatever Sonarr grabs (the untagged/opt-out route) imports normally; whatever the direct-grab
+route sends to the seedbox goes through the same rclone-copy-and-import path as any other AvistaZ
+grab (see below).
+
+The episode-scoped interactive-search fallback below only applies to the Sonarr route — it
+verifies a Sonarr `SeasonSearch` command and inspects Sonarr's own Interactive Search results, so
+there is nothing for it to do on a season the direct-grab route searched instead. A direct-grab
+attempt records its own cooldown the same way (`SEASON_PACK_COOLDOWN_HOURS`), and a season an
+active AvistaZ grab job already covers is skipped rather than re-searched.
 
 If a completed season search makes no progress and its episode-scoped Interactive Search shows
 no eligible pack but does show a clean, Sonarr-approved release for the anchor episode,
@@ -277,6 +298,18 @@ two download slots on the same episodes, and releases already in flight are excl
 is planned, so other shows in the result set are never swept in. Releases join a plan at
 `GRAB_TV_COMPLETE_MIN_CONFIDENCE` (default `70`) — below `GRAB_AUTO_CONFIDENCE` on purpose, since
 the top match must clear that bar on its own before any bulk grab starts.
+
+**Different shows that share a word aren't treated as a match.** The title score used to be pure
+recall — every wanted word present in the release name, nothing else checked — so a request for
+"Revenge" scored `The Law of Revenge` at the same 40/40 as the real show, because "revenge" is
+one word and it's right there. A precision term now costs points for release-name words the
+request didn't ask for, and every caller that knows the real series (season-pack search, episode
+recovery, escalation with a resolved Sonarr/Radarr record) also passes its accepted aliases
+(primary title, Sonarr `alternateTitles`, year-stripped) — with those known, a release whose
+parsed series name isn't one of them is rejected outright (`0%` confidence, never offered, never
+auto-grabbed) rather than merely scored down. A free-typed `/avistaz search` with no resolvable
+series keeps the precision penalty but not the hard gate, so it still finds something for a title
+Sonarr doesn't know yet.
 
 Size is bounded by `GRAB_TV_MAX_RELEASES` (default `6`) **and** by whatever is left of
 `AVISTAZ_DAILY_GRAB_LIMIT`, whichever is smaller; the allowance is re-checked between releases, so
