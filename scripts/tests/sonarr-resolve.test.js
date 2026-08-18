@@ -8,6 +8,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { loadSandbox } = require('./extract');
 const { normalizeTitle } = require('../../src/grab');
+const altTitlesOf = s => (s?.alternateTitles || []).map(t => (typeof t === 'string' ? t : t?.title)).filter(Boolean);
 
 test('sonarr-resolve: resolveSonarrSeriesIdentity tvdb/exact/alternate/ambiguous outcomes', async () => {
   const series = [
@@ -17,7 +18,7 @@ test('sonarr-resolve: resolveSonarrSeriesIdentity tvdb/exact/alternate/ambiguous
     { id: 4, title: 'Old Drama', year: 2015, tvdbId: 444, alternateTitles: [] },
   ];
   const sonarrGet = async () => series;
-  const sandbox = loadSandbox(['resolveSonarrSeriesIdentity'], { normalizeTitle, sonarrGet });
+  const sandbox = loadSandbox(['resolveSonarrSeriesIdentity'], { normalizeTitle, sonarrGet, altTitlesOf });
   const resolve = args => sandbox.run(`resolveSonarrSeriesIdentity(${JSON.stringify(args)})`);
 
   let r = await resolve({ tvdbId: 111, title: 'anything' });

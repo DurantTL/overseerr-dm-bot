@@ -59,6 +59,10 @@ const RUNTIME_SETTINGS = [
   // ---- Season-pack-first searching ----
   { key: 'SEASON_PACK_FIRST', group: 'season_pack', type: 'bool', source: 'config',
     label: 'Search whole seasons for old shows' },
+  { key: 'SEASON_PACK_SONARR_UNTAGGED', group: 'season_pack', type: 'bool', source: 'config',
+    label: 'Also season-search untagged series through Sonarr', help: 'Default off. Untagged series keep the old all-indexer SeasonSearch behavior instead of being skipped.' },
+  { key: 'SEASON_PACK_AVISTAZ_DIRECT', group: 'season_pack', type: 'bool', source: 'config',
+    label: 'Grab tagged series from AvistaZ instead of Sonarr', help: 'Tagged series bypass Sonarr’s indexers entirely; the bot searches AvistaZ and sends the torrent to the seedbox.' },
   { key: 'SEASON_PACK_INTERACTIVE', group: 'season_pack', type: 'bool', source: 'config',
     label: 'Inspect releases after incomplete searches', help: 'Reports candidates and gives admins force-grab buttons only for packs inside the safety limits.' },
   { key: 'SEASON_PACK_FORCE_GRAB', group: 'season_pack', type: 'bool', source: 'config',
@@ -103,6 +107,12 @@ const RUNTIME_SETTINGS = [
     label: 'Minimum release-match confidence', unit: '%' },
   { key: 'EPISODE_RECOVERY_LOOKBACK_DAYS', group: 'episode_recovery', type: 'int', min: 1, max: 365, source: 'env', fallback: 14,
     label: 'Only consider episodes aired within', unit: 'days' },
+
+  // ---- Premiumize transfer watchdog ----
+  { key: 'PREMIUMIZE_AUTO_CLEAR_DEAD', group: 'premiumize', type: 'bool', source: 'config',
+    label: 'Auto-clear dead 0% transfers', help: 'A stuck transfer with no cached source is deleted automatically instead of alerting forever.' },
+  { key: 'PREMIUMIZE_AUTO_CLEAR_MAX_PROGRESS', group: 'premiumize', type: 'int', min: 0, max: 50, source: 'config',
+    label: 'Progress ceiling for "dead"', unit: '%' },
 ];
 
 const GROUPS = [
@@ -113,6 +123,7 @@ const GROUPS = [
   { id: 'escalation', title: 'AvistaZ escalation', blurb: 'Requests that find nothing on public indexers get escalated to the private tracker.' },
   { id: 'season_pack', title: 'Season-pack search', blurb: 'Asks Sonarr for a whole season instead of episode-by-episode when a pack is likely to exist.' },
   { id: 'episode_recovery', title: 'Episode recovery', blurb: 'Chases individual aired episodes that never landed, even once the series looks available.' },
+  { id: 'premiumize', title: 'Premiumize transfers', blurb: 'Clears transfers that will never finish and batches the leftovers into one alert.' },
 ];
 
 const BY_KEY = new Map(RUNTIME_SETTINGS.map(s => [s.key, s]));

@@ -3,7 +3,7 @@ const axios = require('axios');
 const { CONFIG } = require('./config');
 const { audit } = require('./db');
 const { pad } = require('./util');
-const { normalizeTitle, parseReleaseName } = require('./grab');
+const { normalizeTitle, parseReleaseName, buildSeriesAliases } = require('./grab');
 const { healthErrorDetail } = require('./health');
 
 async function radarrGetFrom(url, apiKey, endpoint) {
@@ -392,6 +392,18 @@ const listSonarrSeries = () => sonarrGet('/series');
 // is where foreign titles, alternate names, sequels-filed-as-a-season, and complete-series
 // packs go wrong. tvdbId (when the caller already has one, e.g. a normal request grab) is
 // authoritative and wins outright. Otherwise: an exact normalized-title match, falling back
+// Every alternateTitles entry Sonarr returns, as plain strings (Sonarr uses [{title}], never
+// bare strings, but this stays defensive). Hoisted to module scope so both
+// resolveSonarrSeriesIdentity and the AvistaZ scorer/planner share one reading of the shape.
+const altTitlesOf = s => (s?.alternateTitles || []).map(t => (typeof t === 'string' ? t : t?.title)).filter(Boolean);
+
+// The accepted-alias set for a Sonarr series row, ready for grab.js's title scorer/planner —
+// primary title, alternate titles, clean/original title, all year-stripped and normalized.
+const sonarrSeriesAliases = series => buildSeriesAliases({
+  title: series?.title, alternateTitles: altTitlesOf(series),
+  cleanTitle: series?.cleanTitle, originalTitle: series?.originalTitle,
+});
+
 // to alternate titles, falling back to a loose token-overlap match — but a loose match is
 // NEVER auto-selected, only offered as a candidate a human can click.
 //
@@ -407,7 +419,6 @@ async function resolveSonarrSeriesIdentity({ title, year, tvdbId } = {}) {
   }
   const wanted = normalizeTitle(title);
   if (!wanted) return { status: 'none', series: null, candidates: [] };
-  const altTitlesOf = s => (s.alternateTitles || []).map(t => t.title);
   const exact = all.filter(s => normalizeTitle(s.title) === wanted);
   const alt = all.filter(s => altTitlesOf(s).some(t => normalizeTitle(t) === wanted));
   const pool = exact.length ? exact : alt;
@@ -643,4 +654,4 @@ function remapPath(hostPath) {
   return hostPath;
 }
 
-module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, interactiveSeasonSearch, forceGrabRelease, getSeriesEpisodes, getSeasonDownloadHistory, listSonarrSeries, resolveSonarrSeriesIdentity, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };
+module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, interactiveSeasonSearch, forceGrabRelease, getSeriesEpisodes, getSeasonDownloadHistory, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };

@@ -121,6 +121,11 @@ const CONFIG = (() => {
   PREMIUMIZE_CHECK_MINUTES: Number.parseInt(process.env.PREMIUMIZE_CHECK_MINUTES || '15', 10),
   PREMIUMIZE_STUCK_AFTER_MINUTES: Number.parseInt(process.env.PREMIUMIZE_STUCK_AFTER_MINUTES || '45', 10),
   PREMIUMIZE_ALERT_COOLDOWN_HOURS: Number.parseInt(process.env.PREMIUMIZE_ALERT_COOLDOWN_HOURS || '6', 10),
+  // A transfer still at (effectively) 0% after the stuck window — no cached source, dead
+  // torrent — is deleted automatically instead of sitting in the queue re-alerting forever.
+  PREMIUMIZE_AUTO_CLEAR_DEAD: parseBool(process.env.PREMIUMIZE_AUTO_CLEAR_DEAD, true),
+  // Progress ceiling (percent) below which a stuck transfer counts as "dead" for auto-clear.
+  PREMIUMIZE_AUTO_CLEAR_MAX_PROGRESS: Number.parseInt(process.env.PREMIUMIZE_AUTO_CLEAR_MAX_PROGRESS || '1', 10),
   STUCK_CHECK_MINUTES: Number.parseInt(process.env.STUCK_CHECK_MINUTES || '10', 10),
   STUCK_AFTER_MINUTES: Number.parseInt(process.env.STUCK_AFTER_MINUTES || '45', 10),
   STUCK_ALERT_COOLDOWN_HOURS: Number.parseInt(process.env.STUCK_ALERT_COOLDOWN_HOURS || '6', 10),
@@ -148,6 +153,15 @@ const CONFIG = (() => {
   // the whole season exists as one torrent, so the bot asks Sonarr for a SeasonSearch instead —
   // one grab instead of N. Currently-airing shows are untouched (no pack exists for them yet).
   SEASON_PACK_FIRST: parseBool(process.env.SEASON_PACK_FIRST, true),
+  // Season search only runs against series carrying AVISTAZ_TAG — otherwise Sonarr's own
+  // SeasonSearch/EpisodeSearch hits every configured indexer (public trackers included) and
+  // routes to whatever download client those indexers use. Turn on to keep searching untagged
+  // series through Sonarr the old way.
+  SEASON_PACK_SONARR_UNTAGGED: parseBool(process.env.SEASON_PACK_SONARR_UNTAGGED, false),
+  // A tagged series is searched directly against AvistaZ (Prowlarr search → rank → seedbox
+  // rTorrent), reusing the same pipeline as /avistaz search and the escalation watchdog,
+  // instead of Sonarr's own SeasonSearch command.
+  SEASON_PACK_AVISTAZ_DIRECT: parseBool(process.env.SEASON_PACK_AVISTAZ_DIRECT, true),
   // After a completed search makes no or partial progress, inspect Sonarr's rejected releases
   // and report the best candidates. Automatic rejection overrides are a separate, default-off
   // switch so operators can observe the human-in-the-loop buttons before trusting automation.
