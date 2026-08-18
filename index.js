@@ -56,6 +56,7 @@ const { recordDiskSamples, pruneDiskSamples, forecastDisks, pathIsOnRoot, foreca
 const { webhookEventKey } = require('./src/webhook-events');
 const { createWebhookHandlers, requireWebhookSecret } = require('./src/routes/webhooks');
 const { createTierAgentAuth } = require('./src/routes/tier-agent-auth');
+const { createApp } = require('./src/app');
 const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
@@ -7990,21 +7991,16 @@ function seasonAlertDashboardItems(rows = []) {
 }
 
 function startExpressServer() {
-  const app = express();
-  app.disable('x-powered-by');
-  // Trust exactly one reverse-proxy hop only when the operator opts in. Rate-limit identities use
-  // req.ip below; directly trusting arbitrary X-Forwarded-For lets clients rotate spoofed IPs.
-  app.set('trust proxy', CONFIG.TRUST_PROXY ? 1 : false);
+  // Shared plumbing (x-powered-by, trust proxy, the global JSON body parser) lives in the
+  // src/app.js factory so it can be exercised with real HTTP requests on an ephemeral port
+  // without booting Discord — see scripts/tests/app-factory.test.js. Route registration below is
+  // unchanged; only the app's own setup moved.
+  const app = createApp({ trustProxy: !!CONFIG.TRUST_PROXY, skipJsonPaths: ['/agent/'] });
   const upload = multer({ limits: { fileSize: 5 * 1024 * 1024, files: 5 } });
   // Agent reports can carry a full atime inventory (thousands of file rows), so /agent/ gets a
   // larger JSON limit than the webhook/dashboard routes. Parsing is applied per-route (after
   // tierAgentAuth) below instead of here, so an unauthenticated caller can't force a 25 MB parse.
   const agentJsonParser = bodyParser.json({ limit: '25mb' });
-  app.use((req, res, next) => {
-    if (req.is('multipart/form-data')) return next();
-    if (req.path.startsWith('/agent/')) return next();
-    bodyParser.json({ limit: '1mb' })(req, res, next);
-  });
 
   let publicHealthCache = { at: 0, value: null, pending: null };
   app.get('/live', (_req, res) => res.json({ overall: 'ok', timestamp: new Date().toISOString() }));
