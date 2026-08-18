@@ -89,19 +89,13 @@ function brandedEmbed(color) {
   return e;
 }
 
-// Per-process random secret, generated once at startup. Used only when there's no explicit
-// SESSION_SECRET and no admin credential to derive one from — so a forged session cookie can
-// never be minted from a predictable constant. Sessions rotate on restart in that case, but
-// without a password/token nobody can log in anyway, so that costs nothing.
-const RANDOM_SESSION_SECRET = crypto.randomBytes(32).toString('hex');
-
-// Secret used to sign dashboard session cookies. Prefers an explicit SESSION_SECRET, else
-// derives a stable value from the admin credentials so sessions survive restarts without extra
-// config, else falls back to the per-process random secret above (never a hardcoded constant).
+// Secret used to sign dashboard session cookies. validateConfig() refuses to start with
+// DASHBOARD_ENABLED=true unless SESSION_SECRET is set, so this is never derived from the admin
+// password/token (a captured cookie would otherwise hand an attacker a known HMAC message/
+// signature pair, guessable offline at SHA-256 speed) and never falls back to a per-process value
+// (which would silently invalidate every session on restart instead of failing loudly).
 function sessionSecret() {
-  if (CONFIG.SESSION_SECRET) return CONFIG.SESSION_SECRET;
-  const cred = CONFIG.DASHBOARD_ADMIN_PASSWORD || CONFIG.DASHBOARD_ADMIN_TOKEN;
-  return cred ? sha256(`session:${cred}`) : RANDOM_SESSION_SECRET;
+  return CONFIG.SESSION_SECRET;
 }
 
 // Signed, stateless session token: base64url(payload).hmac. No external cookie/session deps.

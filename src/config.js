@@ -414,6 +414,14 @@ function validateConfig() {
   if (CONFIG.DASHBOARD_ENABLED && !CONFIG.DASHBOARD_ADMIN_PASSWORD && !CONFIG.DASHBOARD_ADMIN_TOKEN) {
     throw new Error('DASHBOARD_ENABLED=true requires DASHBOARD_ADMIN_PASSWORD or DASHBOARD_ADMIN_TOKEN');
   }
+  // Dashboard sessions are signed with SESSION_SECRET. Without this check the app would fall back
+  // to deriving a signing key from the admin password/token via a fast general-purpose hash — a
+  // captured signed session cookie would then give an attacker a known HMAC message/signature
+  // pair, making a weak admin credential guessable offline at SHA-256 speed. Refusing to start is
+  // the actionable fix: generate one with `openssl rand -hex 32` and set SESSION_SECRET.
+  if (CONFIG.DASHBOARD_ENABLED && !CONFIG.SESSION_SECRET) {
+    throw new Error('DASHBOARD_ENABLED=true requires SESSION_SECRET (generate one with `openssl rand -hex 32`); dashboard sessions must never be signed with a key derived from the admin password/token');
+  }
   // TUNNEL_DOMAIN makes /webhook/overseerr, /webhook/plex, and /webhook/tautulli reachable from
   // the public internet regardless of whether deletion is live — an unauthenticated webhook is a
   // real attack surface (spoofed events, request/queue manipulation) on its own.
@@ -491,6 +499,9 @@ function configWarnings() {
   const dashSecret = CONFIG.DASHBOARD_ADMIN_PASSWORD || CONFIG.DASHBOARD_ADMIN_TOKEN;
   if (CONFIG.DASHBOARD_ENABLED && dashSecret && dashSecret.length < 12) {
     warnings.push('The dashboard password/token is under 12 characters — use a longer one (login is internet-reachable if your tunnel exposes it).');
+  }
+  if (CONFIG.DASHBOARD_ENABLED && CONFIG.SESSION_SECRET && CONFIG.SESSION_SECRET.length < 32) {
+    warnings.push('`SESSION_SECRET` is under 32 characters — use a longer, random value (e.g. `openssl rand -hex 32`) so signed dashboard sessions cannot be brute-forced offline.');
   }
   // A malformed ID is invisible at runtime: every notification to that channel just quietly
   // fails to resolve, so the bot looks healthy while nothing is ever posted. (Key list is local
