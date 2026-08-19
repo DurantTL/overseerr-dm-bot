@@ -2838,6 +2838,23 @@ async function executeAdoption(torrent, target, meta, resolver = null) {
       if (resolved.series) identity = { targetArrId: resolved.series.id, tvdbId: resolved.series.tvdbId, matchType: resolved.status };
     }
   }
+  // If Sonarr already has a file for the exact episode(s) this release covers, adopting it would
+  // pay for an rclone copy from the seedbox only to be rejected (or silently skipped) at import
+  // time anyway — check up front and skip it instead. Scoped to single/ranged-episode releases
+  // with a resolved series; a season pack, an unparseable name, or an unresolved series falls
+  // through to the normal path rather than being silently blocked by a check that can't be sure.
+  if (verdict.mediaType === 'tv' && identity.targetArrId) {
+    const parsed = parseReleaseName(torrent.name);
+    if (parsed.season != null && parsed.episode != null && !parsed.seasonPack) {
+      const episodes = await getSeriesEpisodes(identity.targetArrId).catch(() => null);
+      const wanted = (episodes || []).filter(ep => Number(ep.seasonNumber) === parsed.season
+        && Number(ep.episodeNumber) >= parsed.episode && Number(ep.episodeNumber) <= (parsed.episodeEnd || parsed.episode));
+      if (wanted.length && wanted.every(ep => ep.hasFile)) {
+        const epLabel = `S${pad(parsed.season)}E${pad(parsed.episode)}${parsed.episodeEnd ? `-E${pad(parsed.episodeEnd)}` : ''}`;
+        return { ok: false, dup: true, why: `Sonarr already has a file for ${epLabel} — not adopting a duplicate` };
+      }
+    }
+  }
   const { sub: remotePath, tried, viaSearch, ambiguous, mismatch } = await findAdoptRemotePath(torrent, resolver || makeRemotePathResolver());
   if (!remotePath) {
     const probed = tried.slice(0, 3).map(p => `\`${p}\``).join(', ') + (tried.length > 3 ? ', …' : '');
