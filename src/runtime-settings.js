@@ -119,6 +119,14 @@ const RUNTIME_SETTINGS = [
     label: 'Progress ceiling for "dead"', unit: '%' },
   { key: 'PREMIUMIZE_RETRY_BEFORE_CLEAR', group: 'premiumize', type: 'bool', source: 'config',
     label: 'Retry once before auto-clearing', help: 'A dead-looking transfer gets one Premiumize-side retry first, in case it was just a slow tracker — only deleted if still dead on the next sweep.' },
+
+  // ---- Release-group blocklist (#211) ----
+  { key: 'RELEASE_GROUP_BLOCKLIST_ENABLED', group: 'release_group_blocklist', type: 'bool', source: 'config',
+    label: 'Suggest Sonarr Custom Formats for dead release groups', help: 'When the same release-group tag keeps turning up on auto-cleared dead Premiumize transfers, post a suggestion in the downloads channel. Approving it creates a Custom Format and scores it down in every Sonarr quality profile.' },
+  { key: 'RELEASE_GROUP_BLOCKLIST_THRESHOLD', group: 'release_group_blocklist', type: 'int', min: 1, max: 50, source: 'config',
+    label: 'Distinct dead auto-clears before suggesting', unit: 'clears' },
+  { key: 'RELEASE_GROUP_BLOCKLIST_SCORE', group: 'release_group_blocklist', type: 'int', min: -10000, max: 0, source: 'config',
+    label: 'Score applied once approved', unit: 'pts' },
 ];
 
 const GROUPS = [
@@ -130,6 +138,7 @@ const GROUPS = [
   { id: 'season_pack', title: 'Season-pack search', blurb: 'Asks Sonarr for a whole season instead of episode-by-episode when a pack is likely to exist.' },
   { id: 'episode_recovery', title: 'Episode recovery', blurb: 'Chases individual aired episodes that never landed, even once the series looks available.' },
   { id: 'premiumize', title: 'Premiumize transfers', blurb: 'Clears transfers that will never finish and batches the leftovers into one alert.' },
+  { id: 'release_group_blocklist', title: 'Release-group blocklist', blurb: 'Suggests a Sonarr Custom Format when the same release-group tag keeps showing up in dead Premiumize auto-clears.' },
 ];
 
 const BY_KEY = new Map(RUNTIME_SETTINGS.map(s => [s.key, s]));

@@ -185,6 +185,19 @@ function seriesToken(name) {
   return normalizeTitle(head);
 }
 
+// The scene/P2P group tag off the end of a release name — the trailing bracketed form
+// ("...WEB-DL[rartv]") or the trailing dash-suffixed form ("...WEB-DL-RARBG"). Lowercased so
+// "RARBG"/"rarbg"/"[RARBG]" all collapse to the same key for counting repeated dead groups.
+// Unparseable/absent → null, same "don't act on silence" stance as parseReleaseName's fields.
+function extractReleaseGroup(name) {
+  const n = String(name || '').trim().replace(/\.(mkv|mp4|avi|torrent)$/i, '');
+  const bracketed = n.match(/\[([A-Za-z0-9]+)\]\s*$/);
+  if (bracketed) return bracketed[1].toLowerCase();
+  const suffixed = n.match(/-([A-Za-z0-9]+)$/);
+  if (suffixed) return suffixed[1].toLowerCase();
+  return null;
+}
+
 // A release's claimed episode-space: { series, seasons:Set<int> (whole-season claims),
 // episodes:Set<"s.e">, whole:bool (complete series → every season) }. Null when nothing usable
 // parses. Built on the already-tested parseReleaseName so season/pack/range logic stays in one
@@ -486,4 +499,4 @@ function decideGrabJobAction(row, facts, now, cfg) {
   return row.state === 'sent' ? 'mark_downloading' : 'wait';
 }
 
-module.exports = { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, releaseContentClaim, contentClaimsOverlap, describeContentClaim, claimCoversSeason, planSeriesGrab, describeGrabPlan, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction, buildSeriesAliases, seriesAliasMatch, ALIAS_NOISE_TOKENS };
+module.exports = { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, claimCoversSeason, planSeriesGrab, describeGrabPlan, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction, buildSeriesAliases, seriesAliasMatch, ALIAS_NOISE_TOKENS };

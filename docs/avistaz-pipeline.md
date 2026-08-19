@@ -169,6 +169,33 @@ single sweep, while a season that actually makes progress resets straight back t
 cooldown on the next search. This is unconditional — unlike the auto-tag gate above, it applies to
 every show, Asian or not, since the wasted search/download budget is the same either way.
 
+### Proactive dead-release-group blocklist (#211)
+
+The stall backoff above reacts well once a season is stuck, but every stalled season still has to
+burn at least one real grab-and-clear cycle — a dead Premiumize transfer, a wasted download slot —
+before the bot notices anything is wrong. Some release groups are knowable as dead in advance: a
+tracker that's been gone for years (RARBG since 2023 is the canonical example) keeps producing
+releases with essentially zero real seeders, and Sonarr keeps grabbing them anyway because nothing
+tells it not to.
+
+The Premiumize watchdog (`sweepPremiumizeTransfers`) already extracts the release-group tag (the
+trailing `[rartv]` or `-RARBG` on a torrent name) from every transfer it auto-clears as dead, and
+tracks how many distinct dead auto-clears each group has racked up. Once a group crosses
+`RELEASE_GROUP_BLOCKLIST_THRESHOLD` (default 5), the downloads channel gets a suggestion embed
+with **Blocklist in Sonarr** / **Not dead — dismiss** buttons — same suggest-only posture as the
+auto-tag feature above, since a release-group name could coincidentally overlap with something
+legitimate and this should never silently change search behavior.
+
+Clicking **Blocklist in Sonarr** creates a Sonarr Custom Format matching the release group and
+scores it `RELEASE_GROUP_BLOCKLIST_SCORE` (default `-1000`) in every quality profile — negative
+enough to push a matching release's total score below any default minimum, so Sonarr skips/rejects
+it on future searches instead of grabbing and burning another Premiumize slot. **Not dead —
+dismiss** remembers the group as dismissed so it isn't suggested again. Both actions are
+admin-only and fully reversible from Sonarr's own Settings → Custom Formats page if a tracker
+recovers.
+
+Set `RELEASE_GROUP_BLOCKLIST_ENABLED=false` to turn tracking off entirely.
+
 A show counts as **old** when Sonarr marks it `ended`, or when nothing has aired in
 `SEASON_PACK_DORMANT_DAYS` (default 365) and nothing is scheduled. A scheduled next airing always
 wins — a series returning next week is current whatever its status field says, and its latest
