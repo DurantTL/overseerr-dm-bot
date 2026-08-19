@@ -141,6 +141,15 @@ only behavior before the AvistaZ scope existed, and it's why an untagged library
 season searches fan out to dozens of public-tracker grabs (and, on Premiumize, dozens of dead
 0%-forever transfers) for a single request.
 
+An untagged series that's still going through Sonarr's own route doesn't have to stay stuck
+there forever, though: `SEASON_PACK_AUTO_TAG_AFTER_STALLS` (default 3) watches each season's
+missing-episode count across sweeps, and if it hasn't shrunk in that many consecutive sweeps —
+Sonarr keeps "grabbing" something, but it's the same dead public releases every time — the series
+is tagged with `AVISTAZ_TAG` automatically, no manual tagging required. The next sweep then routes
+it through AvistaZ direct grab like any other tagged series. This only fires when
+`SEASON_PACK_AVISTAZ_DIRECT` is on and an AvistaZ indexer is actually configured — tagging a
+series wouldn't change anything otherwise. Set it to `0` to disable and keep tagging manual.
+
 A show counts as **old** when Sonarr marks it `ended`, or when nothing has aired in
 `SEASON_PACK_DORMANT_DAYS` (default 365) and nothing is scheduled. A scheduled next airing always
 wins — a series returning next week is current whatever its status field says, and its latest

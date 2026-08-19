@@ -194,6 +194,12 @@ const CONFIG = (() => {
   SEASON_PACK_EPISODE_BATCH_SIZE: Number.parseInt(process.env.SEASON_PACK_EPISODE_BATCH_SIZE || '25', 10),
   SEASON_PACK_EPISODE_MAX_PER_RUN: Number.parseInt(process.env.SEASON_PACK_EPISODE_MAX_PER_RUN || '50', 10),
   SEASON_PACK_EPISODE_RETRY_MINUTES: Number.parseInt(process.env.SEASON_PACK_EPISODE_RETRY_MINUTES || '180', 10),
+  // An untagged season searched through Sonarr's own indexers whose missing-episode count never
+  // shrinks across repeated sweeps is stuck on dead public releases (defunct trackers, no
+  // seeders) — this is exactly what AVISTAZ_TAG + SEASON_PACK_AVISTAZ_DIRECT exists to fix, but
+  // only for series someone remembered to tag. After this many consecutive stalled sweeps the
+  // series is tagged automatically so the next sweep routes it to AvistaZ instead. 0 disables it.
+  SEASON_PACK_AUTO_TAG_AFTER_STALLS: Number.parseInt(process.env.SEASON_PACK_AUTO_TAG_AFTER_STALLS || '3', 10),
   // ---- AvistaZ direct grab: Prowlarr search → seedbox rTorrent → rclone → arr import ----
   // Full rTorrent XML-RPC endpoint incl. credentials, e.g.
   // https://user:pass@server.rapidseedbox.com/plugins/rpc/rpc.php

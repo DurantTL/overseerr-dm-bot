@@ -39,7 +39,7 @@ const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPl
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases,
-  getArrTagId } = require('./src/arr');
+  getArrTagId, addTagToSeries } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed, usesDirectGrabEscalation } = require('./src/escalation');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('./src/season-pack');
 const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('./src/season-release');
@@ -1767,8 +1767,24 @@ async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
       if (rearmAlerts) clearSeasonAlertState(series.id, season.season);
       // Recorded only after the command is accepted, so a failed search retries next sweep
       // instead of sitting out the cooldown.
-      recordSeasonSearch({ seriesId: series.id, seasonNumber: season.season, seriesTitle: series.title, missing: season.missing });
-      audit('season_pack_search', { seriesId: series.id, title: series.title, season: season.season, missing: season.missing, aired: season.aired, reason, requested, route, commandId: command?.id || null });
+      const stallCount = recordSeasonSearch({ seriesId: series.id, seasonNumber: season.season, seriesTitle: series.title, missing: season.missing });
+      // An untagged season whose missing count never shrinks across repeated sweeps is stuck on
+      // dead public releases (defunct trackers, no real seeders) — Sonarr happily re-grabs the
+      // same corpses forever. Tag it for AvistaZ so the *next* sweep routes it there instead,
+      // closing the loop without anyone having to remember to tag it by hand.
+      const autoTagThreshold = tunable('SEASON_PACK_AUTO_TAG_AFTER_STALLS');
+      if (!tagged && autoTagThreshold > 0 && stallCount >= autoTagThreshold && tagId != null && directEnabled && indexer) {
+        try {
+          await addTagToSeries(series.id, tagId);
+          audit('season_pack_auto_tagged', { seriesId: series.id, title: series.title, season: season.season, stallCount, tag: CONFIG.AVISTAZ_TAG });
+          notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.INFO)
+            .setTitle(`🔐 Auto-tagged for AvistaZ — ${series.title} S${pad(season.season)}`)
+            .setDescription(`Sonarr's own indexers grabbed something **${stallCount}** sweeps in a row without ever shrinking the missing-episode count — those releases look dead (no seeders / defunct trackers). Tagged \`${CONFIG.AVISTAZ_TAG}\` so the next sweep searches AvistaZ directly instead of retrying the same public releases.`)] });
+        } catch (err) {
+          audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'season_pack_auto_tag', seriesId: series.id, season: season.season });
+        }
+      }
+      audit('season_pack_search', { seriesId: series.id, title: series.title, season: season.season, missing: season.missing, aired: season.aired, reason, requested, route, commandId: command?.id || null, stallCount });
       monitorSeasonSearch({ seriesId: series.id, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber: season.season, missingAtSearch: season.missing, commandId: command?.id, searchedAt });
       searched.push({ series, season, reason, pinned, route });
     }

@@ -49,7 +49,7 @@ function build({
   // AvistaZ tag gate/direct-grab route existed. Tests of the gate/route itself opt in explicitly.
   sonarrUntagged = true, avistazDirect = false, tagId = 7, seriesTags = {},
   indexer = { id: 9 }, directResult = { status: 'offered', detail: 'posted 1 candidate(s)' },
-  activeGrabJobs = [],
+  activeGrabJobs = [], autoTagAfterStalls = 0, stallCounts = {},
 } = {}) {
   const calls = [];
   const recorded = [];
@@ -58,6 +58,7 @@ function build({
   const monitored = [];
   const rearmed = [];
   const directCalls = [];
+  const tagCalls = [];
   const CONFIG = {
     SEASON_PACK_FIRST: seasonPackFirst,
     SONARR_URL: 'http://sonarr',
@@ -70,6 +71,7 @@ function build({
     SEASON_PACK_REQUESTED: seasonPackRequested,
     SEASON_PACK_SONARR_UNTAGGED: sonarrUntagged,
     SEASON_PACK_AVISTAZ_DIRECT: avistazDirect,
+    SEASON_PACK_AUTO_TAG_AFTER_STALLS: autoTagAfterStalls,
   };
   // The sweep reads its knobs through tunable() so dashboard overrides apply mid-flight. Wire the
   // real resolver with no override store: every value comes straight from the CONFIG above, which
@@ -96,15 +98,16 @@ function build({
     monitorSeasonSearch: row => { monitored.push(row); },
     getSeasonSearchTimes: id => searchedAt[id] || {},
     listRequestedTvdbIds: () => new Set(requestedTvdbIds),
-    recordSeasonSearch: row => recorded.push(row),
+    recordSeasonSearch: row => { recorded.push(row); return stallCounts[row.seriesId]?.[row.seasonNumber] ?? 0; },
     clearSeasonAlertState: (seriesId, seasonNumber) => rearmed.push(`${seriesId}:${seasonNumber}`),
     audit: () => {},
     notifyChannel: (channel, msg) => notices.push({ channel, msg }),
     COLORS: { INFO: 1 },
-    brandedEmbed: () => ({ setTitle() { return this; }, setDescription(d) { this.description = d; return this; } }),
+    brandedEmbed: () => ({ setTitle(t) { this.title = t; return this; }, setDescription(d) { this.description = d; return this; } }),
     pad: n => String(n).padStart(2, '0'),
     // Tag gate + AvistaZ direct-grab route plumbing.
     getArrTagId: async () => tagId,
+    addTagToSeries: async (seriesId, id) => { tagCalls.push(`${seriesId}:${id}`); },
     grabConfigured: () => true,
     findAvistazIndexer: async () => indexer,
     grabDailyAllowance: () => ({ limited: false, remaining: null, exhausted: false }),
@@ -114,7 +117,7 @@ function build({
     sonarrSeriesAliases,
     listActiveGrabJobs: () => activeGrabJobs,
   });
-  return { sandbox, calls, recorded, notices, episodeFetches, monitored, rearmed, directCalls };
+  return { sandbox, calls, recorded, notices, episodeFetches, monitored, rearmed, directCalls, tagCalls };
 }
 
 test('season-pack-sweep: old shows get season searches, airing shows are never touched', async () => {
@@ -310,6 +313,55 @@ test('season-pack-sweep: an exhausted AvistaZ allowance does not start the coold
   });
   await h.sandbox.sweepSeasonPacks();
   assert.strictEqual(h.recorded.length, 0, 'an allowance-exhausted attempt does not start the cooldown');
+});
+
+// ---- Auto-tag a stalled untagged season for AvistaZ ----
+test('season-pack-sweep: an untagged season stalled past the threshold gets auto-tagged for AvistaZ', async () => {
+  // Winter Sonata S01 (series 1, season 1) is untagged, routed through Sonarr, and has stalled
+  // for exactly the configured threshold — it should get tagged so the next sweep uses AvistaZ.
+  const h = build({
+    sonarrUntagged: true, avistazDirect: true, tagId: 7, seriesTags: {},
+    autoTagAfterStalls: 3, stallCounts: { 1: { 1: 3 } },
+  });
+  await h.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(h.tagCalls, ['1:7'], 'the stalled series is tagged with the AvistaZ tag id');
+  assert.ok(h.notices.some(n => /Auto-tagged for AvistaZ/.test(n.msg.embeds[0].title || '')), 'an admin-facing notice explains what happened and why');
+});
+
+test('season-pack-sweep: a season below the stall threshold is left untagged', async () => {
+  const h = build({
+    sonarrUntagged: true, avistazDirect: true, tagId: 7, seriesTags: {},
+    autoTagAfterStalls: 3, stallCounts: { 1: { 1: 2 } },
+  });
+  await h.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(h.tagCalls, [], 'two stalled sweeps is not yet three');
+});
+
+test('season-pack-sweep: SEASON_PACK_AUTO_TAG_AFTER_STALLS=0 disables auto-tagging entirely', async () => {
+  const h = build({
+    sonarrUntagged: true, avistazDirect: true, tagId: 7, seriesTags: {},
+    autoTagAfterStalls: 0, stallCounts: { 1: { 1: 99 } },
+  });
+  await h.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(h.tagCalls, [], 'a threshold of 0 means never auto-tag, however stalled');
+});
+
+test('season-pack-sweep: a stalled season is not auto-tagged without a usable AvistaZ direct-grab route', async () => {
+  // Auto-tagging only helps if the next sweep can actually route through AvistaZ — with direct
+  // grab off, or on but with no indexer found, tagging would change nothing.
+  const noDirect = build({
+    sonarrUntagged: true, avistazDirect: false, tagId: 7, seriesTags: {},
+    autoTagAfterStalls: 3, stallCounts: { 1: { 1: 5 } },
+  });
+  await noDirect.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(noDirect.tagCalls, [], 'SEASON_PACK_AVISTAZ_DIRECT is off');
+
+  const noIndexer = build({
+    sonarrUntagged: true, avistazDirect: true, tagId: 7, seriesTags: {},
+    autoTagAfterStalls: 3, stallCounts: { 1: { 1: 5 } }, indexer: null,
+  });
+  await noIndexer.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(noIndexer.tagCalls, [], 'no AvistaZ indexer is configured in Prowlarr');
 });
 
 test('sweep guard: concurrent runs are refused and the guard clears after failure', async () => {
