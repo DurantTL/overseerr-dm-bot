@@ -9351,11 +9351,37 @@ function startExpressServer() {
             audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'cooldown', seriesId, seasonNumber, nextEligible });
             return res.status(409).json({ ok: false, error, nextEligible, canOverride: true });
           }
+          // Mirror the automated season-pack sweep's avistaz-vs-sonarr decision. This button used
+          // to always call Sonarr's plain SeasonSearch, silently ignoring the AvistaZ tag — an
+          // override on a tagged show now actually searches AvistaZ instead of quietly falling
+          // back to the public-indexer route it exists to avoid.
+          const tagSource = { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, label: 'sonarr' };
+          const tagId = await getArrTagId(tagSource, CONFIG.AVISTAZ_TAG).catch(() => null);
+          const tagged = tagId != null && (series.tags || []).includes(tagId);
+          const directEnabled = tunable('SEASON_PACK_AVISTAZ_DIRECT') && grabConfigured();
+          const indexer = tagged && directEnabled ? await findAvistazIndexer().catch(() => null) : null;
+          if (tagged && directEnabled && !indexer) {
+            audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'indexer_missing', seriesId, seasonNumber, title: series.title });
+            return res.status(409).json({ ok: false, error: `${series.title} is tagged for AvistaZ, but the AvistaZ indexer could not be found in Prowlarr — check AVISTAZ_INDEXER_NAME and the indexer's name there.` });
+          }
+          if (tagged && directEnabled && indexer) {
+            const allowance = grabDailyAllowance();
+            const result = await runSeasonDirectGrab({ series, season: { season: seasonNumber, missing: missing.length }, indexer, allowance });
+            clearSeasonAlertState(seriesId, seasonNumber);
+            recordSeasonSearch({ seriesId, seasonNumber, seriesTitle: series.title, missing: missing.length });
+            audit('dashboard_search', { ...dashboardActor(req), ok: result.status !== 'error', kind, seriesId, seasonNumber, title: series.title, route: 'avistaz', status: result.status, override: force });
+            const statusText = result.status === 'grabbed' ? result.detail
+              : result.status === 'offered' ? result.detail
+                : result.status === 'no_results' ? 'AvistaZ search completed but found no results.'
+                  : result.status === 'allowance' ? 'the daily AvistaZ grab allowance is exhausted for today.'
+                    : `AvistaZ search failed: ${result.error || 'unknown error'}`;
+            return res.json({ ok: result.status !== 'error', message: `${series.title} S${pad(seasonNumber)} — ${statusText}` });
+          }
           const command = await triggerSeasonSearch(seriesId, seasonNumber);
           clearSeasonAlertState(seriesId, seasonNumber);
           const stallCount = recordSeasonSearch({ seriesId, seasonNumber, seriesTitle: series.title, missing: missing.length });
           monitorSeasonSearch({ seriesId, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber, missingAtSearch: missing.length, commandId: command?.id, stallCount });
-          audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, seasonNumber, title: series.title, commandId: command?.id || null, override: force });
+          audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, seasonNumber, title: series.title, route: 'sonarr', commandId: command?.id || null, override: force });
           return res.json({ ok: true, message: `Sonarr accepted the S${pad(seasonNumber)} season search for ${series.title}.${force ? ' (cooldown overridden)' : ''}` });
         }
         const episode = episodes.find(ep => Number(ep.id) === episodeId && ep.monitored && !ep.hasFile
