@@ -415,6 +415,10 @@ const runMigrations = db.transaction(function runMigrationsInner() {
   ensureColumn('alert_cooldowns', 'fingerprint', 'TEXT');
   ensureColumn('alert_cooldowns', 'stood_down', 'INTEGER DEFAULT 0');
   ensureColumn('alert_cooldowns', 'metadata_json', 'TEXT');
+  // Consecutive season-pack sweeps where a season's missing-episode count failed to shrink —
+  // the signal the auto-tag-for-AvistaZ feature uses to spot a season stuck on dead public
+  // releases. Reset to 0 the moment a search makes real progress.
+  ensureColumn('season_searches', 'stall_count', 'INTEGER DEFAULT 0');
 
   // R2.1 multi-folder: older installs have tier_node_files keyed on (node, rel_path) with no
   // folder_id. Rebuild it under the new (node, folder_id, rel_path) key so the same relPath can
@@ -883,14 +887,28 @@ function getSeasonSearchTimes(seriesId) {
   return Object.fromEntries(rows.map(r => [r.season_number, r.last_searched_at]));
 }
 
+// season → current stall streak for one series — how many consecutive sweeps in a row the
+// missing-episode count failed to shrink. seasonSearchTargets uses this to back off the
+// cooldown for a season that's stuck, instead of retrying it at the same fixed cadence forever.
+function getSeasonSearchStalls(seriesId) {
+  const rows = db.prepare('SELECT season_number, stall_count FROM season_searches WHERE series_id = ?').all(seriesId);
+  return Object.fromEntries(rows.map(r => [r.season_number, r.stall_count]));
+}
+
+// Records this sweep's search and returns how many consecutive sweeps in a row the missing
+// count has failed to shrink (0 = this search made progress, or it's the first one on record).
 function recordSeasonSearch({ seriesId, seasonNumber, seriesTitle, missing }) {
-  db.prepare(`INSERT INTO season_searches (series_id, season_number, series_title, missing_at_search, last_searched_at)
-    VALUES (?, ?, ?, ?, ?)
+  const prior = db.prepare('SELECT missing_at_search, stall_count FROM season_searches WHERE series_id = ? AND season_number = ?').get(seriesId, seasonNumber);
+  const stallCount = prior && Number(missing || 0) >= Number(prior.missing_at_search) ? Number(prior.stall_count || 0) + 1 : 0;
+  db.prepare(`INSERT INTO season_searches (series_id, season_number, series_title, missing_at_search, last_searched_at, stall_count)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(series_id, season_number) DO UPDATE SET
       series_title = excluded.series_title,
       missing_at_search = excluded.missing_at_search,
-      last_searched_at = excluded.last_searched_at`)
-    .run(seriesId, seasonNumber, seriesTitle || null, missing || 0, Date.now());
+      last_searched_at = excluded.last_searched_at,
+      stall_count = excluded.stall_count`)
+    .run(seriesId, seasonNumber, seriesTitle || null, missing || 0, Date.now(), stallCount);
+  return stallCount;
 }
 
 const listRecentSeasonSearches = (sinceMs = 7 * 86400000) =>
@@ -1508,7 +1526,7 @@ function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k) {
   return null;
 }
 
-module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
+module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;
 Object.assign(module.exports, {
   recordSeasonEpisodeFallbackEvidence,

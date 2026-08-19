@@ -12,6 +12,7 @@ const runtimeSettings = require('../../src/runtime-settings');
 const { priorityKey, orderByPriority, isPinned } = require('../../src/priority');
 const { sha256 } = require('../../src/util');
 const { normalizeTitle, splitTitleYear, releaseContentClaim, seriesAliasMatch } = require('../../src/grab');
+const { isAsianLanguageName } = require('../../src/asian');
 const sonarrSeriesAliases = series => [normalizeTitle(series?.title)].filter(Boolean);
 
 const DAY = 86400000;
@@ -27,7 +28,7 @@ const ep = (season, number, over = {}) => ({
 
 // Two old shows with gaps, one airing show with the same gaps, one already-complete old show.
 const SERIES = [
-  { id: 1, tvdbId: 101, title: 'Winter Sonata', monitored: true, status: 'ended', statistics: { episodeCount: 20, episodeFileCount: 0 } },
+  { id: 1, tvdbId: 101, title: 'Winter Sonata', monitored: true, status: 'ended', originalLanguage: { name: 'Korean' }, statistics: { episodeCount: 20, episodeFileCount: 0 } },
   { id: 2, tvdbId: 102, title: 'Dormant Drama', monitored: true, status: 'continuing', previousAiring: daysAgo(900), statistics: { episodeCount: 10, episodeFileCount: 2 } },
   { id: 3, tvdbId: 103, title: 'Airing Now', monitored: true, status: 'continuing', previousAiring: daysAgo(2), nextAiring: daysAhead(5), statistics: { episodeCount: 8, episodeFileCount: 1 } },
   { id: 4, tvdbId: 104, title: 'Finished And Complete', monitored: true, status: 'ended', statistics: { episodeCount: 12, episodeFileCount: 12 } },
@@ -49,7 +50,7 @@ function build({
   // AvistaZ tag gate/direct-grab route existed. Tests of the gate/route itself opt in explicitly.
   sonarrUntagged = true, avistazDirect = false, tagId = 7, seriesTags = {},
   indexer = { id: 9 }, directResult = { status: 'offered', detail: 'posted 1 candidate(s)' },
-  activeGrabJobs = [],
+  activeGrabJobs = [], autoTagAfterStalls = 0, stallCounts = {}, maxBackoffSteps = 4,
 } = {}) {
   const calls = [];
   const recorded = [];
@@ -58,6 +59,7 @@ function build({
   const monitored = [];
   const rearmed = [];
   const directCalls = [];
+  const tagCalls = [];
   const CONFIG = {
     SEASON_PACK_FIRST: seasonPackFirst,
     SONARR_URL: 'http://sonarr',
@@ -70,6 +72,8 @@ function build({
     SEASON_PACK_REQUESTED: seasonPackRequested,
     SEASON_PACK_SONARR_UNTAGGED: sonarrUntagged,
     SEASON_PACK_AVISTAZ_DIRECT: avistazDirect,
+    SEASON_PACK_AUTO_TAG_AFTER_STALLS: autoTagAfterStalls,
+    SEASON_PACK_STALL_BACKOFF_MAX_STEPS: maxBackoffSteps,
   };
   // The sweep reads its knobs through tunable() so dashboard overrides apply mid-flight. Wire the
   // real resolver with no override store: every value comes straight from the CONFIG above, which
@@ -95,16 +99,18 @@ function build({
     triggerSeasonSearch: async (seriesId, seasonNumber) => { calls.push(`${seriesId}:${seasonNumber}`); return { id: seriesId * 100 + seasonNumber }; },
     monitorSeasonSearch: row => { monitored.push(row); },
     getSeasonSearchTimes: id => searchedAt[id] || {},
+    getSeasonSearchStalls: id => stallCounts[id] || {},
     listRequestedTvdbIds: () => new Set(requestedTvdbIds),
-    recordSeasonSearch: row => recorded.push(row),
+    recordSeasonSearch: row => { recorded.push(row); return stallCounts[row.seriesId]?.[row.seasonNumber] ?? 0; },
     clearSeasonAlertState: (seriesId, seasonNumber) => rearmed.push(`${seriesId}:${seasonNumber}`),
     audit: () => {},
     notifyChannel: (channel, msg) => notices.push({ channel, msg }),
     COLORS: { INFO: 1 },
-    brandedEmbed: () => ({ setTitle() { return this; }, setDescription(d) { this.description = d; return this; } }),
+    brandedEmbed: () => ({ setTitle(t) { this.title = t; return this; }, setDescription(d) { this.description = d; return this; } }),
     pad: n => String(n).padStart(2, '0'),
     // Tag gate + AvistaZ direct-grab route plumbing.
     getArrTagId: async () => tagId,
+    addTagToSeries: async (seriesId, id) => { tagCalls.push(`${seriesId}:${id}`); },
     grabConfigured: () => true,
     findAvistazIndexer: async () => indexer,
     grabDailyAllowance: () => ({ limited: false, remaining: null, exhausted: false }),
@@ -113,8 +119,9 @@ function build({
     seriesAliasMatch,
     sonarrSeriesAliases,
     listActiveGrabJobs: () => activeGrabJobs,
+    isAsianLanguageName,
   });
-  return { sandbox, calls, recorded, notices, episodeFetches, monitored, rearmed, directCalls };
+  return { sandbox, calls, recorded, notices, episodeFetches, monitored, rearmed, directCalls, tagCalls };
 }
 
 test('season-pack-sweep: old shows get season searches, airing shows are never touched', async () => {
@@ -175,6 +182,21 @@ test('season-pack-sweep: cooldown — a recently-searched season sits out, an ex
   const h = build({ searchedAt: { 1: { 1: NOW - 2 * 3600000, 2: NOW - 30 * 3600000 } } });
   await h.sandbox.sweepSeasonPacks();
   assert.deepStrictEqual(h.calls.sort(), ['1:2', '2:1'], 'only the season past its cooldown is re-searched');
+});
+
+test('season-pack-sweep: a stalled season sits out longer than a fresh one at the same last-searched time', async () => {
+  // Winter Sonata S01 stalled twice (24h * 2^2 = 96h cooldown) and was searched 30h ago — well
+  // inside backoff, so it sits out even though a plain 24h cooldown would have let it through
+  // (the plain-cooldown test above proves exactly that at the same 30h mark).
+  const h = build({ searchedAt: { 1: { 1: NOW - 30 * 3600000 } }, stallCounts: { 1: { 1: 2 } } });
+  await h.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(h.calls.sort(), ['1:2', '2:1'], 'the stalled season is held past the plain 24h cooldown; its never-searched sibling season is unaffected');
+});
+
+test('season-pack-sweep: SEASON_PACK_STALL_BACKOFF_MAX_STEPS=0 disables backoff entirely', async () => {
+  const h = build({ searchedAt: { 1: { 1: NOW - 30 * 3600000 } }, stallCounts: { 1: { 1: 2 } }, maxBackoffSteps: 0 });
+  await h.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(h.calls.sort(), ['1:1', '1:2', '2:1'], 'with backoff off, the plain 24h cooldown alone decides');
 });
 
 test('season-pack-sweep: the per-run cap bounds a first pass over a large library', async () => {
@@ -310,6 +332,67 @@ test('season-pack-sweep: an exhausted AvistaZ allowance does not start the coold
   });
   await h.sandbox.sweepSeasonPacks();
   assert.strictEqual(h.recorded.length, 0, 'an allowance-exhausted attempt does not start the cooldown');
+});
+
+// ---- Auto-tag a stalled untagged season for AvistaZ ----
+test('season-pack-sweep: an untagged season stalled past the threshold gets auto-tagged for AvistaZ', async () => {
+  // Winter Sonata S01 (series 1, season 1) is untagged, routed through Sonarr, and has stalled
+  // for exactly the configured threshold — it should get tagged so the next sweep uses AvistaZ.
+  const h = build({
+    sonarrUntagged: true, avistazDirect: true, tagId: 7, seriesTags: {},
+    autoTagAfterStalls: 3, stallCounts: { 1: { 1: 3 } },
+  });
+  await h.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(h.tagCalls, ['1:7'], 'the stalled series is tagged with the AvistaZ tag id');
+  assert.ok(h.notices.some(n => /Auto-tagged for AvistaZ/.test(n.msg.embeds[0].title || '')), 'an admin-facing notice explains what happened and why');
+});
+
+test('season-pack-sweep: a stalled Western show is never auto-tagged — AvistaZ is an Asian-content-only tracker', async () => {
+  // 'Dormant Drama' carries no originalLanguage in the fixture, same as an ordinary Western show
+  // Sonarr would report — tagging it for AvistaZ would just waste a metered search that can never
+  // find anything, however many sweeps it stalls for.
+  const h = build({
+    sonarrUntagged: true, avistazDirect: true, tagId: 7, seriesTags: {},
+    autoTagAfterStalls: 3, stallCounts: { 2: { 1: 10 } },
+  });
+  await h.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(h.tagCalls, [], 'a Western show never gets tagged for an Asian-only tracker, however stalled');
+});
+
+test('season-pack-sweep: a season below the stall threshold is left untagged', async () => {
+  const h = build({
+    sonarrUntagged: true, avistazDirect: true, tagId: 7, seriesTags: {},
+    autoTagAfterStalls: 3, stallCounts: { 1: { 1: 2 } },
+  });
+  await h.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(h.tagCalls, [], 'two stalled sweeps is not yet three');
+});
+
+test('season-pack-sweep: SEASON_PACK_AUTO_TAG_AFTER_STALLS=0 disables auto-tagging entirely', async () => {
+  const h = build({
+    sonarrUntagged: true, avistazDirect: true, tagId: 7, seriesTags: {},
+    autoTagAfterStalls: 0, stallCounts: { 1: { 1: 99 } },
+  });
+  await h.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(h.tagCalls, [], 'a threshold of 0 means never auto-tag, however stalled');
+});
+
+test('season-pack-sweep: a stalled season is not auto-tagged without a usable AvistaZ direct-grab route', async () => {
+  // Auto-tagging only helps if the next sweep can actually route through AvistaZ — with direct
+  // grab off, or on but with no indexer found, tagging would change nothing.
+  const noDirect = build({
+    sonarrUntagged: true, avistazDirect: false, tagId: 7, seriesTags: {},
+    autoTagAfterStalls: 3, stallCounts: { 1: { 1: 5 } },
+  });
+  await noDirect.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(noDirect.tagCalls, [], 'SEASON_PACK_AVISTAZ_DIRECT is off');
+
+  const noIndexer = build({
+    sonarrUntagged: true, avistazDirect: true, tagId: 7, seriesTags: {},
+    autoTagAfterStalls: 3, stallCounts: { 1: { 1: 5 } }, indexer: null,
+  });
+  await noIndexer.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(noIndexer.tagCalls, [], 'no AvistaZ indexer is configured in Prowlarr');
 });
 
 test('sweep guard: concurrent runs are refused and the guard clears after failure', async () => {
@@ -538,6 +621,38 @@ test('season search verification: distinguishes queued, verified, failed, and we
   assert.match(h.notices[0].msg.embeds[0].fields.at(-1).value, /System → Tasks/);
 });
 
+test('season search verification: a stalled grab (missing count never shrinking) gets the interactive report too', async () => {
+  // Sonarr "grabbed" something again, but the missing count is unchanged from last time — this
+  // is the dead-release-churn pattern (0% Premiumize transfers, defunct trackers), not a real
+  // success, so it should get the same rejection-reason/candidate report a no_grab search would.
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 1 report downloaded.' },
+    queue: [{ source: { kind: 'tv' }, seriesId: 1, seasonNumber: 1 }],
+    interactive: [{ title: 'Winter.Sonata.S01.1080p.WEB-DL', guid: 'pack-guid', indexerId: 7, size: 20 * 1024 ** 3, seeders: 12, indexer: 'AvistaZ', fullSeason: true, seasonNumber: 1, approved: false, rejections: [{ reason: 'Custom format score too low' }] }],
+  });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101, stallCount: 2 });
+  assert.strictEqual(result.outcome, 'grabbed');
+  assert.strictEqual(h.interactiveCalls.length, 1, 'a stalled grab pays for the interactive lookup, unlike a fresh grab');
+  const embed = h.notices[0].msg.embeds[0];
+  assert.match(embed.title, /still stalled/, 'the title flags this as a stall, not a plain success');
+  assert.match(embed.description, /\*\*3\*\* consecutive sweeps/, 'stallCount + this sweep is reported plainly');
+  assert.strictEqual(embed.color, 1, 'a stalled grab is a warning, not routine info (COLORS.WARN)');
+  assert.ok(embed.fields.some(f => /Custom format score too low/.test(f.value)), 'Sonarr\'s own rejection reason for the better candidate is surfaced');
+});
+
+test('season search verification: a fresh grab (no stall history) is not treated as a problem', async () => {
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 1 report downloaded.' },
+    queue: [{ source: { kind: 'tv' }, seriesId: 1, seasonNumber: 1 }],
+  });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101, stallCount: 0 });
+  assert.strictEqual(result.outcome, 'grabbed');
+  assert.strictEqual(h.interactiveCalls.length, 0, 'a first-time grab does not pay for an interactive lookup');
+  const embed = h.notices[0].msg.embeds[0];
+  assert.doesNotMatch(embed.title, /stalled/);
+  assert.strictEqual(embed.color, 2, 'a fresh grab stays routine info (COLORS.INFO)');
+});
+
 test('season search verification: interactive lookup only runs for partial and no-grab outcomes', async () => {
   let h = seasonVerifier({
     command: { status: 'completed' },
@@ -731,6 +846,7 @@ function previewBed({ values = {}, searchedAt = {}, queue = [], maxPerRun = 5, e
       return episodes[id] || [];
     },
     getSeasonSearchTimes: id => searchedAt[id] || {},
+    getSeasonSearchStalls: () => ({}),
     listRequestedTvdbIds: () => new Set(),
     getArrTagId: async () => tagId,
     grabConfigured: () => true,

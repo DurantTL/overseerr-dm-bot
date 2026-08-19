@@ -141,6 +141,34 @@ only behavior before the AvistaZ scope existed, and it's why an untagged library
 season searches fan out to dozens of public-tracker grabs (and, on Premiumize, dozens of dead
 0%-forever transfers) for a single request.
 
+An untagged series that's still going through Sonarr's own route doesn't have to stay stuck
+there forever, though: `SEASON_PACK_AUTO_TAG_AFTER_STALLS` (default 3) watches each season's
+missing-episode count across sweeps, and if it hasn't shrunk in that many consecutive sweeps —
+Sonarr keeps "grabbing" something, but it's the same dead public releases every time — the series
+is tagged with `AVISTAZ_TAG` automatically, no manual tagging required. The next sweep then routes
+it through AvistaZ direct grab like any other tagged series. This only fires when
+`SEASON_PACK_AVISTAZ_DIRECT` is on and an AvistaZ indexer is actually configured — tagging a
+series wouldn't change anything otherwise. Set it to `0` to disable and keep tagging manual.
+
+**This never fires for Western content.** AvistaZ only carries Asian movies and TV (see the
+escalation section below), so auto-tagging a stalled-but-non-Asian show — a Western series whose
+public-indexer releases have simply gone dead, a cancelled US show on defunct trackers, whatever —
+would just spend a metered AvistaZ search on a title that can never be there. The auto-tag check
+reads `originalLanguage.name` straight off Sonarr's own series record (no Seerr/TMDB round trip
+needed) and only proceeds when it names a language AvistaZ's remit covers; a Western show, or one
+Sonarr has no language recorded for, is left alone and keeps its alerts through the normal
+season-pack-interactive path instead.
+
+**A stalled Western show isn't left to retry forever at full speed, though.** Whatever route
+searched a season — Sonarr's own indexers or AvistaZ direct grab — `SEASON_PACK_STALL_BACKOFF_MAX_STEPS`
+(default 4) watches the same missing-episode-count signal the auto-tag feature does, and doubles
+that season's cooldown each consecutive sweep it fails to shrink: 24h, 48h, 96h, ... up to
+2^`SEASON_PACK_STALL_BACKOFF_MAX_STEPS` × the base cooldown. A season that's genuinely exhausted
+its public indexers stops re-grabbing the same dead release (and burning a download slot) every
+single sweep, while a season that actually makes progress resets straight back to the base
+cooldown on the next search. This is unconditional — unlike the auto-tag gate above, it applies to
+every show, Asian or not, since the wasted search/download budget is the same either way.
+
 A show counts as **old** when Sonarr marks it `ended`, or when nothing has aired in
 `SEASON_PACK_DORMANT_DAYS` (default 365) and nothing is scheduled. A scheduled next airing always
 wins — a series returning next week is current whatever its status field says, and its latest
@@ -187,6 +215,23 @@ season-pack sweep then asks Sonarr to search the live aired, monitored, file-les
 still applies its own profiles, custom formats, blocklist, and release rules to every episode; the
 bot does not force an individual result. Rejected, wrong-series, unknown-series,
 `downloadAllowed: false`, empty, or failed Interactive Search results never authorize this path.
+
+The interactive report isn't limited to a search that came back empty. Sonarr can also "grab"
+something every sweep — a release enters its queue, or its command reports a download — while the
+season's missing-episode count never actually shrinks: that's the dead-release-churn pattern (the
+same defunct-tracker release re-grabbed, dying before import, over and over). Once a season has
+repeated that unproductive `grabbed` result at least once in a row, the sweep pulls the interactive
+report anyway — the same ranked candidates, Sonarr's own rejection reasons (quality profile,
+custom format score, seeders, blocklist, whatever it is), and force-grab buttons for anything
+actually eligible — instead of quietly logging a "success" that never resolves. The Discord embed
+says plainly how many consecutive sweeps this makes and turns the color to a warning.
+
+An admin isn't limited to waiting out `SEASON_PACK_STALL_BACKOFF_MAX_STEPS` either. The
+"Search S01 now" action on the dashboard's incomplete-media list stays clickable through a
+season's cooldown/backoff — during it, the button relabels to make the override explicit
+("...now (override cooldown)") and its tooltip explains what it's bypassing. This is a genuine
+one-off override (`force: true` on `/admin/action/search`): it doesn't touch the backoff itself,
+so the next automated sweep still respects whatever cooldown the season's stall history calls for.
 
 An `EpisodeSearch` API command looks like one request but Sonarr performs one indexer search for
 each episode ID. `SEASON_PACK_EPISODE_BATCH_SIZE` (default 25) caps one season's command and

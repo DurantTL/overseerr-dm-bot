@@ -29,7 +29,7 @@ const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeasonEpisodeFallbacks,
@@ -39,12 +39,12 @@ const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPl
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases,
-  getArrTagId } = require('./src/arr');
+  getArrTagId, addTagToSeries } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed, usesDirectGrabEscalation } = require('./src/escalation');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('./src/season-pack');
 const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('./src/season-release');
 const { classifyEpisodeFallbackEvidence, planEpisodeFallback, orderPendingFallbacks } = require('./src/season-episode-fallback');
-const { assessAsianOrigin, describeAvistazFit } = require('./src/asian');
+const { assessAsianOrigin, describeAvistazFit, isAsianLanguageName } = require('./src/asian');
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
@@ -1034,6 +1034,7 @@ function seasonPackConfig() {
     minMissing: tunable('SEASON_PACK_MIN_MISSING'),
     cooldownHours: CONFIG.SEASON_PACK_COOLDOWN_HOURS,
     includeRequested: tunable('SEASON_PACK_REQUESTED'),
+    maxBackoffSteps: tunable('SEASON_PACK_STALL_BACKOFF_MAX_STEPS'),
   };
 }
 
@@ -1093,7 +1094,7 @@ async function autoForceSeasonPack({ seriesId, seriesTitle, seasonNumber, candid
   return { status: 'grabbed' };
 }
 
-async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = null, seriesAliases = null, seasonNumber, missingAtSearch, commandId, searchedAt = 0 }) {
+async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = null, seriesAliases = null, seasonNumber, missingAtSearch, commandId, searchedAt = 0, stallCount = 0 }) {
   const command = await pollArrCommand({ url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY }, commandId, 10 * 60000);
   const status = command.status || 'unknown';
   const [episodes, queue, history] = await Promise.all([
@@ -1145,10 +1146,14 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
     color = COLORS.SUCCESS;
   } else if (queued || (downloaded != null && downloaded > 0)) {
     outcome = 'grabbed';
-    title = `📥 Season Release Grabbed — ${label}`;
-    description = `Sonarr accepted ${downloaded != null ? `**${downloaded}** release${downloaded === 1 ? '' : 's'}` : 'a release'}${queued ? ` and **${queued}** matching queue item${queued === 1 ? '' : 's'} ${queued === 1 ? 'is' : 'are'} active` : ''}.`;
+    // A repeat of the exact same non-outcome — Sonarr "grabbed" something last time too, and the
+    // missing count still hasn't moved — is the dead-release-churn pattern, not a real success.
+    // Say so plainly rather than reporting a queued item as good news every single sweep.
+    title = stallCount > 0 ? `📥 Season Release Grabbed (still stalled) — ${label}` : `📥 Season Release Grabbed — ${label}`;
+    description = `Sonarr accepted ${downloaded != null ? `**${downloaded}** release${downloaded === 1 ? '' : 's'}` : 'a release'}${queued ? ` and **${queued}** matching queue item${queued === 1 ? '' : 's'} ${queued === 1 ? 'is' : 'are'} active` : ''}.`
+      + (stallCount > 0 ? ` This makes **${stallCount + 1}** consecutive sweeps without the missing count actually shrinking — whatever got queued before likely never resolved.` : '');
     nextStep = 'Import verification comes from Sonarr; the stuck-download watchdog reports a stalled queue item.';
-    color = COLORS.INFO;
+    color = stallCount > 0 ? COLORS.WARN : COLORS.INFO;
   } else {
     outcome = 'no_grab';
     title = `🔍 No Season Release Accepted — ${label}`;
@@ -1159,6 +1164,15 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
   // A completed search that made no (or only partial) progress is the one useful time to pay for
   // Sonarr's interactive release query. Eligible candidates are offered to an admin by default;
   // the separate SEASON_PACK_FORCE_GRAB switch can opt into forcing the single best candidate.
+  //
+  // 'grabbed' normally means the search worked and needs no further reporting — but a season
+  // whose missing count keeps failing to shrink despite Sonarr repeatedly "grabbing" something is
+  // exactly the dead-release-churn case (0% Premiumize transfers, defunct trackers): Sonarr
+  // accepted a release into its queue, it just never resolves. Once that's happened stallCount
+  // times in a row, pull the interactive report anyway — the admin sees Sonarr's own rejection
+  // reasons and any better candidate it passed over, instead of the sweep silently reporting a
+  // "success" that's actually a stuck season.
+  const stalledGrab = outcome === 'grabbed' && stallCount > 0;
   let interactive = null;
   let interactiveError = null;
   let interactiveFingerprint = null;
@@ -1166,7 +1180,7 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
   let seasonGrabOffer = null;
   let autoForceResult = null;
   let episodeFallbackEvidence = null;
-  if (['no_grab', 'partial'].includes(outcome) && tunable('SEASON_PACK_INTERACTIVE')) {
+  if ((['no_grab', 'partial'].includes(outcome) || stalledGrab) && tunable('SEASON_PACK_INTERACTIVE')) {
     try {
       const anchorEpisode = missingEpisodes.find(episode => Number.isInteger(Number(episode.id)) && Number(episode.id) > 0);
       const releases = await interactiveSeasonSearch(seriesId, seasonNumber, anchorEpisode?.id);
@@ -1732,6 +1746,7 @@ async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
       series, episodes, requested,
       inQueue: [...queuedSeasons(queue, series.id), ...(fallbackSeasons.get(Number(series.id)) || []), ...activeGrabSeasons],
       searchedAt: getSeasonSearchTimes(series.id),
+      stallCounts: getSeasonSearchStalls(series.id),
     }, now, cfg);
     if (!eligible) continue;
     for (const season of seasons) {
@@ -1767,9 +1782,29 @@ async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
       if (rearmAlerts) clearSeasonAlertState(series.id, season.season);
       // Recorded only after the command is accepted, so a failed search retries next sweep
       // instead of sitting out the cooldown.
-      recordSeasonSearch({ seriesId: series.id, seasonNumber: season.season, seriesTitle: series.title, missing: season.missing });
-      audit('season_pack_search', { seriesId: series.id, title: series.title, season: season.season, missing: season.missing, aired: season.aired, reason, requested, route, commandId: command?.id || null });
-      monitorSeasonSearch({ seriesId: series.id, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber: season.season, missingAtSearch: season.missing, commandId: command?.id, searchedAt });
+      const stallCount = recordSeasonSearch({ seriesId: series.id, seasonNumber: season.season, seriesTitle: series.title, missing: season.missing });
+      // An untagged season whose missing count never shrinks across repeated sweeps is stuck on
+      // dead public releases (defunct trackers, no real seeders) — Sonarr happily re-grabs the
+      // same corpses forever. Tag it for AvistaZ so the *next* sweep routes it there instead,
+      // closing the loop without anyone having to remember to tag it by hand.
+      // AvistaZ is an Asian-content-only tracker (src/asian.js) — tagging a Western show for it
+      // would never find anything and would just waste a metered search. Sonarr's own record
+      // already names the show's original language, so this needs no extra API call to check.
+      const autoTagThreshold = tunable('SEASON_PACK_AUTO_TAG_AFTER_STALLS');
+      if (!tagged && autoTagThreshold > 0 && stallCount >= autoTagThreshold && tagId != null && directEnabled && indexer
+        && isAsianLanguageName(series.originalLanguage?.name)) {
+        try {
+          await addTagToSeries(series.id, tagId);
+          audit('season_pack_auto_tagged', { seriesId: series.id, title: series.title, season: season.season, stallCount, tag: CONFIG.AVISTAZ_TAG });
+          notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.INFO)
+            .setTitle(`🔐 Auto-tagged for AvistaZ — ${series.title} S${pad(season.season)}`)
+            .setDescription(`Sonarr's own indexers grabbed something **${stallCount}** sweeps in a row without ever shrinking the missing-episode count — those releases look dead (no seeders / defunct trackers). Tagged \`${CONFIG.AVISTAZ_TAG}\` so the next sweep searches AvistaZ directly instead of retrying the same public releases.`)] });
+        } catch (err) {
+          audit('external_api_error', { provider: 'sonarr', error: err.message, action: 'season_pack_auto_tag', seriesId: series.id, season: season.season });
+        }
+      }
+      audit('season_pack_search', { seriesId: series.id, title: series.title, season: season.season, missing: season.missing, aired: season.aired, reason, requested, route, commandId: command?.id || null, stallCount });
+      monitorSeasonSearch({ seriesId: series.id, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber: season.season, missingAtSearch: season.missing, commandId: command?.id, searchedAt, stallCount });
       searched.push({ series, season, reason, pinned, route });
     }
   }
@@ -1799,6 +1834,7 @@ async function previewSeasonPacks(values = {}) {
     dormantDays: previewRuntimeValue(values, 'SEASON_PACK_DORMANT_DAYS'),
     minMissing: previewRuntimeValue(values, 'SEASON_PACK_MIN_MISSING'),
     includeRequested: previewRuntimeValue(values, 'SEASON_PACK_REQUESTED'),
+    maxBackoffSteps: previewRuntimeValue(values, 'SEASON_PACK_STALL_BACKOFF_MAX_STEPS'),
   };
   const maxPerRun = previewRuntimeValue(values, 'SEASON_PACK_MAX_PER_RUN');
   const now = Date.now();
@@ -1847,6 +1883,7 @@ async function previewSeasonPacks(values = {}) {
       series, episodes, requested,
       inQueue: [...queuedSeasons(queue, series.id), ...(fallbackSeasons.get(Number(series.id)) || []), ...activeGrabSeasons],
       searchedAt: getSeasonSearchTimes(series.id),
+      stallCounts: getSeasonSearchStalls(series.id),
     }, now, cfg);
     if (!eligible) continue;
     for (const season of held || []) {
@@ -8132,12 +8169,14 @@ async function gatherIncompleteRequests({ queue = [], grabJobs = [], escalations
           return { label: `Search S${pad(season.season)}E${pad(missingEpisodes[0].episodeNumber)} now`, url: '/admin/action/search', body: { kind: 'episode', seriesId: entry.id, episodeId: missingEpisodes[0].id } };
         }
         const { cooling, nextEligible } = seasonSearchCooldown(searchedAt[season.season], now);
+        // A cooling season isn't unclickable — an admin who's just watched a season stall for
+        // days may reasonably want to try again right now rather than wait out the backoff, so
+        // the button stays enabled and passes force:true instead of disabling.
         return {
-          label: cooling ? `S${pad(season.season)} eligible ${fmtAgo(nextEligible)}` : `Search S${pad(season.season)} now`,
+          label: cooling ? `Search S${pad(season.season)} now (override cooldown)` : `Search S${pad(season.season)} now`,
           url: '/admin/action/search',
-          body: { kind: 'season', seriesId: entry.id, seasonNumber: season.season },
-          disabled: cooling,
-          title: cooling ? `Season search cooldown ends ${new Date(nextEligible).toISOString()}` : '',
+          body: { kind: 'season', seriesId: entry.id, seasonNumber: season.season, force: cooling },
+          title: cooling ? `Normally eligible ${new Date(nextEligible).toISOString()} — this bypasses that cooldown/backoff.` : '',
         };
       });
       rows.push({
@@ -9272,18 +9311,24 @@ function startExpressServer() {
             audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'episode_fallback_active', seriesId, seasonNumber, fallbackState: fallback.state });
             return res.status(409).json({ ok: false, error });
           }
-          const { cooling, nextEligible } = seasonSearchCooldown(getSeasonSearchTimes(seriesId)[seasonNumber]);
+          // An admin explicitly clicking "Search Now" is a deliberate one-off override, not the
+          // automated sweep — force:true skips the cooldown (including any stall backoff) rather
+          // than making them wait out a multi-day backoff they just decided isn't warranted.
+          // Without force, the plain cooldown still applies so an accidental double-click isn't
+          // silently overridden.
+          const force = !!req.body?.force;
+          const { cooling, nextEligible } = force ? { cooling: false } : seasonSearchCooldown(getSeasonSearchTimes(seriesId)[seasonNumber]);
           if (cooling) {
             const error = `Season search is cooling down until ${new Date(nextEligible).toISOString()}`;
             audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'cooldown', seriesId, seasonNumber, nextEligible });
-            return res.status(409).json({ ok: false, error, nextEligible });
+            return res.status(409).json({ ok: false, error, nextEligible, canOverride: true });
           }
           const command = await triggerSeasonSearch(seriesId, seasonNumber);
           clearSeasonAlertState(seriesId, seasonNumber);
-          recordSeasonSearch({ seriesId, seasonNumber, seriesTitle: series.title, missing: missing.length });
-          monitorSeasonSearch({ seriesId, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber, missingAtSearch: missing.length, commandId: command?.id });
-          audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, seasonNumber, title: series.title, commandId: command?.id || null });
-          return res.json({ ok: true, message: `Sonarr accepted the S${pad(seasonNumber)} season search for ${series.title}.` });
+          const stallCount = recordSeasonSearch({ seriesId, seasonNumber, seriesTitle: series.title, missing: missing.length });
+          monitorSeasonSearch({ seriesId, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber, missingAtSearch: missing.length, commandId: command?.id, stallCount });
+          audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, seasonNumber, title: series.title, commandId: command?.id || null, override: force });
+          return res.json({ ok: true, message: `Sonarr accepted the S${pad(seasonNumber)} season search for ${series.title}.${force ? ' (cooldown overridden)' : ''}` });
         }
         const episode = episodes.find(ep => Number(ep.id) === episodeId && ep.monitored && !ep.hasFile
           && Date.parse(ep.airDateUtc || ep.airDate || '') <= Date.now());
