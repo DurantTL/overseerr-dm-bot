@@ -86,8 +86,14 @@ function planSeasonSearches(episodes, now = Date.now(), cfg = {}) {
 // on a show nobody asked about. It stays safe on a currently-airing season because the season
 // still has to clear the missing-episode bar, and only aired episodes count — a season halfway
 // through its run has nothing to search for until episodes actually go missing.
+//
+// `stallCounts` = season → consecutive sweeps in a row the missing count hasn't shrunk
+// (src/db.js getSeasonSearchStalls). A season stuck on nothing available doubles its cooldown per
+// stalled sweep, capped at cfg.maxBackoffSteps (default 4, i.e. 16x) — instead of re-searching a
+// dead season at the same fixed cadence forever and spending an indexer/download-client slot on
+// it every single time.
 // Returns { old, eligible, reason, seasons: [{ season, missing, aired, total }] }.
-function seasonSearchTargets({ series, episodes, inQueue = [], searchedAt = {}, requested = false }, now = Date.now(), cfg = {}) {
+function seasonSearchTargets({ series, episodes, inQueue = [], searchedAt = {}, stallCounts = {}, requested = false }, now = Date.now(), cfg = {}) {
   const age = assessSeriesAge(series, now, cfg);
   const byRequest = requested && cfg.includeRequested !== false;
   const eligible = age.old || byRequest;
@@ -95,14 +101,17 @@ function seasonSearchTargets({ series, episodes, inQueue = [], searchedAt = {}, 
   // An old show says so; a current one is here purely because it was requested.
   const reason = age.old ? age.reason : 'requested';
   const cooldownMs = (cfg.cooldownHours ?? 24) * 3600000;
+  const maxBackoffSteps = cfg.maxBackoffSteps ?? 4;
   const queued = new Set((inQueue || []).map(Number));
   const seasons = [];
   const held = [];
   for (const season of planSeasonSearches(episodes, now, cfg)) {
     if (queued.has(season.season)) continue;
     const last = Number(searchedAt[season.season]);
-    if (Number.isFinite(last) && now - last < cooldownMs) {
-      held.push({ ...season, nextEligible: last + cooldownMs });
+    const backoffSteps = Math.min(Number(stallCounts[season.season]) || 0, maxBackoffSteps);
+    const seasonCooldownMs = cooldownMs * 2 ** backoffSteps;
+    if (Number.isFinite(last) && now - last < seasonCooldownMs) {
+      held.push({ ...season, nextEligible: last + seasonCooldownMs });
     } else {
       seasons.push(season);
     }

@@ -84,6 +84,29 @@ test('season-pack: seasonSearchTargets composed decision (age gate + queue + coo
   assert.deepStrictEqual(seasonsOf(t.seasons), [1, 2], 'a season past its cooldown is retried');
 });
 
+test('season-pack: a stalled season\'s cooldown backs off exponentially instead of retrying at a fixed cadence', () => {
+  const episodes = [ep(1, 1), ep(1, 2), ep(1, 3), ep(2, 1), ep(2, 2), ep(2, 3)];
+  const ended = { status: 'ended' };
+  const backoffCfg = { ...cfg, maxBackoffSteps: 4 };
+
+  // Base cooldown is 24h. One stalled sweep doubles it to 48h — 25h ago is still inside it.
+  let t = seasonSearchTargets({ series: ended, episodes, searchedAt: { 1: NOW - 25 * 3600000 }, stallCounts: { 1: 1 } }, NOW, backoffCfg);
+  assert.deepStrictEqual(seasonsOf(t.seasons), [2], 'one stalled sweep already doubles the cooldown');
+  assert.strictEqual(t.held[0].nextEligible, NOW - 25 * 3600000 + 48 * 3600000, 'the held season reports the backed-off eligible time');
+
+  // Three stalled sweeps: 24h * 2^3 = 192h. 100h ago is still well inside it.
+  t = seasonSearchTargets({ series: ended, episodes, searchedAt: { 1: NOW - 100 * 3600000 }, stallCounts: { 1: 3 } }, NOW, backoffCfg);
+  assert.deepStrictEqual(seasonsOf(t.seasons), [2], 'repeated stalls keep pushing the cooldown out');
+
+  // The backoff is capped at maxBackoffSteps (4 → 16x = 384h here), so it never grows unbounded.
+  t = seasonSearchTargets({ series: ended, episodes, searchedAt: { 1: NOW - 385 * 3600000 }, stallCounts: { 1: 50 } }, NOW, backoffCfg);
+  assert.deepStrictEqual(seasonsOf(t.seasons), [1, 2], 'the cap stops the backoff from growing past 2^maxBackoffSteps');
+
+  // A season with no recorded stall (0, or absent) behaves exactly like the plain cooldown test.
+  t = seasonSearchTargets({ series: ended, episodes, searchedAt: { 1: NOW - 25 * 3600000 }, stallCounts: { 1: 0 } }, NOW, backoffCfg);
+  assert.deepStrictEqual(seasonsOf(t.seasons), [1, 2], 'zero stalls means no backoff at all');
+});
+
 test('season-pack: requested shows bypass the age gate; describeSeasonSearch summary', () => {
   const episodes = [ep(1, 1), ep(1, 2), ep(1, 3), ep(2, 1), ep(2, 2), ep(2, 3)];
   const ended = { status: 'ended' };

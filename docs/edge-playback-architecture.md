@@ -370,12 +370,11 @@ No secrets here; all of the sensitive values (tokens, rclone remotes) already ex
   so that is left as an explicit call for the maintainer. The example library paths
   (`/mnt/media/Media/…`) are generic and were kept.
 * ✅ **Dashboard session-secret hardened (fixed).** `sessionSecret()` previously fell back to the
-  predictable constant `sha256('session:durant')` when no `SESSION_SECRET`/password/token was set.
-  Because `dashboardAuth` accepts any validly-signed `dm_session` cookie, that constant let an
-  attacker **forge an admin session and bypass login** whenever the dashboard was enabled (the
-  default) without credentials. It now falls back to a per-process random secret, so a cookie can
-  never be minted from a known constant. Setting an explicit `SESSION_SECRET` in production is still
-  recommended (keeps sessions valid across restarts).
+  predictable constant `sha256('session:durant')`, then later to a value derived from the admin
+  password/token via a fast general-purpose hash — a captured signed session cookie gave an
+  attacker a known HMAC message/signature pair, making a weak admin credential guessable offline
+  at SHA-256 speed. `validateConfig()` now refuses to start with `DASHBOARD_ENABLED=true` unless an
+  explicit, random `SESSION_SECRET` is set (see #177); there is no fallback left to exploit.
 * ℹ️ Operational naming (`durant-media-server-bot`, `california`, `philippines`, RapidSeedbox
   references, RAID paths) is present. It reveals topology but no credentials — acceptable for an
   open-source self-host bot; only worth changing if you'd rather not advertise the deployment.

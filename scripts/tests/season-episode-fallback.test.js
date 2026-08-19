@@ -8,7 +8,7 @@ const {
 const { classifySeasonRelease } = require('../../src/season-release');
 const { loadSandbox } = require('./extract');
 const Database = require('better-sqlite3');
-const { normalizeTitle, releaseContentClaim } = require('../../src/grab');
+const { normalizeTitle, releaseContentClaim, seriesAliasMatch } = require('../../src/grab');
 const { orderPendingFallbacks: orderRows } = require('../../src/season-episode-fallback');
 
 const NOW = Date.parse('2026-08-17T00:00:00Z');
@@ -119,6 +119,8 @@ function drainBed({ rows, finalQueue = [], preview = false } = {}) {
     getSeriesEpisodes: async seriesId => allEpisodes[seriesId],
     listActiveGrabJobs: () => [],
     normalizeTitle,
+    seriesAliasMatch,
+    sonarrSeriesAliases: series => [normalizeTitle(series?.title)].filter(Boolean),
     releaseContentClaim,
     planEpisodeFallback,
     fetchArrQueues: async () => finalQueue,

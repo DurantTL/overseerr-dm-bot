@@ -7,6 +7,17 @@ function webhookSecretOk(req, expected, { header = 'x-webhook-secret', allowQuer
   return allowQuery ? safeEqual(req.query?.secret, expected) : false;
 }
 
+// Rejects a bad/missing secret before any multipart or JSON body parsing runs, so an
+// unauthenticated caller can't spend parser/memory work on an oversized payload. The secret
+// itself lives in a header (or query string for Plex, which can't send custom headers), so it's
+// available before the body is touched.
+function requireWebhookSecret(getExpected, opts) {
+  return (req, res, next) => {
+    if (!webhookSecretOk(req, getExpected(), opts)) return res.status(401).json({ error: 'Unauthorized' });
+    next();
+  };
+}
+
 function createWebhookHandlers({
   config,
   audit,
@@ -92,4 +103,4 @@ function createWebhookHandlers({
   return { overseerr, plex, tautulli };
 }
 
-module.exports = { createWebhookHandlers, webhookSecretOk };
+module.exports = { createWebhookHandlers, webhookSecretOk, requireWebhookSecret };

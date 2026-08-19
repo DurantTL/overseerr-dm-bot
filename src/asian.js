@@ -59,6 +59,36 @@ function countryCodes(meta) {
   return from.filter(Boolean);
 }
 
+// Sonarr's own /series records carry originalLanguage.name straight from TheTVDB — a human-
+// readable name, not an ISO code, and available with zero extra API calls (no Seerr round trip,
+// no TMDB id to resolve from a TVDB id). Used by the season-pack sweep's auto-tag-for-AvistaZ
+// feature, which only ever sees Sonarr series objects and has no tmdbId to hand fetchSeerrMediaOrigin.
+const ASIAN_LANGUAGE_NAMES = new Set([
+  'japanese', 'korean', 'chinese', 'cantonese', 'mandarin',
+  'thai', 'vietnamese', 'indonesian', 'malay', 'filipino', 'tagalog', 'khmer', 'lao', 'burmese',
+  'hindi', 'tamil', 'telugu', 'malayalam', 'kannada', 'bengali', 'marathi', 'gujarati', 'punjabi',
+  'urdu', 'sinhala', 'nepali',
+  'mongolian', 'tibetan', 'dzongkha',
+].map(n => n.toLowerCase()));
+
+// True only when Sonarr positively names an Asian original language — undefined/empty/unrecognized
+// names return false, the same "don't act on silence" stance assessAsianOrigin takes for 'unknown'.
+// Two passes, since TheTVDB doesn't always hand back a bare English name from ASIAN_LANGUAGE_NAMES:
+//   - substring match covers a qualified variant ("Chinese (Traditional)", "Korean (South Korea)")
+//     that an exact-equality check would miss;
+//   - the same Unicode-script test assessAsianOrigin uses on titles covers a native-script name
+//     (한국어, 日本語, ภาษาไทย, ...) that isn't in English at all — Sonarr's TheTVDB-sourced
+//     language field isn't guaranteed to be localized to English.
+function isAsianLanguageName(name) {
+  const normalized = String(name || '').trim();
+  if (!normalized) return false;
+  const lower = normalized.toLowerCase();
+  for (const known of ASIAN_LANGUAGE_NAMES) {
+    if (lower.includes(known)) return true;
+  }
+  return ASIAN_SCRIPT.test(normalized);
+}
+
 // { verdict, confidence, reasons } for one title.
 //   'asian'     — an Asian language, an Asian production country, or an Asian-script original
 //                 title. AvistaZ plausibly has it; safe to act on without asking.
@@ -101,4 +131,4 @@ function describeAvistazFit(verdict, reasons = []) {
   return '❔ Couldn\'t tell where this is from — AvistaZ only carries Asian movies and TV.';
 }
 
-module.exports = { assessAsianOrigin, describeAvistazFit, ASIAN_LANGUAGES, ASIAN_COUNTRIES };
+module.exports = { assessAsianOrigin, describeAvistazFit, isAsianLanguageName, ASIAN_LANGUAGES, ASIAN_COUNTRIES, ASIAN_LANGUAGE_NAMES };
