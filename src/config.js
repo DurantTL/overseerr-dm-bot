@@ -121,6 +121,15 @@ const CONFIG = (() => {
   PREMIUMIZE_CHECK_MINUTES: Number.parseInt(process.env.PREMIUMIZE_CHECK_MINUTES || '15', 10),
   PREMIUMIZE_STUCK_AFTER_MINUTES: Number.parseInt(process.env.PREMIUMIZE_STUCK_AFTER_MINUTES || '45', 10),
   PREMIUMIZE_ALERT_COOLDOWN_HOURS: Number.parseInt(process.env.PREMIUMIZE_ALERT_COOLDOWN_HOURS || '6', 10),
+  // A transfer still at (effectively) 0% after the stuck window — no cached source, dead
+  // torrent — is deleted automatically instead of sitting in the queue re-alerting forever.
+  PREMIUMIZE_AUTO_CLEAR_DEAD: parseBool(process.env.PREMIUMIZE_AUTO_CLEAR_DEAD, true),
+  // Progress ceiling (percent) below which a stuck transfer counts as "dead" for auto-clear.
+  PREMIUMIZE_AUTO_CLEAR_MAX_PROGRESS: Number.parseInt(process.env.PREMIUMIZE_AUTO_CLEAR_MAX_PROGRESS || '1', 10),
+  // A dead-looking transfer gets one Premiumize-side retry before it's auto-cleared, in case it's
+  // a slow tracker rather than a genuinely dead one — only deleted if it's still dead on the
+  // sweep after that retry. Set to false to go straight back to immediate deletion.
+  PREMIUMIZE_RETRY_BEFORE_CLEAR: parseBool(process.env.PREMIUMIZE_RETRY_BEFORE_CLEAR, true),
   STUCK_CHECK_MINUTES: Number.parseInt(process.env.STUCK_CHECK_MINUTES || '10', 10),
   STUCK_AFTER_MINUTES: Number.parseInt(process.env.STUCK_AFTER_MINUTES || '45', 10),
   STUCK_ALERT_COOLDOWN_HOURS: Number.parseInt(process.env.STUCK_ALERT_COOLDOWN_HOURS || '6', 10),
@@ -148,6 +157,15 @@ const CONFIG = (() => {
   // the whole season exists as one torrent, so the bot asks Sonarr for a SeasonSearch instead —
   // one grab instead of N. Currently-airing shows are untouched (no pack exists for them yet).
   SEASON_PACK_FIRST: parseBool(process.env.SEASON_PACK_FIRST, true),
+  // Season search only runs against series carrying AVISTAZ_TAG — otherwise Sonarr's own
+  // SeasonSearch/EpisodeSearch hits every configured indexer (public trackers included) and
+  // routes to whatever download client those indexers use. Turn on to keep searching untagged
+  // series through Sonarr the old way.
+  SEASON_PACK_SONARR_UNTAGGED: parseBool(process.env.SEASON_PACK_SONARR_UNTAGGED, false),
+  // A tagged series is searched directly against AvistaZ (Prowlarr search → rank → seedbox
+  // rTorrent), reusing the same pipeline as /avistaz search and the escalation watchdog,
+  // instead of Sonarr's own SeasonSearch command.
+  SEASON_PACK_AVISTAZ_DIRECT: parseBool(process.env.SEASON_PACK_AVISTAZ_DIRECT, true),
   // After a completed search makes no or partial progress, inspect Sonarr's rejected releases
   // and report the best candidates. Automatic rejection overrides are a separate, default-off
   // switch so operators can observe the human-in-the-loop buttons before trusting automation.
@@ -180,6 +198,19 @@ const CONFIG = (() => {
   SEASON_PACK_EPISODE_BATCH_SIZE: Number.parseInt(process.env.SEASON_PACK_EPISODE_BATCH_SIZE || '25', 10),
   SEASON_PACK_EPISODE_MAX_PER_RUN: Number.parseInt(process.env.SEASON_PACK_EPISODE_MAX_PER_RUN || '50', 10),
   SEASON_PACK_EPISODE_RETRY_MINUTES: Number.parseInt(process.env.SEASON_PACK_EPISODE_RETRY_MINUTES || '180', 10),
+  // An untagged season searched through Sonarr's own indexers whose missing-episode count never
+  // shrinks across repeated sweeps is stuck on dead public releases (defunct trackers, no
+  // seeders) — this is exactly what AVISTAZ_TAG + SEASON_PACK_AVISTAZ_DIRECT exists to fix, but
+  // only for series someone remembered to tag. After this many consecutive stalled sweeps the
+  // series is tagged automatically so the next sweep routes it to AvistaZ instead. 0 disables it.
+  SEASON_PACK_AUTO_TAG_AFTER_STALLS: Number.parseInt(process.env.SEASON_PACK_AUTO_TAG_AFTER_STALLS || '3', 10),
+  // A season whose missing count hasn't shrunk in N stalled sweeps doubles its cooldown per
+  // stall (24h → 48h → 96h → ...) instead of retrying at the same fixed cadence forever — this
+  // applies whichever route searched it (Sonarr's own indexers or AvistaZ direct grab), so a
+  // season stuck on nothing available stops burning a search/download slot every single sweep.
+  // Capped at 2^this multiplier so backoff can't grow unbounded; a real drop in the missing
+  // count resets it to the base cooldown immediately.
+  SEASON_PACK_STALL_BACKOFF_MAX_STEPS: Number.parseInt(process.env.SEASON_PACK_STALL_BACKOFF_MAX_STEPS || '4', 10),
   // ---- AvistaZ direct grab: Prowlarr search → seedbox rTorrent → rclone → arr import ----
   // Full rTorrent XML-RPC endpoint incl. credentials, e.g.
   // https://user:pass@server.rapidseedbox.com/plugins/rpc/rpc.php
@@ -418,6 +449,14 @@ function validateConfig() {
   if (CONFIG.DASHBOARD_ENABLED && !CONFIG.DASHBOARD_ADMIN_PASSWORD && !CONFIG.DASHBOARD_ADMIN_TOKEN) {
     throw new Error('DASHBOARD_ENABLED=true requires DASHBOARD_ADMIN_PASSWORD or DASHBOARD_ADMIN_TOKEN');
   }
+  // Dashboard sessions are signed with SESSION_SECRET. Without this check the app would fall back
+  // to deriving a signing key from the admin password/token via a fast general-purpose hash — a
+  // captured signed session cookie would then give an attacker a known HMAC message/signature
+  // pair, making a weak admin credential guessable offline at SHA-256 speed. Refusing to start is
+  // the actionable fix: generate one with `openssl rand -hex 32` and set SESSION_SECRET.
+  if (CONFIG.DASHBOARD_ENABLED && !CONFIG.SESSION_SECRET) {
+    throw new Error('DASHBOARD_ENABLED=true requires SESSION_SECRET (generate one with `openssl rand -hex 32`); dashboard sessions must never be signed with a key derived from the admin password/token');
+  }
   // TUNNEL_DOMAIN makes /webhook/overseerr, /webhook/plex, and /webhook/tautulli reachable from
   // the public internet regardless of whether deletion is live — an unauthenticated webhook is a
   // real attack surface (spoofed events, request/queue manipulation) on its own.
@@ -495,6 +534,9 @@ function configWarnings() {
   const dashSecret = CONFIG.DASHBOARD_ADMIN_PASSWORD || CONFIG.DASHBOARD_ADMIN_TOKEN;
   if (CONFIG.DASHBOARD_ENABLED && dashSecret && dashSecret.length < 12) {
     warnings.push('The dashboard password/token is under 12 characters — use a longer one (login is internet-reachable if your tunnel exposes it).');
+  }
+  if (CONFIG.DASHBOARD_ENABLED && CONFIG.SESSION_SECRET && CONFIG.SESSION_SECRET.length < 32) {
+    warnings.push('`SESSION_SECRET` is under 32 characters — use a longer, random value (e.g. `openssl rand -hex 32`) so signed dashboard sessions cannot be brute-forced offline.');
   }
   // A malformed ID is invisible at runtime: every notification to that channel just quietly
   // fails to resolve, so the bot looks healthy while nothing is ever posted. (Key list is local
