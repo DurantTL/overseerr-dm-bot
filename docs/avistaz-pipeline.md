@@ -159,6 +159,16 @@ needed) and only proceeds when it names a language AvistaZ's remit covers; a Wes
 Sonarr has no language recorded for, is left alone and keeps its alerts through the normal
 season-pack-interactive path instead.
 
+**A stalled Western show isn't left to retry forever at full speed, though.** Whatever route
+searched a season — Sonarr's own indexers or AvistaZ direct grab — `SEASON_PACK_STALL_BACKOFF_MAX_STEPS`
+(default 4) watches the same missing-episode-count signal the auto-tag feature does, and doubles
+that season's cooldown each consecutive sweep it fails to shrink: 24h, 48h, 96h, ... up to
+2^`SEASON_PACK_STALL_BACKOFF_MAX_STEPS` × the base cooldown. A season that's genuinely exhausted
+its public indexers stops re-grabbing the same dead release (and burning a download slot) every
+single sweep, while a season that actually makes progress resets straight back to the base
+cooldown on the next search. This is unconditional — unlike the auto-tag gate above, it applies to
+every show, Asian or not, since the wasted search/download budget is the same either way.
+
 A show counts as **old** when Sonarr marks it `ended`, or when nothing has aired in
 `SEASON_PACK_DORMANT_DAYS` (default 365) and nothing is scheduled. A scheduled next airing always
 wins — a series returning next week is current whatever its status field says, and its latest

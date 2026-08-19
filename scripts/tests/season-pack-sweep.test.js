@@ -50,7 +50,7 @@ function build({
   // AvistaZ tag gate/direct-grab route existed. Tests of the gate/route itself opt in explicitly.
   sonarrUntagged = true, avistazDirect = false, tagId = 7, seriesTags = {},
   indexer = { id: 9 }, directResult = { status: 'offered', detail: 'posted 1 candidate(s)' },
-  activeGrabJobs = [], autoTagAfterStalls = 0, stallCounts = {},
+  activeGrabJobs = [], autoTagAfterStalls = 0, stallCounts = {}, maxBackoffSteps = 4,
 } = {}) {
   const calls = [];
   const recorded = [];
@@ -73,6 +73,7 @@ function build({
     SEASON_PACK_SONARR_UNTAGGED: sonarrUntagged,
     SEASON_PACK_AVISTAZ_DIRECT: avistazDirect,
     SEASON_PACK_AUTO_TAG_AFTER_STALLS: autoTagAfterStalls,
+    SEASON_PACK_STALL_BACKOFF_MAX_STEPS: maxBackoffSteps,
   };
   // The sweep reads its knobs through tunable() so dashboard overrides apply mid-flight. Wire the
   // real resolver with no override store: every value comes straight from the CONFIG above, which
@@ -98,6 +99,7 @@ function build({
     triggerSeasonSearch: async (seriesId, seasonNumber) => { calls.push(`${seriesId}:${seasonNumber}`); return { id: seriesId * 100 + seasonNumber }; },
     monitorSeasonSearch: row => { monitored.push(row); },
     getSeasonSearchTimes: id => searchedAt[id] || {},
+    getSeasonSearchStalls: id => stallCounts[id] || {},
     listRequestedTvdbIds: () => new Set(requestedTvdbIds),
     recordSeasonSearch: row => { recorded.push(row); return stallCounts[row.seriesId]?.[row.seasonNumber] ?? 0; },
     clearSeasonAlertState: (seriesId, seasonNumber) => rearmed.push(`${seriesId}:${seasonNumber}`),
@@ -180,6 +182,21 @@ test('season-pack-sweep: cooldown — a recently-searched season sits out, an ex
   const h = build({ searchedAt: { 1: { 1: NOW - 2 * 3600000, 2: NOW - 30 * 3600000 } } });
   await h.sandbox.sweepSeasonPacks();
   assert.deepStrictEqual(h.calls.sort(), ['1:2', '2:1'], 'only the season past its cooldown is re-searched');
+});
+
+test('season-pack-sweep: a stalled season sits out longer than a fresh one at the same last-searched time', async () => {
+  // Winter Sonata S01 stalled twice (24h * 2^2 = 96h cooldown) and was searched 30h ago — well
+  // inside backoff, so it sits out even though a plain 24h cooldown would have let it through
+  // (the plain-cooldown test above proves exactly that at the same 30h mark).
+  const h = build({ searchedAt: { 1: { 1: NOW - 30 * 3600000 } }, stallCounts: { 1: { 1: 2 } } });
+  await h.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(h.calls.sort(), ['1:2', '2:1'], 'the stalled season is held past the plain 24h cooldown; its never-searched sibling season is unaffected');
+});
+
+test('season-pack-sweep: SEASON_PACK_STALL_BACKOFF_MAX_STEPS=0 disables backoff entirely', async () => {
+  const h = build({ searchedAt: { 1: { 1: NOW - 30 * 3600000 } }, stallCounts: { 1: { 1: 2 } }, maxBackoffSteps: 0 });
+  await h.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(h.calls.sort(), ['1:1', '1:2', '2:1'], 'with backoff off, the plain 24h cooldown alone decides');
 });
 
 test('season-pack-sweep: the per-run cap bounds a first pass over a large library', async () => {
@@ -797,6 +814,7 @@ function previewBed({ values = {}, searchedAt = {}, queue = [], maxPerRun = 5, e
       return episodes[id] || [];
     },
     getSeasonSearchTimes: id => searchedAt[id] || {},
+    getSeasonSearchStalls: () => ({}),
     listRequestedTvdbIds: () => new Set(),
     getArrTagId: async () => tagId,
     grabConfigured: () => true,

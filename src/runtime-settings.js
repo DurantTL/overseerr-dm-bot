@@ -93,6 +93,8 @@ const RUNTIME_SETTINGS = [
     label: 'Retry deferred episode fallback after', unit: 'min' },
   { key: 'SEASON_PACK_AUTO_TAG_AFTER_STALLS', group: 'season_pack', type: 'int', min: 0, max: 20, source: 'config',
     label: 'Auto-tag for AvistaZ after stalled sweeps', help: 'An untagged season whose missing-episode count stops shrinking across this many sweeps gets AVISTAZ_TAG applied automatically — only for shows Sonarr names as Asian-language, since AvistaZ never carries anything else. 0 disables it.' },
+  { key: 'SEASON_PACK_STALL_BACKOFF_MAX_STEPS', group: 'season_pack', type: 'int', min: 0, max: 10, source: 'config',
+    label: 'Max cooldown doublings for a stalled season', help: 'A season whose missing count stops shrinking doubles its cooldown per stalled sweep (any route), capped at 2^this. A real drop in the missing count resets it immediately.' },
 
   // ---- Episode recovery worker (src/episode-recovery.js parses these from env itself) ----
   { key: 'EPISODE_RECOVERY_ENABLED', group: 'episode_recovery', type: 'bool', source: 'env', fallback: false,

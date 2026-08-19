@@ -200,6 +200,13 @@ const CONFIG = (() => {
   // only for series someone remembered to tag. After this many consecutive stalled sweeps the
   // series is tagged automatically so the next sweep routes it to AvistaZ instead. 0 disables it.
   SEASON_PACK_AUTO_TAG_AFTER_STALLS: Number.parseInt(process.env.SEASON_PACK_AUTO_TAG_AFTER_STALLS || '3', 10),
+  // A season whose missing count hasn't shrunk in N stalled sweeps doubles its cooldown per
+  // stall (24h → 48h → 96h → ...) instead of retrying at the same fixed cadence forever — this
+  // applies whichever route searched it (Sonarr's own indexers or AvistaZ direct grab), so a
+  // season stuck on nothing available stops burning a search/download slot every single sweep.
+  // Capped at 2^this multiplier so backoff can't grow unbounded; a real drop in the missing
+  // count resets it to the base cooldown immediately.
+  SEASON_PACK_STALL_BACKOFF_MAX_STEPS: Number.parseInt(process.env.SEASON_PACK_STALL_BACKOFF_MAX_STEPS || '4', 10),
   // ---- AvistaZ direct grab: Prowlarr search → seedbox rTorrent → rclone → arr import ----
   // Full rTorrent XML-RPC endpoint incl. credentials, e.g.
   // https://user:pass@server.rapidseedbox.com/plugins/rpc/rpc.php
