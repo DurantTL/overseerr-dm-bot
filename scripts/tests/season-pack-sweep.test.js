@@ -621,6 +621,38 @@ test('season search verification: distinguishes queued, verified, failed, and we
   assert.match(h.notices[0].msg.embeds[0].fields.at(-1).value, /System → Tasks/);
 });
 
+test('season search verification: a stalled grab (missing count never shrinking) gets the interactive report too', async () => {
+  // Sonarr "grabbed" something again, but the missing count is unchanged from last time — this
+  // is the dead-release-churn pattern (0% Premiumize transfers, defunct trackers), not a real
+  // success, so it should get the same rejection-reason/candidate report a no_grab search would.
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 1 report downloaded.' },
+    queue: [{ source: { kind: 'tv' }, seriesId: 1, seasonNumber: 1 }],
+    interactive: [{ title: 'Winter.Sonata.S01.1080p.WEB-DL', guid: 'pack-guid', indexerId: 7, size: 20 * 1024 ** 3, seeders: 12, indexer: 'AvistaZ', fullSeason: true, seasonNumber: 1, approved: false, rejections: [{ reason: 'Custom format score too low' }] }],
+  });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101, stallCount: 2 });
+  assert.strictEqual(result.outcome, 'grabbed');
+  assert.strictEqual(h.interactiveCalls.length, 1, 'a stalled grab pays for the interactive lookup, unlike a fresh grab');
+  const embed = h.notices[0].msg.embeds[0];
+  assert.match(embed.title, /still stalled/, 'the title flags this as a stall, not a plain success');
+  assert.match(embed.description, /\*\*3\*\* consecutive sweeps/, 'stallCount + this sweep is reported plainly');
+  assert.strictEqual(embed.color, 1, 'a stalled grab is a warning, not routine info (COLORS.WARN)');
+  assert.ok(embed.fields.some(f => /Custom format score too low/.test(f.value)), 'Sonarr\'s own rejection reason for the better candidate is surfaced');
+});
+
+test('season search verification: a fresh grab (no stall history) is not treated as a problem', async () => {
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 1 report downloaded.' },
+    queue: [{ source: { kind: 'tv' }, seriesId: 1, seasonNumber: 1 }],
+  });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101, stallCount: 0 });
+  assert.strictEqual(result.outcome, 'grabbed');
+  assert.strictEqual(h.interactiveCalls.length, 0, 'a first-time grab does not pay for an interactive lookup');
+  const embed = h.notices[0].msg.embeds[0];
+  assert.doesNotMatch(embed.title, /stalled/);
+  assert.strictEqual(embed.color, 2, 'a fresh grab stays routine info (COLORS.INFO)');
+});
+
 test('season search verification: interactive lookup only runs for partial and no-grab outcomes', async () => {
   let h = seasonVerifier({
     command: { status: 'completed' },

@@ -1094,7 +1094,7 @@ async function autoForceSeasonPack({ seriesId, seriesTitle, seasonNumber, candid
   return { status: 'grabbed' };
 }
 
-async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = null, seriesAliases = null, seasonNumber, missingAtSearch, commandId, searchedAt = 0 }) {
+async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = null, seriesAliases = null, seasonNumber, missingAtSearch, commandId, searchedAt = 0, stallCount = 0 }) {
   const command = await pollArrCommand({ url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY }, commandId, 10 * 60000);
   const status = command.status || 'unknown';
   const [episodes, queue, history] = await Promise.all([
@@ -1146,10 +1146,14 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
     color = COLORS.SUCCESS;
   } else if (queued || (downloaded != null && downloaded > 0)) {
     outcome = 'grabbed';
-    title = `📥 Season Release Grabbed — ${label}`;
-    description = `Sonarr accepted ${downloaded != null ? `**${downloaded}** release${downloaded === 1 ? '' : 's'}` : 'a release'}${queued ? ` and **${queued}** matching queue item${queued === 1 ? '' : 's'} ${queued === 1 ? 'is' : 'are'} active` : ''}.`;
+    // A repeat of the exact same non-outcome — Sonarr "grabbed" something last time too, and the
+    // missing count still hasn't moved — is the dead-release-churn pattern, not a real success.
+    // Say so plainly rather than reporting a queued item as good news every single sweep.
+    title = stallCount > 0 ? `📥 Season Release Grabbed (still stalled) — ${label}` : `📥 Season Release Grabbed — ${label}`;
+    description = `Sonarr accepted ${downloaded != null ? `**${downloaded}** release${downloaded === 1 ? '' : 's'}` : 'a release'}${queued ? ` and **${queued}** matching queue item${queued === 1 ? '' : 's'} ${queued === 1 ? 'is' : 'are'} active` : ''}.`
+      + (stallCount > 0 ? ` This makes **${stallCount + 1}** consecutive sweeps without the missing count actually shrinking — whatever got queued before likely never resolved.` : '');
     nextStep = 'Import verification comes from Sonarr; the stuck-download watchdog reports a stalled queue item.';
-    color = COLORS.INFO;
+    color = stallCount > 0 ? COLORS.WARN : COLORS.INFO;
   } else {
     outcome = 'no_grab';
     title = `🔍 No Season Release Accepted — ${label}`;
@@ -1160,6 +1164,15 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
   // A completed search that made no (or only partial) progress is the one useful time to pay for
   // Sonarr's interactive release query. Eligible candidates are offered to an admin by default;
   // the separate SEASON_PACK_FORCE_GRAB switch can opt into forcing the single best candidate.
+  //
+  // 'grabbed' normally means the search worked and needs no further reporting — but a season
+  // whose missing count keeps failing to shrink despite Sonarr repeatedly "grabbing" something is
+  // exactly the dead-release-churn case (0% Premiumize transfers, defunct trackers): Sonarr
+  // accepted a release into its queue, it just never resolves. Once that's happened stallCount
+  // times in a row, pull the interactive report anyway — the admin sees Sonarr's own rejection
+  // reasons and any better candidate it passed over, instead of the sweep silently reporting a
+  // "success" that's actually a stuck season.
+  const stalledGrab = outcome === 'grabbed' && stallCount > 0;
   let interactive = null;
   let interactiveError = null;
   let interactiveFingerprint = null;
@@ -1167,7 +1180,7 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
   let seasonGrabOffer = null;
   let autoForceResult = null;
   let episodeFallbackEvidence = null;
-  if (['no_grab', 'partial'].includes(outcome) && tunable('SEASON_PACK_INTERACTIVE')) {
+  if ((['no_grab', 'partial'].includes(outcome) || stalledGrab) && tunable('SEASON_PACK_INTERACTIVE')) {
     try {
       const anchorEpisode = missingEpisodes.find(episode => Number.isInteger(Number(episode.id)) && Number(episode.id) > 0);
       const releases = await interactiveSeasonSearch(seriesId, seasonNumber, anchorEpisode?.id);
@@ -1791,7 +1804,7 @@ async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
         }
       }
       audit('season_pack_search', { seriesId: series.id, title: series.title, season: season.season, missing: season.missing, aired: season.aired, reason, requested, route, commandId: command?.id || null, stallCount });
-      monitorSeasonSearch({ seriesId: series.id, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber: season.season, missingAtSearch: season.missing, commandId: command?.id, searchedAt });
+      monitorSeasonSearch({ seriesId: series.id, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber: season.season, missingAtSearch: season.missing, commandId: command?.id, searchedAt, stallCount });
       searched.push({ series, season, reason, pinned, route });
     }
   }
@@ -8156,12 +8169,14 @@ async function gatherIncompleteRequests({ queue = [], grabJobs = [], escalations
           return { label: `Search S${pad(season.season)}E${pad(missingEpisodes[0].episodeNumber)} now`, url: '/admin/action/search', body: { kind: 'episode', seriesId: entry.id, episodeId: missingEpisodes[0].id } };
         }
         const { cooling, nextEligible } = seasonSearchCooldown(searchedAt[season.season], now);
+        // A cooling season isn't unclickable — an admin who's just watched a season stall for
+        // days may reasonably want to try again right now rather than wait out the backoff, so
+        // the button stays enabled and passes force:true instead of disabling.
         return {
-          label: cooling ? `S${pad(season.season)} eligible ${fmtAgo(nextEligible)}` : `Search S${pad(season.season)} now`,
+          label: cooling ? `Search S${pad(season.season)} now (override cooldown)` : `Search S${pad(season.season)} now`,
           url: '/admin/action/search',
-          body: { kind: 'season', seriesId: entry.id, seasonNumber: season.season },
-          disabled: cooling,
-          title: cooling ? `Season search cooldown ends ${new Date(nextEligible).toISOString()}` : '',
+          body: { kind: 'season', seriesId: entry.id, seasonNumber: season.season, force: cooling },
+          title: cooling ? `Normally eligible ${new Date(nextEligible).toISOString()} — this bypasses that cooldown/backoff.` : '',
         };
       });
       rows.push({
@@ -9296,18 +9311,24 @@ function startExpressServer() {
             audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'episode_fallback_active', seriesId, seasonNumber, fallbackState: fallback.state });
             return res.status(409).json({ ok: false, error });
           }
-          const { cooling, nextEligible } = seasonSearchCooldown(getSeasonSearchTimes(seriesId)[seasonNumber]);
+          // An admin explicitly clicking "Search Now" is a deliberate one-off override, not the
+          // automated sweep — force:true skips the cooldown (including any stall backoff) rather
+          // than making them wait out a multi-day backoff they just decided isn't warranted.
+          // Without force, the plain cooldown still applies so an accidental double-click isn't
+          // silently overridden.
+          const force = !!req.body?.force;
+          const { cooling, nextEligible } = force ? { cooling: false } : seasonSearchCooldown(getSeasonSearchTimes(seriesId)[seasonNumber]);
           if (cooling) {
             const error = `Season search is cooling down until ${new Date(nextEligible).toISOString()}`;
             audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'cooldown', seriesId, seasonNumber, nextEligible });
-            return res.status(409).json({ ok: false, error, nextEligible });
+            return res.status(409).json({ ok: false, error, nextEligible, canOverride: true });
           }
           const command = await triggerSeasonSearch(seriesId, seasonNumber);
           clearSeasonAlertState(seriesId, seasonNumber);
-          recordSeasonSearch({ seriesId, seasonNumber, seriesTitle: series.title, missing: missing.length });
-          monitorSeasonSearch({ seriesId, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber, missingAtSearch: missing.length, commandId: command?.id });
-          audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, seasonNumber, title: series.title, commandId: command?.id || null });
-          return res.json({ ok: true, message: `Sonarr accepted the S${pad(seasonNumber)} season search for ${series.title}.` });
+          const stallCount = recordSeasonSearch({ seriesId, seasonNumber, seriesTitle: series.title, missing: missing.length });
+          monitorSeasonSearch({ seriesId, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber, missingAtSearch: missing.length, commandId: command?.id, stallCount });
+          audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, seasonNumber, title: series.title, commandId: command?.id || null, override: force });
+          return res.json({ ok: true, message: `Sonarr accepted the S${pad(seasonNumber)} season search for ${series.title}.${force ? ' (cooldown overridden)' : ''}` });
         }
         const episode = episodes.find(ep => Number(ep.id) === episodeId && ep.monitored && !ep.hasFile
           && Date.parse(ep.airDateUtc || ep.airDate || '') <= Date.now());

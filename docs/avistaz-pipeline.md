@@ -216,6 +216,23 @@ still applies its own profiles, custom formats, blocklist, and release rules to 
 bot does not force an individual result. Rejected, wrong-series, unknown-series,
 `downloadAllowed: false`, empty, or failed Interactive Search results never authorize this path.
 
+The interactive report isn't limited to a search that came back empty. Sonarr can also "grab"
+something every sweep — a release enters its queue, or its command reports a download — while the
+season's missing-episode count never actually shrinks: that's the dead-release-churn pattern (the
+same defunct-tracker release re-grabbed, dying before import, over and over). Once a season has
+repeated that unproductive `grabbed` result at least once in a row, the sweep pulls the interactive
+report anyway — the same ranked candidates, Sonarr's own rejection reasons (quality profile,
+custom format score, seeders, blocklist, whatever it is), and force-grab buttons for anything
+actually eligible — instead of quietly logging a "success" that never resolves. The Discord embed
+says plainly how many consecutive sweeps this makes and turns the color to a warning.
+
+An admin isn't limited to waiting out `SEASON_PACK_STALL_BACKOFF_MAX_STEPS` either. The
+"Search S01 now" action on the dashboard's incomplete-media list stays clickable through a
+season's cooldown/backoff — during it, the button relabels to make the override explicit
+("...now (override cooldown)") and its tooltip explains what it's bypassing. This is a genuine
+one-off override (`force: true` on `/admin/action/search`): it doesn't touch the backoff itself,
+so the next automated sweep still respects whatever cooldown the season's stall history calls for.
+
 An `EpisodeSearch` API command looks like one request but Sonarr performs one indexer search for
 each episode ID. `SEASON_PACK_EPISODE_BATCH_SIZE` (default 25) caps one season's command and
 `SEASON_PACK_EPISODE_MAX_PER_RUN` (default 50) caps all episode IDs across one guarded run. Long
