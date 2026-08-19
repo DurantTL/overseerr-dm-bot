@@ -73,8 +73,20 @@ const ASIAN_LANGUAGE_NAMES = new Set([
 
 // True only when Sonarr positively names an Asian original language — undefined/empty/unrecognized
 // names return false, the same "don't act on silence" stance assessAsianOrigin takes for 'unknown'.
+// Two passes, since TheTVDB doesn't always hand back a bare English name from ASIAN_LANGUAGE_NAMES:
+//   - substring match covers a qualified variant ("Chinese (Traditional)", "Korean (South Korea)")
+//     that an exact-equality check would miss;
+//   - the same Unicode-script test assessAsianOrigin uses on titles covers a native-script name
+//     (한국어, 日本語, ภาษาไทย, ...) that isn't in English at all — Sonarr's TheTVDB-sourced
+//     language field isn't guaranteed to be localized to English.
 function isAsianLanguageName(name) {
-  return ASIAN_LANGUAGE_NAMES.has(String(name || '').trim().toLowerCase());
+  const normalized = String(name || '').trim();
+  if (!normalized) return false;
+  const lower = normalized.toLowerCase();
+  for (const known of ASIAN_LANGUAGE_NAMES) {
+    if (lower.includes(known)) return true;
+  }
+  return ASIAN_SCRIPT.test(normalized);
 }
 
 // { verdict, confidence, reasons } for one title.
