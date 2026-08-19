@@ -164,13 +164,13 @@ function makeMember(id, hasRole) {
   };
 }
 
-function reconcileSandbox({ members, plexApiGet, getUserByCanonicalEmail }) {
+function reconcileSandbox({ members, fetchPlexFriends, getUserByCanonicalEmail }) {
   const guild = { members: { fetch: async () => new Map(members.map(m => [m.id, m])) } };
   return loadSandbox(['reconcilePlexMemberRoles'], {
     CONFIG: { PLEX_MEMBER_ROLE_ID: 'role1', DISCORD_GUILD_ID: 'g1' },
     client: { guilds: { cache: { get: () => guild } } },
     getPlexToken: async () => 'token',
-    plexApiGet,
+    fetchPlexFriends,
     getUserByCanonicalEmail: getUserByCanonicalEmail || (() => null),
     isSnowflake: id => /^\d+$/.test(String(id)),
     log: { warn: () => {} },
@@ -182,7 +182,7 @@ test('reconcilePlexMemberRoles: aborts and touches no roles when the Plex friend
   const bob = makeMember('222', false); // currently doesn't
   const sb = reconcileSandbox({
     members: [alice, bob],
-    plexApiGet: async () => { throw new Error('Plex is down'); },
+    fetchPlexFriends: async () => { throw new Error('Plex is down'); },
   });
 
   const result = await sb.run('reconcilePlexMemberRoles()');
@@ -198,7 +198,7 @@ test('reconcilePlexMemberRoles: grants and revokes correctly on a successful fet
   const bob = makeMember('222', true); // should lose it (no longer a Plex friend)
   const sb = reconcileSandbox({
     members: [alice, bob],
-    plexApiGet: async () => [{ email: 'alice@example.com' }],
+    fetchPlexFriends: async () => [{ email: 'alice@example.com' }],
     getUserByCanonicalEmail: email => (email === 'alice@example.com' ? { discord_id: '111' } : null),
   });
 

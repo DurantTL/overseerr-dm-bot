@@ -65,10 +65,34 @@ async function inviteUserToPlex(email, { homeServer = 'primary' } = {}) {
   return { successCount, total: servers.length };
 }
 
+// plex.tv's dedicated friends-list JSON endpoint (/api/v2/friends) was deprecated and now
+// returns HTTP 410 Gone. /api/users is the legacy XML-era endpoint plex.tv still serves (the
+// same one python-plexapi's MyPlexAccount.users() uses) — it honors the same
+// Accept: application/json header plexApiGet already sends, but wraps its list in a
+// MediaContainer the way Plex's older endpoints do, instead of returning a bare array like
+// /api/v2/friends used to. Every shape normalizes to a flat array of { id, title, username,
+// email, thumb, ... } objects, the same fields the old endpoint returned, so every caller below
+// is unaffected by the switch.
+function normalizePlexFriendsResponse(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (!raw || typeof raw !== 'object') return [];
+  if (Array.isArray(raw.data)) return raw.data;
+  const container = raw.MediaContainer;
+  if (container) {
+    const users = container.User ?? container.Friend ?? [];
+    return Array.isArray(users) ? users : [users];
+  }
+  return [];
+}
+
+async function fetchPlexFriends(token) {
+  const raw = await plexApiGet('/api/users', token);
+  return normalizePlexFriendsResponse(raw);
+}
+
 async function removePlexAccess(email) {
   const token = await getPlexToken();
-  const friendsData = await plexApiGet('/api/v2/friends', token).catch(() => []);
-  const friends = Array.isArray(friendsData) ? friendsData : (friendsData.data || []);
+  const friends = await fetchPlexFriends(token).catch(() => []);
   const friend = friends.find(f => [f.email, f.username, f.title].some(v => (v || '').toLowerCase() === email.toLowerCase()));
   if (!friend) return { removed: false, reason: 'No Plex account found' };
   // Revocation deliberately ignores PLEX_EXCLUDE_SERVERS and home_server scoping: removing
@@ -88,4 +112,4 @@ async function removePlexAccess(email) {
   return { removed: removedCount > 0, removedCount, total: servers.length };
 }
 
-module.exports = { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, serversForHomeServer, inviteUserToPlex, removePlexAccess };
+module.exports = { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, serversForHomeServer, inviteUserToPlex, removePlexAccess, fetchPlexFriends, normalizePlexFriendsResponse };
