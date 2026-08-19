@@ -2793,10 +2793,20 @@ async function findAdoptRemotePath(torrent, resolver) {
   return { sub: null, tried, ambiguous: hit?.ambiguous || 0, mismatch };
 }
 
+// A hash match only blocks re-adoption when the existing job is still meaningfully tracking the
+// torrent — actively in flight (mirrors listActiveGrabJobs' state list in src/db.js) or already
+// confirmed imported ('verified'). A job that failed, was rejected on import, needs manual
+// mapping, or sits in an unrecognized/legacy state (a stale record from before a refactor, or one
+// that got stuck) never actually finished — treating it as blocking would permanently prevent
+// adopting a torrent that's still sitting right there complete, which defeats the entire point of
+// /rtorrent adopt as the manual recovery path for exactly that situation.
+const ADOPT_BLOCKING_STATES = new Set(['sent', 'downloading', 'complete', 'transferring', 'scanning', 'importing', 'verified']);
+
 // Create the grab job for an existing torrent. Never throws — callers branch on
 // { ok, why, dup }. An explicit adoption overrides a standing ignore flag.
 async function executeAdoption(torrent, target, meta, resolver = null) {
-  const verdict = decideAdoption({ torrent, existingJob: torrent.hash ? getGrabJobByHash(torrent.hash) : null, target });
+  const existingJob = torrent.hash ? getGrabJobByHash(torrent.hash) : null;
+  const verdict = decideAdoption({ torrent, existingJob: existingJob && ADOPT_BLOCKING_STATES.has(existingJob.state) ? existingJob : null, target });
   if (!verdict.ok) return verdict;
   if (!grabImportTarget(verdict.mediaType)) {
     return { ok: false, why: `${target === 'sonarr' ? 'Sonarr' : 'Radarr'} isn't configured — the adopted torrent could never be imported` };
@@ -2957,7 +2967,7 @@ async function sweepAdoptCandidates() {
 
   const candidates = torrents.filter(t => t.hash
     && CONFIG.RTORRENT_ADOPT_LABELS.includes(String(t.label || '').trim().toLowerCase())
-    && !getGrabJobByHash(t.hash) && !isAdoptIgnored(t.hash) && !isAdoptOffered(t.hash));
+    && !ADOPT_BLOCKING_STATES.has(getGrabJobByHash(t.hash)?.state) && !isAdoptIgnored(t.hash) && !isAdoptOffered(t.hash));
   if (!candidates.length) return;
 
   const forButtons = [];
@@ -6220,9 +6230,13 @@ async function handleRtorrentCommand(interaction) {
       const torrents = await listRtorrentTorrents();
       const matches = matchTorrentsByName(torrents, search);
       if (!matches.length) return interaction.editReply(`🔍 No rTorrent torrents matching **${search}**. \`/rtorrent list\` shows what's there.`);
-      const fresh = matches.filter(t => !getGrabJobByHash(t.hash));
+      // A hash match only counts as "tracked" when the existing job is still in flight or
+      // already confirmed imported — see ADOPT_BLOCKING_STATES. A failed/rejected/stale job
+      // never actually finished, so its torrent stays adoptable.
+      const isTracked = t => { const j = getGrabJobByHash(t.hash); return j && ADOPT_BLOCKING_STATES.has(j.state) ? j : null; };
+      const fresh = matches.filter(t => !isTracked(t));
       if (!fresh.length) {
-        const j = getGrabJobByHash(matches[0].hash);
+        const j = isTracked(matches[0]);
         return interaction.editReply(`ℹ️ Every match is already tracked${j ? ` (e.g. **${String(matches[0].name).slice(0, 100)}** as job #${j.id}, ${j.state})` : ''} — nothing to adopt.`);
       }
       audit('rtorrent_adopt_search', { actorDiscordId: interaction.user.id, search, target: explicitTarget || null, matches: matches.length, untracked: fresh.length });
