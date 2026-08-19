@@ -35,11 +35,12 @@ const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeasonEpisodeFallbacks,
   markSeasonEpisodeFallbackSubmitted, attachSeasonEpisodeFallbackCommand, finishSeasonEpisodeFallback, deferSubmittedSeasonEpisodeFallback,
   clearSeasonEpisodeFallback } = require('./src/db');
+const { recordDeadReleaseGroupSighting, getReleaseGroupSighting, markReleaseGroupSuggested, markReleaseGroupBlocklisted, dismissReleaseGroupSuggestion } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases,
-  getArrTagId, addTagToSeries } = require('./src/arr');
+  getArrTagId, addTagToSeries, listSonarrCustomFormats, createSonarrCustomFormat, scoreSonarrCustomFormatInAllProfiles } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed, usesDirectGrabEscalation } = require('./src/escalation');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('./src/season-pack');
 const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('./src/season-release');
@@ -50,7 +51,7 @@ const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, par
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
-const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
+const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
 const { runBackup, rotateBackups, backupState, rehearseLatestBackup } = require('./scripts/backup-db');
 const { recordDiskSamples, pruneDiskSamples, forecastDisks, pathIsOnRoot, forecastLabel } = require('./src/capacity');
@@ -3108,6 +3109,9 @@ async function sweepPremiumizeTransfers() {
 
   const cleared = [];
   const failed = [];
+  const blocklistEnabled = tunable('RELEASE_GROUP_BLOCKLIST_ENABLED');
+  const blocklistThreshold = tunable('RELEASE_GROUP_BLOCKLIST_THRESHOLD');
+  const blocklistCandidates = [];
   for (const t of deletes) {
     const id = String(t.id);
     try {
@@ -3117,6 +3121,18 @@ async function sweepPremiumizeTransfers() {
       clearAlertCooldown('premiumize_retry', id);
       cleared.push(t);
       audit('premiumize_transfer_auto_cleared', { transferId: id, name: t.name, status: t.status, progress: t.progress });
+      // Proactive dead-release-group blocklist (#211): the same release-group tag showing up
+      // across repeated dead auto-clears is knowable in advance, not just after the fact — track
+      // it, and once it crosses the threshold, suggest a Sonarr Custom Format for an admin to
+      // approve (never applied automatically).
+      if (blocklistEnabled) {
+        const group = extractReleaseGroup(t.name);
+        if (group) {
+          const count = recordDeadReleaseGroupSighting(group, { sampleName: t.name, now });
+          const row = getReleaseGroupSighting(group);
+          if (count >= blocklistThreshold && !row.suggested_at && !row.dismissed) blocklistCandidates.push({ group, count, sampleName: t.name });
+        }
+      }
     } catch (err) {
       failed.push({ t, err });
       audit('external_api_error', { provider: 'premiumize', error: err.message, action: 'premiumize_auto_clear', transferId: id });
@@ -3185,6 +3201,25 @@ async function sweepPremiumizeTransfers() {
   }
   notifyChannel('downloads', { embeds: [embed], components });
   audit('premiumize_transfer_stuck', { cleared: cleared.length, retried: retriedOk.length, failed: failed.length, alerted: alerts.length });
+
+  // One suggestion embed per newly-thresholded release group (a sweep rarely produces more than
+  // one or two) — suggest-only, same posture as the AvistaZ auto-tag feature: nothing changes in
+  // Sonarr until an admin clicks Approve.
+  const seenGroups = new Set();
+  for (const { group, count, sampleName } of blocklistCandidates) {
+    if (seenGroups.has(group)) continue;
+    seenGroups.add(group);
+    markReleaseGroupSuggested(group, now);
+    audit('release_group_blocklist_suggested', { group, deadClearCount: count, sampleName });
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`relgroup_approve:${group}`).setLabel('Blocklist in Sonarr').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`relgroup_dismiss:${group}`).setLabel('Not dead — dismiss').setStyle(ButtonStyle.Secondary),
+    );
+    notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle(`🚫 Known-Dead Release Group? — ${group.toUpperCase()}`)
+      .setDescription(`\`${group}\` has shown up on **${count}** distinct auto-cleared dead Premiumize transfers, most recently:\n\`${String(sampleName || '').slice(0, 150)}\`\n\nApproving creates a Sonarr Custom Format matching this release group and scores it \`${CONFIG.RELEASE_GROUP_BLOCKLIST_SCORE}\` in every quality profile, so future Sonarr searches skip it before ever grabbing. This can be undone in Sonarr (Settings → Custom Formats) if the tracker recovers.`)],
+      components: [row] });
+  }
 }
 
 // Enforce the "Auto-deletes in N hours unless you choose Keep" promise. Every guard rail is
@@ -7652,6 +7687,35 @@ async function handleButton(interaction) {
     revokeMemberRole(discordId).catch(() => {});
     audit('user_unlinked', { actorDiscordId: interaction.user.id, targetDiscordId: discordId, email: user.email, removed, source: 'revoke_plex_button' });
     return interaction.editReply({ content: `🗑️ Revoked Plex for <@${discordId}> (${user.email}) and removed from DB. Removed: ${removed ? 'yes' : 'no'}.`, components: [] });
+  }
+
+  if (['relgroup_approve', 'relgroup_dismiss'].includes(action)) {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const group = parts[0];
+    const row = getReleaseGroupSighting(group);
+    if (!row) return interaction.reply({ content: '❌ No record of this release group anymore.', ephemeral: true });
+
+    if (action === 'relgroup_dismiss') {
+      dismissReleaseGroupSuggestion(group);
+      audit('release_group_blocklist_dismissed', { actorDiscordId: interaction.user.id, group, deadClearCount: row.dead_clear_count });
+      return interaction.reply({ content: `✅ Dismissed — won't suggest blocklisting \`${group}\` again unless it's reset.`, ephemeral: true });
+    }
+
+    if (!CONFIG.SONARR_URL) return interaction.reply({ content: '❌ SONARR_URL is not configured.', ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const existingFormats = await listSonarrCustomFormats();
+      const cfName = `Dead release group — ${group}`;
+      let cf = existingFormats.find(f => f.name === cfName);
+      if (!cf) cf = await createSonarrCustomFormat(cfName, `\\b${group}\\b`);
+      await scoreSonarrCustomFormatInAllProfiles(cf.id, CONFIG.RELEASE_GROUP_BLOCKLIST_SCORE);
+      markReleaseGroupBlocklisted(group, cf.id);
+      audit('release_group_blocklisted', { actorDiscordId: interaction.user.id, group, customFormatId: cf.id, score: CONFIG.RELEASE_GROUP_BLOCKLIST_SCORE, deadClearCount: row.dead_clear_count });
+      return interaction.editReply({ content: `🚫 Blocklisted \`${group}\` — created/updated Sonarr Custom Format \`${cfName}\` (id ${cf.id}) and scored it ${CONFIG.RELEASE_GROUP_BLOCKLIST_SCORE} in every quality profile.` });
+    } catch (err) {
+      audit('external_api_error', { actorDiscordId: interaction.user.id, provider: 'sonarr', action: 'release_group_blocklist', group, error: err.message });
+      return interaction.editReply({ content: `❌ Failed to blocklist \`${group}\`: ${err.message}` });
+    }
   }
 
   if (['syncfix_mergekeep', 'syncfix_mergeadopt', 'syncfix_mergedismiss'].includes(action)) {

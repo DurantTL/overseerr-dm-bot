@@ -292,6 +292,52 @@ async function triggerSeriesSearch(seriesId) {
     { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 15000 });
 }
 
+// ---- Sonarr Custom Formats: proactive dead-release-group blocklisting (#211) ----
+// A Custom Format only labels a release — it does nothing on its own until it's also scored in
+// a quality profile's formatItems. A large negative score reliably pushes the release's total
+// score below the profile's minimum, which is what actually makes Sonarr skip/reject it.
+
+async function listSonarrCustomFormats() {
+  const res = await axios.get(`${CONFIG.SONARR_URL}/api/v3/customformat`, { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 10000 });
+  return res.data || [];
+}
+
+async function createSonarrCustomFormat(name, pattern) {
+  const res = await axios.post(`${CONFIG.SONARR_URL}/api/v3/customformat`, {
+    name,
+    includeCustomFormatWhenRenaming: false,
+    specifications: [{
+      name: 'Release Title', implementation: 'ReleaseTitleSpecification', negate: false, required: true,
+      fields: [{ name: 'value', value: pattern }],
+    }],
+  }, { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 15000 });
+  return res.data;
+}
+
+async function listSonarrQualityProfiles() {
+  const res = await axios.get(`${CONFIG.SONARR_URL}/api/v3/qualityprofile`, { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 10000 });
+  return res.data || [];
+}
+
+// Adds (or updates) a formatItems entry scoring `customFormatId` at `score` in every quality
+// profile — the step that turns a labeled release into one Sonarr actually downranks/rejects.
+async function scoreSonarrCustomFormatInAllProfiles(customFormatId, score) {
+  const profiles = await listSonarrQualityProfiles();
+  for (const profile of profiles) {
+    const items = Array.isArray(profile.formatItems) ? profile.formatItems : [];
+    const existing = items.find(fi => fi.format === customFormatId);
+    if (existing) {
+      if (existing.score === score) continue;
+      existing.score = score;
+    } else {
+      items.push({ format: customFormatId, name: '', score });
+    }
+    await axios.put(`${CONFIG.SONARR_URL}/api/v3/qualityprofile/${profile.id}`,
+      { ...profile, formatItems: items },
+      { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 15000 });
+  }
+}
+
 // Ask Sonarr to search one season. A fully missing season can produce one pack; for a partially
 // missing season Sonarr may still search at episode granularity, which verification now records.
 async function triggerSeasonSearch(seriesId, seasonNumber) {
@@ -654,4 +700,4 @@ function remapPath(hostPath) {
   return hostPath;
 }
 
-module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, interactiveSeasonSearch, forceGrabRelease, getSeriesEpisodes, getSeasonDownloadHistory, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath };
+module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, interactiveSeasonSearch, forceGrabRelease, getSeriesEpisodes, getSeasonDownloadHistory, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, listSonarrCustomFormats, createSonarrCustomFormat, listSonarrQualityProfiles, scoreSonarrCustomFormatInAllProfiles };

@@ -130,6 +130,14 @@ const CONFIG = (() => {
   // a slow tracker rather than a genuinely dead one — only deleted if it's still dead on the
   // sweep after that retry. Set to false to go straight back to immediate deletion.
   PREMIUMIZE_RETRY_BEFORE_CLEAR: parseBool(process.env.PREMIUMIZE_RETRY_BEFORE_CLEAR, true),
+  // Proactive dead-release-group blocklist (#211): when the same release-group tag (e.g.
+  // "-RARBG") shows up on this many distinct auto-cleared dead transfers, suggest a Sonarr
+  // Custom Format for it via a Discord approve/dismiss button — never applied automatically.
+  RELEASE_GROUP_BLOCKLIST_ENABLED: parseBool(process.env.RELEASE_GROUP_BLOCKLIST_ENABLED, true),
+  RELEASE_GROUP_BLOCKLIST_THRESHOLD: Number.parseInt(process.env.RELEASE_GROUP_BLOCKLIST_THRESHOLD || '5', 10),
+  // Score applied to the group's Custom Format in every Sonarr quality profile once approved —
+  // negative enough to push a matching release's total score below any default minimum.
+  RELEASE_GROUP_BLOCKLIST_SCORE: Number.parseInt(process.env.RELEASE_GROUP_BLOCKLIST_SCORE || '-1000', 10),
   STUCK_CHECK_MINUTES: Number.parseInt(process.env.STUCK_CHECK_MINUTES || '10', 10),
   STUCK_AFTER_MINUTES: Number.parseInt(process.env.STUCK_AFTER_MINUTES || '45', 10),
   STUCK_ALERT_COOLDOWN_HOURS: Number.parseInt(process.env.STUCK_ALERT_COOLDOWN_HOURS || '6', 10),

@@ -249,6 +249,20 @@ const runMigrations = db.transaction(function runMigrationsInner() {
       PRIMARY KEY (series_id, season_number)
     );
 
+    -- One row per release-group tag ever seen on a Premiumize transfer that was auto-cleared as
+    -- dead. Once dead_clear_count crosses the configured threshold, the group is suggested to an
+    -- admin as a Sonarr Custom Format (blocklist), never applied automatically (#211).
+    CREATE TABLE IF NOT EXISTS release_group_sightings (
+      release_group TEXT NOT NULL PRIMARY KEY,
+      dead_clear_count INTEGER NOT NULL DEFAULT 0,
+      first_seen_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      suggested_at INTEGER,
+      sonarr_custom_format_id INTEGER,
+      dismissed INTEGER NOT NULL DEFAULT 0,
+      sample_transfer_name TEXT
+    );
+
     -- Positive interactive evidence and the high-water cursor for bounded episode fallback.
     -- The unique season key makes scheduler retries and restart reconciliation idempotent.
     CREATE TABLE IF NOT EXISTS season_episode_fallbacks (
@@ -914,6 +928,44 @@ function recordSeasonSearch({ seriesId, seasonNumber, seriesTitle, missing }) {
 const listRecentSeasonSearches = (sinceMs = 7 * 86400000) =>
   db.prepare('SELECT * FROM season_searches WHERE last_searched_at >= ? ORDER BY last_searched_at DESC').all(Date.now() - sinceMs);
 
+// ---- Release-group dead-clear tracking (#211) ----
+// Upserts one sighting of `group` on a Premiumize transfer that was just auto-cleared as dead,
+// and returns the row's updated dead_clear_count so the caller can check it against the
+// suggestion threshold without a second query.
+function recordDeadReleaseGroupSighting(group, { sampleName, now = Date.now() } = {}) {
+  db.prepare(`INSERT INTO release_group_sightings (release_group, dead_clear_count, first_seen_at, last_seen_at, sample_transfer_name)
+    VALUES (?, 1, ?, ?, ?)
+    ON CONFLICT(release_group) DO UPDATE SET
+      dead_clear_count = dead_clear_count + 1,
+      last_seen_at = excluded.last_seen_at,
+      sample_transfer_name = excluded.sample_transfer_name`)
+    .run(group, now, now, sampleName || null);
+  return db.prepare('SELECT dead_clear_count FROM release_group_sightings WHERE release_group = ?').get(group).dead_clear_count;
+}
+
+function getReleaseGroupSighting(group) {
+  return db.prepare('SELECT * FROM release_group_sightings WHERE release_group = ?').get(group) || null;
+}
+
+function markReleaseGroupSuggested(group, now = Date.now()) {
+  db.prepare('UPDATE release_group_sightings SET suggested_at = ? WHERE release_group = ?').run(now, group);
+}
+
+function markReleaseGroupBlocklisted(group, customFormatId) {
+  db.prepare('UPDATE release_group_sightings SET sonarr_custom_format_id = ? WHERE release_group = ?').run(customFormatId, group);
+}
+
+function dismissReleaseGroupSuggestion(group) {
+  db.prepare('UPDATE release_group_sightings SET dismissed = 1 WHERE release_group = ?').run(group);
+}
+
+// A release from this group actually cleared the pipeline (imported successfully) — the
+// tracker/group may have recovered, so let it earn another chance instead of staying flagged
+// forever off old evidence. Resets the count rather than deleting the row, preserving history.
+function resetReleaseGroupSighting(group) {
+  db.prepare('UPDATE release_group_sightings SET dead_clear_count = 0, suggested_at = NULL, dismissed = 0 WHERE release_group = ?').run(group);
+}
+
 function recordSeasonEpisodeFallbackEvidence({ seriesId, seasonNumber, seriesTitle, evidence, now = Date.now() }) {
   if (evidence?.status !== 'approved_episode' || !evidence.fingerprint) return null;
   db.prepare(`INSERT INTO season_episode_fallbacks
@@ -1537,4 +1589,10 @@ Object.assign(module.exports, {
   finishSeasonEpisodeFallback,
   deferSubmittedSeasonEpisodeFallback,
   clearSeasonEpisodeFallback,
+  recordDeadReleaseGroupSighting,
+  getReleaseGroupSighting,
+  markReleaseGroupSuggested,
+  markReleaseGroupBlocklisted,
+  dismissReleaseGroupSuggestion,
+  resetReleaseGroupSighting,
 });
