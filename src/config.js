@@ -126,6 +126,10 @@ const CONFIG = (() => {
   PREMIUMIZE_AUTO_CLEAR_DEAD: parseBool(process.env.PREMIUMIZE_AUTO_CLEAR_DEAD, true),
   // Progress ceiling (percent) below which a stuck transfer counts as "dead" for auto-clear.
   PREMIUMIZE_AUTO_CLEAR_MAX_PROGRESS: Number.parseInt(process.env.PREMIUMIZE_AUTO_CLEAR_MAX_PROGRESS || '1', 10),
+  // A dead-looking transfer gets one Premiumize-side retry before it's auto-cleared, in case it's
+  // a slow tracker rather than a genuinely dead one — only deleted if it's still dead on the
+  // sweep after that retry. Set to false to go straight back to immediate deletion.
+  PREMIUMIZE_RETRY_BEFORE_CLEAR: parseBool(process.env.PREMIUMIZE_RETRY_BEFORE_CLEAR, true),
   STUCK_CHECK_MINUTES: Number.parseInt(process.env.STUCK_CHECK_MINUTES || '10', 10),
   STUCK_AFTER_MINUTES: Number.parseInt(process.env.STUCK_AFTER_MINUTES || '45', 10),
   STUCK_ALERT_COOLDOWN_HOURS: Number.parseInt(process.env.STUCK_ALERT_COOLDOWN_HOURS || '6', 10),

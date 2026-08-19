@@ -78,24 +78,37 @@ function isDeadTransfer(t, { maxProgress = 0.01 } = {}) {
   return NO_SOURCE_MESSAGE.test(String(t.message || ''));
 }
 
-// Split an already-stuck list into what to auto-delete and what still needs a human, honoring
-// per-id ignore flags and the alert cooldown. `alertedAt` maps id -> ms of the last alert (0/
-// missing = never); an id inside cooldown is neither deleted again nor re-alerted, so a batch
-// stays idempotent across sweeps. Deletion never respects the alert cooldown — a dead transfer
-// is cleaned up the moment it's found, whether or not it was already alerted on.
-function planStuckTransferActions(stuck, { autoDelete = false, maxProgress = 0.01, ignored = new Set(), alertedAt = new Map(), cooldownMs = 0, now = Date.now() } = {}) {
+// Split an already-stuck list into what to auto-delete, what to give one more shot before
+// deleting, and what still needs a human — honoring per-id ignore flags and the alert cooldown.
+// `alertedAt` maps id -> ms of the last alert (0/missing = never); an id inside cooldown is
+// neither deleted again nor re-alerted, so a batch stays idempotent across sweeps. Deletion never
+// respects the alert cooldown — a dead transfer is cleaned up the moment it's found, whether or
+// not it was already alerted on.
+//
+// `retried` is the set of ids that already got Premiumize's own retry on a previous sweep: a
+// transfer that looks dead only 45+ minutes after being grabbed may just be a slow tracker
+// rather than a genuinely dead one, so the first time a dead-looking transfer is seen it's
+// retried instead of deleted outright, and only deleted once it's still dead on the *next* sweep
+// after that retry. Set retryBeforeClear=false to go straight to the old immediate-delete
+// behavior.
+function planStuckTransferActions(stuck, { autoDelete = false, maxProgress = 0.01, ignored = new Set(), alertedAt = new Map(), cooldownMs = 0, retried = new Set(), retryBeforeClear = true, now = Date.now() } = {}) {
   const deletes = [];
+  const retries = [];
   const alerts = [];
   let suppressed = 0;
   for (const t of stuck) {
     const id = String(t.id);
     if (ignored.has(id)) { suppressed++; continue; }
-    if (autoDelete && isDeadTransfer(t, { maxProgress })) { deletes.push(t); continue; }
+    if (autoDelete && isDeadTransfer(t, { maxProgress })) {
+      if (retryBeforeClear && !retried.has(id)) { retries.push(t); continue; }
+      deletes.push(t);
+      continue;
+    }
     const last = alertedAt.get(id) || 0;
     if (now - last < cooldownMs) { suppressed++; continue; }
     alerts.push(t);
   }
-  return { deletes, alerts, suppressed };
+  return { deletes, retries, alerts, suppressed };
 }
 
 module.exports = { premiumizeConfigured, pmApi, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate, isDeadTransfer, planStuckTransferActions };

@@ -3056,6 +3056,11 @@ async function sweepPremiumizeTransfers() {
   for (const row of listAlertCooldowns('premiumize')) {
     if (!currentIds.has(row.alert_key) || now - row.last_alerted_at > 48 * 3600000) clearAlertCooldown('premiumize', row.alert_key);
   }
+  // 'premiumize_retry' reuses the generic alert-cooldown table purely as a "have we already
+  // given this one its one retry" flag — same lifecycle as the 'premiumize' scope above.
+  for (const row of listAlertCooldowns('premiumize_retry')) {
+    if (!currentIds.has(row.alert_key) || now - row.last_alerted_at > 48 * 3600000) clearAlertCooldown('premiumize_retry', row.alert_key);
+  }
   // Ignore flags are per transfer id; drop them once the transfer leaves the list so a reused
   // id can't be silently ignored (same pattern as stuck_ignore:).
   for (const r of db.prepare("SELECT key FROM app_settings WHERE key LIKE 'pm_ignore:%'").all()) {
@@ -3065,10 +3070,12 @@ async function sweepPremiumizeTransfers() {
   const stuck = findStuckTransfers(transfers, pmTracker, { stuckAfterMs: CONFIG.PREMIUMIZE_STUCK_AFTER_MINUTES * 60000, now });
   const ignored = new Set(stuck.filter(t => getSetting(`pm_ignore:${t.id}`)).map(t => String(t.id)));
   const alertedAt = new Map(stuck.map(t => [String(t.id), getAlertedAt('premiumize', String(t.id))]));
-  const { deletes, alerts } = planStuckTransferActions(stuck, {
+  const retried = new Set(stuck.filter(t => getAlertedAt('premiumize_retry', String(t.id))).map(t => String(t.id)));
+  const { deletes, retries, alerts } = planStuckTransferActions(stuck, {
     autoDelete: tunable('PREMIUMIZE_AUTO_CLEAR_DEAD'),
     maxProgress: tunable('PREMIUMIZE_AUTO_CLEAR_MAX_PROGRESS') / 100,
-    ignored, alertedAt, cooldownMs: CONFIG.PREMIUMIZE_ALERT_COOLDOWN_HOURS * 3600000, now,
+    retryBeforeClear: tunable('PREMIUMIZE_RETRY_BEFORE_CLEAR'),
+    ignored, alertedAt, retried, cooldownMs: CONFIG.PREMIUMIZE_ALERT_COOLDOWN_HOURS * 3600000, now,
   });
 
   const cleared = [];
@@ -3079,6 +3086,7 @@ async function sweepPremiumizeTransfers() {
       await deleteTransfer(id);
       pmTracker.delete(id);
       clearAlertCooldown('premiumize', id);
+      clearAlertCooldown('premiumize_retry', id);
       cleared.push(t);
       audit('premiumize_transfer_auto_cleared', { transferId: id, name: t.name, status: t.status, progress: t.progress });
     } catch (err) {
@@ -3086,15 +3094,35 @@ async function sweepPremiumizeTransfers() {
       audit('external_api_error', { provider: 'premiumize', error: err.message, action: 'premiumize_auto_clear', transferId: id });
     }
   }
+  // Premiumize's own retry gets one more shot at seeding before the transfer is given up on —
+  // slow trackers (the theory behind "not seeding long enough") get a second chance instead of
+  // being cleared the instant they're first seen dead. Left unmarked on failure so it's retried
+  // again next sweep rather than jumping straight to delete on an API hiccup.
+  const retriedOk = [];
+  for (const t of retries) {
+    const id = String(t.id);
+    try {
+      await retryTransfer(id);
+      setAlertedAt('premiumize_retry', id, now);
+      retriedOk.push(t);
+      audit('premiumize_transfer_retry_auto', { transferId: id, name: t.name, status: t.status, progress: t.progress });
+    } catch (err) {
+      audit('external_api_error', { provider: 'premiumize', error: err.message, action: 'premiumize_auto_retry', transferId: id });
+    }
+  }
   for (const t of alerts) setAlertedAt('premiumize', String(t.id), now);
 
   // One batched embed instead of one alert per transfer — a bad night of public-indexer grabs
   // can produce dozens of dead transfers at once, and a wall of near-identical alerts is worse
   // than a summary with the bulk buttons this channel already has.
-  if (!cleared.length && !alerts.length && !failed.length) return;
+  if (!cleared.length && !retriedOk.length && !alerts.length && !failed.length) return;
   const lines = [];
+  if (retriedOk.length) {
+    lines.push(`**🔁 Given one more chance to seed (${retriedOk.length}):**`, ...retriedOk.slice(0, 10).map(t => `• ${String(t.name || 'unnamed').slice(0, 100)}`));
+    if (retriedOk.length > 10) lines.push(`• _+${retriedOk.length - 10} more_`);
+  }
   if (cleared.length) {
-    lines.push(`**🧹 Auto-cleared (${cleared.length}):**`, ...cleared.slice(0, 10).map(t => `• ${String(t.name || 'unnamed').slice(0, 100)}`));
+    lines.push('', `**🧹 Auto-cleared (${cleared.length}):**`, ...cleared.slice(0, 10).map(t => `• ${String(t.name || 'unnamed').slice(0, 100)}`));
     if (cleared.length > 10) lines.push(`• _+${cleared.length - 10} more_`);
   }
   if (failed.length) {
@@ -3109,7 +3137,7 @@ async function sweepPremiumizeTransfers() {
     if (alerts.length > 10) lines.push(`• _+${alerts.length - 10} more_`);
   }
   const embed = brandedEmbed(alerts.length ? COLORS.WARN : COLORS.INFO)
-    .setTitle(`🧊 Premiumize — ${alerts.length} stuck, ${cleared.length} auto-cleared`)
+    .setTitle(`🧊 Premiumize — ${alerts.length} stuck, ${retriedOk.length} retried, ${cleared.length} auto-cleared`)
     .setDescription(lines.join('\n').slice(0, 4000));
   // Per-transfer Retry/Clear/Ignore buttons only make sense for exactly one alerted transfer —
   // Discord's 5-button row can't carry them for a batch, so the bulk buttons stand in instead.
@@ -3128,7 +3156,7 @@ async function sweepPremiumizeTransfers() {
     ));
   }
   notifyChannel('downloads', { embeds: [embed], components });
-  audit('premiumize_transfer_stuck', { cleared: cleared.length, failed: failed.length, alerted: alerts.length });
+  audit('premiumize_transfer_stuck', { cleared: cleared.length, retried: retriedOk.length, failed: failed.length, alerted: alerts.length });
 }
 
 // Enforce the "Auto-deletes in N hours unless you choose Keep" promise. Every guard rail is

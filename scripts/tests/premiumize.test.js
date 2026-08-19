@@ -100,30 +100,57 @@ test('premiumize: isDeadTransfer / planStuckTransferActions', () => {
   assert.deepStrictEqual(plan.deletes.map(t => t.id), []);
   assert.deepStrictEqual(plan.alerts.map(t => t.id), ['1', '2', '3', '4']);
 
-  // autoDelete on: dead ones are deleted, the slow one still alerts; ignored ids are excluded
-  // from both lists (deletion never respects the alert cooldown, but it does respect ignore).
+  // autoDelete on, retryBeforeClear on (the default): a dead transfer seen for the first time is
+  // retried rather than deleted outright — Premiumize's own retry gets one more shot at seeding
+  // before the bot gives up on it. The slow one still alerts; ignored ids are excluded from every
+  // list (deletion/retry never respect the alert cooldown, but both respect ignore).
   plan = planStuckTransferActions(stuck, {
     autoDelete: true, ignored: new Set(['4']), now: 1000,
   });
-  assert.deepStrictEqual(plan.deletes.map(t => t.id).sort(), ['1', '2']);
+  assert.deepStrictEqual(plan.deletes, []);
+  assert.deepStrictEqual(plan.retries.map(t => t.id).sort(), ['1', '2']);
   assert.deepStrictEqual(plan.alerts.map(t => t.id), ['3']);
   assert.strictEqual(plan.suppressed, 1, 'the ignored id is counted as suppressed');
 
-  // Cooldown suppresses a re-alert on the slow transfer without touching deletion of the dead ones.
+  // Once an id has already been retried on a previous sweep and is still dead, it's deleted —
+  // no third chance.
   plan = planStuckTransferActions(stuck, {
-    autoDelete: true, alertedAt: new Map([['3', 900]]), cooldownMs: 200, now: 1000,
+    autoDelete: true, ignored: new Set(['4']), retried: new Set(['1', '2']), now: 1000,
+  });
+  assert.deepStrictEqual(plan.deletes.map(t => t.id).sort(), ['1', '2']);
+  assert.deepStrictEqual(plan.retries, []);
+
+  // retryBeforeClear: false restores the old immediate-delete behavior for anyone who'd rather
+  // not wait the extra sweep.
+  plan = planStuckTransferActions(stuck, {
+    autoDelete: true, ignored: new Set(['4']), retryBeforeClear: false, now: 1000,
+  });
+  assert.deepStrictEqual(plan.deletes.map(t => t.id).sort(), ['1', '2']);
+  assert.deepStrictEqual(plan.retries, []);
+
+  // Cooldown suppresses a re-alert on the slow transfer without touching retry/deletion of the
+  // dead ones (already-retried '1'/'2'/'4' go straight to delete; the alert cooldown is a
+  // separate mechanism entirely).
+  plan = planStuckTransferActions(stuck, {
+    autoDelete: true, retried: new Set(['1', '2', '4']), alertedAt: new Map([['3', 900]]), cooldownMs: 200, now: 1000,
   });
   assert.deepStrictEqual(plan.deletes.map(t => t.id).sort(), ['1', '2', '4']);
   assert.deepStrictEqual(plan.alerts, []);
   assert.strictEqual(plan.suppressed, 1);
 
-  // A large batch (the reported "30 dead Revenge transfers" case): every dead one is deleted,
-  // nothing needs 30 individual alerts.
+  // A large batch (the reported "30 dead Revenge transfers" case): every dead one gets retried
+  // the first time around, nothing needs 30 individual alerts.
   const big = Array.from({ length: 30 }, (_, i) => ({
     id: String(i), name: `Revenge S0${i}`, status: 'running', progress: 0,
     message: '0.00 KB/s from 0 peer, 0 Bytes of 0 Bytes, unknown left',
   }));
   plan = planStuckTransferActions(big, { autoDelete: true, now: 1000 });
-  assert.strictEqual(plan.deletes.length, 30);
+  assert.strictEqual(plan.retries.length, 30);
+  assert.strictEqual(plan.deletes.length, 0);
   assert.strictEqual(plan.alerts.length, 0);
+
+  // Still dead on the sweep after that retry: all 30 finally get deleted.
+  plan = planStuckTransferActions(big, { autoDelete: true, retried: new Set(big.map(t => t.id)), now: 1000 });
+  assert.strictEqual(plan.deletes.length, 30);
+  assert.strictEqual(plan.retries.length, 0);
 });
