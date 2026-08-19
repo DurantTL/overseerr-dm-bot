@@ -196,6 +196,32 @@ recovers.
 
 Set `RELEASE_GROUP_BLOCKLIST_ENABLED=false` to turn tracking off entirely.
 
+### Premiumize→rTorrent reroute (opt-in)
+
+Blocklisting stops the *next* dead grab; it does nothing for the one that just failed. Premiumize
+itself is a Sonarr/Radarr download client the bot never mediates — Sonarr/Radarr pick a release
+from their own public-indexer search and hand it straight to Premiumize, so when that transfer
+turns out to be dead, the bot has no magnet, no indexer GUID, and no grab-job record for it. All
+that's recoverable is the release's name and, while Sonarr/Radarr still think the download is in
+flight, a matching entry in their own queue — which carries real series/episode or movie identity.
+
+With `PREMIUMIZE_REROUTE_ENABLED=true`, a transfer that's finally given up on (dead even after its
+one Premiumize-side retry) gets matched against the live Sonarr/Radarr queue by exact release name.
+A match resolves the series (with season) or movie identity, re-searches every configured Prowlarr
+indexer for an equivalent release — **AvistaZ is always excluded** from this search, since a title
+that reached Premiumize in the first place was never AvistaZ-tagged or eligible — and, if the best
+result clears `PREMIUMIZE_REROUTE_MIN_CONFIDENCE` (default 60), sends it through the same
+direct-grab pipeline AvistaZ releases use: seedbox rTorrent, not Premiumize. No queue match, no
+search results, or a top result below the confidence floor all leave the transfer alone rather than
+guessing. Each attempt is a real Prowlarr search across every indexer, so at most
+`PREMIUMIZE_REROUTE_MAX_PER_SWEEP` (default 3) transfers get one per watchdog sweep, and every
+reroute grab is counted against the same daily `AVISTAZ_DAILY_GRAB_LIMIT` allowance every other
+direct grab shares — this doesn't get its own separate budget.
+
+This is off by default (`PREMIUMIZE_REROUTE_ENABLED=false`) since, unlike the suggest-only
+blocklist above, it initiates a real grab automatically with no approval step. A successful reroute
+shows up in the same batched Premiumize watchdog embed under "🔀 Rerouted to seedbox rTorrent".
+
 A show counts as **old** when Sonarr marks it `ended`, or when nothing has aired in
 `SEASON_PACK_DORMANT_DAYS` (default 365) and nothing is scheduled. A scheduled next airing always
 wins — a series returning next week is current whatever its status field says, and its latest

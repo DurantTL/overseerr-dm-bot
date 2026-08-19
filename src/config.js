@@ -138,6 +138,15 @@ const CONFIG = (() => {
   // Score applied to the group's Custom Format in every Sonarr quality profile once approved —
   // negative enough to push a matching release's total score below any default minimum.
   RELEASE_GROUP_BLOCKLIST_SCORE: Number.parseInt(process.env.RELEASE_GROUP_BLOCKLIST_SCORE || '-1000', 10),
+  // Premiumize→rTorrent reroute: when a Premiumize transfer is finally given up on (dead even
+  // after its retry), try to pick the same release back up through the seedbox rTorrent client
+  // by matching it against the still-live Sonarr/Radarr queue entry. Off by default — unlike the
+  // blocklist suggestion above, this initiates a real grab automatically, so it's an opt-in.
+  PREMIUMIZE_REROUTE_ENABLED: parseBool(process.env.PREMIUMIZE_REROUTE_ENABLED, false),
+  PREMIUMIZE_REROUTE_MIN_CONFIDENCE: Number.parseInt(process.env.PREMIUMIZE_REROUTE_MIN_CONFIDENCE || '60', 10),
+  // Caps how many dead transfers get a re-search attempt per sweep — each attempt is a real,
+  // possibly-slow Prowlarr search across every configured indexer.
+  PREMIUMIZE_REROUTE_MAX_PER_SWEEP: Number.parseInt(process.env.PREMIUMIZE_REROUTE_MAX_PER_SWEEP || '3', 10),
   STUCK_CHECK_MINUTES: Number.parseInt(process.env.STUCK_CHECK_MINUTES || '10', 10),
   STUCK_AFTER_MINUTES: Number.parseInt(process.env.STUCK_AFTER_MINUTES || '45', 10),
   STUCK_ALERT_COOLDOWN_HOURS: Number.parseInt(process.env.STUCK_ALERT_COOLDOWN_HOURS || '6', 10),

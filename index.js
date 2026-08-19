@@ -36,7 +36,7 @@ const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeaso
   markSeasonEpisodeFallbackSubmitted, attachSeasonEpisodeFallbackCommand, finishSeasonEpisodeFallback, deferSubmittedSeasonEpisodeFallback,
   clearSeasonEpisodeFallback } = require('./src/db');
 const { recordDeadReleaseGroupSighting, getReleaseGroupSighting, markReleaseGroupSuggested, markReleaseGroupBlocklisted, dismissReleaseGroupSuggestion } = require('./src/db');
-const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess } = require('./src/plex');
+const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess, fetchPlexFriends } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases,
@@ -402,15 +402,14 @@ async function resolvePlexWebhookEmail(accountId) {
 
   const token = await getPlexToken();
   const [friendsResult, ownerResult] = await Promise.allSettled([
-    plexApiGet('/api/v2/friends', token),
+    fetchPlexFriends(token),
     plexApiGet('/api/v2/user', token),
   ]);
   if (friendsResult.status === 'rejected') log.warn(`Could not resolve Plex webhook friends: ${friendsResult.reason.message}`);
   if (ownerResult.status === 'rejected') log.warn(`Could not resolve Plex webhook owner: ${ownerResult.reason.message}`);
   if (friendsResult.status === 'rejected' && ownerResult.status === 'rejected') return null;
 
-  const friendsData = friendsResult.status === 'fulfilled' ? friendsResult.value : [];
-  const friends = Array.isArray(friendsData) ? friendsData : (friendsData.data || []);
+  const friends = friendsResult.status === 'fulfilled' ? friendsResult.value : [];
   const ownerData = ownerResult.status === 'fulfilled' ? ownerResult.value : null;
   const owner = ownerData?.user || ownerData?.data || ownerData;
   const emails = new Map();
@@ -2245,6 +2244,74 @@ async function runSeasonDirectGrab({ series, season, indexer, allowance }) {
   return { status: 'offered', detail: `posted ${ranked.length} candidate(s) for approval (best: ${top.confidence}% confidence)` };
 }
 
+// Premiumize→rTorrent reroute: a dead Premiumize transfer came from Sonarr/Radarr's own
+// public-indexer download client — the bot never mediated that grab, so there's no grab_jobs
+// row, magnet, or indexer GUID on file for it, only the transfer's release-name string. The one
+// thing recoverable is the still-live Sonarr/Radarr queue entry for the same release (matched by
+// exact normalized title), which carries real series/episode or movie identity. Re-search
+// Prowlarr's public indexers for an equivalent release under that identity and grab it through
+// the existing direct-grab pipeline (seedbox rTorrent) instead of leaving Sonarr/Radarr to retry
+// the same dead public indexer forever. Never throws — every failure path returns a status the
+// sweep can log; a caller that can't confidently identify the release just leaves it alone.
+async function rerouteDeadPremiumizeTransfer(t) {
+  if (!grabConfigured()) return { status: 'not_configured' };
+  const queue = await fetchArrQueues().catch(() => []);
+  const wanted = normalizeTitle(t.name);
+  const item = queue.find(q => wanted && normalizeTitle(q.sourceTitle) === wanted);
+  if (!item) return { status: 'no_match' };
+
+  let query; let year; let mediaType; let mediaId; let title; let season; let aliases;
+  if (item.source.kind === 'tv') {
+    if (!item.seriesTvdbId) return { status: 'no_match' };
+    const series = await getSeriesByTvdbId(item.seriesTvdbId).catch(() => null);
+    if (!series) return { status: 'no_match' };
+    mediaType = 'tv';
+    ({ query } = splitTitleYear(series.title));
+    year = series.year || null;
+    title = series.title;
+    mediaId = `tvdb:${series.tvdbId}`;
+    season = item.seasonNumber;
+    aliases = sonarrSeriesAliases(series);
+  } else {
+    if (!item.movieTmdbId) return { status: 'no_match' };
+    const movie = await getMovieByTmdbId(item.movieTmdbId).catch(() => null);
+    if (!movie) return { status: 'no_match' };
+    mediaType = 'movie';
+    ({ query } = splitTitleYear(movie.title));
+    year = movie.year || null;
+    title = movie.title;
+    mediaId = `tmdb:${movie.tmdbId}`;
+  }
+
+  let results;
+  try {
+    // No indexerId: searches every indexer Prowlarr has configured, same as a manual "search
+    // all indexers" — this is exactly the pool Sonarr/Radarr's own search already draws from.
+    results = await searchAvistaz({ query, mediaType });
+  } catch (err) {
+    audit('external_api_error', { provider: 'prowlarr', error: err.message, action: 'premiumize_reroute_search', title });
+    return { status: 'error', error: err.message };
+  }
+  // Never resubmit through AvistaZ itself here — a title that reached Premiumize in the first
+  // place was never AvistaZ-tagged/eligible, so an AvistaZ hit in this pool is a coincidental
+  // title collision, not a legitimate route, and would spend a metered private-tracker search
+  // this feature has no business touching.
+  const avistazName = CONFIG.AVISTAZ_INDEXER_NAME;
+  const publicResults = (results || []).filter(r => !String(r.indexer || '').toLowerCase().includes(avistazName));
+  const ranked = rankAvistazResults(publicResults, { title: query, year, mediaType, season, aliases }, { limit: 5 });
+  if (!ranked.length) return { status: 'no_results' };
+  const top = ranked[0];
+  if (top.confidence < tunable('PREMIUMIZE_REROUTE_MIN_CONFIDENCE')) return { status: 'low_confidence', confidence: top.confidence };
+
+  const grab = await executeGrab(top, { mediaId, mediaType, title, origin: 'premiumize_reroute' });
+  if (grab.ok) {
+    audit('premiumize_reroute_grabbed', { transferId: String(t.id), name: t.name, title, releaseTitle: top.releaseTitle, confidence: top.confidence, jobId: grab.job.id });
+    return { status: 'grabbed', releaseTitle: top.releaseTitle, confidence: top.confidence, title };
+  }
+  if (grab.dup) return { status: 'dup', why: grab.why };
+  return { status: 'failed', why: grab.why };
+}
+
 // Seasons an active AvistaZ grab job already covers for this series — the direct-grab
 // counterpart of the Sonarr queue that queuedSeasons() reads, so the sweep doesn't re-search
 // (and re-spend the metered allowance on) a season it already sent to the seedbox last cycle.
@@ -3112,6 +3179,10 @@ async function sweepPremiumizeTransfers() {
   const blocklistEnabled = tunable('RELEASE_GROUP_BLOCKLIST_ENABLED');
   const blocklistThreshold = tunable('RELEASE_GROUP_BLOCKLIST_THRESHOLD');
   const blocklistCandidates = [];
+  const rerouteEnabled = tunable('PREMIUMIZE_REROUTE_ENABLED');
+  const rerouteMaxPerSweep = tunable('PREMIUMIZE_REROUTE_MAX_PER_SWEEP');
+  const rerouted = [];
+  let rerouteAttempts = 0;
   for (const t of deletes) {
     const id = String(t.id);
     try {
@@ -3132,6 +3203,15 @@ async function sweepPremiumizeTransfers() {
           const row = getReleaseGroupSighting(group);
           if (count >= blocklistThreshold && !row.suggested_at && !row.dismissed) blocklistCandidates.push({ group, count, sampleName: t.name });
         }
+      }
+      // Premiumize→rTorrent reroute: this transfer is unsalvageable on Premiumize (already given
+      // its one retry, still dead) — try once to pick the same release back up through the
+      // seedbox rTorrent client instead of leaving Sonarr/Radarr to keep retrying the same dead
+      // public indexer. Bounded per sweep since each attempt is a real Prowlarr search.
+      if (rerouteEnabled && rerouteAttempts < rerouteMaxPerSweep && !grabDailyAllowance().exhausted) {
+        rerouteAttempts += 1;
+        const outcome = await rerouteDeadPremiumizeTransfer(t).catch(err => ({ status: 'error', error: err.message }));
+        if (outcome.status === 'grabbed') rerouted.push({ t, outcome });
       }
     } catch (err) {
       failed.push({ t, err });
@@ -3165,6 +3245,9 @@ async function sweepPremiumizeTransfers() {
     lines.push(`**🔁 Given one more chance to seed (${retriedOk.length}):**`, ...retriedOk.slice(0, 10).map(t => `• ${String(t.name || 'unnamed').slice(0, 100)}`));
     if (retriedOk.length > 10) lines.push(`• _+${retriedOk.length - 10} more_`);
   }
+  if (rerouted.length) {
+    lines.push('', `**🔀 Rerouted to seedbox rTorrent (${rerouted.length}):**`, ...rerouted.slice(0, 10).map(({ outcome }) => `• ${String(outcome.title || '').slice(0, 60)} → ${String(outcome.releaseTitle || '').slice(0, 90)} (${outcome.confidence}% confidence)`));
+  }
   if (cleared.length) {
     lines.push('', `**🧹 Auto-cleared (${cleared.length}):**`, ...cleared.slice(0, 10).map(t => `• ${String(t.name || 'unnamed').slice(0, 100)}`));
     if (cleared.length > 10) lines.push(`• _+${cleared.length - 10} more_`);
@@ -3181,7 +3264,7 @@ async function sweepPremiumizeTransfers() {
     if (alerts.length > 10) lines.push(`• _+${alerts.length - 10} more_`);
   }
   const embed = brandedEmbed(alerts.length ? COLORS.WARN : COLORS.INFO)
-    .setTitle(`🧊 Premiumize — ${alerts.length} stuck, ${retriedOk.length} retried, ${cleared.length} auto-cleared`)
+    .setTitle(`🧊 Premiumize — ${alerts.length} stuck, ${retriedOk.length} retried, ${cleared.length} auto-cleared${rerouted.length ? `, ${rerouted.length} rerouted` : ''}`)
     .setDescription(lines.join('\n').slice(0, 4000));
   // Per-transfer Retry/Clear/Ignore buttons only make sense for exactly one alerted transfer —
   // Discord's 5-button row can't carry them for a batch, so the bulk buttons stand in instead.
@@ -3200,7 +3283,7 @@ async function sweepPremiumizeTransfers() {
     ));
   }
   notifyChannel('downloads', { embeds: [embed], components });
-  audit('premiumize_transfer_stuck', { cleared: cleared.length, retried: retriedOk.length, failed: failed.length, alerted: alerts.length });
+  audit('premiumize_transfer_stuck', { cleared: cleared.length, retried: retriedOk.length, failed: failed.length, alerted: alerts.length, rerouted: rerouted.length });
 
   // One suggestion embed per newly-thresholded release group (a sweep rarely produces more than
   // one or two) — suggest-only, same posture as the AvistaZ auto-tag feature: nothing changes in
@@ -4552,15 +4635,14 @@ async function reconcilePlexMemberRoles() {
   // A failed fetch must abort the whole reconciliation rather than fall back to an empty list —
   // an empty friends list looks identical to "everyone lost access," which would revoke the role
   // from every current holder on a transient Plex API outage.
-  let friendsData;
+  let friends;
   try {
     const token = await getPlexToken();
-    friendsData = await plexApiGet('/api/v2/friends', token);
+    friends = await fetchPlexFriends(token);
   } catch (err) {
     log.warn(`Role reconcile aborted — couldn't fetch the Plex friends list: ${err.message}`);
     return { granted: 0, revoked: 0 };
   }
-  const friends = Array.isArray(friendsData) ? friendsData : (friendsData.data || []);
   const shouldHave = new Set();
   for (const friend of friends) {
     const match = friend.email ? getUserByCanonicalEmail(friend.email) : null;
@@ -5140,8 +5222,7 @@ async function buildSyncPreview() {
   const discordIds = new Set(discordMembers.map(m => m.user.id));
 
   const token = await getPlexToken();
-  const friendsData = await plexApiGet('/api/v2/friends', token).catch(() => []);
-  const plexFriends = Array.isArray(friendsData) ? friendsData : (friendsData.data || []);
+  const plexFriends = await fetchPlexFriends(token).catch(() => []);
   const plexEmails = new Set(plexFriends.map(f => canonicalizeEmail(f.email)).filter(Boolean));
 
   const overseerrUsers = await fetchOverseerrUsers().catch(() => []);
@@ -5289,8 +5370,7 @@ async function handleSyncCommand(interaction) {
       .filter(Boolean),
   );
   const token = await getPlexToken();
-  const friendsData = await plexApiGet('/api/v2/friends', token).catch(() => []);
-  const friends = Array.isArray(friendsData) ? friendsData : (friendsData.data || []);
+  const friends = await fetchPlexFriends(token).catch(() => []);
   for (const friend of friends) {
     const email = (friend.email || '').trim().toLowerCase();
     if (!email) continue;

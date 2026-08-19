@@ -73,16 +73,14 @@ test('webhook-events: Plex account resolution includes friends and the server ow
   const sandbox = loadSandbox(['resolvePlexWebhookEmail'], {
     plexWebhookAccountCache: { expiresAt: 0, emails: new Map() },
     getPlexToken: async () => 'token',
-    plexApiGet: async path => {
-      calls.push(path);
-      return path.endsWith('/friends') ? [{ id: 7, email: 'friend@example.com' }] : { id: 9, email: 'owner@example.com' };
-    },
+    fetchPlexFriends: async () => { calls.push('friends'); return [{ id: 7, email: 'friend@example.com' }]; },
+    plexApiGet: async path => { calls.push(path); return { id: 9, email: 'owner@example.com' }; },
     isValidEmail,
     log: { warn() {} },
   });
   assert.strictEqual(await sandbox.run('resolvePlexWebhookEmail(7)'), 'friend@example.com');
   assert.strictEqual(await sandbox.run('resolvePlexWebhookEmail(9)'), 'owner@example.com');
-  assert.deepStrictEqual(calls, ['/api/v2/friends', '/api/v2/user'], 'the second lookup uses the cache');
+  assert.deepStrictEqual(calls, ['friends', '/api/v2/user'], 'the second lookup uses the cache');
 });
 
 test('webhook-events: unknown source still produces a key rather than throwing', () => {

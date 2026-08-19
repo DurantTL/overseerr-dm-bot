@@ -127,6 +127,14 @@ const RUNTIME_SETTINGS = [
     label: 'Distinct dead auto-clears before suggesting', unit: 'clears' },
   { key: 'RELEASE_GROUP_BLOCKLIST_SCORE', group: 'release_group_blocklist', type: 'int', min: -10000, max: 0, source: 'config',
     label: 'Score applied once approved', unit: 'pts' },
+
+  // ---- Premiumize→rTorrent reroute ----
+  { key: 'PREMIUMIZE_REROUTE_ENABLED', group: 'premiumize', type: 'bool', source: 'config',
+    label: 'Reroute dead transfers to seedbox rTorrent', help: 'When a Premiumize transfer is finally given up on, try to pick the same release back up through the seedbox rTorrent client instead of leaving it dead. Matched against the live Sonarr/Radarr queue entry — skipped if no match is found.' },
+  { key: 'PREMIUMIZE_REROUTE_MIN_CONFIDENCE', group: 'premiumize', type: 'int', min: 0, max: 100, source: 'config',
+    label: 'Minimum confidence to reroute', unit: '%' },
+  { key: 'PREMIUMIZE_REROUTE_MAX_PER_SWEEP', group: 'premiumize', type: 'int', min: 1, max: 20, source: 'config',
+    label: 'Max reroute attempts per sweep', unit: 'attempts' },
 ];
 
 const GROUPS = [

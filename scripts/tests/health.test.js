@@ -85,7 +85,7 @@ test('health: checks liveness endpoints and names feature-specific capabilities'
   assert.ok(HEALTH_KEYS.includes('grabStaging'));
   assert.strictEqual(healthLabel('plex'), 'plex.tv account');
   assert.strictEqual(healthLabel('plexFriends'), 'plex.tv friends');
-  assert.deepStrictEqual(bed.calls.filter(call => call.plexPath).map(call => call.plexPath).sort(), ['/api/v2/friends', '/api/v2/user']);
+  assert.deepStrictEqual(bed.calls.filter(call => call.plexPath).map(call => call.plexPath).sort(), ['/api/users', '/api/v2/user']);
   assert.ok(bed.calls.some(call => call.url === 'http://byparr:8191/openapi.json'));
   assert.ok(!bed.calls.some(call => call.url === 'http://byparr:8191/health'));
   assert.ok(bed.calls.some(call => call.url === 'http://seerr:5055/api/v1/request' && call.options.params.take === 1));
@@ -96,7 +96,7 @@ test('health: a Plex friends failure does not claim the Plex account is down', a
   error.code = 'ERR_BAD_REQUEST';
   error.response = { status: 400, data: { errors: [{ message: 'token cannot list friends' }] } };
   const bed = checkerBed({ plexApiGet: async path => {
-    if (path.endsWith('/friends')) throw error;
+    if (path === '/api/users') throw error;
     return { id: 1 };
   } });
 

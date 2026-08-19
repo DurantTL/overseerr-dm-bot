@@ -134,7 +134,9 @@ function createHealthChecker({ config, client, db, fs, axios, audit, getSetting,
     const seerrHeaders = { 'X-Api-Key': config.OVERSEERR_API_KEY };
     await Promise.all([
       apiCheck('plex', async () => plexApiGet('/api/v2/user', await plexToken())),
-      apiCheck('plexFriends', async () => plexApiGet('/api/v2/friends', await plexToken())),
+      // /api/v2/friends was deprecated (HTTP 410 Gone) — /api/users is the legacy endpoint
+      // plex.tv still serves for this same list (see src/plex.js's fetchPlexFriends).
+      apiCheck('plexFriends', async () => plexApiGet('/api/users', await plexToken())),
       apiCheck('overseerr', async () => axios.get(`${config.OVERSEERR_URL}/api/v1/status`, { headers: seerrHeaders, timeout: 5000 })),
       apiCheck('seerrRequests', async () => axios.get(`${config.OVERSEERR_URL}/api/v1/request`, { params: { take: 1, skip: 0 }, headers: seerrHeaders, timeout: 5000 })),
       apiCheck('radarr', async () => {
