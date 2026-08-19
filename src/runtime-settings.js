@@ -117,6 +117,8 @@ const RUNTIME_SETTINGS = [
     label: 'Auto-clear dead 0% transfers', help: 'A stuck transfer with no cached source is deleted automatically instead of alerting forever.' },
   { key: 'PREMIUMIZE_AUTO_CLEAR_MAX_PROGRESS', group: 'premiumize', type: 'int', min: 0, max: 50, source: 'config',
     label: 'Progress ceiling for "dead"', unit: '%' },
+  { key: 'PREMIUMIZE_RETRY_BEFORE_CLEAR', group: 'premiumize', type: 'bool', source: 'config',
+    label: 'Retry once before auto-clearing', help: 'A dead-looking transfer gets one Premiumize-side retry first, in case it was just a slow tracker — only deleted if still dead on the next sweep.' },
 ];
 
 const GROUPS = [
