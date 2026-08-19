@@ -102,6 +102,45 @@ test('config: validateConfig requires webhook secrets whenever TUNNEL_DOMAIN is 
   assert.doesNotThrow(() => validateConfig(), 'restored to a safe config: passes again');
 });
 
+test('config: validateConfig requires SESSION_SECRET whenever DASHBOARD_ENABLED is true', () => {
+  // A minimal, otherwise-valid baseline so only the field under test trips validateConfig().
+  Object.assign(CONFIG, {
+    DISCORD_BOT_TOKEN: 't', DISCORD_CLIENT_ID: 'c', DISCORD_GUILD_ID: 'g',
+    ADMIN_CHANNEL_ID: 'a', ADMIN_USER_ID: 'u',
+    OVERSEERR_URL: 'http://seerr:5055', OVERSEERR_API_KEY: 'k',
+    PLEX_TOKEN: 'p', PLEX_USERNAME: '', PLEX_PASSWORD: '',
+    TUNNEL_DOMAIN: 'files.example.com', RAID_PATH: '/mnt/raid',
+    WEBHOOK_SECRET: 's3cret', TAUTULLI_WEBHOOK_SECRET: 'tautulli-secret',
+    DASHBOARD_ENABLED: true, DASHBOARD_ADMIN_PASSWORD: 'p4ssword', DASHBOARD_ADMIN_TOKEN: '',
+    SESSION_SECRET: '',
+    ENABLE_DELETION: false, DELETION_DRY_RUN: true,
+    PH_SERVER_NAMES: [], CA_EDGE_SERVER_NAMES: [], PRIMARY_SERVER_NAMES: [],
+  });
+
+  assert.throws(() => validateConfig(), /DASHBOARD_ENABLED=true requires SESSION_SECRET/, 'dashboard enabled without SESSION_SECRET is fatal');
+
+  CONFIG.SESSION_SECRET = 'a-random-secret';
+  assert.doesNotThrow(() => validateConfig(), 'dashboard enabled with SESSION_SECRET set: passes');
+
+  CONFIG.DASHBOARD_ENABLED = false;
+  CONFIG.SESSION_SECRET = '';
+  assert.doesNotThrow(() => validateConfig(), 'dashboard disabled: SESSION_SECRET is not required');
+});
+
+test('config: configWarnings flags a short SESSION_SECRET', () => {
+  const previous = { DASHBOARD_ENABLED: CONFIG.DASHBOARD_ENABLED, SESSION_SECRET: CONFIG.SESSION_SECRET };
+  try {
+    CONFIG.DASHBOARD_ENABLED = true;
+    CONFIG.SESSION_SECRET = 'short';
+    assert.ok(configWarnings().some(w => w.includes('SESSION_SECRET') && w.includes('32 characters')), 'short SESSION_SECRET warns');
+
+    CONFIG.SESSION_SECRET = 'a'.repeat(32);
+    assert.ok(!configWarnings().some(w => w.includes('SESSION_SECRET')), 'a 32-char SESSION_SECRET does not warn');
+  } finally {
+    Object.assign(CONFIG, previous);
+  }
+});
+
 test('config: known example placeholders are detected only at value boundaries', () => {
   for (const value of [
     'CHANGEME', '<node-tailscale-ip>', 'https://your-ph-tunnel/identity',

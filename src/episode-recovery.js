@@ -133,8 +133,8 @@ function setEpisodeRecoveryState(db, key, fields) {
 async function createEpisodeRecoveryWorker(deps = {}) {
   const CONFIG = deps.CONFIG || require('./config').CONFIG;
   const { db, audit, recordGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, countGrabJobsToday, listRequestedTvdbIds, getSetting, mediaPriorityMap } = deps.dbApi || require('./db');
-  const { sonarrGet, fetchArrQueues, getArrTagId } = deps.arrApi || require('./arr');
-  const { findAvistazIndexer, searchAvistaz, fetchTorrentFile, rankAvistazResults, grabAllowance, releaseContentClaim, contentClaimsOverlap } = deps.grabApi || require('./grab');
+  const { sonarrGet, fetchArrQueues, getArrTagId, sonarrSeriesAliases } = deps.arrApi || require('./arr');
+  const { findAvistazIndexer, searchAvistaz, fetchTorrentFile, rankAvistazResults, grabAllowance, releaseContentClaim, contentClaimsOverlap, splitTitleYear } = deps.grabApi || require('./grab');
   const { addTorrentToRtorrent } = deps.rtorrentApi || require('./rtorrent');
   const axios = deps.axios || require('axios');
   const log = deps.log || require('./log').log;
@@ -271,7 +271,8 @@ async function createEpisodeRecoveryWorker(deps = {}) {
           const raw = await searchAvistaz({ query: label, mediaType: 'tv', indexerId: indexer.id });
           // series.year disambiguates same-titled shows ("Full House" is a 1987 US sitcom and a
           // 2004 Korean drama); without it both score identically and the wrong one can win.
-          const ranked = rankAvistazResults(raw, { title: series.title, year: series.year || null, mediaType: 'tv', season: episode.seasonNumber }, { limit: 10 });
+          const { query: seriesQuery, year: parsedYear } = splitTitleYear(series.title);
+          const ranked = rankAvistazResults(raw, { title: seriesQuery, year: series.year || parsedYear || null, mediaType: 'tv', season: episode.seasonNumber, aliases: sonarrSeriesAliases(series) }, { limit: 10 });
           const exact = exactEpisodeCandidates(ranked.map(c => ({ ...c, parsed: { season: c.season, episode: (String(c.releaseTitle).match(/\bS(\d{1,2})[\s._-]*E(\d{1,3})\b/i) || [])[2], seasonPack: c.seasonPack } })), episode)
             .filter(c => c.confidence >= cfg.minConfidence);
           const chosen = exact[0];
