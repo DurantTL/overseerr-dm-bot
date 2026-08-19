@@ -150,6 +150,15 @@ it through AvistaZ direct grab like any other tagged series. This only fires whe
 `SEASON_PACK_AVISTAZ_DIRECT` is on and an AvistaZ indexer is actually configured — tagging a
 series wouldn't change anything otherwise. Set it to `0` to disable and keep tagging manual.
 
+**This never fires for Western content.** AvistaZ only carries Asian movies and TV (see the
+escalation section below), so auto-tagging a stalled-but-non-Asian show — a Western series whose
+public-indexer releases have simply gone dead, a cancelled US show on defunct trackers, whatever —
+would just spend a metered AvistaZ search on a title that can never be there. The auto-tag check
+reads `originalLanguage.name` straight off Sonarr's own series record (no Seerr/TMDB round trip
+needed) and only proceeds when it names a language AvistaZ's remit covers; a Western show, or one
+Sonarr has no language recorded for, is left alone and keeps its alerts through the normal
+season-pack-interactive path instead.
+
 A show counts as **old** when Sonarr marks it `ended`, or when nothing has aired in
 `SEASON_PACK_DORMANT_DAYS` (default 365) and nothing is scheduled. A scheduled next airing always
 wins — a series returning next week is current whatever its status field says, and its latest

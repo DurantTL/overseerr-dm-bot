@@ -108,6 +108,18 @@ test('escalation: assessAsianOrigin (src/asian.js)', () => {
   assert.strictEqual(verdict({ originCountry: [], productionCountries: [] }), 'unknown', 'empty lists are unknown');
 });
 
+test('escalation: isAsianLanguageName (src/asian.js) — the auto-tag-for-AvistaZ gate that reads Sonarr\'s own record', () => {
+  const { isAsianLanguageName } = require('../../src/asian');
+  assert.strictEqual(isAsianLanguageName('Korean'), true, 'exact TheTVDB name matches');
+  assert.strictEqual(isAsianLanguageName('korean'), true, 'case-insensitive');
+  assert.strictEqual(isAsianLanguageName('  Japanese  '), true, 'whitespace is trimmed');
+  assert.strictEqual(isAsianLanguageName('Hindi'), true, 'south asian languages are in scope');
+  assert.strictEqual(isAsianLanguageName('English'), false, 'a Western show is never treated as Asian');
+  assert.strictEqual(isAsianLanguageName('Turkish'), false, 'out-of-remit regions stay excluded, same as assessAsianOrigin');
+  assert.strictEqual(isAsianLanguageName(undefined), false, 'a missing field never assumes Asian');
+  assert.strictEqual(isAsianLanguageName(''), false, 'an empty string never assumes Asian');
+});
+
 test('escalation: escalationEligible', () => {
   const eCfg = { enabled: true, radarrConfigured: true, sonarrConfigured: true };
   assert.strictEqual(escalationEligible({ mediaType: 'movie', is4k: false }, eCfg), true, 'movie eligible');

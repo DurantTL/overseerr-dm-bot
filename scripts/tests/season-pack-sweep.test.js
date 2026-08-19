@@ -12,6 +12,7 @@ const runtimeSettings = require('../../src/runtime-settings');
 const { priorityKey, orderByPriority, isPinned } = require('../../src/priority');
 const { sha256 } = require('../../src/util');
 const { normalizeTitle, splitTitleYear, releaseContentClaim, seriesAliasMatch } = require('../../src/grab');
+const { isAsianLanguageName } = require('../../src/asian');
 const sonarrSeriesAliases = series => [normalizeTitle(series?.title)].filter(Boolean);
 
 const DAY = 86400000;
@@ -27,7 +28,7 @@ const ep = (season, number, over = {}) => ({
 
 // Two old shows with gaps, one airing show with the same gaps, one already-complete old show.
 const SERIES = [
-  { id: 1, tvdbId: 101, title: 'Winter Sonata', monitored: true, status: 'ended', statistics: { episodeCount: 20, episodeFileCount: 0 } },
+  { id: 1, tvdbId: 101, title: 'Winter Sonata', monitored: true, status: 'ended', originalLanguage: { name: 'Korean' }, statistics: { episodeCount: 20, episodeFileCount: 0 } },
   { id: 2, tvdbId: 102, title: 'Dormant Drama', monitored: true, status: 'continuing', previousAiring: daysAgo(900), statistics: { episodeCount: 10, episodeFileCount: 2 } },
   { id: 3, tvdbId: 103, title: 'Airing Now', monitored: true, status: 'continuing', previousAiring: daysAgo(2), nextAiring: daysAhead(5), statistics: { episodeCount: 8, episodeFileCount: 1 } },
   { id: 4, tvdbId: 104, title: 'Finished And Complete', monitored: true, status: 'ended', statistics: { episodeCount: 12, episodeFileCount: 12 } },
@@ -116,6 +117,7 @@ function build({
     seriesAliasMatch,
     sonarrSeriesAliases,
     listActiveGrabJobs: () => activeGrabJobs,
+    isAsianLanguageName,
   });
   return { sandbox, calls, recorded, notices, episodeFetches, monitored, rearmed, directCalls, tagCalls };
 }
@@ -326,6 +328,18 @@ test('season-pack-sweep: an untagged season stalled past the threshold gets auto
   await h.sandbox.sweepSeasonPacks();
   assert.deepStrictEqual(h.tagCalls, ['1:7'], 'the stalled series is tagged with the AvistaZ tag id');
   assert.ok(h.notices.some(n => /Auto-tagged for AvistaZ/.test(n.msg.embeds[0].title || '')), 'an admin-facing notice explains what happened and why');
+});
+
+test('season-pack-sweep: a stalled Western show is never auto-tagged — AvistaZ is an Asian-content-only tracker', async () => {
+  // 'Dormant Drama' carries no originalLanguage in the fixture, same as an ordinary Western show
+  // Sonarr would report — tagging it for AvistaZ would just waste a metered search that can never
+  // find anything, however many sweeps it stalls for.
+  const h = build({
+    sonarrUntagged: true, avistazDirect: true, tagId: 7, seriesTags: {},
+    autoTagAfterStalls: 3, stallCounts: { 2: { 1: 10 } },
+  });
+  await h.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(h.tagCalls, [], 'a Western show never gets tagged for an Asian-only tracker, however stalled');
 });
 
 test('season-pack-sweep: a season below the stall threshold is left untagged', async () => {

@@ -44,7 +44,7 @@ const { decideEscalationAction, escalationEligible, autoEscalateAllowed, usesDir
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('./src/season-pack');
 const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('./src/season-release');
 const { classifyEpisodeFallbackEvidence, planEpisodeFallback, orderPendingFallbacks } = require('./src/season-episode-fallback');
-const { assessAsianOrigin, describeAvistazFit } = require('./src/asian');
+const { assessAsianOrigin, describeAvistazFit, isAsianLanguageName } = require('./src/asian');
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
@@ -1772,8 +1772,12 @@ async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
       // dead public releases (defunct trackers, no real seeders) — Sonarr happily re-grabs the
       // same corpses forever. Tag it for AvistaZ so the *next* sweep routes it there instead,
       // closing the loop without anyone having to remember to tag it by hand.
+      // AvistaZ is an Asian-content-only tracker (src/asian.js) — tagging a Western show for it
+      // would never find anything and would just waste a metered search. Sonarr's own record
+      // already names the show's original language, so this needs no extra API call to check.
       const autoTagThreshold = tunable('SEASON_PACK_AUTO_TAG_AFTER_STALLS');
-      if (!tagged && autoTagThreshold > 0 && stallCount >= autoTagThreshold && tagId != null && directEnabled && indexer) {
+      if (!tagged && autoTagThreshold > 0 && stallCount >= autoTagThreshold && tagId != null && directEnabled && indexer
+        && isAsianLanguageName(series.originalLanguage?.name)) {
         try {
           await addTagToSeries(series.id, tagId);
           audit('season_pack_auto_tagged', { seriesId: series.id, title: series.title, season: season.season, stallCount, tag: CONFIG.AVISTAZ_TAG });

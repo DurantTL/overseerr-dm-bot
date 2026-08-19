@@ -92,7 +92,7 @@ const RUNTIME_SETTINGS = [
   { key: 'SEASON_PACK_EPISODE_RETRY_MINUTES', group: 'season_pack', type: 'int', min: 5, max: 10080, source: 'config',
     label: 'Retry deferred episode fallback after', unit: 'min' },
   { key: 'SEASON_PACK_AUTO_TAG_AFTER_STALLS', group: 'season_pack', type: 'int', min: 0, max: 20, source: 'config',
-    label: 'Auto-tag for AvistaZ after stalled sweeps', help: 'An untagged season whose missing-episode count stops shrinking across this many sweeps gets AVISTAZ_TAG applied automatically. 0 disables it.' },
+    label: 'Auto-tag for AvistaZ after stalled sweeps', help: 'An untagged season whose missing-episode count stops shrinking across this many sweeps gets AVISTAZ_TAG applied automatically — only for shows Sonarr names as Asian-language, since AvistaZ never carries anything else. 0 disables it.' },
 
   // ---- Episode recovery worker (src/episode-recovery.js parses these from env itself) ----
   { key: 'EPISODE_RECOVERY_ENABLED', group: 'episode_recovery', type: 'bool', source: 'env', fallback: false,
