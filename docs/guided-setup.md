@@ -54,16 +54,16 @@ PH users can choose:
 - Android / Google TV
 - Computer
 
-The device flows are intentionally platform-aware:
+The recommended production identity model is normal Tailscale user authentication for personal viewer devices. Current Tailscale guidance treats tags as infrastructure/shared-device identities rather than labels for user-owned phones, computers, or TVs. The optional OAuth/tagged auth-key path remains available for deliberately shared/non-human appliances, but production household/member deployments should leave `TAILSCALE_API_ENABLED=false` and use the user's normal Tailscale identity/invite flow.
+
+Device UX remains platform-aware:
 
 - Phone/tablet: normal Tailscale sign-in/invite flow.
-- Apple TV: supports the one-time auth-key path.
+- Apple TV: normal login/QR is preferred for a personal TV; auth-key support is reserved for the optional appliance mode.
 - Android/Google TV: QR/generated-code flow with admin help when needed.
-- Computer: one-time auth key when OAuth provisioning is enabled.
+- Computer: normal login is preferred for a personal machine; auth-key support is reserved for the optional appliance mode.
 
-When Tailscale OAuth is configured, Apple TV/computer credentials are one-off, short-lived, pre-authorized `tag:ph-viewer` keys. The secret is shown only in the requesting user's ephemeral Discord response and is never stored in SQLite or audit metadata. If OAuth is not configured or fails, the bot falls back to asking an admin for device-specific help.
-
-Each PH device also has a saved **I Connected This Device** confirmation. This is onboarding state, not a live VPN probe. `/setup` remembers phone/tablet, Apple TV, Android/Google TV, and computer independently and allows the user to reset a device later.
+Each PH device has a saved **I Connected This Device** confirmation. This is onboarding state, not a live VPN probe. `/setup` remembers phone/tablet, Apple TV, Android/Google TV, and computer independently and allows the user to reset a device later.
 
 When `TAILSCALE_SERVER_ADDRESS=ph-server.end-cobra.ts.net`, the setup UI derives:
 
@@ -72,6 +72,22 @@ http://ph-server.end-cobra.ts.net:32400/web
 ```
 
 An explicit `PH_PLEX_URL` overrides that base. If Tailscale Serve is enabled for Plex, use the HTTPS tailnet endpoint there.
+
+## Production environment block
+
+The recommended PH viewer deployment uses:
+
+```env
+PLEX_SIGNUP_URL=https://www.plex.tv/sign-up/
+PLEX_WEB_URL=https://app.plex.tv/
+TAILSCALE_ENABLED=true
+TAILSCALE_SETUP_URL=https://tailscale.com/download
+TAILSCALE_SERVER_ADDRESS=ph-server.end-cobra.ts.net
+PH_PLEX_URL=http://ph-server.end-cobra.ts.net:32400
+TAILSCALE_API_ENABLED=false
+```
+
+The optional OAuth client-credentials settings remain documented in `docs/ph-tailscale-viewer-setup.md` for deliberately tagged shared/appliance devices.
 
 ## Mobile Quick Actions
 
@@ -116,11 +132,11 @@ The bridge only recognizes the known onboarding embed titles; request notificati
 
 - `src/setup.js` — pure setup state/action model.
 - `src/setup-discord-extension.js` — base `/setup`, enhanced `/me`, Plex username flow, and quick actions.
-- `src/setup-discord-enhancements.js` — `/send-setup`, Plex read-back verification, and Tailscale provisioning interception.
+- `src/setup-discord-enhancements.js` — `/send-setup`, Plex read-back verification, and optional Tailscale provisioning interception.
 - `src/setup-device-state.js` — persistent PH device confirmations and PH device dashboard.
 - `src/setup-request-ui.js` — mobile Request Media modal/select flow that routes into the existing `/request` handler.
 - `src/setup-dm-bridge.js` — adds the state-aware setup entry point to existing welcome/setup-completion DMs.
-- `src/tailscale-provision.js` — scoped Tailscale OAuth/auth-key client.
+- `src/tailscale-provision.js` — optional scoped Tailscale OAuth/auth-key client for intentionally tagged appliance mode.
 - `bootstrap.js` — installs all guided-setup layers, including the DM bridge, before `index.js` starts.
 
 ## Review hardening added before merge
@@ -134,11 +150,13 @@ A full PR review caught and fixed several integration issues that unit-level fea
 - unlinked members were offered actions that could only fail
 - phone/Android TV copy implied an auth-key workflow that does not match their normal client UX
 - URL tests used substring host matching and were replaced with parsed URL assertions
+- `.env.example` initially omitted the new guided-setup/PH viewer deployment variables
+- the final Tailscale docs review caught that tagged auth keys should not be the default identity model for personal viewer devices
 
-Regression tests cover these cases.
+Regression tests cover the code-path cases above; deployment documentation now defaults personal viewer devices to normal user identity.
 
 ## Remaining cleanup
 
 The feature is intentionally layered around the current large `index.js` composition root. Once Discord/onboarding/request handling is split into normal services, these wrapper hooks should be folded into that composition directly.
 
-Optional future work can correlate saved PH device state with live Tailscale device inventory, but the current UI deliberately does not claim that user-confirmed setup is a live VPN health check. For phone/tablet users joining through a normal Tailscale identity, the operator still needs to create/provide the tailnet invitation and keep that user's grants restricted to the PH media service.
+Optional future work can correlate saved PH device state with live Tailscale device inventory, but the current UI deliberately does not claim that user-confirmed setup is a live VPN health check. The operator must still create/provide the tailnet invitation and keep the PH viewer user's grants restricted to the PH media service.
