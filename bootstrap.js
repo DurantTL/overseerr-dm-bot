@@ -11,11 +11,14 @@ if (configError) {
   // Guided setup is installed before index.js so it can extend the existing Discord command
   // registration and intercept only /setup, the enhanced /me, and setup-owned buttons/modals.
   // The follow-on enhancements wrap that layer to add admin setup resend, verified Plex shares,
-  // and optional Tailscale OAuth provisioning without changing the main composition root.
+  // optional Tailscale OAuth provisioning, and a Setup button on the existing onboarding DMs
+  // without changing the main onboarding/request business logic in index.js.
   const { installSetupDiscordExtension } = require('./src/setup-discord-extension');
   installSetupDiscordExtension();
   const { installSetupDiscordEnhancements } = require('./src/setup-discord-enhancements');
   installSetupDiscordEnhancements();
+  const { installSetupDmBridge } = require('./src/setup-dm-bridge');
+  installSetupDmBridge();
 
   // Start the main Discord/web process, then attach optional background services that are isolated
   // from index.js. Keeping workers here lets index.js shrink toward a true composition root over time.
