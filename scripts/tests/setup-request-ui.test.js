@@ -1,6 +1,12 @@
 #!/usr/bin/env node
-const { test } = require('node:test');
+const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const dbPath = path.join(os.tmpdir(), `durant-request-ui-${process.pid}.db`);
+process.env.DB_PATH = dbPath;
 
 const {
   requestResultOptions,
@@ -9,6 +15,12 @@ const {
   stashSelection,
   takeSelection,
 } = require('../../src/setup-request-ui');
+
+after(() => {
+  for (const suffix of ['', '-wal', '-shm']) {
+    try { fs.unlinkSync(dbPath + suffix); } catch (_e) {}
+  }
+});
 
 test('request wizard formats Seerr results for a mobile select menu', () => {
   const options = requestResultOptions([
