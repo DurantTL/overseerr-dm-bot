@@ -17,19 +17,33 @@ The setup wizard offers the appropriate next actions based on the user record:
 
 1. **Create Plex Account**
 2. **Find My Plex Username**
-3. **Enter Plex Username** once the Discord/access-request record exists
-4. **Invite <username>** when Plex access is not yet confirmed
-5. **Open Plex**
+3. Finish the server's normal **Request Plex Access** step if no Discord/access record exists yet
+4. **Enter Plex Username** once that record exists
+5. **Invite <username>** or **Verify / Re-send to Username**
+6. **Open Plex**
 
 The username help has separate instructions for phone/tablet, computer/Plex Web, and smart TV. Username-based sharing avoids depending on Plex's invitation email delivery.
 
-After a username share is sent, the bot reads the Plex user/friends list back. `invited=1` is only set when Plex recognizes that saved username. A successful POST without a matching read-back is shown as **Share Sent, Not Yet Verified** rather than a false completion.
+### Important legacy-invite behavior
+
+The existing `users.invited` flag historically means the Plex invite/share request was sent successfully. It does **not** prove that the invitation email arrived or that the member accepted it.
+
+For that reason, a saved Plex username always keeps the username recovery action available:
+
+- `invited=0` -> **Invite <username>**
+- `invited=1` -> **Verify / Re-send to Username**
+
+This directly covers the case where Plex reports a successful email-based invitation but the member never receives usable access.
+
+After a username share is sent, the bot reads the Plex user/friends list back. The username path reports success only when Plex recognizes that saved username. A successful POST without a matching read-back is shown as **Share Sent, Not Yet Verified** rather than a false completion.
 
 Admins can resend the personalized guide to an existing member with:
 
 ```text
 /send-setup user:@member
 ```
+
+The resend includes the user's saved PH device status when applicable. Main users never receive PH state.
 
 ## PH Server Connection
 
@@ -61,7 +75,7 @@ An explicit `PH_PLEX_URL` overrides that base. If Tailscale Serve is enabled for
 
 ## Mobile Quick Actions
 
-`/setup` and `/me` surface buttons for:
+`/setup` and `/me` surface buttons for linked members:
 
 - Request Media
 - My Requests
@@ -70,7 +84,7 @@ An explicit `PH_PLEX_URL` overrides that base. If Tailscale Serve is enabled for
 - Setup / Troubleshooting
 - Help
 
-PH users additionally see PH Server Connection/Test actions.
+PH users additionally see PH Server Connection/Test actions. An account with no Discord/access record only receives Setup and Help, so the UI does not advertise request/download actions that cannot succeed yet.
 
 ### Request Media
 
@@ -86,6 +100,18 @@ The wizard does not fork request business logic. The existing linked-user check,
 
 The remaining command-backed Quick Actions return the registered clickable slash-command mention, because Discord buttons cannot directly execute another slash command as the user.
 
+## Existing onboarding messages
+
+The DM bridge is installed before `index.js` starts, so the bot's existing welcome and setup-completion messages gain a setup entry point without copying their onboarding business logic.
+
+The button label follows the state:
+
+- initial welcome -> **Start Plex Setup**
+- setup failure/attention -> **Fix My Setup**
+- successful onboarding -> **Setup / Troubleshooting**
+
+The bridge only recognizes the known onboarding embed titles; request notifications and unrelated DMs are unchanged.
+
 ## Implementation shape
 
 - `src/setup.js` — pure setup state/action model.
@@ -93,10 +119,26 @@ The remaining command-backed Quick Actions return the registered clickable slash
 - `src/setup-discord-enhancements.js` — `/send-setup`, Plex read-back verification, and Tailscale provisioning interception.
 - `src/setup-device-state.js` — persistent PH device confirmations and PH device dashboard.
 - `src/setup-request-ui.js` — mobile Request Media modal/select flow that routes into the existing `/request` handler.
-- `src/setup-dm-bridge.js` — adds Setup / Troubleshooting to existing welcome/setup-completion DMs.
+- `src/setup-dm-bridge.js` — adds the state-aware setup entry point to existing welcome/setup-completion DMs.
 - `src/tailscale-provision.js` — scoped Tailscale OAuth/auth-key client.
-- `bootstrap.js` — installs all guided-setup layers before `index.js` starts.
+- `bootstrap.js` — installs all guided-setup layers, including the DM bridge, before `index.js` starts.
+
+## Review hardening added before merge
+
+A full PR review caught and fixed several integration issues that unit-level feature work could otherwise miss:
+
+- the onboarding DM bridge existed but was not installed at runtime
+- `/send-setup` could be skipped because of REST wrapper installation order
+- admin setup resends did not include saved PH device state
+- legacy `invited=1` hid the username recovery path even though that flag did not prove the Plex email was delivered
+- unlinked members were offered actions that could only fail
+- phone/Android TV copy implied an auth-key workflow that does not match their normal client UX
+- URL tests used substring host matching and were replaced with parsed URL assertions
+
+Regression tests cover these cases.
 
 ## Remaining cleanup
 
-The feature is intentionally layered around the current large `index.js` composition root. Once Discord/onboarding/request handling is split into normal services, these wrapper hooks should be folded into that composition directly. Optional future work can correlate saved PH device state with live Tailscale device inventory, but the current UI deliberately does not claim that user-confirmed setup is a live VPN health check.
+The feature is intentionally layered around the current large `index.js` composition root. Once Discord/onboarding/request handling is split into normal services, these wrapper hooks should be folded into that composition directly.
+
+Optional future work can correlate saved PH device state with live Tailscale device inventory, but the current UI deliberately does not claim that user-confirmed setup is a live VPN health check. For phone/tablet users joining through a normal Tailscale identity, the operator still needs to create/provide the tailnet invitation and keep that user's grants restricted to the PH media service.
