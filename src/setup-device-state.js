@@ -61,6 +61,15 @@ function tailscaleInstallUrl() {
   return String(CONFIG.TAILSCALE_SETUP_URL || process.env.TAILSCALE_SETUP_URL || 'https://tailscale.com/download').trim();
 }
 
+// Preferred PH-viewer path: share only the PH Plex machine to a user's own Tailscale identity.
+// That keeps the viewer outside the Durant tailnet user-seat count while Tailscale's share
+// quarantine and policy can limit them to this machine/port. Share links expire, so operators
+// rotate this deployment value instead of persisting it in a member record.
+function tailscaleShareUrl() {
+  const raw = String(process.env.TAILSCALE_PH_SHARE_URL || '').trim();
+  return /^https:\/\//i.test(raw) ? raw : '';
+}
+
 function linkButton(url, label) {
   return new ButtonBuilder().setURL(url).setLabel(label).setStyle(ButtonStyle.Link);
 }
@@ -113,15 +122,22 @@ async function showPhDashboard(interaction) {
   const state = setupStateForUser(row);
   if (!state.tailscaleRequired) return interaction.reply({ content: 'Your account uses the Main server, so no PH Server Connection setup is needed.', ephemeral: true });
   const confirmations = deviceConfirmations(interaction.user.id);
+  const shareUrl = tailscaleShareUrl();
+  const buttons = DEVICES.map(device => customButton(`setup:ph_device:${device}`, LABELS[device]));
+  if (shareUrl) buttons.push(linkButton(shareUrl, '🔗 Join PH Server'));
   return interaction.reply({
     embeds: [brandedEmbed().setTitle('🔐 PH Server Connection').setDescription([
       'Choose the device you want to set up or troubleshoot.',
       '',
+      ...(shareUrl ? [
+        '**No paid Durant Tailscale seat is required.** Tap **Join PH Server** to accept a share of only the PH Plex machine using your own free Tailscale identity.',
+        '',
+      ] : []),
       ...DEVICES.map(device => statusLine(device, confirmations[device])),
       '',
       'Each device keeps its own saved setup confirmation. You can reset a device later if you replace it or need to troubleshoot from scratch.',
     ].join('\n'))],
-    components: rows(DEVICES.map(device => customButton(`setup:ph_device:${device}`, LABELS[device]))),
+    components: rows(buttons),
     ephemeral: true,
   });
 }
@@ -133,19 +149,26 @@ async function showDevice(interaction, device) {
   if (!DEVICES.includes(device)) return interaction.reply({ content: 'Unknown device type. Open `/setup` and choose a device again.', ephemeral: true });
   const copy = DEVICE_COPY[device];
   const confirmedAt = deviceConfirmation(interaction.user.id, device);
+  const shareUrl = tailscaleShareUrl();
   const buttons = [linkButton(tailscaleInstallUrl(), 'Install Tailscale')];
-  const helpLabel = device === 'phone' ? 'Join / Connection Help'
-    : device === 'androidtv' ? 'TV Code / Connection Help'
-      : 'Connection Help';
+  if (shareUrl) buttons.push(linkButton(shareUrl, '🔗 Join PH Server'));
+  const helpLabel = shareUrl
+    ? 'Connection Help'
+    : device === 'phone' ? 'Join / Connection Help'
+      : device === 'androidtv' ? 'TV Code / Connection Help'
+        : 'Connection Help';
   buttons.push(customButton(`setup:request_key:${device}`, helpLabel, ButtonStyle.Primary));
   if (phPlexUrl()) buttons.push(linkButton(`${phPlexUrl()}/web`, 'Test / Open PH Plex'));
   buttons.push(customButton(`setup:ph_confirm:${device}`, confirmedAt ? 'Confirm Again' : '✅ I Connected This Device', ButtonStyle.Success));
   if (confirmedAt) buttons.push(customButton(`setup:ph_unconfirm:${device}`, 'Reset Device Status', ButtonStyle.Danger));
   buttons.push(customButton('setup:ph_connection', 'Back to PH Devices'));
 
+  const shareIntro = shareUrl
+    ? '\n\n**Join the PH server:** Tap **Join PH Server**, sign in with your own Tailscale account, and accept the shared PH Plex machine. This does not add you as a paid user on the Durant tailnet.'
+    : '';
   const status = confirmedAt ? `\n\n**Saved status:** ✅ confirmed <t:${Math.floor(confirmedAt / 1000)}:R>` : '\n\n**Saved status:** ⚪ not confirmed yet';
   return interaction.reply({
-    embeds: [brandedEmbed().setTitle(copy.title).setDescription(`${copy.steps.map((s, i) => `**${i + 1}.** ${s}`).join('\n\n')}${status}`)],
+    embeds: [brandedEmbed().setTitle(copy.title).setDescription(`${copy.steps.map((s, i) => `**${i + 1}.** ${s}`).join('\n\n')}${shareIntro}${status}`)],
     components: rows(buttons),
     ephemeral: true,
   });
@@ -228,5 +251,6 @@ module.exports = {
   deviceConfirmation,
   deviceConfirmations,
   anyDeviceConfirmed,
+  tailscaleShareUrl,
   personalizedSetupPayload,
 };
