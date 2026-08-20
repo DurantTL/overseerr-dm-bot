@@ -8,6 +8,12 @@ try { validateConfig(); } catch (err) { configError = err; }
 if (configError) {
   startConfigErrorServer(configError);
 } else {
+  // Guided setup is installed before index.js so it can extend the existing Discord command
+  // registration and intercept only /setup, the enhanced /me, and setup-owned buttons/modals.
+  // The rest of the bot continues through index.js unchanged.
+  const { installSetupDiscordExtension } = require('./src/setup-discord-extension');
+  installSetupDiscordExtension();
+
   // Start the main Discord/web process, then attach optional background services that are isolated
   // from index.js. Keeping workers here lets index.js shrink toward a true composition root over time.
   require('./index');
