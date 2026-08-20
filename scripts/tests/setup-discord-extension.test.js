@@ -35,6 +35,19 @@ function componentIds(rows) {
   return components(rows).map(c => c.custom_id || c.url).filter(Boolean);
 }
 
+function hasUrl(rows, { hostname, port = '', pathname = null }) {
+  return componentIds(rows).some(value => {
+    try {
+      const parsed = new URL(String(value));
+      return parsed.hostname === hostname
+        && parsed.port === String(port)
+        && (pathname == null || parsed.pathname === pathname);
+    } catch (_err) {
+      return false;
+    }
+  });
+}
+
 test('setup Discord extension builds MagicDNS PH Plex URL from configured Tailscale address', () => {
   assert.equal(phPlexUrl(), 'http://ph-server.end-cobra.ts.net:32400');
 });
@@ -44,20 +57,21 @@ test('setup Discord extension never gives Main users PH controls', () => {
   const ids = componentIds(setupButtons(main));
   const quickIds = componentIds(quickActionButtons(main));
   assert.ok(!ids.some(v => String(v).includes('ph_device')));
-  assert.ok(!ids.some(v => String(v).includes('ph-server.end-cobra.ts.net')));
+  assert.equal(hasUrl(setupButtons(main), { hostname: 'ph-server.end-cobra.ts.net', port: '32400' }), false);
   assert.ok(!quickIds.some(v => String(v).includes('ph_connection')));
-  assert.ok(ids.some(v => String(v).includes('app.plex.tv')));
+  assert.equal(hasUrl(setupButtons(main), { hostname: 'app.plex.tv' }), true);
 });
 
 test('setup Discord extension gives PH users device-specific setup and PH Plex access', () => {
   const ph = setupStateForUser({ discord_id: '2', home_server: 'ph', plex_username: 'viewer', invited: 1 });
-  const ids = componentIds(setupButtons(ph));
+  const rows = setupButtons(ph);
+  const ids = componentIds(rows);
   const quickIds = componentIds(quickActionButtons(ph));
   assert.ok(ids.includes('setup:ph_device:phone'));
   assert.ok(ids.includes('setup:ph_device:appletv'));
   assert.ok(ids.includes('setup:ph_device:androidtv'));
   assert.ok(ids.includes('setup:ph_device:computer'));
-  assert.ok(ids.some(v => String(v).includes('ph-server.end-cobra.ts.net:32400/web')));
+  assert.equal(hasUrl(rows, { hostname: 'ph-server.end-cobra.ts.net', port: '32400', pathname: '/web' }), true);
   assert.ok(quickIds.includes('setup:ph_connection'));
 });
 
