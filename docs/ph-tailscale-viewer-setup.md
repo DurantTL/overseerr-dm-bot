@@ -12,7 +12,7 @@ The Discord setup wizard exposes device-specific instructions under `/setup` onl
 
 Tailscale does not use the same onboarding UX on every platform, so the bot deliberately avoids pretending one key workflow works everywhere.
 
-- **iPhone/iPad and Android phones/tablets:** use the normal Tailscale account/invite + VPN flow. The mobile apps do not expose the same paste-an-auth-key flow as Apple TV. The Discord guide therefore offers connection/admin help rather than handing the user a key they cannot conveniently enter.
+- **iPhone/iPad and Android phones/tablets:** use the normal Tailscale account/invite + VPN flow. The mobile apps do not expose the same paste-an-auth-key flow as Apple TV. The Discord guide therefore offers connection/admin help rather than handing the user a key they cannot conveniently enter. The tailnet invitation URL/account access is still provided by the admin; unused Tailscale external-user invite links expire, so do not hard-code a permanent invite into Discord.
 - **Apple TV:** Tailscale supports **Use an auth key**. The bot can automatically mint a one-time `tag:ph-viewer` key and show it ephemerally to the requesting Discord member.
 - **Android / Google TV:** prefer the QR code or generated-code flow shown by the Tailscale TV app. The user can ask the admin for help from Discord.
 - **Computer:** a one-time key can be generated automatically when OAuth provisioning is enabled; it can be used with an auth-key-capable client/CLI.
