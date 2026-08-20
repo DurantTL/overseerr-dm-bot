@@ -23,6 +23,12 @@ if (configError) {
   const { installSetupRequestUi } = require('./src/setup-request-ui');
   installSetupRequestUi();
 
+  // Permanent mobile control panel: /media-panel posts or refreshes one pinned message with
+  // request, request-history, queue, removal/report, and support buttons. Install after the
+  // request wizard so the panel can hand its Request button into that existing flow.
+  const { installMediaPanel } = require('./src/media-panel');
+  installMediaPanel();
+
   // Existing welcome/completion DMs are emitted by index.js. Install this bridge before index.js
   // so those messages automatically gain the Setup / Troubleshooting entry point without
   // duplicating the onboarding business logic.

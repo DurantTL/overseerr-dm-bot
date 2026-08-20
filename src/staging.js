@@ -190,11 +190,11 @@ async function purgeStagedPath(destSubPath) {
   return { ok: true };
 }
 
-// Free space on the cache drive via `rclone about` (asked of the remote root, not the cache
-// subfolder — disk pressure is a drive property). Returns null when the backend can't say.
+// Free space on the filesystem that actually contains the staging cache.
+// For SFTP remotes the remote root may be the server's OS disk while
+// STAGE_RCLONE_REMOTE points to a separately mounted media/cache drive.
 async function fetchCacheFreeBytes() {
-  const m = CONFIG.STAGE_RCLONE_REMOTE.match(/^([^:]+:)/);
-  const target = m ? m[1] : CONFIG.STAGE_RCLONE_REMOTE;
+  const target = CONFIG.STAGE_RCLONE_REMOTE;
   try {
     const res = await runRclone(['about', target, '--json'], { timeoutMs: 60000 });
     if (res.code !== 0) return null;
