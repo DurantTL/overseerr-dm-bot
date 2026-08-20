@@ -53,9 +53,10 @@ test('onboarding: pending-email state machine (set/has/clear/rehydrate)', () => 
     INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
   `).run(key, String(value));
+  const deleteSetting = key => db.prepare('DELETE FROM app_settings WHERE key = ?').run(key);
 
-  const sb = loadSandbox(['setPendingEmail', 'hasPendingEmail', 'clearPendingEmail', 'rehydratePendingEmails'], {
-    db, pendingEmailRequests, getSetting, setSetting, log: { info: () => {} },
+  const sb = loadSandbox(['setPendingEmail', 'hasPendingEmail', 'clearPendingEmail', 'rehydratePendingEmails', 'clearPendingHomeServer'], {
+    db, pendingEmailRequests, getSetting, setSetting, deleteSetting, log: { info: () => {} },
     audit: (action, details) => auditLog.push({ action, details }),
     CONFIG: { PENDING_EMAIL_EXPIRY_DAYS: 14 },
   });

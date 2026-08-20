@@ -354,11 +354,29 @@ function hasPendingEmail(discordId) {
 function clearPendingEmail(discordId) {
   pendingEmailRequests.delete(discordId);
   db.prepare('DELETE FROM app_settings WHERE key = ?').run(`pending_email:${discordId}`);
+  clearPendingHomeServer(discordId);
 }
 function rehydratePendingEmails() {
   const rows = db.prepare("SELECT key FROM app_settings WHERE key LIKE 'pending_email:%'").all();
   for (const r of rows) pendingEmailRequests.set(r.key.slice('pending_email:'.length), true);
   if (rows.length) log.info(`Rehydrated ${rows.length} pending onboarding request(s)`);
+}
+
+// A DM onboarding requester's server pick, made via the "Main / Philippines" buttons before they
+// reply with their email — read once the email lands, then discarded. Absence just means primary
+// (the pre-PH default), so this only ever needs to persist the 'ph' case.
+function phServerConfigured() { return CONFIG.PH_SERVER_NAMES.length > 0; }
+function setPendingHomeServer(discordId, server) {
+  if (server === 'ph') setSetting(`pending_home_server:${discordId}`, 'ph');
+  else clearPendingHomeServer(discordId);
+}
+function takePendingHomeServer(discordId) {
+  const server = getSetting(`pending_home_server:${discordId}`) === 'ph' ? 'ph' : 'primary';
+  clearPendingHomeServer(discordId);
+  return server;
+}
+function clearPendingHomeServer(discordId) {
+  deleteSetting(`pending_home_server:${discordId}`);
 }
 const requestCommandLimits = new Map();
 // Deliberately NOT in RATE_LIMIT_MAPS: its window is 24h and the hourly reaper would wipe the
@@ -3803,7 +3821,7 @@ const slashCommands = [
   new SlashCommandBuilder().setName('sync').setDescription('Sync users safely').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(true).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
   new SlashCommandBuilder().setName('sync-fix').setDescription('Resolve sync issues found in the preview').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('target').setDescription('Category to fix').setRequired(true).addChoices({ name: 'placeholders', value: 'placeholders' }, { name: 'duplicates', value: 'duplicates' }, { name: 'orphans', value: 'orphans' }, { name: 'mergeemails', value: 'mergeemails' }, { name: 'links', value: 'links' })),
   new SlashCommandBuilder().setName('cleanup').setDescription('Cleanup deleted Seerr users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(false).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
-  new SlashCommandBuilder().setName('invite').setDescription('Invite a member: bot DMs them for their Plex email and auto-sets them up').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('Member to invite').setRequired(true)).addStringOption(o => o.setName('email').setDescription('Skip the DM — set them up with this Plex email right away').setAutocomplete(true)),
+  new SlashCommandBuilder().setName('invite').setDescription('Invite a member: bot DMs them for their Plex email and auto-sets them up').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('Member to invite').setRequired(true)).addStringOption(o => o.setName('email').setDescription('Skip the DM — set them up with this Plex email right away').setAutocomplete(true)).addStringOption(o => o.setName('server').setDescription('Home server (only applies with `email` set — otherwise they pick it in the DM)').addChoices({ name: 'Main (USA)', value: 'primary' }, { name: 'Philippines', value: 'ph' })),
   new SlashCommandBuilder().setName('invite-post').setDescription('Post a public "Request Plex Access" button in this channel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('reinvite').setDescription('Re-send a Plex invite to a linked user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('Discord user currently in the server')).addStringOption(o => o.setName('email').setDescription('Any linked user — start typing to search the DB').setAutocomplete(true)),
   new SlashCommandBuilder().setName('requests').setDescription('Show the most recent Seerr requests').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addIntegerOption(o => o.setName('count').setDescription('How many to show (default 10)').setMinValue(1).setMaxValue(25)),
@@ -4138,7 +4156,9 @@ client.on('guildMemberAdd', async member => {
   try {
     await member.send({ embeds: [brandedEmbed(COLORS.PLEX)
       .setTitle('👋 Welcome to Durant Media Server!')
-      .setDescription('Glad to have you here! To request access, just **reply to this message with the email on your Plex account**.\n\nOnce an admin approves you, you\'ll get a Plex invite and a DM confirming you\'re all set. 🍿')] });
+      .setDescription('Glad to have you here! To request access, just **reply to this message with the email on your Plex account**.\n\nOnce an admin approves you, you\'ll get a Plex invite and a DM confirming you\'re all set. 🍿'
+        + (phServerConfigured() ? '\n\nOn the **Philippines server**? Tap the button below before you reply so I invite you to the right one — otherwise I\'ll default you to the main (USA) servers.' : ''))],
+      components: phServerConfigured() ? [homeServerPickerRow()] : [] });
   } catch (err) {
     log.warn(`Could not DM ${member.user.tag}: ${err.message}`);
     notifyChannel('system', { embeds: [brandedEmbed(COLORS.WARN)
@@ -4177,9 +4197,37 @@ client.on('guildMemberRemove', async member => {
   }
 });
 
+// The email modal opened by the public Request Access button. The server pick (if any) rides in
+// the customId suffix since a modal can't carry a select menu/buttons of its own.
+function requestAccessModal(server) {
+  return new ModalBuilder()
+    .setCustomId(`request_access_modal:${server}`)
+    .setTitle('Request Plex Access')
+    .addComponents(new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('plex_email')
+        .setLabel('Email on your Plex account')
+        .setPlaceholder('you@example.com')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(100),
+    ));
+}
+
+// Two buttons offered wherever a requester can pick their home server before an admin approves
+// them (DM onboarding, /invite's DM). Only shown when a PH box is actually configured.
+function homeServerPickerRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('onboard_server:primary').setLabel('🇺🇸 Main (USA) Servers').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('onboard_server:ph').setLabel('🇵🇭 Philippines Server').setStyle(ButtonStyle.Secondary),
+  );
+}
+
 // Post the Approve/Deny access-request embed to the admin channel. Shared by the DM email flow
-// and the public Request Access modal.
-async function postAccessRequestToAdmins(user, email) {
+// and the public Request Access modal. homeServer reflects what the requester already picked
+// (or 'primary' by default) — Approve honors it as-is; Approve + Tailscale still lets an admin
+// force PH regardless.
+async function postAccessRequestToAdmins(user, email, homeServer = 'primary') {
   const adminChannel = await safeGetChannel(CONFIG.ADMIN_CHANNEL_ID);
   if (!adminChannel) {
     log.error(`Access request for ${user.id} could not be posted: ADMIN_CHANNEL_ID is unavailable.`);
@@ -4197,6 +4245,7 @@ async function postAccessRequestToAdmins(user, email) {
   const requestEmbed = brandedEmbed(COLORS.INFO)
     .setTitle('🔐 New Plex Access Request')
     .addFields({ name: 'User', value: `<@${user.id}>`, inline: true }, { name: 'Email', value: `\`${email}\``, inline: true });
+  if (homeServer === 'ph') requestEmbed.addFields({ name: 'Requested server', value: '🇵🇭 Philippines', inline: true });
   const avatarUrl = user.displayAvatarURL?.();
   if (avatarUrl) requestEmbed.setThumbnail(avatarUrl);
   await adminChannel.send({ embeds: [requestEmbed], components: [row] });
@@ -4208,7 +4257,9 @@ client.on('messageCreate', async message => {
   if (!hasPendingEmail(message.author.id)) return;
   const email = message.content.trim().toLowerCase();
   if (!isValidEmail(email)) return message.reply('That does not look like a valid email. Try again.');
+  const homeServer = takePendingHomeServer(message.author.id);
   clearPendingEmail(message.author.id);
+  if (homeServer === 'ph') setUserHomeServer(message.author.id, 'ph');
 
   // Admin-initiated invite (/invite): the admin already vouched for this person, so skip the
   // Approve button and run the full chain (absorb + Plex invite + Seerr) the moment they reply.
@@ -4247,8 +4298,8 @@ client.on('messageCreate', async message => {
   // linkUserToEmail (not storeUserEmail) so an existing plex_ synthetic row with the same email is
   // absorbed instead of becoming a duplicate pair — e.g. an existing Plex friend joining Discord.
   linkUserToEmail(message.author.id, email);
-  audit('user_linked', { targetDiscordId: message.author.id, email });
-  const posted = await postAccessRequestToAdmins(message.author, email).catch(err => {
+  audit('user_linked', { targetDiscordId: message.author.id, email, homeServer });
+  const posted = await postAccessRequestToAdmins(message.author, email, homeServer).catch(err => {
     log.error(`Access request for ${message.author.id} failed to post: ${err.message}`);
     return false;
   });
@@ -5628,6 +5679,7 @@ async function handleInviteCommand(interaction) {
   await interaction.deferReply({ ephemeral: true });
   const target = interaction.options.getUser('user', true);
   const emailOpt = interaction.options.getString('email');
+  const serverOpt = interaction.options.getString('server');
   if (target.bot) return interaction.editReply('❌ Can\'t invite a bot.');
   const existing = getUserByDiscordId(target.id);
   const existingNote = existing ? `\nNote: they were already linked to \`${existing.email}\` — this updates it.` : '';
@@ -5637,6 +5689,7 @@ async function handleInviteCommand(interaction) {
     if (!isValidEmail(email) || canonicalizeEmail(email).startsWith('__placeholder__:')) {
       return interaction.editReply(`❌ \`${email}\` isn't a valid email address.`);
     }
+    if (serverOpt === 'ph') setUserHomeServer(target.id, 'ph');
     const { absorbed, plexStatus, seerrStatus, plexOk, seerrOk } = await applyFullChainLink(target.id, email, target.username);
     audit('user_linked', { actorDiscordId: interaction.user.id, targetDiscordId: target.id, email, source: 'slash_invite', absorbedPlexRow: absorbed?.discord_id || null });
     const hadAccess = plexStatus.includes('already');
@@ -5658,7 +5711,9 @@ async function handleInviteCommand(interaction) {
   try {
     await target.send({ embeds: [brandedEmbed(COLORS.PLEX)
       .setTitle('👋 You\'ve been invited to Durant Media Server!')
-      .setDescription(`An admin has invited you! To get set up, just **reply to this message with the email on your Plex account** — I'll handle the rest automatically. 🍿`)] });
+      .setDescription(`An admin has invited you! To get set up, just **reply to this message with the email on your Plex account** — I'll handle the rest automatically. 🍿`
+        + (phServerConfigured() ? '\n\nOn the **Philippines server**? Tap the button below before you reply.' : ''))],
+      components: phServerConfigured() ? [homeServerPickerRow()] : [] });
   } catch (_e) {
     return interaction.editReply(`❌ ${target.tag}'s DMs are closed — use \`/invite user:${target.tag} email:<their Plex email>\` to set them up directly.`);
   }
@@ -5744,7 +5799,8 @@ async function handleModalSubmit(interaction) {
     if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
     return handleStageBulkModal(interaction);
   }
-  if (interaction.customId !== 'request_access_modal') return;
+  if (!interaction.customId.startsWith('request_access_modal')) return;
+  const homeServer = interaction.customId.split(':')[1] === 'ph' ? 'ph' : 'primary';
   await interaction.deferReply({ ephemeral: true });
   const email = String(interaction.fields.getTextInputValue('plex_email') || '').toLowerCase().trim();
   if (!isValidEmail(email)) {
@@ -5759,10 +5815,11 @@ async function handleModalSubmit(interaction) {
     return;
   }
   linkUserToEmail(interaction.user.id, email);
-  audit('user_linked', { targetDiscordId: interaction.user.id, email, source: 'request_access_button' });
-  const posted = await postAccessRequestToAdmins(interaction.user, email).catch(() => false);
+  if (homeServer === 'ph') setUserHomeServer(interaction.user.id, 'ph');
+  audit('user_linked', { targetDiscordId: interaction.user.id, email, homeServer, source: 'request_access_button' });
+  const posted = await postAccessRequestToAdmins(interaction.user, email, homeServer).catch(() => false);
   await interaction.editReply({ content: posted
-    ? `✅ Thanks! Your request for \`${email}\` was sent to the admins. You'll get a DM as soon as you're approved.`
+    ? `✅ Thanks! Your request for \`${email}\`${homeServer === 'ph' ? ' (Philippines server)' : ''} was sent to the admins. You'll get a DM as soon as you're approved.`
     : '❌ I saved your email, but I could not notify the admins. Ask an admin to check `ADMIN_CHANNEL_ID`; clicking Request Plex Access again will retry the notice.' });
 }
 
@@ -7621,6 +7678,16 @@ function parseDeleteCustomId(parts) {
 async function handleButton(interaction) {
   const [action, ...parts] = interaction.customId.split(':');
 
+  // Server pick from a DM onboarding message (welcome DM or /invite's DM) — stash it for
+  // messageCreate to pick up once they reply with their email.
+  if (action === 'onboard_server') {
+    const server = parts[0] === 'ph' ? 'ph' : 'primary';
+    setPendingHomeServer(interaction.user.id, server);
+    return interaction.reply({ content: server === 'ph'
+      ? '✅ Got it — Philippines server. Now reply to my first message with the email on your Plex account.'
+      : '✅ Got it — main (USA) servers. Now reply to my first message with the email on your Plex account.' });
+  }
+
   // Public self-service button from /invite-post — open to everyone, pops an email modal.
   if (action === 'request_access') {
     const existing = getUserByDiscordId(interaction.user.id);
@@ -7629,24 +7696,26 @@ async function handleButton(interaction) {
         return interaction.reply({ content: `✅ You're already set up with \`${existing.email}\`. Use \`/me\` to check your access, or ask an admin if the email needs changing.`, ephemeral: true });
       }
       await interaction.deferReply({ ephemeral: true });
-      const posted = await postAccessRequestToAdmins(interaction.user, existing.email).catch(() => false);
+      const posted = await postAccessRequestToAdmins(interaction.user, existing.email, existing.home_server || 'primary').catch(() => false);
       return interaction.editReply(posted
         ? `✅ Your pending request for \`${existing.email}\` was posted to the admins again.`
         : '❌ I still could not reach the admin channel. Ask an admin to check `ADMIN_CHANNEL_ID` and the bot\'s channel permissions.');
     }
-    const modal = new ModalBuilder()
-      .setCustomId('request_access_modal')
-      .setTitle('Request Plex Access')
-      .addComponents(new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId('plex_email')
-          .setLabel('Email on your Plex account')
-          .setPlaceholder('you@example.com')
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true)
-          .setMaxLength(100),
-      ));
-    return interaction.showModal(modal);
+    // A PH box exists to choose from — ask which server before popping the email modal. Discord
+    // modals can't hold a select menu/buttons, so the pick has to happen as its own step first.
+    if (phServerConfigured()) {
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('request_access_server:primary').setLabel('🇺🇸 Main (USA) Servers').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('request_access_server:ph').setLabel('🇵🇭 Philippines Server').setStyle(ButtonStyle.Secondary),
+      );
+      return interaction.reply({ content: 'Which server are you requesting access to?', components: [row], ephemeral: true });
+    }
+    return interaction.showModal(requestAccessModal('primary'));
+  }
+
+  if (action === 'request_access_server') {
+    const server = parts[0] === 'ph' ? 'ph' : 'primary';
+    return interaction.showModal(requestAccessModal(server));
   }
 
   if (['plex_approve', 'plex_approve_ts', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'trust_undo', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'season_grab', 'adopt_do', 'adopt_bulk', 'adopt_cancel'].includes(action) && !isAdminInteraction(interaction)) {
@@ -7697,8 +7766,12 @@ async function handleButton(interaction) {
         const discordUser = await client.users.fetch(targetDiscordId).catch(() => null);
         const { plexStatus, seerrStatus, plexOk, seerrOk } = await applyFullChainLink(targetDiscordId, user.email, discordUser?.username);
         const complete = plexOk && seerrOk;
+        // Cover both paths onto PH: the admin explicitly clicking "Approve + Tailscale" and a
+        // requester who already self-selected Philippines before plain Approve — either way they
+        // need the Tailscale instructions, since the PH box is CGNAT'd and unreachable otherwise.
+        const isPh = wantsTailscale || (getUserByDiscordId(targetDiscordId)?.home_server || 'primary') === 'ph';
         audit('admin_command_executed', { actorDiscordId: interaction.user.id, targetDiscordId, command: wantsTailscale ? 'plex_approve_ts' : 'plex_approve', plexOk, seerrOk });
-        const tailscaleNote = wantsTailscale
+        const tailscaleNote = isPh && CONFIG.TAILSCALE_ENABLED
           ? `\n\n🌐 **You're on the Philippines/travel server**, which sits behind CGNAT with no IPv6 — normal Plex remote access can't reach it. To watch, you'll need **Tailscale**:\n1. Install it: ${CONFIG.TAILSCALE_SETUP_URL}\n2. An admin will send you a tailnet invite separately — accept it once it arrives.\n3. In Plex, add the server manually using ${CONFIG.TAILSCALE_SERVER_ADDRESS ? `\`${CONFIG.TAILSCALE_SERVER_ADDRESS}\`` : 'the tailnet address an admin sends you'}.`
           : '';
         await dmUser(targetDiscordId, { embeds: [brandedEmbed(plexOk ? COLORS.SUCCESS : COLORS.WARN)
@@ -7712,7 +7785,7 @@ async function handleButton(interaction) {
             { name: 'User', value: `<@${targetDiscordId}>`, inline: true },
             { name: 'Plex', value: plexStatus, inline: true },
             { name: 'Seerr', value: seerrStatus, inline: true },
-            ...(wantsTailscale ? [{ name: 'Server', value: '🌐 Philippines (Tailscale)', inline: true }] : []),
+            ...(isPh ? [{ name: 'Server', value: '🇵🇭 Philippines', inline: true }] : []),
           )], components: complete ? [] : interaction.message.components });
         return;
       }
