@@ -136,7 +136,7 @@ async function showDevice(interaction, device) {
   const buttons = [linkButton(tailscaleInstallUrl(), 'Install Tailscale')];
   const helpLabel = device === 'phone' ? 'Join / Connection Help'
     : device === 'androidtv' ? 'TV Code / Connection Help'
-      : 'Get One-Time Key';
+      : 'Connection Help';
   buttons.push(customButton(`setup:request_key:${device}`, helpLabel, ButtonStyle.Primary));
   if (phPlexUrl()) buttons.push(linkButton(`${phPlexUrl()}/web`, 'Test / Open PH Plex'));
   buttons.push(customButton(`setup:ph_confirm:${device}`, confirmedAt ? 'Confirm Again' : '✅ I Connected This Device', ButtonStyle.Success));
