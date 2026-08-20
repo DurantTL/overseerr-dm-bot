@@ -87,12 +87,12 @@ async function sendSetupGuideCommand(interaction) {
 
 function keyUsageCopy(device, key, ttlSeconds) {
   const ttlMinutes = Math.max(1, Math.round(ttlSeconds / 60));
-  const common = `This is a **one-time**, restricted PH-viewer key and expires in about **${ttlMinutes} minutes** if unused. Do not share it.`;
+  const common = `This is a **one-time**, restricted appliance key and expires in about **${ttlMinutes} minutes** if unused. Do not share it.`;
   if (device === 'appletv') {
-    return `${common}\n\n**Apple TV**\n1. Install/open Tailscale on Apple TV.\n2. Choose **Use an auth key**.\n3. On your iPhone/iPad open the Apple TV Remote keyboard and paste the key below.\n4. Select **Log in**.\n\n\`${key}\``;
+    return `${common}\n\n**Apple TV shared/appliance mode**\n1. Install/open Tailscale on Apple TV.\n2. Choose **Use an auth key**.\n3. On your iPhone/iPad open the Apple TV Remote keyboard and paste the key below.\n4. Select **Log in**.\n\n\`${key}\``;
   }
   if (device === 'computer') {
-    return `${common}\n\n**Windows / macOS / Linux**\nIf the app offers an auth-key option, paste the key below. Otherwise use the Tailscale CLI with its auth-key option.\n\n\`${key}\``;
+    return `${common}\n\n**Computer shared/appliance mode**\nIf the client offers an auth-key option, paste the key below. Otherwise use the Tailscale CLI with its auth-key option.\n\n\`${key}\``;
   }
   return `${common}\n\n\`${key}\``;
 }
@@ -102,14 +102,15 @@ async function autoOrFallbackKey(interaction, device) {
   const state = setupStateForUser(row);
   if (!state.tailscaleRequired) return interaction.reply({ content: 'No PH connection setup is needed for your Main-server account.', ephemeral: true });
 
-  // Current Tailscale clients do not expose the same auth-key UX on every platform. Apple TV
-  // explicitly supports pasting an auth key; iOS/Android phone setup is normally account/QR
-  // based, and Android TV also has QR/generated-code flows. Do not hand users a key they cannot
-  // actually enter.
+  // Personal viewer devices should normally keep a user-owned Tailscale identity. Current
+  // Tailscale guidance reserves tags for non-human/shared infrastructure, because applying a
+  // tag replaces the user's identity on that device. Phones and Android/Google TV therefore
+  // always use the normal user login/invite path. Apple TV/computer only reach the optional
+  // tagged auth-key path when the operator explicitly enables TAILSCALE_API_ENABLED.
   if (device === 'phone') {
     return interaction.reply({
       embeds: [brandedEmbed(0x3b82f6).setTitle('📱 Phone / Tablet — easiest setup').setDescription([
-        'On iPhone/iPad and Android phones, use the normal Tailscale sign-in flow rather than an auth key.',
+        'Use your normal Tailscale user sign-in/invite rather than an auth key.',
         '',
         '1. Install and open Tailscale.',
         '2. Allow the VPN configuration.',
@@ -129,11 +130,11 @@ async function autoOrFallbackKey(interaction, device) {
   if (device === 'androidtv') {
     return interaction.reply({
       embeds: [brandedEmbed(0x3b82f6).setTitle('📺 Android / Google TV — easiest setup').setDescription([
-        'Android TV is easiest with the QR code or generated code shown by the Tailscale TV app.',
+        'Use the normal Tailscale user/QR flow so this personal TV keeps the viewer identity.',
         '',
         '1. Install/open Tailscale on the TV and choose **Log in**.',
-        '2. Scan the QR code with a phone already signed into the PH tailnet, **or** record the generated code.',
-        '3. If using the generated code, send it to the admin using the button below so they can authorize it.',
+        '2. Scan the QR code with a phone, or use the generated code shown by the TV app.',
+        '3. If the generated code needs admin help, send it using the button below.',
         '4. When the TV says **Connected**, open Plex.',
       ].join('\n'))],
       components: [new ActionRowBuilder().addComponents(
@@ -145,7 +146,22 @@ async function autoOrFallbackKey(interaction, device) {
   }
 
   const cfg = provisionConfig();
-  if (!tailscaleApiConfigured(cfg)) return notifyAdminForManualKey(interaction, device, 'Tailscale OAuth automation is not configured yet.');
+  if (!tailscaleApiConfigured(cfg)) {
+    const label = device === 'appletv' ? 'Apple TV' : 'computer';
+    return interaction.reply({
+      embeds: [brandedEmbed(0x3b82f6).setTitle(`🔐 ${label} — recommended personal-device setup`).setDescription([
+        'Use the normal Tailscale login/QR flow for a personal viewer device.',
+        '',
+        'The bot\'s automatic auth-key mode is intentionally disabled unless an admin explicitly enables shared/appliance provisioning.',
+        'If you need the tailnet invitation or help connecting, use the button below.',
+      ].join('\n'))],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`setup:admin_tailnet_help:${device}`).setLabel('Ask Admin for Access').setStyle(ButtonStyle.Primary),
+        ...(phPlexUrl() ? [new ButtonBuilder().setURL(`${phPlexUrl()}/web`).setLabel('Test / Open PH Plex').setStyle(ButtonStyle.Link)] : []),
+      )],
+      ephemeral: true,
+    });
+  }
 
   await interaction.deferReply({ ephemeral: true });
   try {
@@ -158,12 +174,12 @@ async function autoOrFallbackKey(interaction, device) {
       expirySeconds: result.expirySeconds,
     });
     return interaction.editReply({
-      embeds: [brandedEmbed(0x22c55e).setTitle('🔑 One-Time PH Connection Key').setDescription(keyUsageCopy(device, result.key, result.expirySeconds))],
+      embeds: [brandedEmbed(0x22c55e).setTitle('🔑 One-Time Shared/Appliance Connection Key').setDescription(keyUsageCopy(device, result.key, result.expirySeconds))],
       components: phPlexUrl() ? [new ActionRowBuilder().addComponents(new ButtonBuilder().setURL(`${phPlexUrl()}/web`).setLabel('After Setup: Test PH Plex').setStyle(ButtonStyle.Link))] : [],
     });
   } catch (err) {
     log.warn(`Automatic Tailscale viewer-key creation failed: ${err.response?.data?.message || err.message}`);
-    return notifyAdminForManualKey(interaction, device, `Automatic key creation failed: ${err.response?.data?.message || err.message}`, true);
+    return notifyAdminForManualKey(interaction, device, `Automatic appliance-key creation failed: ${err.response?.data?.message || err.message}`, true);
   }
 }
 
@@ -173,7 +189,7 @@ async function notifyAdminForManualKey(interaction, device, reason, alreadyDefer
     const channel = CONFIG.ADMIN_CHANNEL_ID ? await interaction.client.channels.fetch(CONFIG.ADMIN_CHANNEL_ID) : null;
     if (channel?.isTextBased()) {
       await channel.send({ embeds: [brandedEmbed(0xf59e0b)
-        .setTitle('🔑 PH Connection Help Requested')
+        .setTitle('🔐 PH Connection Help Requested')
         .setDescription(`<@${interaction.user.id}> needs PH Server Connection help for **${device}**.\n\n${reason}`)] });
       notified = true;
     }
@@ -249,9 +265,6 @@ function installCommandRegistration() {
   const originalPut = REST.prototype.put;
   if (originalPut.__durantSetupEnhancementsWrapped) return;
   async function wrappedPut(route, options = {}) {
-    // This wrapper is installed outside the base setup wrapper. The original command list still
-    // contains /me but not /setup at this point; the base wrapper appends /setup after we pass
-    // through. Accept either marker so /send-setup is not silently lost because of wrapper order.
     const isBotCommandRegistration = Array.isArray(options?.body)
       && options.body.some(c => c?.name === 'me' || c?.name === 'setup');
     if (isBotCommandRegistration && !options.body.some(c => c?.name === 'send-setup')) {
