@@ -19,8 +19,10 @@ const {
 } = require('discord.js');
 
 const { CONFIG } = require('./config');
-const { db, getUserByDiscordId, audit } = require('./db');
+const { db, getUserByDiscordId, getTrustScore, audit } = require('./db');
 const { inviteUserToPlex } = require('./plex');
+const { fetchUserQuota } = require('./seerr');
+const { quotaLine } = require('./util');
 const {
   setupStateForUser,
   setupSummaryLines,
@@ -157,15 +159,21 @@ function setupEmbed(userRow) {
   };
 }
 
-async function sendSetup(interaction, { update = false } = {}) {
+async function sendSetup(interaction) {
   const row = getUserByDiscordId(interaction.user.id);
   const { state, embed } = setupEmbed(row);
   const components = [...setupButtons(state), ...quickActionButtons(state)].slice(0, 5);
   const payload = { embeds: [embed], components, ephemeral: true };
-
-  if (update && interaction.isMessageComponent()) return interaction.update(payload);
   if (interaction.replied || interaction.deferred) return interaction.followUp(payload);
   return interaction.reply(payload);
+}
+
+function describeTrustStanding(discordId) {
+  const threshold = Number(CONFIG.AUTO_APPROVE_AFTER_N_APPROVED || 0);
+  if (threshold <= 0) return null;
+  const score = getTrustScore(discordId);
+  if (score >= threshold) return `🚀 Auto-approved — ${score} approved request${score === 1 ? '' : 's'} (4K still needs admin approval)`;
+  return `${score} of ${threshold} approved requests until auto-approval`;
 }
 
 async function sendMe(interaction) {
@@ -175,25 +183,53 @@ async function sendMe(interaction) {
     return interaction.reply({
       embeds: [brandedEmbed(0xf59e0b)
         .setTitle('👤 Not Linked Yet')
-        .setDescription('I do not have a linked Durant Media Server profile for your Discord account yet. Use **Setup / Troubleshooting** for the Plex account steps, then use the server\'s Request Plex Access flow to finish linking.')],
+        .setDescription('You are not linked to a Plex account yet. Open **Setup / Troubleshooting** for the Plex account steps, then use the server\'s Request Plex Access flow to finish linking.')],
       components: quickActionButtons(state).slice(0, 2),
       ephemeral: true,
     });
   }
 
+  await interaction.deferReply({ ephemeral: true });
   const state = setupStateForUser(row);
-  const fields = [
-    { name: 'Plex', value: state.plexUsername ? `✅ ${state.plexUsername}` : '⚠️ username not confirmed', inline: true },
-    { name: 'Server', value: state.homeServer === 'ph' ? '🇵🇭 Philippines' : '🇺🇸 Main', inline: true },
-    { name: 'Seerr', value: state.seerrLinked ? '✅ linked' : '⚠️ not linked', inline: true },
-  ];
-  if (state.homeServer === 'ph') fields.push({ name: 'PH Server Connection', value: 'Tailscale is required when away from the PH home network.', inline: false });
+  const requestCount = db.prepare('SELECT COUNT(*) AS c FROM requests WHERE requested_by_discord_id = ?').get(interaction.user.id).c;
+  let quota = null;
+  if (row.overseerr_user_id != null) {
+    try { quota = await fetchUserQuota(row.overseerr_user_id); } catch (_e) {}
+  }
+  const quotaLines = [quotaLine(quota, 'movie'), quotaLine(quota, 'tv')].filter(Boolean);
+  const accessReady = !!(row.invited && row.overseerr_created);
+  const homeServer = state.homeServer === 'ph' ? 'Philippines' : 'Main';
+  const checklist = [
+    `1. ${state.plexIdentityVerified ? '✅' : '⚠️'} Plex username ${state.plexUsername ? `**${state.plexUsername}**` : 'not confirmed — use Setup instead of relying on the invite email'}`,
+    `2. ${row.invited ? '✅' : '⏳'} Plex server access ${row.invited ? 'sent' : 'has not been sent yet'}`,
+    `3. ${row.overseerr_created ? '✅' : '⏳'} Request access ${row.overseerr_created ? 'connected' : 'still being set up'}`,
+    `4. ${accessReady ? '✅' : '⏳'} Home server: **${homeServer}**`,
+  ].join('\n');
+  const nextStep = !state.plexIdentityVerified
+    ? 'Open **Setup / Troubleshooting** and confirm your Plex username. This avoids depending on Plex invite emails.'
+    : !row.invited
+      ? `Open **Setup / Troubleshooting** and send access directly to **${state.plexUsername}**.`
+      : !row.overseerr_created
+        ? 'Your Plex access is sent; an admin still needs to finish request access.'
+        : state.homeServer === 'ph'
+          ? 'You are ready. Use **Setup / Troubleshooting** whenever you need to connect a new phone, TV, or computer to the PH server.'
+          : 'You are ready. Use the Quick Actions below for requests, status, downloads, and help.';
 
-  return interaction.reply({
-    embeds: [brandedEmbed(0x3b82f6).setTitle('👤 Your Durant Media Server Profile').addFields(...fields)],
-    components: quickActionButtons(state).slice(0, 5),
-    ephemeral: true,
-  });
+  const standing = describeTrustStanding(interaction.user.id);
+  const embed = brandedEmbed(accessReady ? 0x22c55e : 0xe5a00d)
+    .setTitle(accessReady ? '✅ Your Access Is Ready' : '👤 Your Access Checklist')
+    .setThumbnail(interaction.user.displayAvatarURL?.() || null)
+    .addFields(
+      { name: 'Plex email', value: `\`${row.email}\``, inline: false },
+      { name: 'Setup', value: checklist, inline: false },
+      { name: 'Next step', value: nextStep, inline: false },
+      { name: 'Total requests', value: `${requestCount}`, inline: true },
+      ...(quotaLines.length ? [{ name: 'Quota', value: quotaLines.join('\n'), inline: false }] : []),
+      ...(standing ? [{ name: 'Standing', value: standing, inline: false }] : []),
+      ...(state.homeServer === 'ph' ? [{ name: 'PH Server Connection', value: 'Tailscale is required when you are away from the PH home network. Setup is available again whenever you add a new device.', inline: false }] : []),
+    );
+
+  return interaction.editReply({ embeds: [embed], components: quickActionButtons(state).slice(0, 5) });
 }
 
 function usernameModal(currentUsername = '') {
@@ -352,7 +388,7 @@ async function savePlexUsername(interaction) {
   return interaction.reply({
     embeds: [brandedEmbed(0x22c55e)
       .setTitle('✅ Plex Username Saved')
-      .setDescription(`I saved **${username}** as your Plex username.${state.plexAccessVerified ? '\n\nYour server access is already marked as sent.' : '\n\nNext, tap **Invite ' + username + '** so the Plex share is sent to the username instead of depending on an invite email.'}`)],
+      .setDescription(`I saved **${username}** as your Plex username.${state.plexAccessVerified ? '\n\nYour server access is already marked as sent.' : `\n\nNext, tap **Invite ${username}** so the Plex share is sent to the username instead of depending on an invite email.`}`)],
     components: state.plexAccessVerified
       ? rowsFromButtons([button('setup:open', 'Back to Setup', ButtonStyle.Primary)])
       : rowsFromButtons([button('setup:plex_invite_username', `Invite ${username}`.slice(0, 80), ButtonStyle.Success), button('setup:open', 'Back to Setup')]),
@@ -415,7 +451,7 @@ async function handleSetupInteraction(interaction) {
   if (!interaction.isButton()) return;
 
   const id = String(interaction.customId || '');
-  if (id === 'setup:open') return sendSetup(interaction, { update: false });
+  if (id === 'setup:open') return sendSetup(interaction);
   if (id === 'setup:plex_find_username') return showPlexUsernameHelp(interaction);
   if (id === 'setup:plex_enter_username') {
     const row = getUserByDiscordId(interaction.user.id);
