@@ -74,24 +74,47 @@ This is opt-in per person, not a default part of onboarding — most admins will
 the handful of people actually assigned to the PH box:
 
 1. Set `TAILSCALE_ENABLED=true`. This adds a third **Approve + Tailscale (PH)** button next to
-   Approve/Deny on new access-request DMs — nothing changes for the plain **Approve** button.
+   Approve/Deny on new access-request DMs — nothing changes for the plain **Approve** button. If a
+   requester already picked "Philippines Server" themselves (see below), plain **Approve** already
+   scopes their invite to the PH box and includes the Tailscale note; the `+ Tailscale` button is
+   there for an admin to force PH on a request that didn't specify one.
 2. Optionally set `TAILSCALE_SERVER_ADDRESS` to the PH box's tailnet hostname/IP so the bot can
    include it directly in the DM; leave it blank to tell the user an admin will send it.
 3. When a request comes in from someone who needs the PH box, click **Approve + Tailscale (PH)**
    instead of **Approve**. The bot assigns them to `home_server=ph` (same as `/assign-server`),
    runs the normal Plex/Seerr invite chain, and appends Tailscale setup steps to their DM.
-4. Separately (outside the bot — there's no Tailscale API integration here), invite that person
-   to your tailnet from the Tailscale admin console, since you're deciding this case by case
-   anyway.
+4. Separately (outside the bot — there's no Tailscale API integration here), get that person onto
+   your tailnet.
+
+### Adding viewers without burning your 3-user Personal plan seats
+Tailscale's free Personal plan caps you at 3 *users* (login identities), but each user's own
+device quota is far higher. Don't hand out logins — generate an **auth key** per viewer instead
+(Tailscale admin console → Settings → Keys): they run `tailscale up --authkey=tskey-...` (or use
+"Use a setup key" in the mobile app) and their device joins under *your* user seat, not a new one.
+Keys can be reusable or single-use, and should carry an expiry so a stale invite dies on its own.
+
+Tag every key at creation (e.g. `tag:ph-viewer`) and tag the PH box itself (e.g. `tag:media-ph`),
+then lock down the tailnet policy file (ACLs) so `tag:ph-viewer` can reach `tag:media-ph` on port
+`32400` and nothing else. That's what actually keeps your management boxes and everyone else's
+devices invisible/unreachable to a viewer's phone — sharing one tailnet doesn't have to mean
+sharing full mesh visibility.
 
 ## One server per person
 Plex does **not** sync watch state between servers — separate Continue Watching, separate watched
 marks, separate Tautulli history. So each person belongs to exactly one server:
 
-- `/assign-server user:@X server:ph` marks a PH user. Invites (`/link`, `/invite`, `/reinvite`,
-  access-request approvals) then go **only** to servers matching `PH_SERVER_NAMES`; everyone else
-  is invited to everything *except* the PH box. With `PH_SERVER_NAMES` unset, invites behave as
-  before (all servers).
+- Self-service requests (the welcome DM, `/invite`'s DM, and the public **Request Plex Access**
+  button/modal) offer a **Main (USA) / Philippines** pick whenever `PH_SERVER_NAMES` is configured
+  — the requester's choice is stored as their `home_server` before the request even reaches the
+  admin channel, and shown on the Approve/Deny embed. Nobody has to remember `/assign-server`
+  after the fact just because someone said in chat they're in the Philippines.
+- `/assign-server user:@X server:ph` remains for correcting/overriding a home server after the
+  fact (e.g. someone moves, or self-picked wrong). `/invite`'s `server` option does the same at
+  invite time when an admin is setting someone up directly with `email:`.
+- Invites (`/link`, `/invite`, `/reinvite`, access-request approvals) go **only** to servers
+  matching `PH_SERVER_NAMES` for a `home_server=ph` user; everyone else is invited to everything
+  *except* the PH box. With `PH_SERVER_NAMES` unset, invites behave as before (all servers), and
+  the self-service Main/Philippines picker doesn't appear at all.
 - Revocation (leave-server button, `/unlink`, sync-fix orphan cleanup) always sweeps **every**
   server in the account — including ones in `PLEX_EXCLUDE_SERVERS` — so nobody keeps quiet access
   to an "excluded" box after losing access.
