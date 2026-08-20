@@ -8,7 +8,9 @@ const path = require('path');
 const dbPath = path.join(os.tmpdir(), `durant-device-state-${process.pid}.db`);
 process.env.DB_PATH = dbPath;
 
-const { setSetting, deleteSetting } = require('../../src/db');
+const { runMigrations, setSetting, deleteSetting } = require('../../src/db');
+runMigrations();
+
 const {
   DEVICES,
   stateKey,
