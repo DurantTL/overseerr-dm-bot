@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { REST } = require('discord.js');
 
 const dbPath = path.join(os.tmpdir(), `durant-setup-enhancements-${process.pid}.db`);
 process.env.DB_PATH = dbPath;
@@ -11,7 +12,7 @@ process.env.DB_PATH = dbPath;
 const { runMigrations, db, setSetting } = require('../../src/db');
 runMigrations();
 const { stateKey } = require('../../src/setup-device-state');
-const { setupPayloadForUser } = require('../../src/setup-discord-enhancements');
+const { setupPayloadForUser, installSetupDiscordEnhancements } = require('../../src/setup-discord-enhancements');
 
 after(() => {
   try { db.close(); } catch (_e) {}
@@ -53,4 +54,18 @@ test('admin resend payload for Main never includes PH state', () => {
   const json = payload.embeds[0].toJSON();
   assert.ok(!json.fields.some(field => field.name === 'PH devices'));
   assert.equal(JSON.stringify(payload.components).includes('ph_connection'), false);
+});
+
+test('send-setup registers even though the base wrapper has not appended /setup yet', async () => {
+  const original = REST.prototype.put;
+  REST.prototype.put = async function fakePut(_route, options) { return options.body; };
+  try {
+    installSetupDiscordEnhancements();
+    const body = await REST.prototype.put.call({}, '/commands', {
+      body: [{ name: 'me', description: 'existing command' }],
+    });
+    assert.ok(body.some(command => command.name === 'send-setup'), 'admin setup resend command is appended from the original /me-bearing list');
+  } finally {
+    REST.prototype.put = original;
+  }
 });
