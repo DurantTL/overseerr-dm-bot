@@ -8,6 +8,27 @@ try { validateConfig(); } catch (err) { configError = err; }
 if (configError) {
   startConfigErrorServer(configError);
 } else {
+  // Guided setup is installed before index.js so it can extend the existing Discord command
+  // registration and intercept only setup-owned interactions. Layers are installed from broadest
+  // to most specific; the later wrappers get first refusal and otherwise pass through to the
+  // existing index.js listener unchanged. Request Media deliberately forwards its final choice
+  // back down this chain as a synthetic /request interaction so the original request gate remains
+  // the one authoritative implementation.
+  const { installSetupDiscordExtension } = require('./src/setup-discord-extension');
+  installSetupDiscordExtension();
+  const { installSetupDiscordEnhancements } = require('./src/setup-discord-enhancements');
+  installSetupDiscordEnhancements();
+  const { installSetupDeviceState } = require('./src/setup-device-state');
+  installSetupDeviceState();
+  const { installSetupRequestUi } = require('./src/setup-request-ui');
+  installSetupRequestUi();
+
+  // Existing welcome/completion DMs are emitted by index.js. Install this bridge before index.js
+  // so those messages automatically gain the Setup / Troubleshooting entry point without
+  // duplicating the onboarding business logic.
+  const { installSetupDmBridge } = require('./src/setup-dm-bridge');
+  installSetupDmBridge();
+
   // Start the main Discord/web process, then attach optional background services that are isolated
   // from index.js. Keeping workers here lets index.js shrink toward a true composition root over time.
   require('./index');
