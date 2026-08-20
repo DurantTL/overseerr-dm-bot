@@ -17,6 +17,7 @@ const {
   deviceConfirmation,
   deviceConfirmations,
   anyDeviceConfirmed,
+  tailscaleShareUrl,
   personalizedSetupPayload,
 } = require('../../src/setup-device-state');
 
@@ -68,4 +69,17 @@ test('PH setup payload shows saved device confirmation status', () => {
   assert.match(field.value, /Computer.*confirmed/);
   assert.match(field.value, /Phone \/ Tablet.*not confirmed/);
   assert.equal(deviceConfirmation(userId, 'computer') > 0, true);
+});
+
+test('PH machine-share URL only accepts HTTPS links', () => {
+  const before = process.env.TAILSCALE_PH_SHARE_URL;
+  try {
+    process.env.TAILSCALE_PH_SHARE_URL = 'https://login.tailscale.com/admin/machines/example/share';
+    assert.equal(tailscaleShareUrl(), 'https://login.tailscale.com/admin/machines/example/share');
+    process.env.TAILSCALE_PH_SHARE_URL = 'javascript:alert(1)';
+    assert.equal(tailscaleShareUrl(), '');
+  } finally {
+    if (before == null) delete process.env.TAILSCALE_PH_SHARE_URL;
+    else process.env.TAILSCALE_PH_SHARE_URL = before;
+  }
 });
