@@ -23,6 +23,12 @@ if (configError) {
   const { installSetupRequestUi } = require('./src/setup-request-ui');
   installSetupRequestUi();
 
+  // Existing welcome/completion DMs are emitted by index.js. Install this bridge before index.js
+  // so those messages automatically gain the Setup / Troubleshooting entry point without
+  // duplicating the onboarding business logic.
+  const { installSetupDmBridge } = require('./src/setup-dm-bridge');
+  installSetupDmBridge();
+
   // Start the main Discord/web process, then attach optional background services that are isolated
   // from index.js. Keeping workers here lets index.js shrink toward a true composition root over time.
   require('./index');
