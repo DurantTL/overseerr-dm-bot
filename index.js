@@ -29,7 +29,7 @@ const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeasonEpisodeFallbacks,
@@ -1714,6 +1714,13 @@ async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
   // asked to prioritize. The cap itself is unchanged — pinning buys position, not extra searches.
   const priority = mediaPriorityMap();
   const ordered = orderByPriority(seriesList || [], { keyFor: series => priorityKey({ tvdbId: series.tvdbId }), priority });
+  // A series that has never had a season swept before goes first (within its pin bracket — this
+  // is a stable sort on top of orderByPriority's own stable sort, so pin order survives inside
+  // each group). Without this, a large stalled backlog can spend SEASON_PACK_MAX_PER_RUN every
+  // single run re-polling shows that already have nothing available, and a newly-added or
+  // newly-missing show never gets a turn.
+  const everSwept = listSeriesIdsWithSeasonSearches();
+  ordered.sort((a, b) => (everSwept.has(Number(a.id)) ? 1 : 0) - (everSwept.has(Number(b.id)) ? 1 : 0));
   const searched = [];
   let avistazAllowanceExhausted = false;
   for (const series of ordered) {
@@ -3841,6 +3848,13 @@ const slashCommands = [
       .addStringOption(o => o.setName('mode').setDescription('move (default, cleans up staging) or copy (leaves the files in place)').addChoices({ name: 'move', value: 'move' }, { name: 'copy', value: 'copy' })))
     .addSubcommand(s => s.setName('staging').setDescription('Why-won\'t-it-import report: per-folder match/rejection summary of the staging share')
       .addStringOption(o => o.setName('target').setDescription('Which arr to ask (default sonarr)').addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }))),
+  new SlashCommandBuilder().setName('season').setDescription('Season-pack sweep: force a search now, or see why one hasn\'t happened').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(s => s.setName('search').setDescription('Force a season search right now (Sonarr, or AvistaZ direct if the series is tagged)')
+      .addStringOption(o => o.setName('title').setDescription('Sonarr series — start typing to search').setRequired(true).setAutocomplete(true))
+      .addIntegerOption(o => o.setName('season').setDescription('Season number').setRequired(true).setMinValue(0).setMaxValue(99))
+      .addBooleanOption(o => o.setName('force').setDescription('Skip the cooldown/backoff (default: respect it)')))
+    .addSubcommand(s => s.setName('status').setDescription('Why the automatic sweep has or hasn\'t touched this series')
+      .addStringOption(o => o.setName('title').setDescription('Sonarr series — start typing to search').setRequired(true).setAutocomplete(true))),
   new SlashCommandBuilder().setName('cleanup-suggestions').setDescription('Largest/oldest media that could be cleaned up').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('stage').setDescription('Copy a title into the travel-server cache so it plays instantly there').addStringOption(o => o.setName('title').setDescription('Start typing — matches what\'s in the library').setRequired(true).setAutocomplete(true)),
   // Cache-management trio is admin-gated by default; /stage stays member-visible (self-serve,
@@ -4327,6 +4341,30 @@ async function handleAutocomplete(interaction) {
     }
   }
 
+  // /season search|status title: — Sonarr's own library, scored by token overlap (same approach
+  // as the guided-import wizard's series picker), recently-added first on ties.
+  if (interaction.commandName === 'season') {
+    const focusedTitle = interaction.options.getFocused(true);
+    if (focusedTitle.name !== 'title') return interaction.respond([]).catch(() => {});
+    const q = String(focusedTitle.value || '').trim();
+    try {
+      const all = await listSonarrSeries();
+      const tokens = normalizeTitle(q).split(' ').filter(Boolean);
+      const scored = all.map(s => {
+        const hay = ` ${normalizeTitle(`${s.title} ${(s.alternateTitles || []).map(t => t.title).join(' ')}`)} `;
+        return { s, score: tokens.filter(t => hay.includes(` ${t} `)).length };
+      }).sort((a, b) => b.score - a.score || String(b.s.added || '').localeCompare(String(a.s.added || '')));
+      const pool = tokens.length ? (scored.filter(x => x.score > 0).length ? scored.filter(x => x.score > 0) : scored) : scored;
+      const choices = pool.slice(0, 25).map(({ s }) => ({
+        name: `${s.title}${s.year ? ` (${s.year})` : ''}`.slice(0, 100),
+        value: String(s.id),
+      }));
+      return interaction.respond(choices).catch(() => {});
+    } catch (_e) {
+      return interaction.respond([]).catch(() => {});
+    }
+  }
+
   // /request-status title: — matches locally tracked requests (fed by webhooks + /request).
   // Non-admins only see their own requests; showing everyone's titles/statuses would let any
   // member enumerate what other people requested.
@@ -4513,6 +4551,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'debrid') return handleDebridCommand(interaction);
   if (n === 'avistaz') return handleAvistazCommand(interaction);
   if (n === 'rtorrent') return handleRtorrentCommand(interaction);
+  if (n === 'season') return handleSeasonCommand(interaction);
   if (n === 'cleanup-suggestions') return handleCleanupSuggestionsCommand(interaction);
   if (n === 'stage') return handleStageCommand(interaction);
   if (n === 'staged') return handleStagedCommand(interaction);
@@ -6513,6 +6552,99 @@ async function handleRtorrentCommand(interaction) {
     for (const ig of ignored.slice(0, 10)) lines.push(`• ${ig.name ? String(ig.name).slice(0, 100) : ig.infoHash}`);
   }
   return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO).setTitle('🧲 Adopted Torrents').setDescription(lines.join('\n').slice(0, 4000))] });
+}
+
+// /season search|status — an on-demand escape hatch for the automatic season-pack sweep
+// (index.js's runSeasonPackSweep and src/season-pack.js's seasonSearchTargets). `search` mirrors
+// the dashboard's "Search Now" action (same route decision: AvistaZ-tagged + direct-grab enabled
+// goes through runSeasonDirectGrab, everything else through Sonarr's own SeasonSearch) so an admin
+// never has to leave Discord for what used to require the dashboard or Sonarr's own web UI.
+// `status` never searches anything — it just explains the seasonSearchTargets gate for one series,
+// since the sweep itself stays silent about series it decides not to touch (untagged when
+// SEASON_PACK_SONARR_UNTAGGED is off, too young, on cooldown, etc.).
+async function handleSeasonCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  if (!CONFIG.SONARR_URL) return interaction.reply({ content: '❌ Sonarr isn\'t configured.', ephemeral: true });
+  const sub = interaction.options.getSubcommand();
+  const seriesId = Number(interaction.options.getString('title'));
+  await interaction.deferReply({ ephemeral: true });
+  const all = await listSonarrSeries().catch(() => []);
+  const series = all.find(s => Number(s.id) === seriesId);
+  if (!series) return interaction.editReply('❌ Couldn\'t find that series in Sonarr any more — start typing again and pick a fresh suggestion.');
+
+  const tagSource = { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, label: 'sonarr' };
+  const tagId = await getArrTagId(tagSource, CONFIG.AVISTAZ_TAG).catch(() => null);
+  const tagged = tagId != null && (series.tags || []).includes(tagId);
+  const allowUntagged = tunable('SEASON_PACK_SONARR_UNTAGGED');
+  const directEnabled = tunable('SEASON_PACK_AVISTAZ_DIRECT') && grabConfigured();
+
+  if (sub === 'status') {
+    const episodes = await getSeriesEpisodes(series.id).catch(() => null);
+    if (!episodes) return interaction.editReply(`❌ Couldn't read episodes for **${series.title}** from Sonarr.`);
+    const requestedTvdbIds = tunable('SEASON_PACK_REQUESTED') ? listRequestedTvdbIds() : new Set();
+    const requested = requestedTvdbIds.has(Number(series.tvdbId));
+    const cfg = seasonPackConfig();
+    const targets = seasonSearchTargets({
+      series, episodes, requested,
+      searchedAt: getSeasonSearchTimes(series.id),
+      stallCounts: getSeasonSearchStalls(series.id),
+    }, Date.now(), cfg);
+    const lines = [];
+    lines.push(`**Sweep eligible:** ${targets.eligible ? `✅ yes (${targets.reason})` : `❌ no — ${targets.reason}`}`);
+    lines.push(`**AvistaZ tag:** ${tagged ? `✅ tagged \`${CONFIG.AVISTAZ_TAG}\`` : `❌ not tagged${allowUntagged ? '' : ' — the automatic sweep skips untagged series unless `SEASON_PACK_SONARR_UNTAGGED=true`'}`}`);
+    lines.push(`**Would route through:** ${tagged && directEnabled ? 'AvistaZ direct grab' : 'Sonarr\'s own SeasonSearch (its configured indexers)'}`);
+    if (!tagged && !allowUntagged) {
+      lines.push('', '⚠️ This series is **not swept automatically** — untagged, and `SEASON_PACK_SONARR_UNTAGGED` is off. Use `/season search` here to force a one-off check, or tag it (or flip that setting) for it to be picked up on its own.');
+    }
+    if (targets.seasons.length) {
+      lines.push('', '**Ready to search now:**');
+      for (const s of targets.seasons) lines.push(`• S${pad(s.season)} — ${s.missing}/${s.aired} aired episode(s) missing`);
+    }
+    if (targets.held?.length) {
+      lines.push('', '**On cooldown:**');
+      for (const s of targets.held) lines.push(`• S${pad(s.season)} — ${s.missing}/${s.aired} missing, next eligible ${new Date(s.nextEligible).toISOString().slice(0, 16).replace('T', ' ')} UTC (\`/season search force:true\` skips this)`);
+    }
+    if (!targets.seasons.length && !targets.held?.length) lines.push('', 'No season currently qualifies for a pack search (nothing missing enough, or everything already in queue).');
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO).setTitle(`🔍 Season-Pack Status — ${series.title}`.slice(0, 256)).setDescription(lines.join('\n').slice(0, 4000))] });
+  }
+
+  // sub === 'search'
+  const seasonNumber = interaction.options.getInteger('season');
+  const force = interaction.options.getBoolean('force') || false;
+  const episodes = await getSeriesEpisodes(series.id).catch(() => null);
+  if (!episodes) return interaction.editReply(`❌ Couldn't read episodes for **${series.title}** from Sonarr.`);
+  const missing = episodes.filter(ep => Number(ep.seasonNumber) === seasonNumber && ep.monitored && !ep.hasFile
+    && Date.parse(ep.airDateUtc || ep.airDate || '') <= Date.now());
+  if (!missing.length) return interaction.editReply(`ℹ️ **${series.title}** S${pad(seasonNumber)} has no aired missing episodes — nothing to search for.`);
+  const fallback = getSeasonEpisodeFallback(series.id, seasonNumber);
+  if (fallback) return interaction.editReply(`❌ A bounded episode fallback already owns **${series.title}** S${pad(seasonNumber)} (${fallback.state}) — let it finish first.`);
+  if (!force) {
+    const { cooling, nextEligible } = seasonSearchCooldown(getSeasonSearchTimes(series.id)[seasonNumber]);
+    if (cooling) return interaction.editReply(`⏳ **${series.title}** S${pad(seasonNumber)} is on cooldown until ${new Date(nextEligible).toISOString()}. Add \`force:true\` to search anyway.`);
+  }
+
+  if (tagged && directEnabled) {
+    const indexer = await findAvistazIndexer().catch(() => null);
+    if (!indexer) return interaction.editReply(`❌ **${series.title}** is tagged for AvistaZ, but no matching Prowlarr indexer was found — check \`AVISTAZ_INDEXER_NAME\`.`);
+    const allowance = grabDailyAllowance();
+    const result = await runSeasonDirectGrab({ series, season: { season: seasonNumber, missing: missing.length }, indexer, allowance });
+    clearSeasonAlertState(series.id, seasonNumber);
+    recordSeasonSearch({ seriesId: series.id, seasonNumber, seriesTitle: series.title, missing: missing.length });
+    audit('season_search_command', { actorDiscordId: interaction.user.id, seriesId: series.id, title: series.title, season: seasonNumber, route: 'avistaz', status: result.status, force });
+    const statusText = result.status === 'grabbed' ? result.detail
+      : result.status === 'offered' ? result.detail
+        : result.status === 'no_results' ? 'AvistaZ search completed but found no results.'
+          : result.status === 'allowance' ? 'the daily AvistaZ grab allowance is exhausted for today.'
+            : `AvistaZ search failed: ${result.error || 'unknown error'}`;
+    return interaction.editReply(`📦 **${series.title}** S${pad(seasonNumber)} — ${statusText}`);
+  }
+
+  const command = await triggerSeasonSearch(series.id, seasonNumber);
+  clearSeasonAlertState(series.id, seasonNumber);
+  const stallCount = recordSeasonSearch({ seriesId: series.id, seasonNumber, seriesTitle: series.title, missing: missing.length });
+  monitorSeasonSearch({ seriesId: series.id, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber, missingAtSearch: missing.length, commandId: command?.id, stallCount });
+  audit('season_search_command', { actorDiscordId: interaction.user.id, seriesId: series.id, title: series.title, season: seasonNumber, route: 'sonarr', commandId: command?.id || null, force });
+  return interaction.editReply(`📡 Sonarr accepted the S${pad(seasonNumber)} season search for **${series.title}**.${force ? ' (cooldown overridden)' : ''} Its own interactive-search report will follow in the downloads channel if it needs one.`);
 }
 
 // /cleanup-suggestions — read-only list of the largest disk hogs, oldest-friendly, honoring the
