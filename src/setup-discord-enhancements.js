@@ -20,6 +20,7 @@ const { db, getUserByDiscordId, audit } = require('./db');
 const { getPlexToken, fetchPlexFriends, inviteUserToPlex } = require('./plex');
 const { setupStateForUser, setupSummaryLines, setupIntro } = require('./setup');
 const { setupButtons, quickActionButtons, phPlexUrl } = require('./setup-discord-extension');
+const { deviceConfirmations, anyDeviceConfirmed, LABELS } = require('./setup-device-state');
 const { createViewerAuthKey, configured: tailscaleApiConfigured, provisionConfig } = require('./tailscale-provision');
 const { log } = require('./log');
 
@@ -30,7 +31,10 @@ function brandedEmbed(color = 0xe5a00d) {
 }
 
 function setupPayloadForUser(userRow, { dm = false } = {}) {
-  const state = setupStateForUser(userRow);
+  const connectionVerified = userRow?.home_server === 'ph' && userRow?.discord_id
+    ? anyDeviceConfirmed(userRow.discord_id)
+    : false;
+  const state = setupStateForUser(userRow, { connectionVerified });
   const title = state.homeServer === 'ph' ? '🇵🇭 Your Durant Media Server Setup' : '🎬 Your Durant Media Server Setup';
   const embed = brandedEmbed(state.plexIdentityVerified && state.plexAccessVerified ? 0x22c55e : 0xe5a00d)
     .setTitle(title)
@@ -41,6 +45,20 @@ function setupPayloadForUser(userRow, { dm = false } = {}) {
         ? 'Use `/setup` whenever you add a new phone, TV, or computer. PH Server Connection instructions only appear for Philippines users.'
         : 'Use `/setup` any time you need Plex account help or want the mobile Quick Actions again.',
     });
+
+  if (state.homeServer === 'ph' && userRow?.discord_id) {
+    const confirmations = deviceConfirmations(userRow.discord_id);
+    const lines = Object.entries(LABELS).map(([device, label]) => {
+      const ts = confirmations[device];
+      return ts ? `${label} — ✅ confirmed <t:${Math.floor(ts / 1000)}:R>` : `${label} — ⚪ not confirmed`;
+    });
+    embed.addFields({
+      name: 'PH devices',
+      value: lines.join('\n'),
+      inline: false,
+    });
+  }
+
   const components = [...setupButtons(state), ...quickActionButtons(state)].slice(0, 5);
   return { embeds: [embed], components, ...(dm ? {} : { ephemeral: true }) };
 }
