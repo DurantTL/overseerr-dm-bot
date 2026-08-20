@@ -65,8 +65,11 @@ async function runEdgeDiagnostics({ live = true } = {}) {
   checks.push(check('rclone binary', version.ok ? 'ok' : 'fail', version.ok ? (version.stdout.split('\n')[0] || 'available') : (version.error || version.stderr || 'unavailable')));
 
   if (version.ok && CONFIG.STAGE_RCLONE_REMOTE) {
-    const remoteRoot = (CONFIG.STAGE_RCLONE_REMOTE.match(/^([^:]+:)/) || [])[1] || CONFIG.STAGE_RCLONE_REMOTE;
-    const about = await run(CONFIG.STAGE_RCLONE_BINARY, ['about', remoteRoot, '--json', ...CONFIG.STAGE_RCLONE_FLAGS], 30000);
+    // Ask rclone about the configured staging path, not merely the remote root. With SFTP the
+    // cache may live on a separately mounted filesystem (for example /mnt/media), while phbox:
+    // itself reports the server's OS disk. The safety check and /doctor must measure the same disk.
+    const aboutTarget = CONFIG.STAGE_RCLONE_REMOTE;
+    const about = await run(CONFIG.STAGE_RCLONE_BINARY, ['about', aboutTarget, '--json', ...CONFIG.STAGE_RCLONE_FLAGS], 30000);
     if (about.ok) {
       try {
         const info = JSON.parse(about.stdout);
