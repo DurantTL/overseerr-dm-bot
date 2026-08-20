@@ -63,4 +63,7 @@ test('request proxy masquerades as /request while preserving the real interactio
   assert.equal(proxy.options.getString('title'), 'tv:321:Example Show');
   assert.equal(proxy.options.getBoolean('is4k'), true);
   assert.deepEqual(proxy.deferReply({ ephemeral: true }), ['defer', { ephemeral: true }]);
+
+  const hdProxy = requestInteractionProxy(original, 'movie:654:Example Movie', false);
+  assert.equal(hdProxy.options.getBoolean('is4k'), false);
 });
