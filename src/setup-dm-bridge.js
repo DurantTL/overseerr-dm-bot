@@ -1,8 +1,8 @@
 'use strict';
 
-// Add a persistent Setup / Troubleshooting entry point to the bot's existing onboarding DMs
-// without duplicating the onboarding business logic from index.js. This only touches a tightly
-// scoped set of known onboarding embed titles; request/progress/cleanup DMs are left unchanged.
+// Add a persistent setup entry point to the bot's existing onboarding DMs without duplicating the
+// onboarding business logic from index.js. This only touches a tightly scoped set of known
+// onboarding embed titles; request/progress/cleanup DMs are left unchanged.
 
 const {
   ActionRowBuilder,
@@ -24,9 +24,13 @@ function embedTitle(embed) {
   return String(embed?.data?.title || embed?.title || '');
 }
 
+function onboardingTitle(payload) {
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.embeds)) return '';
+  return payload.embeds.map(embedTitle).find(title => ONBOARDING_TITLE_PATTERNS.some(re => re.test(title))) || '';
+}
+
 function isOnboardingPayload(payload) {
-  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.embeds)) return false;
-  return payload.embeds.some(embed => ONBOARDING_TITLE_PATTERNS.some(re => re.test(embedTitle(embed))));
+  return !!onboardingTitle(payload);
 }
 
 function hasSetupButton(payload) {
@@ -39,6 +43,13 @@ function hasSetupButton(payload) {
   });
 }
 
+function setupButtonLabel(payload) {
+  const title = onboardingTitle(payload);
+  if (/Welcome to Durant Media Server/i.test(title)) return '🎬 Start Plex Setup';
+  if (/Your Setup Needs Attention/i.test(title)) return '🛠️ Fix My Setup';
+  return '🛠️ Setup / Troubleshooting';
+}
+
 function withSetupButton(payload) {
   if (!isOnboardingPayload(payload) || hasSetupButton(payload)) return payload;
   const rows = Array.isArray(payload.components) ? [...payload.components] : [];
@@ -46,7 +57,7 @@ function withSetupButton(payload) {
   rows.push(new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('setup:open')
-      .setLabel('🛠️ Setup / Troubleshooting')
+      .setLabel(setupButtonLabel(payload))
       .setStyle(ButtonStyle.Primary),
   ));
   return { ...payload, components: rows };
@@ -75,5 +86,6 @@ function installSetupDmBridge() {
 module.exports = {
   installSetupDmBridge,
   isOnboardingPayload,
+  setupButtonLabel,
   withSetupButton,
 };
