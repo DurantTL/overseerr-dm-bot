@@ -249,7 +249,12 @@ function installCommandRegistration() {
   const originalPut = REST.prototype.put;
   if (originalPut.__durantSetupEnhancementsWrapped) return;
   async function wrappedPut(route, options = {}) {
-    if (Array.isArray(options?.body) && options.body.some(c => c?.name === 'setup') && !options.body.some(c => c?.name === 'send-setup')) {
+    // This wrapper is installed outside the base setup wrapper. The original command list still
+    // contains /me but not /setup at this point; the base wrapper appends /setup after we pass
+    // through. Accept either marker so /send-setup is not silently lost because of wrapper order.
+    const isBotCommandRegistration = Array.isArray(options?.body)
+      && options.body.some(c => c?.name === 'me' || c?.name === 'setup');
+    if (isBotCommandRegistration && !options.body.some(c => c?.name === 'send-setup')) {
       const cmd = new SlashCommandBuilder()
         .setName('send-setup')
         .setDescription('Send a member their personalized Plex/PH setup guide')
