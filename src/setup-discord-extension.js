@@ -87,12 +87,22 @@ function setupButtons(state) {
     buttons.push(
       linkButton(plexSignupUrl(), 'Create Plex Account'),
       button('setup:plex_find_username', 'Find My Plex Username'),
-      button('setup:plex_enter_username', 'Enter Plex Username', ButtonStyle.Primary),
-      linkButton(plexWebUrl(), 'Open Plex Web'),
     );
-  } else if (!state.plexAccessVerified) {
+    // A Discord/access-request row has to exist before a username can be saved. New members can
+    // still create the Plex account and learn where the username is, but we do not show a button
+    // that can only end in an error until the normal Request Plex Access step created their row.
+    if (state.discordLinked) buttons.push(button('setup:plex_enter_username', 'Enter Plex Username', ButtonStyle.Primary));
+    buttons.push(linkButton(plexWebUrl(), 'Open Plex Web'));
+  } else {
+    // Keep this recovery action available even when `invited=1`. Older email-first onboarding
+    // marks that flag when Plex accepted the invite POST, not when the member actually received or
+    // accepted the email. Re-sharing to the confirmed username is the reliable recovery path.
     buttons.push(
-      button('setup:plex_invite_username', `Invite ${state.plexUsername}`.slice(0, 80), ButtonStyle.Success),
+      button(
+        'setup:plex_invite_username',
+        state.plexAccessVerified ? 'Verify / Re-send to Username' : `Invite ${state.plexUsername}`.slice(0, 80),
+        ButtonStyle.Success,
+      ),
       button('setup:plex_enter_username', 'Change Plex Username'),
     );
   }
@@ -201,7 +211,7 @@ async function sendMe(interaction) {
   const homeServer = state.homeServer === 'ph' ? 'Philippines' : 'Main';
   const checklist = [
     `1. ${state.plexIdentityVerified ? '✅' : '⚠️'} Plex username ${state.plexUsername ? `**${state.plexUsername}**` : 'not confirmed — use Setup instead of relying on the invite email'}`,
-    `2. ${row.invited ? '✅' : '⏳'} Plex server access ${row.invited ? 'sent' : 'has not been sent yet'}`,
+    `2. ${row.invited ? '✅' : '⏳'} Plex server access ${row.invited ? 'sent/recorded' : 'has not been sent yet'}`,
     `3. ${row.overseerr_created ? '✅' : '⏳'} Request access ${row.overseerr_created ? 'connected' : 'still being set up'}`,
     `4. ${accessReady ? '✅' : '⏳'} Home server: **${homeServer}**`,
   ].join('\n');
@@ -210,10 +220,10 @@ async function sendMe(interaction) {
     : !row.invited
       ? `Open **Setup / Troubleshooting** and send access directly to **${state.plexUsername}**.`
       : !row.overseerr_created
-        ? 'Your Plex access is sent; an admin still needs to finish request access.'
+        ? 'Your Plex share is recorded; an admin still needs to finish request access.'
         : state.homeServer === 'ph'
-          ? 'You are ready. Use **Setup / Troubleshooting** whenever you need to connect a new phone, TV, or computer to the PH server.'
-          : 'You are ready. Use the Quick Actions below for requests, status, downloads, and help.';
+          ? 'You are ready. Use **Setup / Troubleshooting** whenever you need to connect a new phone, TV, or computer to the PH server. If an old Plex email invite never worked, use **Verify / Re-send to Username** there.'
+          : 'You are ready. Use the Quick Actions below for requests, status, downloads, and help. If an old Plex email invite never worked, use **Verify / Re-send to Username** in Setup.';
 
   const standing = describeTrustStanding(interaction.user.id);
   const embed = brandedEmbed(accessReady ? 0x22c55e : 0xe5a00d)
@@ -250,6 +260,7 @@ function usernameModal(currentUsername = '') {
 
 async function showPlexUsernameHelp(interaction) {
   const help = plexUsernameHelp();
+  const row = getUserByDiscordId(interaction.user.id);
   const lines = [
     '**📱 iPhone / Android**',
     help.phone.map((s, i) => `${i + 1}. ${s}`).join('\n'),
@@ -261,15 +272,16 @@ async function showPlexUsernameHelp(interaction) {
     help.tv.map((s, i) => `${i + 1}. ${s}`).join('\n'),
     '',
     '**If the TV does not make the username obvious, use Plex Web on your phone or computer.**',
+    ...(!row ? ['', '**Next:** finish the server\'s **Request Plex Access** step so your Discord account gets an access record. Then return to `/setup` and enter the username you found.'] : []),
   ];
+
+  const buttons = [linkButton(plexWebUrl(), 'Open Plex Web')];
+  if (row) buttons.push(button('setup:plex_enter_username', 'Enter Plex Username', ButtonStyle.Primary));
+  buttons.push(button('setup:open', 'Back to Setup'));
 
   return interaction.reply({
     embeds: [brandedEmbed().setTitle(`🔎 ${help.title}`).setDescription(lines.join('\n'))],
-    components: rowsFromButtons([
-      linkButton(plexWebUrl(), 'Open Plex Web'),
-      button('setup:plex_enter_username', 'Enter Plex Username', ButtonStyle.Primary),
-      button('setup:open', 'Back to Setup'),
-    ]),
+    components: rowsFromButtons(buttons),
     ephemeral: true,
   });
 }
@@ -280,7 +292,7 @@ const DEVICE_COPY = {
     steps: [
       'Install **Tailscale** on the phone or tablet.',
       'Open Tailscale and allow the VPN configuration when your device asks.',
-      'Use the **one-time connection key** provided for this device when Tailscale asks you to sign in/setup.',
+      'Sign in using the PH tailnet invite/account flow provided through Discord. Phones and tablets normally use this sign-in flow rather than a pasted auth key.',
       'Make sure Tailscale says **Connected**.',
       'Return here and open PH Plex. If the Plex page opens, the connection is working.',
     ],
@@ -290,19 +302,19 @@ const DEVICE_COPY = {
     steps: [
       'On Apple TV, open the **App Store** and install **Tailscale**.',
       'Open Tailscale and allow/install the VPN configuration.',
-      'Choose Connect and follow the QR/login/setup-key instructions shown on the TV.',
+      'Choose **Use an auth key** when using the one-time key from Discord, or follow the QR/login flow shown on the TV.',
       'Leave Tailscale connected, then open Plex.',
-      'If you need a one-time connection key, use the button below and an admin will send one for this device.',
+      'If you need a one-time connection key, use the button below.',
     ],
   },
   androidtv: {
     title: '📺 Android / Google TV — PH Server Connection',
     steps: [
       'Open the **Play Store** on the TV and install **Tailscale**.',
-      'Open Tailscale and start the connection/setup flow.',
-      'Follow the code/login/setup-key instructions shown on the TV.',
+      'Open Tailscale and choose **Log in**.',
+      'Use the QR code or generated code shown by the TV app. If an admin needs to authorize the code, use the Discord help button below.',
       'Leave Tailscale connected, then open Plex.',
-      'If you need a one-time connection key, use the button below and an admin will send one for this device.',
+      'Return here to test PH Plex and save this device as connected.',
     ],
   },
   computer: {
@@ -310,7 +322,7 @@ const DEVICE_COPY = {
     steps: [
       'Install **Tailscale** for Windows, macOS, or Linux.',
       'Open Tailscale and allow the VPN connection.',
-      'Use the **one-time connection key** provided for this computer when prompted.',
+      'Use the **one-time connection key** provided for this computer when prompted, or use the normal sign-in flow.',
       'Confirm Tailscale says **Connected**.',
       'Open PH Plex using the button below.',
     ],
@@ -327,7 +339,7 @@ async function showPhDevice(interaction, device) {
   const phUrl = phPlexUrl();
   const buttons = [
     linkButton(tailscaleSetupUrl(), 'Install Tailscale'),
-    button(`setup:request_key:${device}`, '🔑 Request One-Time Key', ButtonStyle.Primary),
+    button(`setup:request_key:${device}`, 'Connection Help', ButtonStyle.Primary),
     button('setup:open', 'Back to Setup'),
   ];
   if (phUrl) buttons.splice(2, 0, linkButton(`${phUrl}/web`, '✅ Test / Open PH Plex'));
@@ -353,7 +365,7 @@ async function requestOneTimeKey(interaction, device) {
     if (channel?.isTextBased()) {
       await channel.send({ embeds: [brandedEmbed(0xf59e0b)
         .setTitle('🔑 PH Connection Key Requested')
-        .setDescription(`<@${interaction.user.id}> needs a **one-time Tailscale setup key** for **${device}**.\n\nGenerate a short-lived, one-off PH-viewer key and DM it to the member. Do not send a reusable admin key.`)
+        .setDescription(`<@${interaction.user.id}> needs **PH Server Connection help** for **${device}**.\n\nUse the platform-appropriate flow. If an auth key is appropriate, generate a short-lived, one-off PH-viewer key. Do not send a reusable admin key.`)
         .addFields({ name: 'Plex user', value: state.plexUsername || 'not confirmed', inline: true }, { name: 'Home server', value: '🇵🇭 Philippines', inline: true })] });
       notified = true;
     }
@@ -364,8 +376,8 @@ async function requestOneTimeKey(interaction, device) {
   audit('tailscale_setup_key_requested', { actorDiscordId: interaction.user.id, device, notified });
   return interaction.reply({
     content: notified
-      ? '✅ I asked an admin for a **one-time PH connection key** for this device. When you receive it, open Tailscale and use the app\'s setup-key option, then return to **Setup / Troubleshooting**.'
-      : '⚠️ I could not reach the admin channel automatically. Please ask an admin for a **one-time PH connection key** and tell them which device you are setting up.',
+      ? '✅ I asked an admin for **PH Server Connection help** for this device. Follow the device-specific instructions they send, then return to **Setup / Troubleshooting**.'
+      : '⚠️ I could not reach the admin channel automatically. Please ask an admin for **PH Server Connection help** and tell them which device you are setting up.',
     ephemeral: true,
   });
 }
@@ -373,7 +385,7 @@ async function requestOneTimeKey(interaction, device) {
 async function savePlexUsername(interaction) {
   const row = getUserByDiscordId(interaction.user.id);
   if (!row) {
-    return interaction.reply({ content: 'I cannot save a Plex username until your Discord account has an access-request record. Please use the server\'s **Request Plex Access** button first, then return to `/setup`.', ephemeral: true });
+    return interaction.reply({ content: 'I cannot save a Plex username until your Discord account has an access-request record. Please use the server\'s **Request Plex Access** flow first, then return to `/setup`.', ephemeral: true });
   }
   const username = String(interaction.fields.getTextInputValue('plex_username') || '').trim();
   if (!username || username.length > 100 || /[\r\n]/.test(username)) {
@@ -385,13 +397,15 @@ async function savePlexUsername(interaction) {
 
   const refreshed = getUserByDiscordId(interaction.user.id);
   const state = setupStateForUser(refreshed);
+  const shareLabel = state.plexAccessVerified ? 'Verify / Re-send to Username' : `Invite ${username}`.slice(0, 80);
   return interaction.reply({
     embeds: [brandedEmbed(0x22c55e)
       .setTitle('✅ Plex Username Saved')
-      .setDescription(`I saved **${username}** as your Plex username.${state.plexAccessVerified ? '\n\nYour server access is already marked as sent.' : `\n\nNext, tap **Invite ${username}** so the Plex share is sent to the username instead of depending on an invite email.`}`)],
-    components: state.plexAccessVerified
-      ? rowsFromButtons([button('setup:open', 'Back to Setup', ButtonStyle.Primary)])
-      : rowsFromButtons([button('setup:plex_invite_username', `Invite ${username}`.slice(0, 80), ButtonStyle.Success), button('setup:open', 'Back to Setup')]),
+      .setDescription(`I saved **${username}** as your Plex username.\n\nNext, tap **${shareLabel}**. This sends the Plex share directly to the username and verifies it against Plex, so a missing or broken invitation email does not block setup.`)],
+    components: rowsFromButtons([
+      button('setup:plex_invite_username', shareLabel, ButtonStyle.Success),
+      button('setup:open', 'Back to Setup'),
+    ]),
     ephemeral: true,
   });
 }
@@ -455,6 +469,12 @@ async function handleSetupInteraction(interaction) {
   if (id === 'setup:plex_find_username') return showPlexUsernameHelp(interaction);
   if (id === 'setup:plex_enter_username') {
     const row = getUserByDiscordId(interaction.user.id);
+    if (!row) {
+      return interaction.reply({
+        content: 'First finish the server\'s **Request Plex Access** step so I have an account record for you. Then return to `/setup` and enter the Plex username you found.',
+        ephemeral: true,
+      });
+    }
     return interaction.showModal(usernameModal(row?.plex_username || ''));
   }
   if (id === 'setup:plex_invite_username') return inviteSavedUsername(interaction);
