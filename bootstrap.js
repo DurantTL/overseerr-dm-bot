@@ -11,7 +11,9 @@ if (configError) {
   // Guided setup is installed before index.js so it can extend the existing Discord command
   // registration and intercept only setup-owned interactions. Layers are installed from broadest
   // to most specific; the later wrappers get first refusal and otherwise pass through to the
-  // existing index.js listener unchanged.
+  // existing index.js listener unchanged. Request Media deliberately forwards its final choice
+  // back down this chain as a synthetic /request interaction so the original request gate remains
+  // the one authoritative implementation.
   const { installSetupDiscordExtension } = require('./src/setup-discord-extension');
   installSetupDiscordExtension();
   const { installSetupDiscordEnhancements } = require('./src/setup-discord-enhancements');
