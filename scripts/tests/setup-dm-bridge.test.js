@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
 const { EmbedBuilder } = require('discord.js');
 const { isOnboardingPayload, withSetupButton } = require('../../src/setup-dm-bridge');
 
@@ -29,4 +31,13 @@ test('setup DM bridge: appends one setup button and preserves existing rows', ()
 test('setup DM bridge: leaves non-onboarding payloads untouched', () => {
   const payload = { embeds: [new EmbedBuilder().setTitle('Download Ready')], components: [] };
   assert.strictEqual(withSetupButton(payload), payload);
+});
+
+test('setup DM bridge: bootstrap installs it before the main bot starts', () => {
+  const bootstrap = fs.readFileSync(path.join(__dirname, '..', '..', 'bootstrap.js'), 'utf8');
+  const installAt = bootstrap.indexOf('installSetupDmBridge();');
+  const mainAt = bootstrap.indexOf("require('./index');");
+  assert.ok(installAt >= 0, 'bridge installer is present');
+  assert.ok(mainAt >= 0, 'main bot startup is present');
+  assert.ok(installAt < mainAt, 'bridge is installed before index.js emits onboarding DMs');
 });
