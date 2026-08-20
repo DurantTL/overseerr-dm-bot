@@ -51,6 +51,7 @@ function build({
   sonarrUntagged = true, avistazDirect = false, tagId = 7, seriesTags = {},
   indexer = { id: 9 }, directResult = { status: 'offered', detail: 'posted 1 candidate(s)' },
   activeGrabJobs = [], autoTagAfterStalls = 0, stallCounts = {}, maxBackoffSteps = 4,
+  everSweptSeriesIds = null,
 } = {}) {
   const calls = [];
   const recorded = [];
@@ -101,6 +102,10 @@ function build({
     getSeasonSearchTimes: id => searchedAt[id] || {},
     getSeasonSearchStalls: id => stallCounts[id] || {},
     listRequestedTvdbIds: () => new Set(requestedTvdbIds),
+    // Defaults to "every series has been swept before" so the never-swept-goes-first ordering is
+    // a no-op for tests that don't care about it — only tests exercising that behavior pass a
+    // narrower set.
+    listSeriesIdsWithSeasonSearches: () => everSweptSeriesIds ?? new Set(taggedSeries.map(s => s.id)),
     recordSeasonSearch: row => { recorded.push(row); return stallCounts[row.seriesId]?.[row.seasonNumber] ?? 0; },
     clearSeasonAlertState: (seriesId, seasonNumber) => rearmed.push(`${seriesId}:${seasonNumber}`),
     audit: () => {},
@@ -205,6 +210,22 @@ test('season-pack-sweep: the per-run cap bounds a first pass over a large librar
   assert.strictEqual(h.calls.length, 2, 'the per-run cap stops the sweep');
   assert.strictEqual(result.searched, 2, 'the capped run reports only what it did');
   assert.strictEqual(h.recorded.length, 2, 'nothing beyond the cap is marked as searched');
+});
+
+test('season-pack-sweep: a series never swept before jumps ahead of the stalled backlog when the cap bites', async () => {
+  // Series 1 (Winter Sonata) sorts first in the library and would normally win the per-run cap
+  // every single sweep. Once it's been swept at least once, series 2 (Dormant Drama) — which has
+  // never been searched — should get priority instead, so a large backlog can't starve a newly
+  // eligible show forever.
+  const alreadySwept = build({ maxPerRun: 1, everSweptSeriesIds: new Set([1]) });
+  await alreadySwept.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(alreadySwept.calls, ['2:1'], 'the never-swept series goes first despite sorting later in the library');
+
+  // Once neither (or both) has been swept, original library order decides — no artificial
+  // reshuffling beyond the never-swept boost.
+  const neitherSwept = build({ maxPerRun: 1, everSweptSeriesIds: new Set() });
+  await neitherSwept.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(neitherSwept.calls, ['1:1'], 'with nobody boosted, original order wins');
 });
 
 test('season-pack-sweep: off means off — no Sonarr calls at all', async () => {
