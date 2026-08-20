@@ -16,6 +16,9 @@ function setupStateForUser(user, options = {}) {
   const plexUsername = String(user?.plex_username || '').trim();
   const discordLinked = !!user?.discord_id;
   const plexIdentityVerified = !!plexUsername;
+  // The legacy `invited` column records that a share/invite was successfully sent. Older flows
+  // set it before the member accepted the share, so setup must keep a username re-share/verify
+  // action available even when this is true.
   const plexAccessVerified = !!Number(user?.invited || 0);
   const seerrLinked = !!Number(user?.overseerr_created || 0) || Number.isInteger(user?.overseerr_user_id);
   const tailscaleRequired = homeServer === 'ph';
@@ -29,8 +32,6 @@ function setupStateForUser(user, options = {}) {
     plexUsername: plexUsername || null,
     email: String(user?.email || '').trim() || null,
     tailscaleRequired,
-    // Phase 1 intentionally does not pretend we can detect a viewer's Tailscale client from
-    // Discord. A later API-backed phase can supply these booleans explicitly.
     tailscaleSetupStarted: tailscaleRequired ? !!options.tailscaleSetupStarted : false,
     connectionVerified: tailscaleRequired ? !!options.connectionVerified : true,
   };
@@ -44,13 +45,13 @@ function setupSummaryLines(state) {
   const lines = [
     `Discord account      ${statusIcon(state.discordLinked)}`,
     `Plex account         ${statusIcon(state.plexIdentityVerified)}${state.plexUsername ? ` ${state.plexUsername}` : ''}`,
-    `Server access        ${statusIcon(state.plexAccessVerified)} ${state.homeServer === 'ph' ? '🇵🇭 Philippines' : 'Main'}`,
+    `Plex share record    ${statusIcon(state.plexAccessVerified)} ${state.homeServer === 'ph' ? '🇵🇭 Philippines' : 'Main'}`,
     `Seerr account        ${statusIcon(state.seerrLinked)}`,
   ];
 
   if (state.tailscaleRequired) {
     const connectionOk = state.connectionVerified;
-    lines.push(`PH connection        ${statusIcon(connectionOk)}${connectionOk ? ' verified' : ' not verified'}`);
+    lines.push(`PH device setup      ${statusIcon(connectionOk)}${connectionOk ? ' confirmed' : ' not confirmed'}`);
   }
 
   return lines;
@@ -84,6 +85,12 @@ function plexUsernameHelp() {
 }
 
 function quickActions(state) {
+  const setupAndHelp = [
+    { id: 'setup', label: '🛠️ Setup / Troubleshooting', command: 'setup' },
+    { id: 'help', label: '❓ Help', command: 'help' },
+  ];
+  if (!state?.discordLinked) return setupAndHelp;
+
   // These IDs are intentionally UI-framework-agnostic strings. Discord handlers can map them
   // to existing slash-command service functions without duplicating request business logic.
   const actions = [
@@ -91,8 +98,7 @@ function quickActions(state) {
     { id: 'my_requests', label: '📋 My Requests', command: 'myrequests' },
     { id: 'request_status', label: '🔎 Request Status', command: 'request-status' },
     { id: 'downloads', label: '⬇️ Downloads', command: 'downloads' },
-    { id: 'setup', label: '🛠️ Setup / Troubleshooting', command: 'setup' },
-    { id: 'help', label: '❓ Help', command: 'help' },
+    ...setupAndHelp,
   ];
 
   if (state?.tailscaleRequired) {
@@ -114,12 +120,16 @@ function setupActions(state, config = {}) {
     actions.push(
       { id: 'plex_create', label: 'Create Plex Account', style: 'link', url: plexSignupUrl },
       { id: 'plex_find_username', label: 'Find My Plex Username', style: 'secondary' },
-      { id: 'plex_enter_username', label: 'Enter Plex Username', style: 'primary' },
-      { id: 'plex_profile_web', label: 'Open Plex on Web', style: 'link', url: plexWebUrl },
     );
-  } else if (!state.plexAccessVerified) {
+    if (state.discordLinked) actions.push({ id: 'plex_enter_username', label: 'Enter Plex Username', style: 'primary' });
+    actions.push({ id: 'plex_profile_web', label: 'Open Plex on Web', style: 'link', url: plexWebUrl });
+  } else {
     actions.push(
-      { id: 'plex_reinvite_username', label: `Invite ${state.plexUsername}`, style: 'primary' },
+      {
+        id: 'plex_reinvite_username',
+        label: state.plexAccessVerified ? 'Verify / Re-send to Username' : `Invite ${state.plexUsername}`,
+        style: 'primary',
+      },
       { id: 'plex_change_username', label: 'Change Plex Username', style: 'secondary' },
     );
   }
@@ -145,22 +155,22 @@ function setupActions(state, config = {}) {
 
 function setupIntro(state) {
   if (!state.discordLinked) {
-    return 'I found no linked Discord profile yet. We can still guide you through Plex setup and then link the account.';
+    return 'Start by creating/signing in to Plex and finding your Plex username. Then finish the server\'s Request Plex Access step so I can create your Discord access record; return here afterward to save the username and verify the Plex share.';
   }
 
   if (!state.plexIdentityVerified) {
-    return 'I found part of your existing account. The next step is confirming your Plex username so you do not have to rely on a missing Plex invite email.';
+    return 'I found your existing access record. The next step is confirming your Plex username so a missing Plex invitation email cannot block you.';
   }
 
   if (!state.plexAccessVerified) {
-    return `Your Plex username is saved as **${state.plexUsername}**, but server access still needs to be verified.`;
+    return `Your Plex username is saved as **${state.plexUsername}**. Send the server share directly to that username next.`;
   }
 
   if (state.tailscaleRequired && !state.connectionVerified) {
-    return 'Your Plex access is ready. Because you use the Philippines server, finish the PH Server Connection on each device you watch from outside the PH home network.';
+    return `Plex has a share record for **${state.plexUsername}**. If an old email invite never worked, use **Verify / Re-send to Username**. Then finish PH Server Connection on each device you watch from outside the PH home network.`;
   }
 
-  return 'Your Durant Media Server setup looks ready. You can reopen this setup screen any time, especially when adding a new device.';
+  return `Your setup record looks complete. **Verify / Re-send to Username** remains available if an older Plex email invitation never actually gave you access. You can reopen this screen any time, especially when adding a new device.`;
 }
 
 module.exports = {
