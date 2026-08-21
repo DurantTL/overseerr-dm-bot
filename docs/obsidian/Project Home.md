@@ -5,15 +5,15 @@ aliases:
 tags:
   - project/overseerr-dm-bot
   - map-of-content
-reviewed: 2026-08-16
-source_commit: 1a803ac
-github_snapshot: 17 open issues
+reviewed: 2026-08-21
+source_commit: 937f379
+github_snapshot: 16 open issues
 ---
 
 # Durant Media Server Bot project home
 
-This vault maps `DurantTL/overseerr-dm-bot` at commit `1a803ac` and the 17 open GitHub issues
-reviewed on 2026-08-16. GitHub remains authoritative after that dated snapshot.
+This vault maps `DurantTL/overseerr-dm-bot` at commit `937f379` and the 16 open GitHub issues
+reviewed on 2026-08-21. GitHub remains authoritative after that dated snapshot.
 
 The product is a Discord-first concierge for private Plex communities. It links Discord members
 to Plex and Seerr, gates requests, reports request progress, and adds an operator layer for
