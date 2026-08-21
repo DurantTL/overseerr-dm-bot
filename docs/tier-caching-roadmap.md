@@ -1,6 +1,6 @@
 ---
-reviewed: 2026-08-16
-source_commit: 1a803ac
+reviewed: 2026-08-21
+source_commit: 937f379
 ---
 
 # Regional tiering / edge cache — implementation record and remaining work
