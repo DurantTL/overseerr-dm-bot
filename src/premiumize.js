@@ -71,7 +71,12 @@ function findStuckTransfers(transfers, tracker, { stuckAfterMs, now = Date.now()
 // an active status Premiumize itself is reporting as sourceless ("0 peer", "0 Bytes", not
 // cached). findStuckTransfers already proves the freeze lasted stuckAfterMs — this only tells a
 // dead torrent apart from one that's merely slow.
-const NO_SOURCE_MESSAGE = /no (seeders?|peers?|source)|not cached|unknown left|0\s*bytes\s+of\s+0\s*bytes/i;
+//
+// Premiumize's own messages phrase "no source" as a literal numeric zero ("0.00 KB/s from 0
+// peer", "0 seeds") far more often than with the words "no peers"/"no seeders" — the original
+// word-only regex missed exactly that phrasing, so a genuinely dead transfer just kept
+// re-alerting every cooldown window instead of ever being auto-retried/cleared.
+const NO_SOURCE_MESSAGE = /no (seeders?|peers?|source)|not cached|unknown left|0\s*bytes\s+of\s+0\s*bytes|\b0\s*(seeds?|seeders?|peers?)\b|\bfrom\s+0\s+peers?\b|\b(?:0|0\.\d+)\s*kb\/s\b/i;
 function isDeadTransfer(t, { maxProgress = 0.01 } = {}) {
   if (Number(t.progress || 0) > maxProgress) return false;
   if (String(t.status) === 'error') return true;

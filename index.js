@@ -1725,6 +1725,12 @@ async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
   }
   const directEnabled = tunable('SEASON_PACK_AVISTAZ_DIRECT') && grabConfigured();
   const indexer = directEnabled ? await findAvistazIndexer().catch(() => null) : null;
+  // One rTorrent listing for the whole sweep (not per series) so a season already sitting there
+  // — downloading or fully transferred, added manually or still waiting on the independent
+  // adoption sweep to notice it — isn't invisible to activeGrabSeasonsFor/GRAB_CONTENT_DEDUPE
+  // (both grab_jobs-only) and re-searched/re-grabbed. Best-effort: an unreachable seedbox must
+  // not block the whole sweep, it just loses this one extra check for this run.
+  const rtorrentTorrents = directEnabled && rtorrentConfigured() ? await listRtorrentTorrents().catch(() => []) : [];
   // Shows somebody actually asked for get the pack treatment whatever their age — most releases
   // are "S01" packs regardless of how old the show is, and a requester is waiting on this one.
   const requestedTvdbIds = tunable('SEASON_PACK_REQUESTED') ? listRequestedTvdbIds() : new Set();
@@ -1768,9 +1774,10 @@ async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
       continue;
     }
     const activeGrabSeasons = route === 'avistaz' ? activeGrabSeasonsFor(series, episodes) : [];
+    const rtorrentSeasons = route === 'avistaz' ? rtorrentSeasonsFor(series, episodes, rtorrentTorrents) : [];
     const { eligible, reason, seasons } = seasonSearchTargets({
       series, episodes, requested,
-      inQueue: [...queuedSeasons(queue, series.id), ...(fallbackSeasons.get(Number(series.id)) || []), ...activeGrabSeasons],
+      inQueue: [...queuedSeasons(queue, series.id), ...(fallbackSeasons.get(Number(series.id)) || []), ...activeGrabSeasons, ...rtorrentSeasons],
       searchedAt: getSeasonSearchTimes(series.id),
       stallCounts: getSeasonSearchStalls(series.id),
     }, now, cfg);
@@ -1882,6 +1889,7 @@ async function previewSeasonPacks(values = {}) {
   const tagId = await getArrTagId(source, CONFIG.AVISTAZ_TAG).catch(() => null);
   const allowUntagged = previewRuntimeValue(values, 'SEASON_PACK_SONARR_UNTAGGED');
   const directEnabled = previewRuntimeValue(values, 'SEASON_PACK_AVISTAZ_DIRECT') && grabConfigured();
+  const rtorrentTorrents = directEnabled && rtorrentConfigured() ? await listRtorrentTorrents().catch(() => []) : [];
   if (tagId == null && !allowUntagged) {
     return [...items, { title: '(all)', reason: `the \`${CONFIG.AVISTAZ_TAG}\` tag does not exist in Sonarr — nothing is eligible until it does, or SEASON_PACK_SONARR_UNTAGGED is enabled`, stage: 'unknown' }];
   }
@@ -1905,9 +1913,10 @@ async function previewSeasonPacks(values = {}) {
       continue;
     }
     const activeGrabSeasons = route === 'avistaz season grab' ? activeGrabSeasonsFor(series, episodes) : [];
+    const rtorrentSeasons = route === 'avistaz season grab' ? rtorrentSeasonsFor(series, episodes, rtorrentTorrents) : [];
     const { eligible, reason, seasons, held } = seasonSearchTargets({
       series, episodes, requested,
-      inQueue: [...queuedSeasons(queue, series.id), ...(fallbackSeasons.get(Number(series.id)) || []), ...activeGrabSeasons],
+      inQueue: [...queuedSeasons(queue, series.id), ...(fallbackSeasons.get(Number(series.id)) || []), ...activeGrabSeasons, ...rtorrentSeasons],
       searchedAt: getSeasonSearchTimes(series.id),
       stallCounts: getSeasonSearchStalls(series.id),
     }, now, cfg);
@@ -2347,6 +2356,29 @@ function activeGrabSeasonsFor(series, episodes) {
   const seasons = new Set();
   for (const job of listActiveGrabJobs().filter(j => j.media_type === 'tv')) {
     const claim = releaseContentClaim(job.release_title);
+    if (!claim || !seriesAliasMatch(claim.series, aliases).ok) continue;
+    if (claim.whole) { for (const ep of episodes || []) seasons.add(Number(ep.seasonNumber)); continue; }
+    for (const s of claim.seasons) seasons.add(s);
+  }
+  return [...seasons];
+}
+
+// Seasons a torrent ALREADY sitting in rTorrent already covers for this series — the direct-grab
+// pipeline only tracks torrents it submitted itself (grab_jobs, keyed by an info-hash it
+// computed), so a torrent added manually, added before the bot existed, or still waiting on the
+// independent adoption sweep (RTORRENT_ADOPT_CHECK_MINUTES, default every 5 min, vs. the season-
+// pack sweep's own much longer interval) is otherwise invisible to activeGrabSeasonsFor and to
+// GRAB_CONTENT_DEDUPE (both grab_jobs-only) — so the season-pack sweep would search AvistaZ and
+// spend a metered allowance slot re-grabbing a season that's already downloading or already sat
+// there fully transferred. Matches by content claim (same machinery as activeGrabSeasonsFor),
+// not by exact filename, so renamed/differently-cased releases are still recognized. `torrents`
+// is a `listRtorrentTorrents()` snapshot passed in by the caller so one sweep only lists rTorrent
+// once, not once per series.
+function rtorrentSeasonsFor(series, episodes, torrents) {
+  const aliases = sonarrSeriesAliases(series);
+  const seasons = new Set();
+  for (const t of torrents || []) {
+    const claim = releaseContentClaim(t.name);
     if (!claim || !seriesAliasMatch(claim.series, aliases).ok) continue;
     if (claim.whole) { for (const ep of episodes || []) seasons.add(Number(ep.seasonNumber)); continue; }
     for (const s of claim.seasons) seasons.add(s);

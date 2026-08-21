@@ -51,7 +51,7 @@ function build({
   sonarrUntagged = true, avistazDirect = false, tagId = 7, seriesTags = {},
   indexer = { id: 9 }, directResult = { status: 'offered', detail: 'posted 1 candidate(s)' },
   activeGrabJobs = [], autoTagAfterStalls = 0, stallCounts = {}, maxBackoffSteps = 4,
-  everSweptSeriesIds = null,
+  everSweptSeriesIds = null, rtorrentTorrents = [],
 } = {}) {
   const calls = [];
   const recorded = [];
@@ -81,7 +81,7 @@ function build({
   // is exactly the behavior when nothing has been overridden.
   const store = { get: key => overrides[key.replace(runtimeSettings.OVERRIDE_PREFIX, '')] ?? null };
   const taggedSeries = SERIES.map(s => ({ ...s, tags: seriesTags[s.id] || [] }));
-  const sandbox = loadSandbox(['sweepSeasonPacks', 'seasonPackConfig', 'queuedSeasons', 'activeGrabSeasonsFor'], {
+  const sandbox = loadSandbox(['sweepSeasonPacks', 'seasonPackConfig', 'queuedSeasons', 'activeGrabSeasonsFor', 'rtorrentSeasonsFor'], {
     CONFIG,
     tunable: key => runtimeSettings.resolveRuntime(key, { config: CONFIG, store }),
     // Pinning reorders the candidate list; `pinned` maps tvdbId → rank.
@@ -125,6 +125,8 @@ function build({
     sonarrSeriesAliases,
     listActiveGrabJobs: () => activeGrabJobs,
     isAsianLanguageName,
+    rtorrentConfigured: () => true,
+    listRtorrentTorrents: async () => rtorrentTorrents,
   });
   return { sandbox, calls, recorded, notices, episodeFetches, monitored, rearmed, directCalls, tagCalls };
 }
@@ -340,6 +342,19 @@ test('season-pack-sweep: a season an active AvistaZ grab job already covers is n
   });
   await h.sandbox.sweepSeasonPacks();
   assert.deepStrictEqual(h.directCalls, ['1:2'], 'S01 is already covered by an in-flight grab job; only S02 is searched');
+});
+
+test('season-pack-sweep: a season already sitting in rTorrent (no grab_jobs row) is not re-searched', async () => {
+  // The exact gap that let a season already downloading/transferred outside the bot's own
+  // grab_jobs table (added manually, or still waiting on the independent adoption sweep) get
+  // re-searched and re-grabbed: activeGrabSeasonsFor alone can't see it, only a live rTorrent
+  // listing can.
+  const h = build({
+    sonarrUntagged: false, avistazDirect: true, tagId: 7, seriesTags: { 1: [7] },
+    rtorrentTorrents: [{ name: 'Winter.Sonata.S01.1080p.WEB-DL', hash: 'ABC', complete: false, label: 'sonarr' }],
+  });
+  await h.sandbox.sweepSeasonPacks();
+  assert.deepStrictEqual(h.directCalls, ['1:2'], 'S01 already sits in rTorrent; only S02 is searched');
 });
 
 test('season-pack-sweep: an exhausted AvistaZ allowance does not start the cooldown', async () => {

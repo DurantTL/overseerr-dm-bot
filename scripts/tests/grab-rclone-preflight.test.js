@@ -36,6 +36,15 @@ test('grab preflight passes when the configured remote exists', () => {
   assert.equal(result.checked, true);
 });
 
+test('grab preflight is case-sensitive, matching rclone\'s own section lookup', () => {
+  // rclone treats [RapidSeedbox] and [rapidseedbox] as different sections — a case-insensitive
+  // preflight would report the pipeline healthy while every real transfer still fails at runtime
+  // with "didn't find section in config file".
+  const result = grabTransferPreflight(baseCfg, () => '[RapidSeedbox]\ntype = sftp\nhost = example\n');
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'rclone_remote_missing');
+});
+
 test('episode-only whole-series results are not truncated by the pack/release cap', () => {
   const candidates = Array.from({ length: 12 }, (_, i) => ({
     releaseTitle: `The Road to Splendor S01E${String(i + 1).padStart(2, '0')} 1080p WEB-DL-GRP`,
