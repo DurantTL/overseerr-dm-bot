@@ -8,11 +8,65 @@
 // and only sends a chosen torrent to the seedbox — with an allowance counter so a limited
 // AvistaZ account can't be drained by automation.
 const axios = require('axios');
+const fs = require('fs');
 const { CONFIG } = require('./config');
 
+function rcloneConfigPath(flags = []) {
+  const list = Array.isArray(flags) ? flags : [];
+  for (let i = 0; i < list.length; i++) {
+    const value = String(list[i]);
+    if (value === '--config' && list[i + 1]) return String(list[i + 1]);
+    if (value.startsWith('--config=')) return value.slice('--config='.length);
+  }
+  return null;
+}
+
+// Cheap fail-fast validation for the exact class of failure that otherwise appears only after
+// AvistaZ has already spent a tracker download and rTorrent has finished: rclone is pointed at
+// a named remote whose section is missing (or whose explicitly configured file is not mounted).
+// If no --config flag is supplied, rclone may be using its platform default config location; in
+// that case we cannot validate synchronously here and leave the runtime probe to rclone itself.
+function grabTransferPreflight(cfg = CONFIG, readFileSync = fs.readFileSync) {
+  if (!(cfg.PROWLARR_URL && cfg.RTORRENT_URL && cfg.GRAB_RCLONE_REMOTE && cfg.GRAB_STAGING_PATH)) {
+    return { ok: false, checked: false, reason: 'pipeline_not_configured', message: 'direct-grab pipeline is not fully configured' };
+  }
+  const remote = String(cfg.GRAB_RCLONE_REMOTE || '');
+  const colon = remote.indexOf(':');
+  if (colon <= 0) return { ok: true, checked: false };
+  const remoteName = remote.slice(0, colon);
+  const configPath = rcloneConfigPath(cfg.GRAB_RCLONE_FLAGS);
+  if (!configPath) return { ok: true, checked: false, remoteName };
+  let text;
+  try {
+    text = readFileSync(configPath, 'utf8');
+  } catch (err) {
+    return {
+      ok: false,
+      checked: true,
+      reason: 'rclone_config_unreadable',
+      remoteName,
+      configPath,
+      message: `rclone config ${configPath} cannot be read: ${err.message}`,
+    };
+  }
+  const escaped = remoteName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!new RegExp(`^\\s*\\[${escaped}\\]\\s*$`, 'mi').test(text)) {
+    return {
+      ok: false,
+      checked: true,
+      reason: 'rclone_remote_missing',
+      remoteName,
+      configPath,
+      message: `rclone remote [${remoteName}] is missing from ${configPath}`,
+    };
+  }
+  return { ok: true, checked: true, remoteName, configPath };
+}
+
 // The full pipeline needs Prowlarr (search), rTorrent (download), and an rclone remote +
-// local staging folder (transfer & import).
-const grabConfigured = () => !!(CONFIG.PROWLARR_URL && CONFIG.RTORRENT_URL && CONFIG.GRAB_RCLONE_REMOTE && CONFIG.GRAB_STAGING_PATH);
+// local staging folder (transfer & import). If an explicit rclone config is supplied, also
+// require that its configured remote exists before advertising the pipeline as ready.
+const grabConfigured = () => grabTransferPreflight().ok;
 
 // The arr that will import a grab of this media type — a movie grab is useless without
 // Radarr, a TV grab without Sonarr. Null means "don't even start the download".
@@ -42,7 +96,11 @@ async function searchAvistaz({ query, mediaType, indexerId }, cfg = CONFIG) {
 
 // Fetch the .torrent file behind a Prowlarr result (the downloadUrl already carries the
 // apikey). The bytes go straight to rTorrent — the seedbox can't reach Prowlarr itself.
+// This is the last point before a tracker download can be counted, so fail here if the local
+// transfer backend is known-broken instead of burning AvistaZ allowance on an undeliverable job.
 async function fetchTorrentFile(downloadUrl) {
+  const preflight = grabTransferPreflight();
+  if (!preflight.ok) throw new Error(`AvistaZ grab blocked before tracker download: ${preflight.message}`);
   const res = await axios.get(downloadUrl, { responseType: 'arraybuffer', timeout: 60000, maxRedirects: 5 });
   return Buffer.from(res.data);
 }
@@ -267,6 +325,9 @@ function claimCoversSeason(claim, season) {
 // already covers those episodes. trimmed = dropped by the `max` cap (allowance/config), i.e.
 // real episodes left on the table — callers surface that so nobody thinks it grabbed everything.
 // `exclude` takes release titles already in flight (active grab jobs) so a re-run adds only gaps.
+// If the tracker has no pack at all and the only usable results are individual episodes, the
+// whole-series action is the fallback: finish the episode set instead of arbitrarily stopping at
+// GRAB_TV_MAX_RELEASES. The daily allowance and content dedupe still apply in the execution layer.
 function planSeriesGrab(candidates, { season = null, minConfidence = 0, max = 8, exclude = [], aliases = null } = {}) {
   const taken = (exclude || []).map(releaseContentClaim).filter(Boolean);
   const eligible = (candidates || [])
@@ -285,13 +346,17 @@ function planSeriesGrab(candidates, { season = null, minConfidence = 0, max = 8,
     ? eligible.find(x => seriesAliasMatch(x.claim.series, aliases).exact) || byConfidence
     : byConfidence;
   const series = anchor?.claim.series || null;
+  const seriesEligible = eligible.filter(x => x.claim.series === series);
+  const hasPackCandidate = seriesEligible.some(x => x.claim.whole || x.claim.seasons.size > 0);
+  const numericMax = Number(max);
+  const effectiveMax = !hasPackCandidate || !Number.isFinite(numericMax) || numericMax <= 0 ? Infinity : numericMax;
   const picks = [];
   let covered = 0;
   let trimmed = 0;
   for (const { c, claim } of eligible) {
     if (claim.series !== series) continue;
     if (taken.some(t => contentClaimsOverlap(claim, t))) { covered++; continue; }
-    if (picks.length >= max) { trimmed++; continue; }
+    if (picks.length >= effectiveMax) { trimmed++; continue; }
     taken.push(claim);
     picks.push(c);
   }
@@ -499,4 +564,4 @@ function decideGrabJobAction(row, facts, now, cfg) {
   return row.state === 'sent' ? 'mark_downloading' : 'wait';
 }
 
-module.exports = { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, claimCoversSeason, planSeriesGrab, describeGrabPlan, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction, buildSeriesAliases, seriesAliasMatch, ALIAS_NOISE_TOKENS };
+module.exports = { grabConfigured, grabTransferPreflight, rcloneConfigPath, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, claimCoversSeason, planSeriesGrab, describeGrabPlan, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction, buildSeriesAliases, seriesAliasMatch, ALIAS_NOISE_TOKENS };
