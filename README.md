@@ -22,6 +22,9 @@ This README covers what the bot does and how to set it up. Deep implementation d
 advanced-infrastructure layer lives in `docs/`:
 - [AvistaZ pipeline](docs/avistaz-pipeline.md) — private-tracker fallback, season-pack-first search, direct grab
 - [Plex Home staging](docs/plex-home-staging.md) — remote cache box, server-aware webhook routing
+- [PH viewer Tailscale setup](docs/ph-tailscale-viewer-setup.md) — the recommended machine-share
+  flow for reaching the PH box remotely (supersedes the auth-key model described in the Plex Home
+  staging doc's Tailscale section)
 - [Regional tiering](docs/regional-tiering.md) — multi-node edge cache, the sync agent's safety model
 - [Edge playback architecture](docs/edge-playback-architecture.md) — mergerfs remote-fallback design
 - [mergerfs + Plex operational notes](docs/mergerfs-plex-operational.md)
@@ -148,9 +151,14 @@ See `.env.example` for full values.
 - `TAILSCALE_ENABLED` (default `false`) — adds an **Approve + Tailscale (PH)** button next to
   Approve/Deny on new access requests, for viewers who need to reach the PH box (CGNAT + no
   IPv6, and the Cloudflare tunnel is HTTP-only — never media). Opt-in per person; the admin still
-  clicks it deliberately and still invites that person to the tailnet manually. `TAILSCALE_SETUP_URL`
-  (default the Tailscale download page) and `TAILSCALE_SERVER_ADDRESS` (blank by default) are
-  included in the DM. See [Plex Home staging](docs/plex-home-staging.md#reaching-the-ph-box-tailscale-optional-per-person).
+  clicks it deliberately. `TAILSCALE_SETUP_URL` (default the Tailscale download page) and
+  `TAILSCALE_SERVER_ADDRESS` (blank by default) are included in the DM. `TAILSCALE_PH_SHARE_URL`
+  is the recommended way to actually get that person onto the PH box: a Tailscale **Share**
+  (machine-sharing) link for the tagged PH host, so the viewer joins their own tailnet rather than
+  becoming a paid seat on yours — set it and PH users get a **Join PH Server** button in `/setup`.
+  See [PH viewer Tailscale setup](docs/ph-tailscale-viewer-setup.md) (the recommended flow) and
+  [Plex Home staging](docs/plex-home-staging.md#reaching-the-ph-box-tailscale-optional-per-person)
+  (the older per-viewer auth-key model, still supported but not preferred).
 - `PATH_REMAP_FROM`, `PATH_REMAP_TO`
 - `DOWNLOAD_*`, `ENABLE_DELETION`, `KEEP_LIST_DEFAULT_DAYS`, `NEVER_DELETE_MEDIA_IDS`
 - `DELETION_DRY_RUN` (default `true`) — when deletion is confirmed, logs the exact file paths and API call that would fire and skips the real delete API. Flip to `false` only after reviewing real prompts.
@@ -511,25 +519,38 @@ command set.
 
 ## Slash Command List
 Admin (hidden from non-admin roles by default; grant per-role via Server Settings → Integrations if e.g. PH users should `/pin`):
-- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/backup-rehearse`, `/doctor`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`, `/avistaz`, `/rtorrent`, `/staged`, `/pin`, `/unpin`, `/stage-bulk`, `/assign-server`, `/tier`, `/tier-node`, `/tier-member`
+- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/automation`, `/backup-rehearse`, `/doctor`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/pending`, `/whorequested`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`, `/avistaz`, `/rtorrent`, `/season`, `/staged`, `/pin`, `/unpin`, `/stage-bulk`, `/assign-server`, `/tier`, `/tier-node`, `/tier-member`
 
 User:
-- `/request`, `/request-status`, `/download`, `/queue`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`, `/stage`
+- `/request`, `/request-status`, `/request-cancel`, `/download`, `/queue`, `/report`, `/notifications`, `/me`, `/stats`, `/myrequests`, `/downloads`, `/keep`, `/help`, `/stage`
 
 ## Database Tables
 - `users`
 - `requests`
+- `request_subscribers` (who to DM on progress for a request beyond its original requester)
 - `keep_list`
+- `media_priority` (admin `/pin` ordering for staging/season-pack sweeps)
+- `pending_deletions` (in-flight "Finished Watching" grace-delete prompts)
 - `download_tokens`
 - `download_access_log`
+- `rate_limit_hits` (the download route's durable SQLite rolling-window limiter)
 - `audit_log`
+- `webhook_events` (dedupe key for already-processed inbound webhooks)
 - `app_settings`
+- `dashboard_passkeys` (WebAuthn credentials for `/admin` login)
+- `disk_space_samples` (retained history behind the `/status`/dashboard fill-date forecast)
+- `alert_cooldowns` (shared per-scope cooldown timestamps for the various watchdog alerts)
 - `media_retention_rules`
 - `escalations` (AvistaZ fallback watch list)
 - `grab_jobs` (AvistaZ direct-grab pipeline: sent → downloading → complete → transferring → scanning → (importing) → verified, or needs_mapping/import_rejected/failed; adopted torrents enter at downloading/complete with origin `adopt`/`adopt-auto`; `target_arr_id`/`tvdb_id`/`match_type` pin the resolved Sonarr/Radarr identity)
+- `release_group_sightings` (tracks release groups whose grabs keep dying, for auto-blocklist suggestions)
+- `season_searches` (season-pack sweep cooldown/stall history per series+season)
+- `season_episode_fallbacks` (per-episode fallback queue when a season pack search comes up empty)
+- `edge_promote_log` (durable daily cap on play-triggered edge/PH promotions)
 - `stage_jobs` (durable Plex Home staging queue)
 - `staged_items` (PH cache inventory + LRU/pin state)
 - `tier_nodes` (regional tiering node registry)
+- `tier_node_folders` (per-node Syncthing folder ID ↔ local path mapping)
 - `tier_node_members` (restricted nodes' closed access sets)
 - `tier_agent_tokens` (per-node sync-agent bearer token hashes)
 - `tier_node_files` (agent-reported local inventory — the atime demand signal)
