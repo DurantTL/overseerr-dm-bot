@@ -49,8 +49,11 @@ function grabTransferPreflight(cfg = CONFIG, readFileSync = fs.readFileSync) {
       message: `rclone config ${configPath} cannot be read: ${err.message}`,
     };
   }
+  // rclone's own section lookup is case-sensitive ([RapidSeedbox] != [rapidseedbox]) — matching
+  // case-insensitively here would report the pipeline healthy while every real transfer still
+  // fails at runtime with "didn't find section in config file".
   const escaped = remoteName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  if (!new RegExp(`^\\s*\\[${escaped}\\]\\s*$`, 'mi').test(text)) {
+  if (!new RegExp(`^\\s*\\[${escaped}\\]\\s*$`, 'm').test(text)) {
     return {
       ok: false,
       checked: true,

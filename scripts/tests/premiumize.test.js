@@ -88,6 +88,12 @@ test('premiumize: isDeadTransfer / planStuckTransferActions', () => {
   assert.strictEqual(isDeadTransfer({ id: '3', status: 'running', progress: 0, message: 'downloading from 3 peers' }), false, 'a message with no dead-source language is not assumed dead');
   assert.strictEqual(isDeadTransfer({ ...dead, progress: 0.02 }, { maxProgress: 0.01 }), false, 'maxProgress is honored — a transfer past the ceiling is not dead even with a no-source message');
 
+  // Premiumize phrases "no source" as a literal numeric zero far more often than the words "no
+  // peers"/"no seeders" — a word-only regex missed exactly this phrasing, so a genuinely dead
+  // transfer just kept re-alerting every cooldown window instead of ever being auto-cleared.
+  assert.strictEqual(isDeadTransfer({ id: '4', status: 'running', progress: 0, message: '0.00 KB/s from 0 peer, 0 Bytes of 500 MB' }), true, 'numeric "0 peer" phrasing is recognized as dead');
+  assert.strictEqual(isDeadTransfer({ id: '5', status: 'running', progress: 0, message: '0 seeds, 0 peers' }), true, 'numeric "0 seeds/peers" phrasing is recognized as dead');
+
   const stuck = [
     { id: '1', name: 'Dead One', status: 'running', progress: 0, message: '0.00 KB/s from 0 peer, 0 Bytes of 0 Bytes, unknown left' },
     { id: '2', name: 'Dead Two', status: 'error', progress: 0, message: 'boom' },
