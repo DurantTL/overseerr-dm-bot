@@ -1085,6 +1085,18 @@ async function seasonPackForceBlocker({ seriesId, seasonNumber, releaseTitle }) 
 }
 
 async function autoForceSeasonPack({ seriesId, seriesTitle, seasonNumber, candidate }) {
+  // Manual force-grab buttons deliberately surface a Sonarr-rejected pack — an admin reviewing
+  // it can judge whether the rejection reason (undersized for its claimed resolution, wrong
+  // language, cutoff not met, ...) still makes sense to override. Automatic force-grab has no
+  // human in that loop, so it must never silently push through a release Sonarr already turned
+  // down; that's exactly how an undersized 2160p pack it flagged as too small could otherwise
+  // get grabbed anyway.
+  if (candidate.sonarrApproved === false) {
+    audit('season_pack_auto_force_refused', {
+      seriesId, title: seriesTitle, season: seasonNumber, releaseTitle: candidate.title, reason: 'sonarr_rejected',
+    });
+    return { status: 'covered', reason: 'sonarr_rejected' };
+  }
   let blocked;
   try {
     blocked = await seasonPackForceBlocker({ seriesId, seasonNumber, releaseTitle: candidate.title });
@@ -1259,6 +1271,7 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
           indexer: release.indexer,
           confidence: release.confidence,
           displayedRank: ranked.indexOf(release) + 1,
+          sonarrApproved: !(release.rejections || []).length,
         }));
       }
       if (seasonGrabCandidates?.length && tunable('SEASON_PACK_FORCE_GRAB')) {
@@ -1271,6 +1284,10 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
           color = COLORS.SUCCESS;
           nextStep = 'Import verification remains with Sonarr; the stuck-download watchdog reports a stalled queue item.';
           seasonGrabCandidates = null;
+        } else if (autoForceResult.status === 'covered' && autoForceResult.reason === 'sonarr_rejected') {
+          // Not actually resolved — leave the manual buttons in place so an admin can still
+          // choose to override Sonarr's rejection with full visibility into why it happened.
+          nextStep = 'Automatic force-grab declined to override Sonarr\'s rejection of the top candidate. An admin can still force one eligible pack below after reviewing the reason.';
         } else if (autoForceResult.status === 'covered') {
           outcome = 'grabbed';
           title = `ℹ️ Season Already Covered — ${label}`;

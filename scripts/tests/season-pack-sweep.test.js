@@ -610,6 +610,24 @@ test('season search verification: default-off auto-force grabs only the best eli
   assert.match(h.notices[0].msg.embeds[0].title, /Auto-Forced/);
 });
 
+test('season search verification: auto-force never overrides a release Sonarr already rejected', async () => {
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 0 reports downloaded.' },
+    autoForce: true,
+    interactive: [
+      // Passes our own size/seeder/confidence checks but Sonarr rejected it against the show's
+      // quality profile (undersized for its claimed 2160p resolution) — auto-force must not
+      // silently grab it just because it clears the generic heuristics.
+      { title: 'Drama.S01.2160p.WEB-DL', guid: 'rejected-guid', indexerId: 7, size: 3 * 1024 ** 3, seeders: 12, indexer: 'AvistaZ', fullSeason: true, seasonNumber: 1, approved: false, rejections: [{ reason: '769.8 MB is smaller than minimum allowed 1.5 GB' }] },
+    ],
+  });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Drama', seasonNumber: 1, missingAtSearch: 3, commandId: 101 });
+  assert.notStrictEqual(result.outcome, 'auto_forced');
+  assert.strictEqual(h.forced.length, 0, 'a Sonarr-rejected release is never auto-force-grabbed');
+  assert.ok(h.audits.some(row => row.action === 'season_pack_auto_force_refused' && row.detail.reason === 'sonarr_rejected'));
+  assert.strictEqual(h.offers.length, 1, 'manual override buttons remain available for an admin to review');
+});
+
 test('season search verification: auto-force rechecks live coverage and falls back to buttons on failure', async () => {
   const candidate = [{ title: 'Winter.Sonata.S01.1080p', guid: 'pack-guid', indexerId: 7, size: 20 * 1024 ** 3, seeders: 12, indexer: 'Public', fullSeason: true, seasonNumber: 1 }];
   let h = seasonVerifier({
