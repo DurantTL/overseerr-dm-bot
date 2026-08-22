@@ -214,13 +214,19 @@ const CONFIG = (() => {
   SEASON_PACK_EPISODE_FALLBACK: parseBool(process.env.SEASON_PACK_EPISODE_FALLBACK, true),
   SEASON_PACK_EPISODE_BATCH_SIZE: Number.parseInt(process.env.SEASON_PACK_EPISODE_BATCH_SIZE || '25', 10),
   SEASON_PACK_EPISODE_MAX_PER_RUN: Number.parseInt(process.env.SEASON_PACK_EPISODE_MAX_PER_RUN || '50', 10),
-  SEASON_PACK_EPISODE_RETRY_MINUTES: Number.parseInt(process.env.SEASON_PACK_EPISODE_RETRY_MINUTES || '180', 10),
+  // How long a submitted (or just-finished) batch sits before the next one is eligible. Matched
+  // to a fraction of the season-pack sweep interval rather than to it 1:1 — at 180 min this was
+  // exactly SEASON_PACK_CHECK_MINUTES, so a season stuck waiting on its cursor to advance got only
+  // one bounded batch per sweep instead of one per eligible sweep tick.
+  SEASON_PACK_EPISODE_RETRY_MINUTES: Number.parseInt(process.env.SEASON_PACK_EPISODE_RETRY_MINUTES || '60', 10),
   // An untagged season searched through Sonarr's own indexers whose missing-episode count never
   // shrinks across repeated sweeps is stuck on dead public releases (defunct trackers, no
   // seeders) — this is exactly what AVISTAZ_TAG + SEASON_PACK_AVISTAZ_DIRECT exists to fix, but
   // only for series someone remembered to tag. After this many consecutive stalled sweeps the
   // series is tagged automatically so the next sweep routes it to AvistaZ instead. 0 disables it.
-  SEASON_PACK_AUTO_TAG_AFTER_STALLS: Number.parseInt(process.env.SEASON_PACK_AUTO_TAG_AFTER_STALLS || '3', 10),
+  // Kept low (not e.g. 5+): every stalled sweep in between spends a search/download-client slot
+  // re-grabbing the same dead public releases, so there's no benefit to waiting longer to reroute.
+  SEASON_PACK_AUTO_TAG_AFTER_STALLS: Number.parseInt(process.env.SEASON_PACK_AUTO_TAG_AFTER_STALLS || '2', 10),
   // A season whose missing count hasn't shrunk in N stalled sweeps doubles its cooldown per
   // stall (24h → 48h → 96h → ...) instead of retrying at the same fixed cadence forever — this
   // applies whichever route searched it (Sonarr's own indexers or AvistaZ direct grab), so a

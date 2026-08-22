@@ -179,7 +179,7 @@ The implementation exposes these runtime-visible settings in the existing `seaso
 | `SEASON_PACK_EPISODE_FALLBACK` | `true` | Master switch; false submits no episode commands. |
 | `SEASON_PACK_EPISODE_BATCH_SIZE` | `25` | Maximum episode IDs in one Sonarr command for one season. |
 | `SEASON_PACK_EPISODE_MAX_PER_RUN` | `50` | Maximum total episode IDs submitted by one guarded sweep. |
-| `SEASON_PACK_EPISODE_RETRY_MINUTES` | `180` | Earliest retry after a terminal or uncertain fallback attempt. |
+| `SEASON_PACK_EPISODE_RETRY_MINUTES` | `60` | Earliest retry after a terminal or uncertain fallback attempt. |
 
 The hard invariants are `1 <= batch size <= global maximum` and total submitted IDs never exceed
 the run's remaining global budget. One season gets at most one batch per sweep. Eligible pending

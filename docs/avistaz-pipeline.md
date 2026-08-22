@@ -142,7 +142,7 @@ season searches fan out to dozens of public-tracker grabs (and, on Premiumize, d
 0%-forever transfers) for a single request.
 
 An untagged series that's still going through Sonarr's own route doesn't have to stay stuck
-there forever, though: `SEASON_PACK_AUTO_TAG_AFTER_STALLS` (default 3) watches each season's
+there forever, though: `SEASON_PACK_AUTO_TAG_AFTER_STALLS` (default 2) watches each season's
 missing-episode count across sweeps, and if it hasn't shrunk in that many consecutive sweeps —
 Sonarr keeps "grabbing" something, but it's the same dead public releases every time — the series
 is tagged with `AVISTAZ_TAG` automatically, no manual tagging required. The next sweep then routes
@@ -291,7 +291,7 @@ each episode ID. `SEASON_PACK_EPISODE_BATCH_SIZE` (default 25) caps one season's
 `SEASON_PACK_EPISODE_MAX_PER_RUN` (default 50) caps all episode IDs across one guarded run. Long
 seasons retain a durable high-water cursor, so a 72-episode gap runs as 25, 25, and 22 rather than
 one hidden 72-search burst, and unavailable early episodes cannot starve later ones. Deferred work
-uses `SEASON_PACK_EPISODE_RETRY_MINUTES` (default 180), independently of the 24-hour pack-search
+uses `SEASON_PACK_EPISODE_RETRY_MINUTES` (default 60), independently of the 24-hour pack-search
 cooldown. When a full cursor cycle still leaves gaps, that season rests for the normal pack
 cooldown before beginning another cycle.
 
