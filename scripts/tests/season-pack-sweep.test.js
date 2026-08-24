@@ -10,7 +10,7 @@ const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('..
 const { classifyEpisodeFallbackEvidence } = require('../../src/season-episode-fallback');
 const runtimeSettings = require('../../src/runtime-settings');
 const { priorityKey, orderByPriority, isPinned } = require('../../src/priority');
-const { sha256 } = require('../../src/util');
+const { sha256, queueItemLooksUnhealthy } = require('../../src/util');
 const { normalizeTitle, splitTitleYear, releaseContentClaim, seriesAliasMatch } = require('../../src/grab');
 const { isAsianLanguageName } = require('../../src/asian');
 const sonarrSeriesAliases = series => [normalizeTitle(series?.title)].filter(Boolean);
@@ -494,6 +494,7 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
   }
   const sandbox = loadSandbox(['seasonPackForceBlocker', 'autoForceSeasonPack', 'verifySeasonSearchCommand'], {
     CONFIG: { SONARR_URL: 'http://sonarr', SONARR_API_KEY: 'key', SEASON_PACK_INTERACTIVE: interactiveEnabled, SEASON_PACK_FORCE_GRAB: autoForce },
+    queueItemLooksUnhealthy,
     tunable: key => ({
       SEASON_PACK_INTERACTIVE: interactiveEnabled,
       SEASON_PACK_FORCE_GRAB: autoForce,
@@ -692,6 +693,21 @@ test('season search verification: a stalled grab (missing count never shrinking)
   assert.match(embed.description, /\*\*3\*\* consecutive sweeps/, 'stallCount + this sweep is reported plainly');
   assert.strictEqual(embed.color, 1, 'a stalled grab is a warning, not routine info (COLORS.WARN)');
   assert.ok(embed.fields.some(f => /Custom format score too low/.test(f.value)), 'Sonarr\'s own rejection reason for the better candidate is surfaced');
+});
+
+test('season search verification: a stalled grab surfaces Sonarr\'s own queue warning instead of a blank next step', async () => {
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 1 report downloaded.' },
+    queue: [{
+      source: { kind: 'tv' }, seriesId: 1, seasonNumber: 1,
+      trackedStatus: 'warning', status: 'completed',
+      messages: ['One or more episodes expected in this release were not imported'],
+    }],
+  });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101, stallCount: 2 });
+  assert.strictEqual(result.outcome, 'grabbed');
+  const embed = h.notices[0].msg.embeds[0];
+  assert.match(embed.description, /One or more episodes expected in this release were not imported/, 'Sonarr\'s own queue message is surfaced, not just "still stalled"');
 });
 
 test('season search verification: a fresh grab (no stall history) is not treated as a problem', async () => {
