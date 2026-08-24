@@ -1183,6 +1183,17 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
     title = stallCount > 0 ? `📥 Season Release Grabbed (still stalled) — ${label}` : `📥 Season Release Grabbed — ${label}`;
     description = `Sonarr accepted ${downloaded != null ? `**${downloaded}** release${downloaded === 1 ? '' : 's'}` : 'a release'}${queued ? ` and **${queued}** matching queue item${queued === 1 ? '' : 's'} ${queued === 1 ? 'is' : 'are'} active` : ''}.`
       + (stallCount > 0 ? ` This makes **${stallCount + 1}** consecutive sweeps without the missing count actually shrinking — whatever got queued before likely never resolved.` : '');
+    // On a repeat stall, Sonarr's own queue often already names the reason (import rejection,
+    // stalled transfer, upgrade blocked) via trackedDownloadStatus/statusMessages — the same
+    // fields the stuck-download watchdog reads. Surface it here so the alert is self-diagnosing
+    // instead of sending an admin to Sonarr's queue to find the same message.
+    if (stallCount > 0) {
+      const unhealthy = matchingQueue.find(item => queueItemLooksUnhealthy({ messages: [], ...item }));
+      if (unhealthy) {
+        const reason = String((unhealthy.messages || [])[0] || unhealthy.trackedStatus || unhealthy.status).slice(0, 300);
+        description += `\nSonarr's queue reports: \`${reason}\``;
+      }
+    }
     nextStep = 'Import verification comes from Sonarr; the stuck-download watchdog reports a stalled queue item.';
     color = stallCount > 0 ? COLORS.WARN : COLORS.INFO;
   } else {
