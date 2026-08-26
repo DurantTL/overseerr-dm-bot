@@ -217,7 +217,7 @@ function installSetupRequestUi() {
       return true;
     }
     if (interaction.isButton?.() && String(interaction.customId || '').startsWith('setup:request_confirm:')) {
-      const [, , , nonce, quality] = String(interaction.customId).split(':');
+      const [, , nonce, quality] = String(interaction.customId).split(':');
       const raw = takeSelection(nonce, interaction.user.id);
       if (!raw) {
         Promise.resolve(interaction.reply({ content: '⏳ That request screen expired. Tap **Request Media** and search again.', ephemeral: true })).catch(() => {});

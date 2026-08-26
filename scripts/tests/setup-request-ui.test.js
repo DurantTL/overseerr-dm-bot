@@ -48,6 +48,15 @@ test('request selection sessions are user-bound and one-time', () => {
   assert.equal(takeSelection(nonce, '123'), null);
 });
 
+test('request_confirm customId parses nonce and quality in the same order the button sets them', () => {
+  const nonce = stashSelection('123', 'movie:99:Movie');
+  const customId = `setup:request_confirm:${nonce}:4k`;
+  const [, , parsedNonce, quality] = customId.split(':');
+  assert.equal(parsedNonce, nonce);
+  assert.equal(quality, '4k');
+  assert.equal(takeSelection(parsedNonce, '123'), 'movie:99:Movie');
+});
+
 test('request proxy masquerades as /request while preserving the real interaction', () => {
   const original = {
     user: { id: '123' },
