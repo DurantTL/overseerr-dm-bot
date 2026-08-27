@@ -20,6 +20,7 @@ const express = require('express');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const bodyParser = require('body-parser');
 const multer = require('multer');
+const { createBodyConcurrencyLimiter } = require('./src/routes/body-concurrency-limit');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -8694,12 +8695,21 @@ function startExpressServer() {
   // src/app.js factory so it can be exercised with real HTTP requests on an ephemeral port
   // without booting Discord — see scripts/tests/app-factory.test.js. Route registration below is
   // unchanged; only the app's own setup moved.
-  const app = createApp({ trustProxy: !!CONFIG.TRUST_PROXY, skipJsonPaths: ['/agent/'] });
+  const app = createApp({ trustProxy: !!CONFIG.TRUST_PROXY, skipJsonPaths: ['/agent/', '/webhook/tautulli'] });
   const upload = multer({ limits: { fileSize: 5 * 1024 * 1024, files: 5 } });
   // Agent reports can carry a full atime inventory (thousands of file rows), so /agent/ gets a
   // larger JSON limit than the webhook/dashboard routes. Parsing is applied per-route (after
   // tierAgentAuth) below instead of here, so an unauthenticated caller can't force a 25 MB parse.
   const agentJsonParser = bodyParser.json({ limit: '25mb' });
+  const tautulliJsonParser = bodyParser.json({ limit: '1mb' });
+  const webhookBodyConcurrencyLimiter = createBodyConcurrencyLimiter({
+    limit: CONFIG.WEBHOOK_BODY_MAX_CONCURRENT,
+    scope: 'webhook body',
+  });
+  const agentBodyConcurrencyLimiter = createBodyConcurrencyLimiter({
+    limit: CONFIG.AGENT_REPORT_MAX_CONCURRENT,
+    scope: 'agent report body',
+  });
 
   let publicHealthCache = { at: 0, value: null, pending: null };
   app.get('/live', (_req, res) => res.json({ overall: 'ok', timestamp: new Date().toISOString() }));
@@ -8739,11 +8749,18 @@ function startExpressServer() {
     handleTautulliWebhook,
     log,
   });
-  app.post('/webhook/overseerr', requireWebhookSecret(() => CONFIG.WEBHOOK_SECRET), upload.any(), webhookHandlers.overseerr);
+  app.post('/webhook/overseerr', requireWebhookSecret(() => CONFIG.WEBHOOK_SECRET), webhookBodyConcurrencyLimiter, upload.any(), webhookHandlers.overseerr);
 
-  app.post('/webhook/plex', requireWebhookSecret(() => CONFIG.WEBHOOK_SECRET, { allowQuery: true }), upload.any(), webhookHandlers.plex);
+  app.post('/webhook/plex', requireWebhookSecret(() => CONFIG.WEBHOOK_SECRET, { allowQuery: true }), webhookBodyConcurrencyLimiter, upload.any(), webhookHandlers.plex);
 
-  app.post('/webhook/tautulli', webhookHandlers.tautulli);
+  // Tautulli sends JSON, so exclude this path from createApp's global parser and attach the parser
+  // only after its secret and concurrency admission checks. Invalid internet traffic is rejected
+  // without spending JSON parsing work or occupying an authenticated body-processing slot.
+  app.post('/webhook/tautulli',
+    requireWebhookSecret(() => CONFIG.TAUTULLI_WEBHOOK_SECRET, { header: 'x-tautulli-secret' }),
+    webhookBodyConcurrencyLimiter,
+    tautulliJsonParser,
+    webhookHandlers.tautulli);
 
   app.get('/download/:token', rateLimit({
     windowMs: 60000,
@@ -8862,7 +8879,7 @@ function startExpressServer() {
   });
 
   const tierAgentReportLimiter = createTierAgentReportLimiter({ limit: CONFIG.AGENT_REPORT_MAX_PER_MINUTE });
-  app.post('/agent/report/:node', tierAgentAuth, tierAgentReportLimiter, agentJsonParser, (req, res) => {
+  app.post('/agent/report/:node', tierAgentAuth, tierAgentReportLimiter, agentBodyConcurrencyLimiter, agentJsonParser, (req, res) => {
     const node = String(req.params.node).toLowerCase();
     const body = req.body || {};
     // Heartbeat fast-path: the agent posts { heartbeat:true } on a clean no-op run (plan + inventory
