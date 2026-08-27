@@ -268,6 +268,12 @@ function tierNodeStatus(plan, report, now = Date.now()) {
     report?.bytesFreed ? `freed ${fmtSpace(report.bytesFreed)} last run` : 'freed 0 B last run',
     publishedHash ? `published manifest ${matches ? 'matches' : 'does not match'} last confirmed plan` : null,
     errors ? `errors: ${errors}` : null,
+    plan?.lastTelemetry ? [
+      plan.lastTelemetry.temperatureC != null ? `${Number(plan.lastTelemetry.temperatureC).toFixed(1)}°C CPU` : 'temperature unavailable',
+      plan.lastTelemetry.load1 != null ? `load ${Number(plan.lastTelemetry.load1).toFixed(2)}` : null,
+      plan.lastTelemetry.memoryTotalBytes && plan.lastTelemetry.memoryFreeBytes != null
+        ? `RAM ${Math.round((plan.lastTelemetry.memoryTotalBytes - plan.lastTelemetry.memoryFreeBytes) / plan.lastTelemetry.memoryTotalBytes * 100)}% used` : null,
+    ].filter(Boolean).join(' · ') : 'hardware telemetry unavailable',
   ].filter(Boolean).join(' · ');
   if (!checkIn) return { state: 'warn', status: 'never reported', details, setup: true };
   if (matches && now - checkIn > 45 * 60 * 1000) return { state: 'down', status: 'stale', details };

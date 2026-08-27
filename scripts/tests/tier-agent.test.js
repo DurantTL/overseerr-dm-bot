@@ -36,7 +36,9 @@ test('tier-agent: a registered node waits cleanly until its first manifest is pu
   const result = await runOnce(ctx);
 
   assert.deepStrictEqual(result, { skipped: true, heartbeat: true, awaitingManifest: true });
-  assert.deepStrictEqual(report, { heartbeat: true, awaitingManifest: true });
+  assert.strictEqual(report.heartbeat, true);
+  assert.strictEqual(report.awaitingManifest, true);
+  assert.ok(report.telemetry && typeof report.telemetry === 'object');
   assert.ok(logs.some(line => line.includes('waiting for /tier apply')));
   assert.notStrictEqual(process.exitCode, 1, 'an unpublished first plan is not a systemd failure');
   await new Promise(resolve => botSrv.close(resolve));
