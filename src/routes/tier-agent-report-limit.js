@@ -16,4 +16,18 @@ function createTierAgentReportLimiter({ limit, windowMs = 60000 }) {
   });
 }
 
-module.exports = { createTierAgentReportLimiter };
+// GET endpoints are cheap compared with a full report, but install/source synchronously read files
+// and manifest reads persistent state. One authenticated node shares a read budget across all three
+// routes so a leaked node token cannot turn them into an unbounded event-loop/filesystem workload.
+function createTierAgentReadLimiter({ limit, windowMs = 60000 }) {
+  return rateLimit({
+    windowMs,
+    limit,
+    keyGenerator: req => String(req.params.node || '').toLowerCase(),
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).json({ error: 'Too many agent reads for this node' }),
+  });
+}
+
+module.exports = { createTierAgentReportLimiter, createTierAgentReadLimiter };

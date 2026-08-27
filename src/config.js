@@ -433,6 +433,7 @@ const CONFIG = (() => {
   // JSON body and up to 200k inventory rows). The systemd timer runs the agent every 15 minutes,
   // so this only needs headroom for manual re-runs/retries, not the steady-state cadence.
   AGENT_REPORT_MAX_PER_MINUTE: Number.parseInt(process.env.AGENT_REPORT_MAX_PER_MINUTE || '12', 10),
+  AGENT_READ_MAX_PER_MINUTE: Number.parseInt(process.env.AGENT_READ_MAX_PER_MINUTE || '60', 10),
   // Full reports may carry 25 MB / 200k rows. Count admission above limits frequency; this
   // separately bounds simultaneous authenticated parses and report processing.
   AGENT_REPORT_MAX_CONCURRENT: Number.parseInt(process.env.AGENT_REPORT_MAX_CONCURRENT || '2', 10),
