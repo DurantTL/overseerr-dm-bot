@@ -25,6 +25,53 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
+
+function collectSystemTelemetry(ctx, { fsImpl = fs, osImpl = os } = {}) {
+  const sensors = [];
+  const readSensors = (root, entries, prefix) => {
+    for (const entry of entries.slice(0, 64)) {
+      const dir = path.join(root, entry);
+      let files;
+      try { files = fsImpl.readdirSync(dir); } catch (_e) { continue; }
+      for (const file of files.filter(name => /^temp\d*_input$|^temp$/.test(name)).slice(0, 16)) {
+        try {
+          const raw = Number(fsImpl.readFileSync(path.join(dir, file), 'utf8').trim());
+          const temperatureC = raw > 1000 ? raw / 1000 : raw;
+          if (!Number.isFinite(temperatureC) || temperatureC < -20 || temperatureC > 150) continue;
+          const labelFile = file.replace(/_input$/, '_label');
+          let label = `${prefix}/${entry}/${file}`;
+          if (files.includes(labelFile)) label = fsImpl.readFileSync(path.join(dir, labelFile), 'utf8').trim() || label;
+          sensors.push({ temperatureC, label: String(label).slice(0, 80) });
+        } catch (_e) { /* sensor disappeared or is unreadable */ }
+      }
+    }
+  };
+  try { readSensors('/sys/class/thermal', fsImpl.readdirSync('/sys/class/thermal').filter(name => name.startsWith('thermal_zone')), 'thermal'); } catch (_e) {}
+  try { readSensors('/sys/class/hwmon', fsImpl.readdirSync('/sys/class/hwmon').filter(name => name.startsWith('hwmon')), 'hwmon'); } catch (_e) {}
+  sensors.sort((a, b) => b.temperatureC - a.temperatureC);
+
+  let filesystemTotalBytes = null;
+  let filesystemFreeBytes = null;
+  try {
+    const stat = fsImpl.statfsSync(ctx.mount?.root || ctx.folderRoot);
+    filesystemTotalBytes = Number(stat.blocks) * Number(stat.bsize);
+    filesystemFreeBytes = Number(stat.bavail) * Number(stat.bsize);
+  } catch (_e) { /* filesystem telemetry is optional */ }
+  const load = osImpl.loadavg();
+  return {
+    collectedAt: Date.now(),
+    temperatureC: sensors[0]?.temperatureC ?? null,
+    temperatureSource: sensors[0]?.label ?? null,
+    load1: load[0], load5: load[1], load15: load[2],
+    cpuCount: osImpl.cpus().length,
+    memoryTotalBytes: osImpl.totalmem(),
+    memoryFreeBytes: osImpl.freemem(),
+    uptimeSeconds: osImpl.uptime(),
+    filesystemTotalBytes,
+    filesystemFreeBytes,
+  };
+}
 
 // A node's Syncthing folders, as { id, root }. Multi-folder nodes set TIER_FOLDERS (JSON
 // '[{"id":"aaaaa-bbbbb","path":"/mnt/media/Media/Family Films"}, ...]' or the compact
@@ -411,6 +458,7 @@ function checkMountGuard(ctx) {
 
 async function runOnce(ctx) {
   const state = loadState(ctx);
+  const telemetry = collectSystemTelemetry(ctx);
   // The drive guard runs first, before any network call, .stignore write, prune, or inventory
   // walk. On failure the report carries driveMissing and NO inventory field — an absent inventory
   // preserves the bot's last-known node contents, whereas the empty inventory a blind walk of the
@@ -428,6 +476,7 @@ async function runOnce(ctx) {
         bytesFreed: 0,
         dropped: [],
         errors: guard.reasons,
+        telemetry,
       });
     } catch (err) { ctx.log(`could not report drive-missing to the bot: ${err.message}`); }
     if (!ctx.dryRun && !state.driveMissing) { state.driveMissing = true; saveState(ctx, state); }
@@ -445,7 +494,7 @@ async function runOnce(ctx) {
     if (err.status !== 404) throw err;
     ctx.log('no manifest published yet — waiting for /tier apply');
     try {
-      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, awaitingManifest: true });
+      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, awaitingManifest: true, telemetry });
       return { skipped: true, heartbeat: true, awaitingManifest: true };
     } catch (reportErr) {
       ctx.log(`waiting-for-manifest heartbeat failed: ${reportErr.message}`);
@@ -472,7 +521,7 @@ async function runOnce(ctx) {
     // timer) see a clean exit, or an unreachable bot stays masked behind a stale UI until someone
     // notices. Signal failure with a non-zero exit code, matching the failed-report path.
     try {
-      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, planHash: manifest.planHash });
+      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, planHash: manifest.planHash, telemetry });
       return { skipped: true, heartbeat: true, planHash: manifest.planHash };
     } catch (err) {
       ctx.log(`heartbeat report failed: ${err.message}`);
@@ -519,6 +568,7 @@ async function runOnce(ctx) {
     dropped: pruneResult.dropped,
     errors: pruneResult.errors,
     skipped: pruneResult.skipped,
+    telemetry,
   };
   // Reconcile the snapshot against what actually got pruned THIS run instead of reporting the
   // pre-prune walk as-is: the bot's converged report and its file inventory used to arrive out
@@ -558,4 +608,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, escapeStignore, loadState, saveState, writeStignore };
+module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, collectSystemTelemetry, escapeStignore, loadState, saveState, writeStignore };

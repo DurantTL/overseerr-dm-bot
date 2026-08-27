@@ -21,6 +21,7 @@ const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const bodyParser = require('body-parser');
 const multer = require('multer');
 const { createBodyConcurrencyLimiter } = require('./src/routes/body-concurrency-limit');
+const { sanitizeNodeTelemetry, assessNodeTelemetry, telemetrySummary } = require('./src/node-telemetry');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -5337,6 +5338,13 @@ async function handleDoctorCommand(interaction) {
       status: heartbeatAge != null && heartbeatAge < 15 * 60000 && !(tierState?.lastErrors || []).length ? 'ok' : 'warn',
       detail: heartbeatAge == null ? 'no heartbeat reported' : `last heartbeat ${fmtDuration(heartbeatAge)} ago${tierState?.lastErrors?.length ? ` · ${tierState.lastErrors[0]}` : ''}`,
     });
+    const telemetry = tierState?.lastTelemetry;
+    const hardware = assessNodeTelemetry(telemetry, { warnC: CONFIG.NODE_TEMP_WARN_C, criticalC: CONFIG.NODE_TEMP_CRITICAL_C });
+    checks.push({
+      name: `Hardware: ${node.name}`,
+      status: hardware.level === 'critical' ? 'fail' : hardware.level === 'warn' || hardware.level === 'unknown' ? 'warn' : 'ok',
+      detail: telemetrySummary(telemetry, fmtSpace),
+    });
   }
   const icon = s => s === 'ok' ? '✅' : s === 'warn' ? '⚠️' : '❌';
   const failures = checks.filter(c => c.status === 'fail').length;
@@ -7580,7 +7588,8 @@ async function handleTierNodeCommand(interaction) {
       // node reads differently from a stopped/unreachable one.
       const beatAt = plan?.lastHeartbeatAt || plan?.lastAgentReportAt || null;
       const beatNote = beatAt ? ` · agent ${fmtAgo(beatAt)}${plan?.lastErrors?.length ? ' ⚠️' : ''}` : ' · agent never reported';
-      return `${n.enabled ? '🟢' : '⚫'} **${n.name}** — ${fmtSpace(n.usable_bytes || 0)}, headroom ${n.headroom_pct}%${n.full ? ', **full master**' : ''}${n.sticky ? ', sticky' : ''} · ${n.access}/${n.demand_source}/${n.transport}${folderNote}${members}${planNote}${beatNote}`;
+      const hardwareNote = plan?.lastTelemetry ? ` · ${telemetrySummary(plan.lastTelemetry, fmtSpace)}` : ' · hardware telemetry unavailable';
+      return `${n.enabled ? '🟢' : '⚫'} **${n.name}** — ${fmtSpace(n.usable_bytes || 0)}, headroom ${n.headroom_pct}%${n.full ? ', **full master**' : ''}${n.sticky ? ', sticky' : ''} · ${n.access}/${n.demand_source}/${n.transport}${folderNote}${members}${planNote}${beatNote}${hardwareNote}`;
     });
     return interaction.reply({ embeds: [brandedEmbed(COLORS.INFO).setTitle('📦 Tier Nodes').setDescription(lines.join('\n').slice(0, 4000))], ephemeral: true });
   }
@@ -8780,13 +8789,26 @@ function startExpressServer() {
   app.post('/agent/report/:node', tierAgentAuth, tierAgentReportLimiter, agentBodyConcurrencyLimiter, agentJsonParser, (req, res) => {
     const node = String(req.params.node).toLowerCase();
     const body = req.body || {};
+    const previousTelemetryLevel = getTierPlan(node)?.lastTelemetryLevel || 'unknown';
+    const telemetry = sanitizeNodeTelemetry(body.telemetry);
+    const telemetryHealth = assessNodeTelemetry(telemetry, { warnC: CONFIG.NODE_TEMP_WARN_C, criticalC: CONFIG.NODE_TEMP_CRITICAL_C });
+    const notifyTelemetryTransition = () => {
+      if (!telemetry || telemetryHealth.level === previousTelemetryLevel) return;
+      if (!['warn', 'critical'].includes(telemetryHealth.level) && !['warn', 'critical'].includes(previousTelemetryLevel)) return;
+      const recovered = telemetryHealth.level === 'ok';
+      notifyChannel('system', { embeds: [brandedEmbed(recovered ? COLORS.SUCCESS : telemetryHealth.level === 'critical' ? COLORS.DANGER : COLORS.WARN)
+        .setTitle(`${recovered ? '✅' : telemetryHealth.level === 'critical' ? '🔥' : '⚠️'} Edge node hardware — ${node}`)
+        .setDescription(`${telemetryHealth.reason}\n${telemetrySummary(telemetry, fmtSpace)}${recovered ? `\nRecovered from ${previousTelemetryLevel}.` : ''}`)] });
+      audit('tier_agent_telemetry_transition', { node, from: previousTelemetryLevel, to: telemetryHealth.level, temperatureC: telemetry.temperatureC });
+    };
     // Heartbeat fast-path: the agent posts { heartbeat:true } on a clean no-op run (plan + inventory
     // unchanged). It's proof of life with nothing to store or converge — bump the timestamp and
     // clear any stale errors (a clean no-op only happens AFTER a healthy convergence, so lingering
     // errors would be misleading). Full reports go through recordTierAgentReport below, which also
     // bumps the heartbeat; the drive-missing branch bumps it too but with its mount errors.
     if (body.heartbeat && !body.driveMissing) {
-      recordTierAgentHeartbeat(node, { errors: [] });
+      recordTierAgentHeartbeat(node, { errors: [], telemetry, telemetryLevel: telemetryHealth.level });
+      notifyTelemetryTransition();
       audit('tier_agent_heartbeat', { node, planHash: body.planHash || null });
       return res.json({ ok: true, heartbeat: true });
     }
@@ -8811,7 +8833,8 @@ function startExpressServer() {
       // as the plan's error state so the status surfaces read warn/⚠️, not a healthy "checked in
       // recently / ok". Without this the heartbeat bump alone would mask a repeatedly drive-missing
       // node as healthy. Cleared on recovery, when the agent's next full report reports no errors.
-      recordTierAgentHeartbeat(node, { errors: mountErrors.length ? mountErrors : ['media drive missing'] });
+      recordTierAgentHeartbeat(node, { errors: mountErrors.length ? mountErrors : ['media drive missing'], telemetry, telemetryLevel: telemetryHealth.level });
+      notifyTelemetryTransition();
       audit('tier_agent_drive_missing', { node, mountErrors: mountErrors.join('; ').slice(0, 500) || undefined });
       if (prev !== 'missing') {
         notifyChannel('system', { embeds: [brandedEmbed(COLORS.DANGER)
@@ -8852,7 +8875,8 @@ function startExpressServer() {
     // tell "healthy idle" from "stopped / net down". Then advance `converged` ONLY when the agent
     // says it converged, reported no errors, AND the hash matches what we actually published — a
     // report for a stale/mismatched plan, or one carrying errors, must never mark convergence.
-    recordTierAgentReport(node, { inventoryStored, errors });
+    recordTierAgentReport(node, { inventoryStored, errors, telemetry, telemetryLevel: telemetryHealth.level });
+    notifyTelemetryTransition();
     const publishedHash = getTierPlan(node)?.published?.planHash || null;
     const converged = body.converged === true && errors.length === 0 && !!body.planHash && body.planHash === publishedHash;
     if (converged) markTierPlanConverged(node, { planHash: body.planHash });

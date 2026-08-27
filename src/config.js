@@ -436,6 +436,8 @@ const CONFIG = (() => {
   // Full reports may carry 25 MB / 200k rows. Count admission above limits frequency; this
   // separately bounds simultaneous authenticated parses and report processing.
   AGENT_REPORT_MAX_CONCURRENT: Number.parseInt(process.env.AGENT_REPORT_MAX_CONCURRENT || '2', 10),
+  NODE_TEMP_WARN_C: Number.parseFloat(process.env.NODE_TEMP_WARN_C || '80'),
+  NODE_TEMP_CRITICAL_C: Number.parseFloat(process.env.NODE_TEMP_CRITICAL_C || '90'),
   DELETION_GRACE_HOURS: Number.parseInt(process.env.DELETION_GRACE_HOURS || '24', 10),
   DELETION_REMINDER_COOLDOWN_HOURS: Number.parseInt(process.env.DELETION_REMINDER_COOLDOWN_HOURS || '12', 10),
   KEEP_LIST_DEFAULT_DAYS: Number.parseInt(process.env.KEEP_LIST_DEFAULT_DAYS || '90', 10),
@@ -508,6 +510,10 @@ function validateConfig() {
     const identities = [...CONFIG.PH_SERVER_NAMES, ...CONFIG.CA_EDGE_SERVER_NAMES, ...CONFIG.PRIMARY_SERVER_NAMES];
     const duplicate = identities.find((id, index) => identities.indexOf(id) !== index);
     if (duplicate) throw new Error(`Live deletion refuses overlapping server identity '${duplicate}'; PH_SERVER_NAMES, CA_EDGE_SERVER_NAMES, and PRIMARY_SERVER_NAMES must be disjoint`);
+  }
+  if (!Number.isFinite(CONFIG.NODE_TEMP_WARN_C) || !Number.isFinite(CONFIG.NODE_TEMP_CRITICAL_C)
+    || CONFIG.NODE_TEMP_WARN_C < 0 || CONFIG.NODE_TEMP_CRITICAL_C <= CONFIG.NODE_TEMP_WARN_C) {
+    throw new Error('NODE_TEMP_WARN_C and NODE_TEMP_CRITICAL_C must be valid temperatures, with the critical threshold greater than the warning threshold');
   }
 }
 
