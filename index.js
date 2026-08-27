@@ -21,7 +21,7 @@ const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const bodyParser = require('body-parser');
 const multer = require('multer');
 const { createBodyConcurrencyLimiter } = require('./src/routes/body-concurrency-limit');
-const { sanitizeNodeTelemetry, assessNodeTelemetry, telemetrySummary } = require('./src/node-telemetry');
+const { assessNodeTelemetry, telemetrySummary } = require('./src/node-telemetry');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -59,8 +59,7 @@ const { runBackup, rotateBackups, backupState, rehearseLatestBackup } = require(
 const { recordDiskSamples, pruneDiskSamples, forecastDisks, pathIsOnRoot, forecastLabel } = require('./src/capacity');
 const { webhookEventKey } = require('./src/webhook-events');
 const { createWebhookHandlers, requireWebhookSecret } = require('./src/routes/webhooks');
-const { createTierAgentAuth } = require('./src/routes/tier-agent-auth');
-const { createTierAgentReportLimiter } = require('./src/routes/tier-agent-report-limit');
+const { registerTierAgentRoutes } = require('./src/routes/tier-agent');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
 const { createApp } = require('./src/app');
 const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
@@ -8706,20 +8705,11 @@ function startExpressServer() {
   // unchanged; only the app's own setup moved.
   const app = createApp({ trustProxy: !!CONFIG.TRUST_PROXY, skipJsonPaths: ['/agent/', '/webhook/tautulli'] });
   const upload = multer({ limits: { fileSize: 5 * 1024 * 1024, files: 5 } });
-  // Agent reports can carry a full atime inventory (thousands of file rows), so /agent/ gets a
-  // larger JSON limit than the webhook/dashboard routes. Parsing is applied per-route (after
-  // tierAgentAuth) below instead of here, so an unauthenticated caller can't force a 25 MB parse.
-  const agentJsonParser = bodyParser.json({ limit: '25mb' });
   const tautulliJsonParser = bodyParser.json({ limit: '1mb' });
   const webhookBodyConcurrencyLimiter = createBodyConcurrencyLimiter({
     limit: CONFIG.WEBHOOK_BODY_MAX_CONCURRENT,
     scope: 'webhook body',
   });
-  const agentBodyConcurrencyLimiter = createBodyConcurrencyLimiter({
-    limit: CONFIG.AGENT_REPORT_MAX_CONCURRENT,
-    scope: 'agent report body',
-  });
-
   registerHealthAndDownloadRoutes(app, {
     config: CONFIG,
     db,
@@ -8760,39 +8750,12 @@ function startExpressServer() {
     tautulliJsonParser,
     webhookHandlers.tautulli);
 
-  // ---- Regional tiering: per-node sync-agent API ----
-  const tierAgentAuth = createTierAgentAuth({ getTierAgentTokenHash, sha256, safeEqual, audit });
-
-  // One-liner install for a node's sync agent. Both routes sit behind the node's own bearer token:
-  // no new public surface, and a token that can already read the manifest can hardly be harmed by
-  // also reading the agent source. The token itself is never embedded here — the bot only stores
-  // its hash — so the installer takes it from the environment of the shell running the pipe.
-  app.get('/agent/install/:node', tierAgentAuth, (req, res) => {
-    const node = String(req.params.node).toLowerCase();
-    const template = fs.readFileSync(path.join(__dirname, 'agent', 'install.sh.tmpl'), 'utf8');
-    const botUrl = CONFIG.TUNNEL_DOMAIN ? `https://${CONFIG.TUNNEL_DOMAIN}` : `http://127.0.0.1:${CONFIG.PORT}`;
-    audit('tier_agent_installer_fetched', { node, ip: req.ip || req.socket.remoteAddress || 'unknown' });
-    res.type('text/plain').send(template.split('__NODE__').join(node).split('__BOT_URL__').join(botUrl));
-  });
-
-  app.get('/agent/source/:node', tierAgentAuth, (_req, res) => {
-    res.type('text/plain').send(fs.readFileSync(path.join(__dirname, 'agent', 'agent.js'), 'utf8'));
-  });
-
-  app.get('/agent/manifest/:node', tierAgentAuth, (req, res) => {
-    const raw = getSetting(`tier_manifest:${String(req.params.node).toLowerCase()}`);
-    if (!raw) return res.status(404).json({ error: 'No manifest published for this node — run /tier apply.' });
-    res.type('json').send(raw);
-  });
-
-  const tierAgentReportLimiter = createTierAgentReportLimiter({ limit: CONFIG.AGENT_REPORT_MAX_PER_MINUTE });
-  app.post('/agent/report/:node', tierAgentAuth, tierAgentReportLimiter, agentBodyConcurrencyLimiter, agentJsonParser, (req, res) => {
-    const node = String(req.params.node).toLowerCase();
-    const body = req.body || {};
-    const previousTelemetryLevel = getTierPlan(node)?.lastTelemetryLevel || 'unknown';
-    const telemetry = sanitizeNodeTelemetry(body.telemetry);
-    const telemetryHealth = assessNodeTelemetry(telemetry, { warnC: CONFIG.NODE_TEMP_WARN_C, criticalC: CONFIG.NODE_TEMP_CRITICAL_C });
-    const notifyTelemetryTransition = () => {
+  registerTierAgentRoutes(app, {
+    config: CONFIG,
+    getTierAgentTokenHash, sha256, safeEqual, audit, getSetting, setSetting,
+    getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, markTierPlanConverged,
+    getTierNode, listTierNodeFiles, replaceTierNodeFiles, parseAtimeMask, maskSuspectAtimes,
+    notifyTelemetryTransition: ({ node, telemetry, telemetryHealth, previousTelemetryLevel }) => {
       if (!telemetry || telemetryHealth.level === previousTelemetryLevel) return;
       if (!['warn', 'critical'].includes(telemetryHealth.level) && !['warn', 'critical'].includes(previousTelemetryLevel)) return;
       const recovered = telemetryHealth.level === 'ok';
@@ -8800,91 +8763,18 @@ function startExpressServer() {
         .setTitle(`${recovered ? '✅' : telemetryHealth.level === 'critical' ? '🔥' : '⚠️'} Edge node hardware — ${node}`)
         .setDescription(`${telemetryHealth.reason}\n${telemetrySummary(telemetry, fmtSpace)}${recovered ? `\nRecovered from ${previousTelemetryLevel}.` : ''}`)] });
       audit('tier_agent_telemetry_transition', { node, from: previousTelemetryLevel, to: telemetryHealth.level, temperatureC: telemetry.temperatureC });
-    };
-    // Heartbeat fast-path: the agent posts { heartbeat:true } on a clean no-op run (plan + inventory
-    // unchanged). It's proof of life with nothing to store or converge — bump the timestamp and
-    // clear any stale errors (a clean no-op only happens AFTER a healthy convergence, so lingering
-    // errors would be misleading). Full reports go through recordTierAgentReport below, which also
-    // bumps the heartbeat; the drive-missing branch bumps it too but with its mount errors.
-    if (body.heartbeat && !body.driveMissing) {
-      recordTierAgentHeartbeat(node, { errors: [], telemetry, telemetryLevel: telemetryHealth.level });
-      notifyTelemetryTransition();
-      audit('tier_agent_heartbeat', { node, planHash: body.planHash || null });
-      return res.json({ ok: true, heartbeat: true });
-    }
-    const errors = Array.isArray(body.errors) ? body.errors.slice(0, 10).map(e => String(e).slice(0, 300)) : [];
-    // Per-file prune skips are reported separately from errors: the file stays ignored either way,
-    // so the node still reached its plan. Counting them as errors used to hold the node at
-    // "published but not converged" forever — the agent advances its own plan hash after a skip and
-    // never retries, so nothing could ever clear it, and the lost converged state also cost the
-    // node its hysteresis keep-set on every subsequent plan. Surfaced, never convergence-blocking.
-    const skipped = Array.isArray(body.skipped) ? body.skipped.slice(0, 10).map(e => String(e).slice(0, 300)) : [];
-    // Mount guard: when the node's external media drive is absent the agent refuses to run and
-    // reports driveMissing WITHOUT an inventory — so the empty-directory walk can never wipe the
-    // node's known contents (which would trigger a full re-seed onto the wrong disk). Handle it
-    // before the inventory block, alert only on the state transition, and never post a "converged"
-    // success for a run that did nothing.
-    const mountKey = `tier_mount_state:${node}`;
-    if (body.driveMissing) {
-      const prev = getSetting(mountKey);
-      setSetting(mountKey, 'missing');
-      const mountErrors = (Array.isArray(body.mountErrors) ? body.mountErrors : []).slice(0, 8).map(e => String(e).slice(0, 300));
-      // Proof of life (the agent ran and reached us) but a DEGRADED run — persist the mount errors
-      // as the plan's error state so the status surfaces read warn/⚠️, not a healthy "checked in
-      // recently / ok". Without this the heartbeat bump alone would mask a repeatedly drive-missing
-      // node as healthy. Cleared on recovery, when the agent's next full report reports no errors.
-      recordTierAgentHeartbeat(node, { errors: mountErrors.length ? mountErrors : ['media drive missing'], telemetry, telemetryLevel: telemetryHealth.level });
-      notifyTelemetryTransition();
-      audit('tier_agent_drive_missing', { node, mountErrors: mountErrors.join('; ').slice(0, 500) || undefined });
-      if (prev !== 'missing') {
-        notifyChannel('system', { embeds: [brandedEmbed(COLORS.DANGER)
-          .setTitle(`🟠 ${node} media drive missing`)
-          .setDescription([
-            'The external media drive is not mounted where the tier agent expects it.',
-            '**Syncthing convergence has been suspended** — the agent will not write, prune, or re-inventory until the drive is back.',
-            mountErrors.length ? `\n${mountErrors.slice(0, 6).map(e => `• ${e}`).join('\n')}` : null,
-          ].filter(Boolean).join('\n').slice(0, 4000))] });
-      }
-      return res.json({ ok: true, acknowledged: 'drive-missing' });
-    }
-    if (getSetting(mountKey) === 'missing') {
-      setSetting(mountKey, 'ok');
-      audit('tier_agent_drive_recovered', { node });
-      notifyChannel('system', { embeds: [brandedEmbed(COLORS.SUCCESS)
-        .setTitle(`🟢 ${node} media drive back online`)
-        .setDescription('The external media drive is mounted again and the tier agent has resumed converging Syncthing.')] });
-    }
-    // The atime demand signal (§3.2a): full local inventory snapshots replace the stored set.
-    // An EMPTY array is still a snapshot (the node may have pruned its last media file) —
-    // only an absent field means "no inventory in this report". When the node has an
-    // atime_mask, suspect (maintenance-window) atimes are laundered against the previously
-    // stored rows BEFORE the replace, so the DB always holds the last plausible human read.
-    let inventoryStored = false;
-    if (Array.isArray(body.inventory)) {
-      try {
-        let files = body.inventory.slice(0, 200000);
-        const mask = parseAtimeMask(getTierNode(node)?.atime_mask);
-        if (mask) files = maskSuspectAtimes(files, listTierNodeFiles(node), mask);
-        replaceTierNodeFiles(node, files);
-        inventoryStored = true;
-      } catch (err) {
-        errors.push(`inventory store failed: ${err.message}`);
-      }
-    }
-    // §1.1 The agent has reported — record it (any run, converged or not) so status surfaces can
-    // tell "healthy idle" from "stopped / net down". Then advance `converged` ONLY when the agent
-    // says it converged, reported no errors, AND the hash matches what we actually published — a
-    // report for a stale/mismatched plan, or one carrying errors, must never mark convergence.
-    recordTierAgentReport(node, { inventoryStored, errors, telemetry, telemetryLevel: telemetryHealth.level });
-    notifyTelemetryTransition();
-    const publishedHash = getTierPlan(node)?.published?.planHash || null;
-    const converged = body.converged === true && errors.length === 0 && !!body.planHash && body.planHash === publishedHash;
-    if (converged) markTierPlanConverged(node, { planHash: body.planHash });
-    audit('tier_agent_report', { node, planHash: body.planHash || null, publishedHash, converged, bytesFreed: body.bytesFreed || 0, droppedCount: (body.dropped || []).length, inventoryCount: Array.isArray(body.inventory) ? body.inventory.length : 0, errors: errors.join('; ').slice(0, 500) || undefined, skipped: skipped.join('; ').slice(0, 500) || undefined });
-    if ((body.bytesFreed || 0) > 0 || errors.length || skipped.length) {
-      // Report the honest state: "converged" only when the checks above passed; otherwise say the
-      // agent has published-but-pending or hit errors, so a mismatched/failed run can't masquerade
-      // as a clean convergence.
+    },
+    notifyDriveMissing: ({ node, mountErrors }) => notifyChannel('system', { embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle(`🟠 ${node} media drive missing`)
+      .setDescription([
+        'The external media drive is not mounted where the tier agent expects it.',
+        '**Syncthing convergence has been suspended** — the agent will not write, prune, or re-inventory until the drive is back.',
+        mountErrors.length ? `\n${mountErrors.slice(0, 6).map(e => `• ${e}`).join('\n')}` : null,
+      ].filter(Boolean).join('\n').slice(0, 4000))] }),
+    notifyDriveRecovered: ({ node }) => notifyChannel('system', { embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle(`🟢 ${node} media drive back online`)
+      .setDescription('The external media drive is mounted again and the tier agent has resumed converging Syncthing.')] }),
+    notifyAgentReport: ({ node, body, errors, skipped, publishedHash, converged }) => {
       const statusLine = errors.length
         ? `⚠️ Plan \`${body.planHash || '?'}\` reported with errors — not marked converged.`
         : converged
@@ -8896,11 +8786,9 @@ function startExpressServer() {
           statusLine,
           (body.bytesFreed || 0) > 0 ? `Freed **${fmtSpace(body.bytesFreed)}** across ${(body.dropped || []).length} title(s). Master copies untouched.` : null,
           errors.length ? `⚠️ Errors:\n${errors.map(e => `• ${e}`).join('\n')}` : null,
-          // Informational: these files stayed on disk but are ignored, so the node is still on plan.
           skipped.length ? `ℹ️ Not pruned (still ignored, node is on plan):\n${skipped.map(e => `• ${e}`).join('\n')}` : null,
         ].filter(Boolean).join('\n').slice(0, 4000))] });
-    }
-    res.json({ ok: true, converged });
+    },
   });
 
   if (CONFIG.DASHBOARD_ENABLED) {
