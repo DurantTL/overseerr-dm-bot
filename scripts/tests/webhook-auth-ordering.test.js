@@ -59,6 +59,16 @@ test('requireWebhookSecret honors allowQuery for Plex (which cannot send custom 
   assert.strictEqual(nextCalled, true);
 });
 
+test('requireWebhookSecret supports the Tautulli header before JSON parsing', () => {
+  const middleware = requireWebhookSecret(() => SECRET, { header: 'x-tautulli-secret' });
+  const req = bodyThrowingReq({ headers: { 'x-tautulli-secret': SECRET } });
+  const res = response();
+  let nextCalled = false;
+  middleware(req, res, () => { nextCalled = true; });
+  assert.strictEqual(nextCalled, true);
+  assert.strictEqual(res.statusCode, null);
+});
+
 test('requireWebhookSecret treats an unset expected secret as open (matches webhookSecretOk)', () => {
   const middleware = requireWebhookSecret(() => '');
   const req = bodyThrowingReq({});
