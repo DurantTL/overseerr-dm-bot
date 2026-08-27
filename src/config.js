@@ -339,6 +339,9 @@ const CONFIG = (() => {
   DOWNLOAD_ONE_TIME_LINKS_DEFAULT: parseBool(process.env.DOWNLOAD_ONE_TIME_LINKS_DEFAULT, false),
   DOWNLOAD_MAX_PER_HOUR: Number.parseInt(process.env.DOWNLOAD_MAX_PER_HOUR || '10', 10),
   DOWNLOAD_ROUTE_MAX_PER_MINUTE: Number.parseInt(process.env.DOWNLOAD_ROUTE_MAX_PER_MINUTE || '60', 10),
+  // Authenticated webhook uploads share this cap before multer/JSON parsing. It prevents a burst
+  // of otherwise-valid requests from retaining unbounded parser and downstream handler work.
+  WEBHOOK_BODY_MAX_CONCURRENT: Number.parseInt(process.env.WEBHOOK_BODY_MAX_CONCURRENT || '8', 10),
   DOWNLOAD_LARGE_FILE_GB: Number.parseInt(process.env.DOWNLOAD_LARGE_FILE_GB || '8', 10),
   // ---- Plex Home staging (remote cache box behind a tunnel) ----
   // The PH box serves a small local cache of the Main library. The bot copies titles into
@@ -430,6 +433,9 @@ const CONFIG = (() => {
   // JSON body and up to 200k inventory rows). The systemd timer runs the agent every 15 minutes,
   // so this only needs headroom for manual re-runs/retries, not the steady-state cadence.
   AGENT_REPORT_MAX_PER_MINUTE: Number.parseInt(process.env.AGENT_REPORT_MAX_PER_MINUTE || '12', 10),
+  // Full reports may carry 25 MB / 200k rows. Count admission above limits frequency; this
+  // separately bounds simultaneous authenticated parses and report processing.
+  AGENT_REPORT_MAX_CONCURRENT: Number.parseInt(process.env.AGENT_REPORT_MAX_CONCURRENT || '2', 10),
   DELETION_GRACE_HOURS: Number.parseInt(process.env.DELETION_GRACE_HOURS || '24', 10),
   DELETION_REMINDER_COOLDOWN_HOURS: Number.parseInt(process.env.DELETION_REMINDER_COOLDOWN_HOURS || '12', 10),
   KEEP_LIST_DEFAULT_DAYS: Number.parseInt(process.env.KEEP_LIST_DEFAULT_DAYS || '90', 10),
