@@ -612,6 +612,17 @@ function configWarnings() {
   if (CONFIG.RTORRENT_URL && (!CONFIG.GRAB_RCLONE_REMOTE || !CONFIG.GRAB_STAGING_PATH)) {
     warnings.push('`RTORRENT_URL` is set but `GRAB_RCLONE_REMOTE`/`GRAB_STAGING_PATH` aren\'t — completed seedbox grabs can\'t be copied home and imported.');
   }
+  // The src/grab.js preflight can only validate a config file it is handed. With no --config in
+  // GRAB_RCLONE_FLAGS it returns checked:false / ok:true, so the pipeline advertises itself as
+  // ready while rclone falls back to its platform default path — which, for the dropped-root
+  // container user, is usually somewhere no rclone.conf was ever mounted. Every grab then dies at
+  // the transfer step with "didn't find section in config file", after AvistaZ has already spent
+  // a tracker download on it. STAGE_RCLONE_FLAGS is the tell: an operator who set --config there
+  // and not here has hit the trap, not made a choice.
+  if (CONFIG.GRAB_RCLONE_REMOTE.includes(':') && !CONFIG.GRAB_RCLONE_FLAGS.includes('--config')
+    && !CONFIG.GRAB_RCLONE_FLAGS.some(flag => flag.startsWith('--config='))) {
+    warnings.push('`GRAB_RCLONE_REMOTE` names an rclone remote but `GRAB_RCLONE_FLAGS` passes no `--config`, so rclone reads its default config location — usually empty in the container. Seedbox copies will fail with "didn\'t find section in config file" only after a tracker download is spent. Add `--config /app/data/rclone.conf` (the same path `STAGE_RCLONE_FLAGS` uses).');
+  }
   if (CONFIG.RTORRENT_URL && !CONFIG.RADARR_URL && !CONFIG.SONARR_URL) {
     warnings.push('`RTORRENT_URL` is set but neither Radarr nor Sonarr is configured — completed grabs could never be imported.');
   }

@@ -224,3 +224,33 @@ test('config: validation failure stays reachable through health', async () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('config: a named rclone remote with no --config warns before a tracker download is spent', () => {
+  // grabTransferPreflight can only validate a config file it is handed. With no --config it
+  // returns ok/checked:false, the pipeline advertises itself ready, and rclone falls back to a
+  // default path the container usually has nothing at — so every seedbox copy dies with
+  // "didn't find section in config file" after AvistaZ has already spent the download.
+  const CONFIG_MODULE = require.resolve('../../src/config');
+  const saved = { ...process.env };
+  const warnFor = ({ remote = 'rapidseedbox:', flags = '' }) => {
+    Object.assign(process.env, {
+      RTORRENT_URL: 'http://rtorrent', PROWLARR_URL: 'http://prowlarr', SONARR_URL: 'http://sonarr',
+      GRAB_RCLONE_REMOTE: remote, GRAB_STAGING_PATH: '/app/staging', GRAB_RCLONE_FLAGS: flags,
+    });
+    delete require.cache[CONFIG_MODULE];
+    return require('../../src/config').configWarnings().filter(w => w.includes('GRAB_RCLONE_FLAGS'));
+  };
+  try {
+    assert.strictEqual(warnFor({}).length, 1, 'no --config warns');
+    assert.match(warnFor({})[0], /--config \/app\/data\/rclone\.conf/, 'and names the flag to add');
+    assert.strictEqual(warnFor({ flags: '--config /app/data/rclone.conf' }).length, 0, 'separate-argument form satisfies it');
+    assert.strictEqual(warnFor({ flags: '--config=/app/data/rclone.conf' }).length, 0, 'joined form satisfies it too');
+    // A path-only remote (nothing before ':') needs no config section at all.
+    assert.strictEqual(warnFor({ remote: '/mnt/seedbox' }).length, 0);
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+    delete require.cache[CONFIG_MODULE];
+    require('../../src/config');
+  }
+});
