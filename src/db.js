@@ -263,6 +263,29 @@ const runMigrations = db.transaction(function runMigrationsInner() {
       sample_transfer_name TEXT
     );
 
+    -- One row per (rejection bucket, quality) Sonarr has refused a season pack for. Sonarr states
+    -- its reason once, in prose, in an interactive-search response that is otherwise discarded —
+    -- so without this table "which of my settings is blocking packs?" is unanswerable after the
+    -- fact. Counting by bucket makes the dominant blocker visible, and keeping the tightest
+    -- observed size floor lets the size-limit suggestion name a concrete number (#236).
+    CREATE TABLE IF NOT EXISTS pack_rejection_sightings (
+      bucket TEXT NOT NULL,
+      quality TEXT NOT NULL DEFAULT '',
+      sighting_count INTEGER NOT NULL DEFAULT 0,
+      season_count INTEGER NOT NULL DEFAULT 0,
+      first_seen_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      sample_title TEXT,
+      sample_reason TEXT,
+      limit_mb REAL,
+      observed_mb REAL,
+      limit_mb_per_minute REAL,
+      observed_mb_per_minute REAL,
+      suggested_at INTEGER,
+      dismissed INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (bucket, quality)
+    );
+
     -- Positive interactive evidence and the high-water cursor for bounded episode fallback.
     -- The unique season key makes scheduler retries and restart reconciliation idempotent.
     CREATE TABLE IF NOT EXISTS season_episode_fallbacks (
@@ -972,6 +995,69 @@ function resetReleaseGroupSighting(group) {
   db.prepare('UPDATE release_group_sightings SET dead_clear_count = 0, suggested_at = NULL, dismissed = 0 WHERE release_group = ?').run(group);
 }
 
+// ---- Season-pack rejection sightings (#236) ----
+// Records one sweep's worth of pack rejections and returns the updated row per bucket. Counting
+// is deliberately two-dimensional: sighting_count is every blocked pack (how loud the problem is)
+// while season_count is how many sweeps saw it (how persistent it is) — a single season with
+// twelve bad packs should not look like a library-wide setting problem.
+//
+// For a size floor the highest limit seen is kept, because that is the number actually doing the
+// blocking, and the *smallest* observed size, because a new floor has to sit below every blocked
+// release to unblock them all — clearing only the roomiest one would leave the rest still stuck.
+function recordPackRejections(buckets = [], { seriesTitle = null, now = Date.now() } = {}) {
+  const rows = [];
+  for (const bucket of buckets) {
+    if (!bucket?.bucket) continue;
+    const quality = String(bucket.quality || '');
+    const size = bucket.size || null;
+    db.prepare(`INSERT INTO pack_rejection_sightings
+        (bucket, quality, sighting_count, season_count, first_seen_at, last_seen_at, sample_title,
+         sample_reason, limit_mb, observed_mb, limit_mb_per_minute, observed_mb_per_minute)
+      VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(bucket, quality) DO UPDATE SET
+        sighting_count = sighting_count + excluded.sighting_count,
+        season_count = season_count + 1,
+        last_seen_at = excluded.last_seen_at,
+        sample_title = excluded.sample_title,
+        sample_reason = excluded.sample_reason,
+        limit_mb = MAX(COALESCE(pack_rejection_sightings.limit_mb, excluded.limit_mb), COALESCE(excluded.limit_mb, pack_rejection_sightings.limit_mb)),
+        limit_mb_per_minute = MAX(COALESCE(pack_rejection_sightings.limit_mb_per_minute, excluded.limit_mb_per_minute), COALESCE(excluded.limit_mb_per_minute, pack_rejection_sightings.limit_mb_per_minute)),
+        observed_mb = MIN(COALESCE(pack_rejection_sightings.observed_mb, excluded.observed_mb), COALESCE(excluded.observed_mb, pack_rejection_sightings.observed_mb)),
+        observed_mb_per_minute = MIN(COALESCE(pack_rejection_sightings.observed_mb_per_minute, excluded.observed_mb_per_minute), COALESCE(excluded.observed_mb_per_minute, pack_rejection_sightings.observed_mb_per_minute))`)
+      .run(bucket.bucket, quality, Number(bucket.count) || 1, now, now, seriesTitle,
+        String(bucket.sample || '').slice(0, 300) || null,
+        size?.limitMb ?? null, size?.actualMb ?? null,
+        size?.limitMbPerMinute ?? null, size?.actualMbPerMinute ?? null);
+    rows.push(getPackRejectionSighting(bucket.bucket, quality));
+  }
+  return rows;
+}
+
+function getPackRejectionSighting(bucket, quality = '') {
+  return db.prepare('SELECT * FROM pack_rejection_sightings WHERE bucket = ? AND quality = ?')
+    .get(bucket, String(quality || '')) || null;
+}
+
+const listPackRejectionSightings = () =>
+  db.prepare('SELECT * FROM pack_rejection_sightings ORDER BY sighting_count DESC, bucket, quality').all();
+
+function markPackRejectionSuggested(bucket, quality = '', now = Date.now()) {
+  db.prepare('UPDATE pack_rejection_sightings SET suggested_at = ? WHERE bucket = ? AND quality = ?')
+    .run(now, bucket, String(quality || ''));
+}
+
+function dismissPackRejectionSuggestion(bucket, quality = '') {
+  db.prepare('UPDATE pack_rejection_sightings SET dismissed = 1 WHERE bucket = ? AND quality = ?')
+    .run(bucket, String(quality || ''));
+}
+
+// A pack from this quality finally got through, so the evidence is stale — the setting may
+// already have been fixed by hand. Reset the counts rather than deleting, preserving history.
+function resetPackRejectionSightings(quality = '') {
+  db.prepare(`UPDATE pack_rejection_sightings SET sighting_count = 0, season_count = 0,
+    suggested_at = NULL, dismissed = 0 WHERE quality = ?`).run(String(quality || ''));
+}
+
 function recordSeasonEpisodeFallbackEvidence({ seriesId, seasonNumber, seriesTitle, evidence, now = Date.now() }) {
   if (evidence?.status !== 'approved_episode' || !evidence.fingerprint) return null;
   db.prepare(`INSERT INTO season_episode_fallbacks
@@ -1599,6 +1685,12 @@ function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k) {
 module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;
 Object.assign(module.exports, {
+  recordPackRejections,
+  getPackRejectionSighting,
+  listPackRejectionSightings,
+  markPackRejectionSuggested,
+  dismissPackRejectionSuggestion,
+  resetPackRejectionSightings,
   recordSeasonEpisodeFallbackEvidence,
   getSeasonEpisodeFallback,
   listSeasonEpisodeFallbacks,

@@ -138,6 +138,12 @@ const CONFIG = (() => {
   // Score applied to the group's Custom Format in every Sonarr quality profile once approved —
   // negative enough to push a matching release's total score below any default minimum.
   RELEASE_GROUP_BLOCKLIST_SCORE: Number.parseInt(process.env.RELEASE_GROUP_BLOCKLIST_SCORE || '-1000', 10),
+
+  // ---- Season-pack size-floor fix (#236) ----
+  PACK_SIZE_FIX_ENABLED: parseBool(process.env.PACK_SIZE_FIX_ENABLED, true),
+  PACK_SIZE_FIX_THRESHOLD: Number.parseInt(process.env.PACK_SIZE_FIX_THRESHOLD || '3', 10),
+  PACK_SIZE_FIX_HEADROOM_PCT: Number.parseInt(process.env.PACK_SIZE_FIX_HEADROOM_PCT || '20', 10),
+  SEASON_PACK_FORCE_UNDERSIZED: parseBool(process.env.SEASON_PACK_FORCE_UNDERSIZED, false),
   // Premiumize→rTorrent reroute: when a Premiumize transfer is finally given up on (dead even
   // after its retry), try to pick the same release back up through the seedbox rTorrent client
   // by matching it against the still-live Sonarr/Radarr queue entry. Off by default — unlike the

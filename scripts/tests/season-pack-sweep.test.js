@@ -5,8 +5,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { loadSandbox } = require('./extract');
-const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('../../src/season-pack');
-const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('../../src/season-release');
+const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity, SEASON_FILL_EVENTS, SEASON_FAILURE_EVENTS } = require('../../src/season-pack');
+const { rankSeasonReleases, chooseSeasonPack, describeRejections, summarizePackRejections, rejectedOnlyForSizeFloor, rejectionLabel } = require('../../src/season-release');
 const { classifyEpisodeFallbackEvidence } = require('../../src/season-episode-fallback');
 const runtimeSettings = require('../../src/runtime-settings');
 const { priorityKey, orderByPriority, isPinned } = require('../../src/priority');
@@ -463,17 +463,29 @@ test('season search history: keeps recent grabs/imports for the requested season
     { eventType: 'grabbed', date: new Date(NOW - 1000).toISOString(), downloadId: 'old', sourceTitle: 'Drama.S01E03.1080p', episode: { seasonNumber: 1, episodeNumber: 3 } },
     { eventType: 'grabbed', date: new Date(NOW + 1000).toISOString(), downloadId: 'other-season', sourceTitle: 'Drama.S02.1080p', episode: { seasonNumber: 2, episodeNumber: 1 } },
     { eventType: 'episodeFileDeleted', date: new Date(NOW + 1000).toISOString(), downloadId: 'delete', episode: { seasonNumber: 1, episodeNumber: 4 } },
+    { eventType: 'downloadFailed', date: new Date(NOW + 3000).toISOString(), downloadId: 'pack-1', data: { message: 'Torrent was removed from the client' }, episode: { seasonNumber: 1, episodeNumber: 1 } },
+    { eventType: 'downloadIgnored', date: new Date(NOW + 4000).toISOString(), downloadId: 'ignored-1', data: { reason: 'Manually ignored' }, episode: { seasonNumber: 1, episodeNumber: 5 } },
   ];
   const sandbox = loadSandbox(['parseReleaseName', 'getSeasonDownloadHistory'], {
+    SEASON_FILL_EVENTS, SEASON_FAILURE_EVENTS,
     sonarrGet: async () => ({ records: rows }),
   });
   const result = await sandbox.getSeasonDownloadHistory(7, 1, NOW);
-  assert.strictEqual(result.length, 2);
-  assert.ok(result.every(row => row.downloadId === 'pack-1'));
-  assert.ok(result.every(row => row.fullSeason), 'S01 without an episode marker is a season pack');
+  const fills = result.filter(row => SEASON_FILL_EVENTS.includes(row.eventType));
+  assert.strictEqual(fills.length, 2);
+  assert.ok(fills.every(row => row.downloadId === 'pack-1'));
+  assert.ok(fills.every(row => row.fullSeason), 'S01 without an episode marker is a season pack');
+
+  // A grab that died leaves no queue item behind, so these history rows are the only record
+  // that it happened at all — and the only place its reason is written down.
+  const failures = result.filter(row => SEASON_FAILURE_EVENTS.includes(row.eventType));
+  assert.deepStrictEqual(failures.map(row => row.message).sort(),
+    ['Manually ignored', 'Torrent was removed from the client']);
+  assert.ok(!result.some(row => row.eventType === 'episodefiledeleted'),
+    'unrelated history events stay out of both sets');
 });
 
-function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], queue = [], history = [], interactive = [], interactiveError = null, interactiveEnabled = true, autoForce = false, duplicate = null, recheckQueue = null, forceError = null, alertDecision = null }) {
+function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], queue = [], history = [], interactive = [], interactiveError = null, interactiveEnabled = true, autoForce = false, forceUndersized = false, duplicate = null, recheckQueue = null, forceError = null, alertDecision = null, sizeFixEnabled = true, sizeFixThreshold = 3, sighting = null }) {
   const notices = [];
   const audits = [];
   const interactiveCalls = [];
@@ -481,6 +493,9 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
   const alertRecords = [];
   const fallbackRecords = [];
   const clearedAlerts = [];
+  const clearedFallbacks = [];
+  const rejectionRecords = [];
+  const rejectionResets = [];
   const forced = [];
   let queueCalls = 0;
   class FakeButton {
@@ -492,8 +507,10 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
     constructor() { this.components = []; }
     addComponents(...values) { this.components.push(...values); return this; }
   }
-  const sandbox = loadSandbox(['seasonPackForceBlocker', 'autoForceSeasonPack', 'verifySeasonSearchCommand'], {
+  const suggestions = [];
+  const sandbox = loadSandbox(['seasonPackForceBlocker', 'autoForceSeasonPack', 'proposedSizeFloor', 'maybeSuggestPackSizeFix', 'verifySeasonSearchCommand'], {
     CONFIG: { SONARR_URL: 'http://sonarr', SONARR_API_KEY: 'key', SEASON_PACK_INTERACTIVE: interactiveEnabled, SEASON_PACK_FORCE_GRAB: autoForce },
+    SEASON_FILL_EVENTS, SEASON_FAILURE_EVENTS,
     queueItemLooksUnhealthy,
     tunable: key => ({
       SEASON_PACK_INTERACTIVE: interactiveEnabled,
@@ -504,7 +521,13 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
       SEASON_PACK_EPISODE_FALLBACK: true,
       SEASON_PACK_EPISODE_BATCH_SIZE: 25,
       SEASON_PACK_EPISODE_MAX_PER_RUN: 50,
+      SEASON_PACK_FORCE_UNDERSIZED: forceUndersized,
+      PACK_SIZE_FIX_ENABLED: sizeFixEnabled,
+      PACK_SIZE_FIX_THRESHOLD: sizeFixThreshold,
+      PACK_SIZE_FIX_HEADROOM_PCT: 20,
     })[key],
+    getPackRejectionSighting: () => sighting,
+    markPackRejectionSuggested: (bucket, quality) => { suggestions.push({ bucket, quality }); },
     pollArrCommand: async () => command,
     getSeriesEpisodes: async () => episodes,
     fetchArrQueues: async () => (++queueCalls === 1 ? queue : (recheckQueue ?? queue)),
@@ -518,12 +541,15 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
     getSeasonEpisodeFallback: () => null,
     forceGrabRelease: async identity => { forced.push(identity); if (forceError) throw forceError; },
     rankSeasonReleases,
+    summarizePackRejections, rejectedOnlyForSizeFloor, rejectionLabel,
+    recordPackRejections: (buckets, meta) => { rejectionRecords.push({ buckets, meta }); },
+    resetPackRejectionSightings: quality => { rejectionResets.push(quality); },
     chooseSeasonPack,
     splitTitleYear,
     classifyEpisodeFallbackEvidence,
     describeRejections,
     recordSeasonEpisodeFallbackEvidence: detail => fallbackRecords.push(detail),
-    clearSeasonEpisodeFallback: () => {},
+    clearSeasonEpisodeFallback: (seriesId, seasonNumber) => { clearedFallbacks.push({ seriesId, seasonNumber }); },
     stashGrabOffer: payload => { offers.push(payload); return 'abc12345'; },
     sha256,
     recordSeasonNoGrab: detail => {
@@ -547,7 +573,7 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
       addFields(...values) { this.fields.push(...values); return this; },
     }),
   });
-  return { sandbox, notices, audits, interactiveCalls, offers, alertRecords, fallbackRecords, clearedAlerts, forced, get queueCalls() { return queueCalls; } };
+  return { sandbox, notices, audits, interactiveCalls, offers, alertRecords, fallbackRecords, clearedAlerts, clearedFallbacks, rejectionRecords, rejectionResets, suggestions, forced, get queueCalls() { return queueCalls; } };
 }
 
 test('season search verification: approved Revenge-like episode evidence records bounded fallback work', async () => {
@@ -629,6 +655,110 @@ test('season search verification: auto-force never overrides a release Sonarr al
   assert.strictEqual(h.offers.length, 1, 'manual override buttons remain available for an admin to review');
 });
 
+test('season search verification: pack rejections are counted and the blocking setting is named', async () => {
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 0 reports downloaded.' },
+    interactive: [
+      { title: 'Drama.S01.1080p.WEB-DL', guid: 'a', indexerId: 7, size: 4 * 1024 ** 3, seeders: 12, indexer: 'AvistaZ', fullSeason: true, seasonNumber: 1, quality: { quality: { name: 'WEBDL-1080p' } }, approved: false, rejections: [{ reason: '4.2 GB is smaller than minimum allowed 9 GB (for 20min)' }] },
+      { title: 'Drama.S01.720p.WEB-DL', guid: 'b', indexerId: 7, size: 2 * 1024 ** 3, seeders: 8, indexer: 'AvistaZ', fullSeason: true, seasonNumber: 1, quality: { quality: { name: 'WEBDL-1080p' } }, approved: false, rejections: [{ reason: '2.1 GB is smaller than minimum allowed 9 GB (for 20min)' }] },
+    ],
+  });
+  await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Drama', seasonNumber: 1, missingAtSearch: 3, commandId: 101 });
+  assert.strictEqual(h.rejectionRecords.length, 1, 'Sonarr explains itself once, so the buckets are persisted at that moment');
+  assert.strictEqual(h.rejectionRecords[0].buckets[0].bucket, 'size_below_min');
+  assert.strictEqual(h.rejectionRecords[0].buckets[0].count, 2);
+  const blocked = h.notices[0].msg.embeds[0].fields.find(field => field.name === 'Blocked by');
+  assert.match(blocked.value, /Sonarr minimum size limit\*\* blocked 2 of 2 full-season packs \(WEBDL-1080p\)/);
+  assert.match(blocked.value, /floor is 460\.8 MB\/min; the pack offered 107\.5 MB\/min/);
+});
+
+test('season search verification: an approved pack clears stale counts for that quality', async () => {
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 0 reports downloaded.' },
+    // Approved but too few seeders to be force-grabbed, so the run still reaches the reporting
+    // path — the point is that a quality getting through resets its evidence.
+    interactive: [
+      { title: 'Drama.S01.1080p.WEB-DL', guid: 'a', indexerId: 7, size: 4 * 1024 ** 3, seeders: 12, indexer: 'AvistaZ', fullSeason: true, seasonNumber: 1, quality: { quality: { name: 'WEBDL-1080p' } }, approved: true, downloadAllowed: true },
+    ],
+  });
+  await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Drama', seasonNumber: 1, missingAtSearch: 3, commandId: 101 });
+  assert.deepStrictEqual(h.rejectionResets, ['WEBDL-1080p'], 'a fixed setting must stop driving a suggestion');
+  assert.strictEqual(h.rejectionRecords.length, 0, 'nothing was rejected, so nothing is counted');
+});
+
+test('season search verification: a size floor past the threshold is offered as a one-click fix', async () => {
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 0 reports downloaded.' },
+    sighting: {
+      bucket: 'size_below_min', quality: 'WEBDL-1080p', sighting_count: 5, season_count: 3,
+      limit_mb_per_minute: 460.8, observed_mb_per_minute: 100, dismissed: 0, suggested_at: null,
+      sample_reason: '2.1 GB is smaller than minimum allowed 9 GB (for 20min)',
+    },
+    interactive: [
+      { title: 'Drama.S01.1080p.WEB-DL', guid: 'a', indexerId: 7, size: 4 * 1024 ** 3, seeders: 12, indexer: 'AvistaZ', fullSeason: true, seasonNumber: 1, quality: { quality: { name: 'WEBDL-1080p' } }, approved: false, rejections: [{ reason: '2.1 GB is smaller than minimum allowed 9 GB (for 20min)' }] },
+    ],
+  });
+  await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Drama', seasonNumber: 1, missingAtSearch: 3, commandId: 101 });
+  assert.deepStrictEqual(h.suggestions, [{ bucket: 'size_below_min', quality: 'WEBDL-1080p' }], 'suggested once, then marked so it does not repeat');
+  const suggestion = h.notices.find(n => /Size Limit Is Blocking/.test(n.msg.embeds[0].title || ''));
+  assert.ok(suggestion, 'the suggestion is its own message, not buried in the season alert');
+  // 20% under the least dense blocked pack (100 MB/min), so a slightly smaller release later
+  // does not immediately trip the same floor again.
+  assert.strictEqual(suggestion.msg.components[0].components[0].customId, 'packsize_approve:WEBDL-1080p:80');
+  assert.match(suggestion.msg.embeds[0].description, /Current minimum: \*\*460\.8 MB\/min\*\*/);
+  assert.ok(h.audits.some(row => row.action === 'pack_size_fix_suggested' && row.detail.proposedFloorMbPerMinute === 80));
+});
+
+test('season search verification: the size-floor suggestion respects threshold, dismissal, and prior suggestion', async () => {
+  const base = {
+    command: { status: 'completed', message: 'Season search completed. 0 reports downloaded.' },
+    interactive: [
+      { title: 'Drama.S01.1080p.WEB-DL', guid: 'a', indexerId: 7, size: 4 * 1024 ** 3, seeders: 12, indexer: 'AvistaZ', fullSeason: true, seasonNumber: 1, quality: { quality: { name: 'WEBDL-1080p' } }, approved: false, rejections: [{ reason: '2.1 GB is smaller than minimum allowed 9 GB (for 20min)' }] },
+    ],
+  };
+  const row = { bucket: 'size_below_min', quality: 'WEBDL-1080p', sighting_count: 5, limit_mb_per_minute: 460.8, observed_mb_per_minute: 100, dismissed: 0, suggested_at: null };
+  for (const [label, over] of [
+    ['below threshold', { sighting: { ...row, sighting_count: 2 } }],
+    ['already dismissed', { sighting: { ...row, dismissed: 1 } }],
+    ['already suggested', { sighting: { ...row, suggested_at: 1 } }],
+    ['feature disabled', { sighting: row, sizeFixEnabled: false }],
+    ['no sighting row yet', { sighting: null }],
+  ]) {
+    const h = seasonVerifier({ ...base, ...over });
+    await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Drama', seasonNumber: 1, missingAtSearch: 3, commandId: 101 });
+    assert.deepStrictEqual(h.suggestions, [], `${label}: no suggestion`);
+  }
+});
+
+test('season search verification: auto-force may override a size-only rejection, but only when opted in', async () => {
+  const undersized = { title: 'Drama.S01.2160p.WEB-DL', guid: 'undersized-guid', indexerId: 7, size: 3 * 1024 ** 3, seeders: 12, indexer: 'AvistaZ', fullSeason: true, seasonNumber: 1, quality: { quality: { name: 'WEBDL-2160p' } }, approved: false };
+  const sizeOnly = { ...undersized, rejections: [{ reason: '769.8 MB is smaller than minimum allowed 1.5 GB (for 45min)' }] };
+
+  // Opted in: the floor is a statement about bytes, not about content, so it is overridden.
+  let h = seasonVerifier({ command: { status: 'completed', message: 'Season search completed. 0 reports downloaded.' }, autoForce: true, forceUndersized: true, interactive: [sizeOnly] });
+  let result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Drama', seasonNumber: 1, missingAtSearch: 3, commandId: 101 });
+  assert.strictEqual(result.outcome, 'auto_forced');
+  assert.strictEqual(h.forced.length, 1);
+  assert.strictEqual(h.forced[0].guid, 'undersized-guid');
+  assert.ok(h.audits.some(row => row.action === 'season_pack_auto_force_undersized'));
+
+  // A second, different objection means this is not a size problem — still refused.
+  h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 0 reports downloaded.' }, autoForce: true, forceUndersized: true,
+    interactive: [{ ...undersized, rejections: [{ reason: '769.8 MB is smaller than minimum allowed 1.5 GB (for 45min)' }, { reason: 'Language Korean is not wanted in profile' }] }],
+  });
+  result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Drama', seasonNumber: 1, missingAtSearch: 3, commandId: 101 });
+  assert.notStrictEqual(result.outcome, 'auto_forced');
+  assert.strictEqual(h.forced.length, 0, 'undersized AND wrong language is not a size problem');
+  assert.ok(h.audits.some(row => row.action === 'season_pack_auto_force_refused' && row.detail.reason === 'sonarr_rejected'));
+
+  // Default off: the #229 rail is intact for the same size-only release.
+  h = seasonVerifier({ command: { status: 'completed', message: 'Season search completed. 0 reports downloaded.' }, autoForce: true, interactive: [sizeOnly] });
+  result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Drama', seasonNumber: 1, missingAtSearch: 3, commandId: 101 });
+  assert.notStrictEqual(result.outcome, 'auto_forced');
+  assert.strictEqual(h.forced.length, 0, 'the override is opt-in, never the default');
+});
+
 test('season search verification: auto-force rechecks live coverage and falls back to buttons on failure', async () => {
   const candidate = [{ title: 'Winter.Sonata.S01.1080p', guid: 'pack-guid', indexerId: 7, size: 20 * 1024 ** 3, seeders: 12, indexer: 'Public', fullSeason: true, seasonNumber: 1 }];
   let h = seasonVerifier({
@@ -708,6 +838,76 @@ test('season search verification: a stalled grab surfaces Sonarr\'s own queue wa
   assert.strictEqual(result.outcome, 'grabbed');
   const embed = h.notices[0].msg.embeds[0];
   assert.match(embed.description, /One or more episodes expected in this release were not imported/, 'Sonarr\'s own queue message is surfaced, not just "still stalled"');
+});
+
+test('season search verification: a grab with nothing in the queue is reported as vanished, not as progress', async () => {
+  // The screenshot case: Sonarr accepted a release, the queue is empty, and the missing count
+  // never moved. Nothing else in the pipeline can see this — the stuck-download watchdog only
+  // reads the *arr queue — so reporting it as a plain "grabbed" is how a season churns forever.
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 1 report downloaded.' },
+    queue: [],
+    history: [
+      { eventType: 'grabbed', date: NOW + 500, downloadId: 'pack-1', sourceTitle: 'Winter.Sonata.S01.1080p', fullSeason: true },
+      { eventType: 'downloadfailed', date: NOW + 1000, message: 'Torrent was removed from the client', downloadId: 'dead-2', sourceTitle: 'Winter.Sonata.S01.1080p', fullSeason: true },
+    ],
+  });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101, stallCount: 3 });
+  assert.strictEqual(result.outcome, 'grab_vanished');
+  const embed = h.notices[0].msg.embeds[0];
+  assert.match(embed.title, /Grab Vanished/);
+  assert.match(embed.description, /left the download client without importing/);
+  assert.match(embed.description, /Torrent was removed from the client/, 'Sonarr\'s own failure reason is named, not just "still stalled"');
+  assert.strictEqual(embed.color, 1, 'a vanished grab is a warning, not routine info (COLORS.WARN)');
+  assert.strictEqual(h.interactiveCalls.length, 1, 'there is no live download to wait on, so the interactive report is worth paying for');
+  const detail = h.audits.find(row => row.action === 'season_pack_search_result').detail;
+  assert.strictEqual(detail.outcome, 'grab_vanished');
+  assert.strictEqual(detail.failureEvent, 'downloadfailed');
+
+  // A failed grab contributed nothing, so it must not be counted alongside the release that was
+  // actually grabbed — the fill summary describes what was attempted, not how many times it died.
+  assert.strictEqual(result.fill.releaseCount, 1);
+  assert.strictEqual(result.fill.mode, 'pack');
+});
+
+test('season search verification: a vanished grab with no history event still says so plainly', async () => {
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 2 reports downloaded.' },
+    queue: [],
+    interactiveEnabled: false,
+  });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101, stallCount: 0 });
+  assert.strictEqual(result.outcome, 'grab_vanished');
+  const embed = h.notices[0].msg.embeds[0];
+  assert.match(embed.description, /\*\*2\*\* releases, but nothing is in its queue/);
+  assert.match(embed.fields.find(field => field.name === 'Next step').value, /never arrived/);
+  assert.ok(h.alertRecords.length, 'a vanished grab uses the same identical-result backoff as a no-grab, so it cannot spam the channel');
+});
+
+test('season search verification: episode-fallback evidence recorded this run is not deleted before the guarded sweep can act on it', async () => {
+  // Recording the evidence and then clearing the row in the same call is what left a stalled
+  // season reporting "Episode fallback: Pending" on every sweep while the fallback never ran.
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 1 report downloaded.' },
+    queue: [],
+    interactive: [{ title: 'Winter.Sonata.S01E01.1080p.WEB-DL', approved: true, downloadAllowed: true, seeders: 112, size: 2 * 1024 ** 3, indexer: 'AvistaZ' }],
+  });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101, stallCount: 3 });
+  assert.strictEqual(result.outcome, 'grab_vanished');
+  assert.strictEqual(h.fallbackRecords.length, 1, 'approved episode evidence is recorded');
+  assert.deepStrictEqual(h.clearedFallbacks, [], 'and survives the same call that wrote it');
+  assert.match(h.notices[0].msg.embeds[0].fields.find(field => field.name === 'Episode fallback').value, /Pending/);
+});
+
+test('season search verification: a healthy grab still clears a stale episode fallback', async () => {
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 1 report downloaded.' },
+    queue: [{ source: { kind: 'tv' }, seriesId: 1, seasonNumber: 1 }],
+  });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101, stallCount: 0 });
+  assert.strictEqual(result.outcome, 'grabbed');
+  assert.deepStrictEqual(h.clearedFallbacks, [{ seriesId: 1, seasonNumber: 1 }],
+    'a live download owns the season, so any pending episode fan-out is dropped');
 });
 
 test('season search verification: a fresh grab (no stall history) is not treated as a problem', async () => {

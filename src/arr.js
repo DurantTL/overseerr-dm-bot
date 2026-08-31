@@ -5,6 +5,7 @@ const { audit } = require('./db');
 const { pad } = require('./util');
 const { normalizeTitle, parseReleaseName, buildSeriesAliases } = require('./grab');
 const { healthErrorDetail } = require('./health');
+const { SEASON_FILL_EVENTS, SEASON_FAILURE_EVENTS } = require('./season-pack');
 
 async function radarrGetFrom(url, apiKey, endpoint) {
   const res = await axios.get(`${url}/api/v3${endpoint}`, { params: { apikey: apiKey }, timeout: 10000 });
@@ -319,6 +320,29 @@ async function listSonarrQualityProfiles() {
   return res.data || [];
 }
 
+// Sonarr's per-quality size limits, in MB per minute of runtime. These are what produce the
+// "X is smaller than minimum allowed Y (for Nmin)" rejection, and Sonarr applies the same
+// per-minute test to a whole season pack (total size over total runtime) — so one floor that is
+// too high for a given source rejects that source's packs library-wide, not just one episode.
+async function listSonarrQualityDefinitions() {
+  const res = await axios.get(`${CONFIG.SONARR_URL}/api/v3/qualitydefinition`, { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 10000 });
+  return res.data || [];
+}
+
+// Lowers one quality definition's minimum. Only minSize is touched: maxSize and preferredSize are
+// the operator's ceiling and target, and moving them is a different decision from unblocking an
+// efficient encode. Sonarr rejects a definition whose minimum is not below its maximum, so the
+// caller's value is clamped under any configured maxSize before the write.
+async function setSonarrQualityDefinitionMinSize(definition, minSize) {
+  const ceiling = Number(definition?.maxSize);
+  const wanted = Math.max(0, Number(minSize));
+  const bounded = Number.isFinite(ceiling) && ceiling > 0 ? Math.min(wanted, ceiling - 0.1) : wanted;
+  const body = { ...definition, minSize: Number(bounded.toFixed(1)) };
+  const res = await axios.put(`${CONFIG.SONARR_URL}/api/v3/qualitydefinition/${definition.id}`, body,
+    { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 15000 });
+  return res.data || body;
+}
+
 // Adds (or updates) a formatItems entry scoring `customFormatId` at `score` in every quality
 // profile — the step that turns a labeled release into one Sonarr actually downranks/rejects.
 async function scoreSonarrCustomFormatInAllProfiles(customFormatId, score) {
@@ -415,12 +439,17 @@ async function getSeasonDownloadHistory(seriesId, seasonNumber, since = 0) {
   return (data.records || []).filter(row => {
     const event = String(row.eventType || '').toLowerCase();
     const date = Date.parse(row.date || '');
-    return ['grabbed', 'downloadfolderimported'].includes(event)
+    return [...SEASON_FILL_EVENTS, ...SEASON_FAILURE_EVENTS].includes(event)
       && Number(row.episode?.seasonNumber ?? row.seasonNumber) === Number(seasonNumber)
       && (!since || (Number.isFinite(date) && date >= since));
   }).map(row => {
     const sourceTitle = row.sourceTitle || row.data?.sourceTitle || '';
+    const date = Date.parse(row.date || '');
     return {
+      eventType: String(row.eventType || '').toLowerCase(),
+      date: Number.isFinite(date) ? date : null,
+      // Sonarr puts a failed grab's reason in data.message, an ignored one's in data.reason.
+      message: String(row.data?.message || row.data?.reason || '').trim().slice(0, 300) || null,
       downloadId: row.downloadId || row.data?.downloadId || '',
       sourceTitle,
       episodeNumber: row.episode?.episodeNumber ?? row.episodeNumber ?? null,
@@ -700,4 +729,4 @@ function remapPath(hostPath) {
   return hostPath;
 }
 
-module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, interactiveSeasonSearch, forceGrabRelease, getSeriesEpisodes, getSeasonDownloadHistory, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, listSonarrCustomFormats, createSonarrCustomFormat, listSonarrQualityProfiles, scoreSonarrCustomFormatInAllProfiles };
+module.exports = { radarrGetFrom, sonarrGet, arrSources, arrSourceByLabel, escalationSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, resolveDeletableMedia, executeDeletion, getArrTagId, getMovieByTmdbId, getSeriesByTvdbId, addTagToMovie, addTagToSeries, triggerMovieSearch, triggerSeriesSearch, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, interactiveSeasonSearch, forceGrabRelease, getSeriesEpisodes, getSeasonDownloadHistory, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, extractEpisodeNumber, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, listSonarrCustomFormats, createSonarrCustomFormat, listSonarrQualityProfiles, scoreSonarrCustomFormatInAllProfiles, listSonarrQualityDefinitions, setSonarrQualityDefinitionMinSize };
