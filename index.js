@@ -1142,7 +1142,13 @@ async function autoForceSeasonPack({ seriesId, seriesTitle, seasonNumber, candid
   return { status: 'grabbed' };
 }
 
-async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = null, seriesAliases = null, seasonNumber, missingAtSearch, commandId, searchedAt = 0, stallCount = 0 }) {
+// `searchedAt` bounds the history read to this search. It defaults to now — evaluated at call
+// time, so it lands within microseconds of the triggerSeasonSearch that precedes every call —
+// because the alternative default, 0, means "no date filter" in getSeasonDownloadHistory: the
+// fill summary then counts every grab the season has ever had (a real one reported 136 releases
+// for a single search), and the vanished-grab diagnosis can quote a months-old failure as if it
+// explained this sweep.
+async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = null, seriesAliases = null, seasonNumber, missingAtSearch, commandId, searchedAt = Date.now(), stallCount = 0 }) {
   const command = await pollArrCommand({ url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY }, commandId, 10 * 60000);
   const status = command.status || 'unknown';
   const [episodes, queue, history] = await Promise.all([
@@ -6906,10 +6912,11 @@ async function handleSeasonCommand(interaction) {
     return interaction.editReply(`📦 **${series.title}** S${pad(seasonNumber)} — ${statusText}`);
   }
 
+  const searchedAt = Date.now();
   const command = await triggerSeasonSearch(series.id, seasonNumber);
   clearSeasonAlertState(series.id, seasonNumber);
   const stallCount = recordSeasonSearch({ seriesId: series.id, seasonNumber, seriesTitle: series.title, missing: missing.length });
-  monitorSeasonSearch({ seriesId: series.id, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber, missingAtSearch: missing.length, commandId: command?.id, stallCount });
+  monitorSeasonSearch({ seriesId: series.id, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber, missingAtSearch: missing.length, commandId: command?.id, searchedAt, stallCount });
   audit('season_search_command', { actorDiscordId: interaction.user.id, seriesId: series.id, title: series.title, season: seasonNumber, route: 'sonarr', commandId: command?.id || null, force });
   return interaction.editReply(`📡 Sonarr accepted the S${pad(seasonNumber)} season search for **${series.title}**.${force ? ' (cooldown overridden)' : ''} Its own interactive-search report will follow in the downloads channel if it needs one.`);
 }
@@ -9830,10 +9837,11 @@ function startExpressServer() {
                     : `AvistaZ search failed: ${result.error || 'unknown error'}`;
             return res.json({ ok: result.status !== 'error', message: `${series.title} S${pad(seasonNumber)} — ${statusText}` });
           }
+          const searchedAt = Date.now();
           const command = await triggerSeasonSearch(seriesId, seasonNumber);
           clearSeasonAlertState(seriesId, seasonNumber);
           const stallCount = recordSeasonSearch({ seriesId, seasonNumber, seriesTitle: series.title, missing: missing.length });
-          monitorSeasonSearch({ seriesId, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber, missingAtSearch: missing.length, commandId: command?.id, stallCount });
+          monitorSeasonSearch({ seriesId, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber, missingAtSearch: missing.length, commandId: command?.id, searchedAt, stallCount });
           audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, seasonNumber, title: series.title, route: 'sonarr', commandId: command?.id || null, override: force });
           return res.json({ ok: true, message: `Sonarr accepted the S${pad(seasonNumber)} season search for ${series.title}.${force ? ' (cooldown overridden)' : ''}` });
         }
