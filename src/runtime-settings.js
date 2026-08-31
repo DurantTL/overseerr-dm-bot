@@ -138,6 +138,9 @@ const RUNTIME_SETTINGS = [
   { key: 'SEASON_PACK_FORCE_UNDERSIZED', group: 'pack_size_fix', type: 'bool', source: 'config',
     label: 'Let automatic force-grab override a size-only rejection', help: 'Off by default. When on, SEASON_PACK_FORCE_GRAB may push through a pack whose ONLY rejection is the minimum-size floor. Every other rejection reason is still refused. This deliberately relaxes the rule that automatic force-grab never overrides Sonarr, so a pack Sonarr flagged as undersized for its claimed resolution can be grabbed with no human in the loop.' },
 
+  { key: 'RTORRENT_PATH_GUARD', group: 'pack_size_fix', type: 'bool', source: 'config',
+    label: 'Pause searching while rTorrent paths are unimportable', help: 'When torrents are sitting at relative paths Sonarr/Radarr refuse to import, stop starting new season searches and episode-fallback batches. Every grab made in that state is a metered tracker slot spent on a file that cannot land. Already-submitted work is still tracked to completion, and searching resumes on its own once the paths are fixed.' },
+
   // ---- Premiumize→rTorrent reroute ----
   { key: 'PREMIUMIZE_REROUTE_ENABLED', group: 'premiumize', type: 'bool', source: 'config',
     label: 'Reroute dead transfers to seedbox rTorrent', help: 'When a Premiumize transfer is finally given up on, try to pick the same release back up through the seedbox rTorrent client instead of leaving it dead. Matched against the live Sonarr/Radarr queue entry — skipped if no match is found.' },

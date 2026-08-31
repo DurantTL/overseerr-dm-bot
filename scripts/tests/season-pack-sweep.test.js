@@ -13,6 +13,7 @@ const { priorityKey, orderByPriority, isPinned } = require('../../src/priority')
 const { sha256, queueItemLooksUnhealthy } = require('../../src/util');
 const { normalizeTitle, splitTitleYear, releaseContentClaim, seriesAliasMatch } = require('../../src/grab');
 const { isAsianLanguageName } = require('../../src/asian');
+const { findUnprocessableTorrents } = require('../../src/adopt');
 const sonarrSeriesAliases = series => [normalizeTitle(series?.title)].filter(Boolean);
 
 const DAY = 86400000;
@@ -55,6 +56,7 @@ function build({
 } = {}) {
   const calls = [];
   const recorded = [];
+  const audits = [];
   const notices = [];
   const episodeFetches = [];
   const monitored = [];
@@ -62,6 +64,7 @@ function build({
   const directCalls = [];
   const tagCalls = [];
   const CONFIG = {
+    RTORRENT_PATH_GUARD: true,
     SEASON_PACK_FIRST: seasonPackFirst,
     SONARR_URL: 'http://sonarr',
     SONARR_API_KEY: 'key',
@@ -81,7 +84,7 @@ function build({
   // is exactly the behavior when nothing has been overridden.
   const store = { get: key => overrides[key.replace(runtimeSettings.OVERRIDE_PREFIX, '')] ?? null };
   const taggedSeries = SERIES.map(s => ({ ...s, tags: seriesTags[s.id] || [] }));
-  const sandbox = loadSandbox(['sweepSeasonPacks', 'seasonPackConfig', 'queuedSeasons', 'activeGrabSeasonsFor', 'rtorrentSeasonsFor'], {
+  const sandbox = loadSandbox(['sweepSeasonPacks', 'downloadPathBlock', 'seasonPackConfig', 'queuedSeasons', 'activeGrabSeasonsFor', 'rtorrentSeasonsFor'], {
     CONFIG,
     tunable: key => runtimeSettings.resolveRuntime(key, { config: CONFIG, store }),
     // Pinning reorders the candidate list; `pinned` maps tvdbId → rank.
@@ -108,7 +111,7 @@ function build({
     listSeriesIdsWithSeasonSearches: () => everSweptSeriesIds ?? new Set(taggedSeries.map(s => s.id)),
     recordSeasonSearch: row => { recorded.push(row); return stallCounts[row.seriesId]?.[row.seasonNumber] ?? 0; },
     clearSeasonAlertState: (seriesId, seasonNumber) => rearmed.push(`${seriesId}:${seasonNumber}`),
-    audit: () => {},
+    audit: (action, detail) => audits.push({ action, detail }),
     notifyChannel: (channel, msg) => notices.push({ channel, msg }),
     COLORS: { INFO: 1 },
     brandedEmbed: () => ({ setTitle(t) { this.title = t; return this; }, setDescription(d) { this.description = d; return this; } }),
@@ -127,8 +130,9 @@ function build({
     isAsianLanguageName,
     rtorrentConfigured: () => true,
     listRtorrentTorrents: async () => rtorrentTorrents,
+    findUnprocessableTorrents,
   });
-  return { sandbox, calls, recorded, notices, episodeFetches, monitored, rearmed, directCalls, tagCalls };
+  return { sandbox, calls, recorded, audits, notices, episodeFetches, monitored, rearmed, directCalls, tagCalls };
 }
 
 test('season-pack-sweep: old shows get season searches, airing shows are never touched', async () => {
@@ -177,6 +181,36 @@ test('season-pack-sweep: a manual run re-arms only seasons it actually retries',
   await h.sandbox.sweepSeasonPacks({ rearmAlerts: true });
   assert.deepStrictEqual(h.rearmed, ['1:1', '1:2']);
   assert.deepStrictEqual(h.calls, ['1:1', '1:2'], 'manual re-arm does not expand the normal search cap');
+});
+
+test('season-pack-sweep: searching pauses while rTorrent holds paths the *arrs will not import', async () => {
+  // Every grab made in this state is a metered tracker slot spent on a file that provably cannot
+  // land — a live run burned 25 episode grabs in one hour that way.
+  const h = build({ rtorrentTorrents: [
+    { name: 'The.Road.to.Splendor.S01E01.mkv', basePath: './The.Road.to.Splendor.S01E01.mkv', hash: 'A', label: 'sonarr' },
+    { name: 'Healthy.mkv', basePath: '/home/seed/downloads/Healthy.mkv', hash: 'B', label: 'sonarr' },
+  ] });
+  const result = await h.sandbox.run('sweepSeasonPacks()');
+  assert.strictEqual(result.skipped, 'download_path_blocked');
+  assert.strictEqual(result.searched, 0);
+  assert.strictEqual(h.calls.length, 0, 'no season search is started');
+  assert.ok(h.audits.some(row => row.action === 'season_pack_skipped' && row.detail.reason === 'download_path_blocked'));
+  assert.match(h.notices.at(-1).msg.embeds[0].title, /Season Searching Paused/);
+  assert.match(h.notices.at(-1).msg.embeds[0].description, /RTORRENT_PATH_GUARD=false/, 'the opt-out is named');
+});
+
+test('season-pack-sweep: the path guard never blocks on an unknown answer', async () => {
+  // "Cannot tell" must not read as "blocked", or an unreachable seedbox silently stops all
+  // searching — a far worse failure than the waste the guard exists to prevent.
+  const unreachable = build({ rtorrentTorrents: [] });
+  unreachable.sandbox.listRtorrentTorrents = async () => { throw new Error('seedbox unreachable'); };
+  assert.notStrictEqual((await unreachable.sandbox.run('sweepSeasonPacks()')).skipped, 'download_path_blocked');
+
+  const guardOff = build({ overrides: { RTORRENT_PATH_GUARD: 'false' }, rtorrentTorrents: [
+    { name: 'Bad.mkv', basePath: './Bad.mkv', hash: 'A', label: 'sonarr' },
+  ] });
+  assert.notStrictEqual((await guardOff.sandbox.run('sweepSeasonPacks()')).skipped, 'download_path_blocked');
+  assert.ok(guardOff.calls.length > 0, 'the opt-out really does keep searching');
 });
 
 test('season-pack-sweep: a season already downloading is left alone rather than raced', async () => {

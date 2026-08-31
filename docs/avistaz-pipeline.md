@@ -350,6 +350,17 @@ since builds differ in what they expose; when nothing resolves the alert says so
 ruTorrent rather than guessing a path, because a wrong absolute path trades a diagnosable failure
 for a silent one.
 
+While the condition holds, `RTORRENT_PATH_GUARD` (default on) stops the season sweep starting new
+searches and stops the episode fallback submitting new batches — every grab made in that state is
+a metered tracker slot spent on a file that provably cannot land. Already-submitted fallback
+commands are still read to completion, so nothing is left stuck in `submitted`, and searching
+resumes on its own once the paths are fixed. "Cannot tell" never counts as blocked: an
+unreachable seedbox or a failed listing leaves searching alone, since silently halting every
+download is a worse failure than the waste the guard prevents.
+
+`/rtorrent status` reports the same diagnosis on demand, so the absolute path is available the
+moment imports stop rather than only on the next sweep.
+
 `RTORRENT_DOWNLOAD_DIR` pins that same absolute path on the torrents this bot adds itself. Unset
 (the default) keeps rTorrent's own default. The two settings cover the two halves: the *arrs add
 their own torrents to rTorrent directly, so their Directory field covers those, and this covers

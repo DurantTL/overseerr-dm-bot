@@ -269,3 +269,21 @@ test('failed episode fallback command enters cooldown and reports a distinct fai
   assert.match(finished.error, /indexer unavailable/);
   assert.ok(audits.some(row => row.action === 'episode_fallback_failed'));
 });
+
+test('planner refuses to spend grabs while the download path is blocked', () => {
+  // Submitting here would hand Sonarr 25 episodes to grab into a client that refuses to import
+  // any of them. The reason is distinct from fallback_disabled so the cause stays legible.
+  const blocked = planEpisodeFallback({
+    seasonNumber: 1, episodes: episodes(36), evidence, downloadPathBlocked: true,
+    now: NOW, budget: { perSeason: 25, remainingGlobal: 50 },
+  });
+  assert.deepStrictEqual({ action: blocked.action, reason: blocked.reason, submitted: blocked.submitted },
+    { action: 'blocked', reason: 'download_path_blocked', submitted: 0 });
+  // And it is a pause, not a cancellation: the same season submits normally once cleared.
+  const cleared = planEpisodeFallback({
+    seasonNumber: 1, episodes: episodes(36), evidence, downloadPathBlocked: false,
+    now: NOW, budget: { perSeason: 25, remainingGlobal: 50 },
+  });
+  assert.strictEqual(cleared.action, 'submit');
+  assert.strictEqual(cleared.submitted, 25);
+});
