@@ -2,7 +2,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { loadSandbox } = require('./extract');
-const { classifySeasonRelease, rankSeasonReleases, chooseSeasonPack, describeRejections } = require('../../src/season-release');
+const { classifySeasonRelease, rankSeasonReleases, chooseSeasonPack, describeRejections,
+  classifyRejection, parseSizeRejection, rejectedOnlyForSizeFloor, summarizePackRejections } = require('../../src/season-release');
 
 const GB = 1024 ** 3;
 const release = (title, over = {}) => ({
@@ -129,4 +130,64 @@ test('season-release: interactive lookup refuses to fall back to Sonarr RSS with
   });
   await assert.rejects(sandbox.interactiveSeasonSearch(42, 3), /episode id is required/);
   assert.strictEqual(calls, 0, 'an unscoped release request must never be sent');
+});
+
+test('rejection classification: buckets Sonarr prose and leaves unrecognised wording as other', () => {
+  assert.strictEqual(classifyRejection('769.8 MB is smaller than minimum allowed 1.5 GB (for 45min)'), 'size_below_min');
+  assert.strictEqual(classifyRejection('24.1 GB is larger than maximum allowed 20 GB (for 45min)'), 'size_above_max');
+  assert.strictEqual(classifyRejection('Custom Formats [LQ] have score -50 below Minimum Custom Format Score 0'), 'custom_format_score');
+  assert.strictEqual(classifyRejection('Quality for existing file on disk is of equal or higher preference'), 'cutoff_met');
+  assert.strictEqual(classifyRejection('Language Korean is not wanted in profile'), 'language');
+  assert.strictEqual(classifyRejection('Unknown Series'), 'unmatched_series');
+  // Sonarr's wording drifts between versions; an unrecognised reason must degrade to a visible
+  // "we don't know" rather than land in whichever bucket happens to be checked last.
+  assert.strictEqual(classifyRejection('Something Sonarr started saying last release'), 'other');
+  assert.strictEqual(classifyRejection(''), 'other');
+});
+
+test('rejection classification: size rejections yield the MB-per-minute the quality definition is set in', () => {
+  const parsed = parseSizeRejection('769.8 MB is smaller than minimum allowed 1.5 GB (for 45min)');
+  assert.strictEqual(parsed.actualMb, 769.8);
+  assert.strictEqual(parsed.limitMb, 1536);
+  assert.strictEqual(parsed.runtimeMinutes, 45);
+  assert.ok(Math.abs(parsed.limitMbPerMinute - 34.13) < 0.01, 'the floor is reported in the unit Sonarr configures it in');
+  assert.ok(Math.abs(parsed.actualMbPerMinute - 17.11) < 0.01);
+  // A reason with no runtime still yields both sizes; only the per-minute view is unavailable.
+  const noRuntime = parseSizeRejection('700 MB is smaller than minimum allowed 1.5 GB');
+  assert.strictEqual(noRuntime.runtimeMinutes, null);
+  assert.strictEqual(noRuntime.limitMbPerMinute, null);
+  assert.strictEqual(parseSizeRejection('Unknown Series'), null);
+});
+
+test('rejection classification: only a pure size-floor rejection is safe for automatic override', () => {
+  assert.strictEqual(rejectedOnlyForSizeFloor({ rejections: ['769.8 MB is smaller than minimum allowed 1.5 GB (for 45min)'] }), true);
+  // A second, different objection means this is not a size problem — the release may genuinely be
+  // the wrong content, which is exactly what the #229 safety rail exists to catch.
+  assert.strictEqual(rejectedOnlyForSizeFloor({
+    rejections: ['769.8 MB is smaller than minimum allowed 1.5 GB (for 45min)', 'Language Korean is not wanted in profile'],
+  }), false);
+  assert.strictEqual(rejectedOnlyForSizeFloor({ rejections: [] }), false, 'an approved release is not "rejected for size"');
+  assert.strictEqual(rejectedOnlyForSizeFloor({ rejections: ['Unknown Series'] }), false);
+});
+
+test('rejection classification: the pack summary ranks the setting that blocks the most packs', () => {
+  const ranked = rankSeasonReleases([
+    release('Winter.Sonata.S01.1080p.WEB-DL', { fullSeason: true, seasonNumber: 1, approved: false, quality: { quality: { name: 'WEBDL-1080p' } }, rejections: [{ reason: '4.2 GB is smaller than minimum allowed 9 GB (for 20min)' }] }),
+    release('Winter.Sonata.S01.720p.WEB-DL', { fullSeason: true, seasonNumber: 1, approved: false, quality: { quality: { name: 'WEBDL-1080p' } }, rejections: [{ reason: '2.1 GB is smaller than minimum allowed 6 GB (for 20min)' }] }),
+    release('Winter.Sonata.S01.2160p.WEB-DL', { fullSeason: true, seasonNumber: 1, approved: false, rejections: [{ reason: 'Language Korean is not wanted in profile' }] }),
+    // Episode releases are not what this is trying to unblock, so they stay out of the count.
+    release('Winter.Sonata.S01E01.1080p.WEB-DL', { approved: false, rejections: [{ reason: 'Language Korean is not wanted in profile' }] }),
+  ], { title: 'Winter Sonata', season: 1 });
+
+  const summary = summarizePackRejections(ranked);
+  assert.strictEqual(summary.packCount, 3);
+  assert.strictEqual(summary.rejectedPackCount, 3);
+  assert.strictEqual(summary.primary.bucket, 'size_below_min');
+  assert.strictEqual(summary.primary.count, 2, 'two packs blocked by the size floor outrank the one language rejection');
+  assert.strictEqual(summary.primary.label, 'Sonarr minimum size limit');
+  assert.strictEqual(summary.primary.quality, 'WEBDL-1080p', 'the floor is tied to the quality definition that set it');
+  // The tightest floor is the one that has to move for a pack to pass.
+  assert.strictEqual(summary.primary.size.limitMb, 9216);
+  assert.deepStrictEqual(summary.buckets.map(b => b.bucket), ['size_below_min', 'language']);
+  assert.deepStrictEqual(summarizePackRejections([]), { packCount: 0, rejectedPackCount: 0, buckets: [], primary: null });
 });

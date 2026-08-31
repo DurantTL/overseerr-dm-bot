@@ -128,6 +128,16 @@ const RUNTIME_SETTINGS = [
   { key: 'RELEASE_GROUP_BLOCKLIST_SCORE', group: 'release_group_blocklist', type: 'int', min: -10000, max: 0, source: 'config',
     label: 'Score applied once approved', unit: 'pts' },
 
+  // ---- Season-pack size-floor fix (#236) ----
+  { key: 'PACK_SIZE_FIX_ENABLED', group: 'pack_size_fix', type: 'bool', source: 'config',
+    label: 'Suggest loosening a Sonarr size floor', help: 'When Sonarr’s minimum-size limit keeps rejecting season packs of the same quality, post a suggestion in the downloads channel. Approving it lowers that one quality definition’s minimum; nothing changes until an admin clicks.' },
+  { key: 'PACK_SIZE_FIX_THRESHOLD', group: 'pack_size_fix', type: 'int', min: 1, max: 100, source: 'config',
+    label: 'Packs blocked before suggesting', unit: 'packs' },
+  { key: 'PACK_SIZE_FIX_HEADROOM_PCT', group: 'pack_size_fix', type: 'int', min: 0, max: 90, source: 'config',
+    label: 'Headroom below the smallest blocked pack', unit: '%', help: 'The proposed floor sits this far under the least dense pack Sonarr rejected, so a slightly smaller release later does not trip the same limit again.' },
+  { key: 'SEASON_PACK_FORCE_UNDERSIZED', group: 'pack_size_fix', type: 'bool', source: 'config',
+    label: 'Let automatic force-grab override a size-only rejection', help: 'Off by default. When on, SEASON_PACK_FORCE_GRAB may push through a pack whose ONLY rejection is the minimum-size floor. Every other rejection reason is still refused. This deliberately relaxes the rule that automatic force-grab never overrides Sonarr, so a pack Sonarr flagged as undersized for its claimed resolution can be grabbed with no human in the loop.' },
+
   // ---- Premiumize→rTorrent reroute ----
   { key: 'PREMIUMIZE_REROUTE_ENABLED', group: 'premiumize', type: 'bool', source: 'config',
     label: 'Reroute dead transfers to seedbox rTorrent', help: 'When a Premiumize transfer is finally given up on, try to pick the same release back up through the seedbox rTorrent client instead of leaving it dead. Matched against the live Sonarr/Radarr queue entry — skipped if no match is found.' },
@@ -147,6 +157,7 @@ const GROUPS = [
   { id: 'episode_recovery', title: 'Episode recovery', blurb: 'Chases individual aired episodes that never landed, even once the series looks available.' },
   { id: 'premiumize', title: 'Premiumize transfers', blurb: 'Clears transfers that will never finish and batches the leftovers into one alert.' },
   { id: 'release_group_blocklist', title: 'Release-group blocklist', blurb: 'Suggests a Sonarr Custom Format when the same release-group tag keeps showing up in dead Premiumize auto-clears.' },
+  { id: 'pack_size_fix', title: 'Season-pack size floors', blurb: 'Sonarr’s minimum-size limits reject efficient encodes. Counts which limit is blocking packs and offers to loosen it.' },
 ];
 
 const BY_KEY = new Map(RUNTIME_SETTINGS.map(s => [s.key, s]));

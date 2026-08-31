@@ -31,7 +31,7 @@ const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, recordPackRejections, getPackRejectionSighting, markPackRejectionSuggested, dismissPackRejectionSuggestion, resetPackRejectionSightings, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeasonEpisodeFallbacks,
@@ -42,10 +42,11 @@ const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPl
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases,
-  getArrTagId, addTagToSeries, listSonarrCustomFormats, createSonarrCustomFormat, scoreSonarrCustomFormatInAllProfiles } = require('./src/arr');
+  getArrTagId, addTagToSeries, listSonarrCustomFormats, createSonarrCustomFormat, scoreSonarrCustomFormatInAllProfiles,
+  listSonarrQualityDefinitions, setSonarrQualityDefinitionMinSize } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed, usesDirectGrabEscalation } = require('./src/escalation');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity, SEASON_FILL_EVENTS, SEASON_FAILURE_EVENTS } = require('./src/season-pack');
-const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('./src/season-release');
+const { rankSeasonReleases, chooseSeasonPack, describeRejections, summarizePackRejections, rejectedOnlyForSizeFloor } = require('./src/season-release');
 const { classifyEpisodeFallbackEvidence, planEpisodeFallback, orderPendingFallbacks } = require('./src/season-episode-fallback');
 const { assessAsianOrigin, describeAvistazFit, isAsianLanguageName } = require('./src/asian');
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
@@ -1093,10 +1094,25 @@ async function autoForceSeasonPack({ seriesId, seriesTitle, seasonNumber, candid
   // down; that's exactly how an undersized 2160p pack it flagged as too small could otherwise
   // get grabbed anyway.
   if (candidate.sonarrApproved === false) {
-    audit('season_pack_auto_force_refused', {
-      seriesId, title: seriesTitle, season: seasonNumber, releaseTitle: candidate.title, reason: 'sonarr_rejected',
+    // SEASON_PACK_FORCE_UNDERSIZED (default off) carves one class out of that rule: a rejection
+    // that is ONLY Sonarr's minimum-size floor. That floor is a statement about bytes per minute,
+    // not about whether the release is the right content — an efficient encode of a short episode
+    // trips it — so it is the one reason a human reviewing the alert would essentially always
+    // override. Every other reason, and any release carrying a second reason alongside the size
+    // one, still refuses: "undersized AND wrong language" is not a size problem.
+    const sizeOnly = tunable('SEASON_PACK_FORCE_UNDERSIZED')
+      && rejectedOnlyForSizeFloor({ rejections: candidate.rejections || [] });
+    if (!sizeOnly) {
+      audit('season_pack_auto_force_refused', {
+        seriesId, title: seriesTitle, season: seasonNumber, releaseTitle: candidate.title, reason: 'sonarr_rejected',
+        rejections: (candidate.rejections || []).slice(0, 3),
+      });
+      return { status: 'covered', reason: 'sonarr_rejected' };
+    }
+    audit('season_pack_auto_force_undersized', {
+      seriesId, title: seriesTitle, season: seasonNumber, releaseTitle: candidate.title,
+      rejections: (candidate.rejections || []).slice(0, 3),
     });
-    return { status: 'covered', reason: 'sonarr_rejected' };
   }
   let blocked;
   try {
@@ -1247,6 +1263,7 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
   let interactiveFingerprint = null;
   let seasonGrabCandidates = null;
   let seasonGrabOffer = null;
+  let packRejections = null;
   let autoForceResult = null;
   let episodeFallbackEvidence = null;
   // 'grab_vanished' earns the interactive report on its first occurrence rather than only on a
@@ -1275,6 +1292,18 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
         candidates: ranked.slice(0, 3),
         anchorEpisodeNumber: Number(anchorEpisode?.episodeNumber) || null,
       };
+      // Sonarr has just explained, in prose, why it refused each pack. This is the only moment
+      // that explanation exists — the response is not persisted anywhere else — so bucket it and
+      // count it now, or the question "which setting is blocking my packs?" stays unanswerable.
+      packRejections = summarizePackRejections(ranked);
+      if (packRejections.buckets.length) {
+        recordPackRejections(packRejections.buckets, { seriesTitle });
+      }
+      // A pack of this quality getting through means the setting that was blocking it is no
+      // longer blocking it — stale counts must not keep driving a suggestion for a fixed problem.
+      for (const approvedPack of ranked.filter(r => r.isPack && r.coversSeason && r.approved && !r.rejections.length && r.quality)) {
+        resetPackRejectionSightings(approvedPack.quality);
+      }
       const choice = chooseSeasonPack(ranked, {
         minSeeders: tunable('SEASON_PACK_MIN_SEEDERS'),
         maxSizeGb: tunable('SEASON_PACK_MAX_SIZE_GB'),
@@ -1312,6 +1341,9 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
           confidence: release.confidence,
           displayedRank: ranked.indexOf(release) + 1,
           sonarrApproved: !(release.rejections || []).length,
+          // Carried so the automatic path can tell a pure size-floor rejection from any other
+          // reason; the manual buttons already show the same text via describeRejections.
+          rejections: (release.rejections || []).slice(0, 5),
         }));
       }
       if (seasonGrabCandidates?.length && tunable('SEASON_PACK_FORCE_GRAB')) {
@@ -1384,6 +1416,19 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
   } else if (interactiveError) {
     fields.push({ name: 'Interactive search', value: `Unavailable: ${interactiveError}`.slice(0, 1024), inline: false });
   }
+  // Name the setting that is actually blocking the packs. Without this the operator sees three
+  // candidates with three different rejection sentences and has to work out for themselves which
+  // one is the common cause — which is the whole reason a stalled season stays stalled.
+  if (packRejections?.primary) {
+    const primary = packRejections.primary;
+    const blocked = [`**${primary.label}** blocked ${primary.count} of ${packRejections.packCount} full-season pack${packRejections.packCount === 1 ? '' : 's'}${primary.quality ? ` (${primary.quality})` : ''}.`];
+    if (primary.size?.limitMbPerMinute) {
+      blocked.push(`Sonarr's floor is ${primary.size.limitMbPerMinute.toFixed(1)} MB/min; the pack offered ${primary.size.actualMbPerMinute.toFixed(1)} MB/min.`);
+    }
+    const others = packRejections.buckets.slice(1);
+    if (others.length) blocked.push(`Also seen: ${others.map(b => `${b.label} (${b.count})`).join(', ')}.`);
+    fields.push({ name: 'Blocked by', value: blocked.join('\n').slice(0, 1024), inline: false });
+  }
   if (episodeFallbackEvidence?.status === 'approved_episode') {
     fields.push({
       name: 'Episode fallback',
@@ -1410,6 +1455,7 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
       // A new failure reason is new information — it must re-arm a stood-down alert rather than
       // being collapsed into the previous sweep's identical-result count.
       failure: failureHistory[0]?.message || failureHistory[0]?.eventType || null,
+      blockedBy: packRejections?.primary?.bucket || null,
     }));
     alertDecision = recordSeasonNoGrab({
       seriesId, seasonNumber, seriesTitle, fingerprint, missingCount: remaining,
@@ -1445,8 +1491,13 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
     });
   }
   if (nextStep) fields.push({ name: 'Next step', value: nextStep.slice(0, 1024), inline: false });
+  // Deliberately outside the shouldNotify gate: the per-season alert stands down after repeats,
+  // but the setting-level suggestion is posted at most once per quality anyway (suggested_at),
+  // and it is the message that actually ends the stall.
+  try { maybeSuggestPackSizeFix(packRejections, { seriesTitle, seasonNumber }); }
+  catch (err) { audit('pack_size_fix_failed', { seriesId, title: seriesTitle, season: seasonNumber, stage: 'suggest', error: err.message }); }
 
-  audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, fillMode: fill.mode, releaseCount: fill.releaseCount, packReleases: fill.packReleases, episodeReleases: fill.episodeReleases, interactiveSearched: interactive !== null || interactiveError !== null, interactiveReleaseCount: interactive?.releaseCount ?? null, interactivePackCount: interactive?.packCount ?? null, interactiveError, failureEvent: failureHistory[0]?.eventType ?? null, failureReason: failureHistory[0]?.message ?? null, episodeFallbackEvidence: episodeFallbackEvidence?.status ?? null, episodeFallbackFingerprint: episodeFallbackEvidence?.fingerprint ?? null, autoForceStatus: autoForceResult?.status ?? null, autoForceReason: autoForceResult?.reason ?? null, autoForceError: autoForceResult?.error ?? null, alertPosted: shouldNotify, noGrabAttempts: alertDecision?.attemptCount ?? null, alertStoodDown: alertDecision?.stoodDown ?? false, message: commandText.slice(0, 1000) || null });
+  audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, fillMode: fill.mode, releaseCount: fill.releaseCount, packReleases: fill.packReleases, episodeReleases: fill.episodeReleases, interactiveSearched: interactive !== null || interactiveError !== null, interactiveReleaseCount: interactive?.releaseCount ?? null, interactivePackCount: interactive?.packCount ?? null, interactiveError, packRejectionPrimary: packRejections?.primary?.bucket ?? null, packRejectionQuality: packRejections?.primary?.quality ?? null, packRejectionCounts: packRejections?.buckets?.map(b => `${b.bucket}:${b.count}`) ?? null, failureEvent: failureHistory[0]?.eventType ?? null, failureReason: failureHistory[0]?.message ?? null, episodeFallbackEvidence: episodeFallbackEvidence?.status ?? null, episodeFallbackFingerprint: episodeFallbackEvidence?.fingerprint ?? null, autoForceStatus: autoForceResult?.status ?? null, autoForceReason: autoForceResult?.reason ?? null, autoForceError: autoForceResult?.error ?? null, alertPosted: shouldNotify, noGrabAttempts: alertDecision?.attemptCount ?? null, alertStoodDown: alertDecision?.stoodDown ?? false, message: commandText.slice(0, 1000) || null });
   const message = { embeds: [brandedEmbed(color)
     .setTitle(title.slice(0, 256))
     .setDescription(description.slice(0, 4000))
@@ -1513,6 +1564,56 @@ async function handleSeasonPackGrab(interaction, nonce, candidateIndex) {
   return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
     .setTitle(`📥 Season Pack Forced — ${offer.seriesTitle} S${pad(offer.seasonNumber)}`.slice(0, 256))
     .setDescription(`**${candidate.title}** (${fmtSpace(candidate.size)}) was sent to Sonarr by <@${interaction.user.id}>. Sonarr's rejection was deliberately overridden; import verification remains with Sonarr.`)], components: [] });
+}
+
+// Sonarr's minimum-size floor is the one rejection class that says nothing about whether a
+// release is the right content — an efficient encode of a short episode trips it, and because
+// Sonarr applies the same MB-per-minute test to a whole pack, one floor that is too high for a
+// source rejects that source's packs across the library. When the same floor has blocked enough
+// packs to be a setting problem rather than a bad release, offer to lower it.
+//
+// Suggest-only, matching the release-group blocklist: nothing in Sonarr changes until an admin
+// clicks. The proposed floor sits PACK_SIZE_FIX_HEADROOM_PCT under the least dense pack Sonarr
+// rejected, so the next slightly-smaller release does not immediately trip the same limit.
+function proposedSizeFloor(row, headroomPct = 20) {
+  const observed = Number(row?.observed_mb_per_minute);
+  if (!Number.isFinite(observed) || observed <= 0) return null;
+  const floor = observed * (1 - Math.min(90, Math.max(0, headroomPct)) / 100);
+  return Number(floor.toFixed(1));
+}
+
+function maybeSuggestPackSizeFix(packRejections, { seriesTitle, seasonNumber } = {}) {
+  if (!tunable('PACK_SIZE_FIX_ENABLED') || !CONFIG.SONARR_URL) return null;
+  const bucket = (packRejections?.buckets || []).find(b => b.bucket === 'size_below_min');
+  if (!bucket?.quality) return null;
+  const row = getPackRejectionSighting('size_below_min', bucket.quality);
+  if (!row || row.dismissed || row.suggested_at) return null;
+  if (Number(row.sighting_count) < tunable('PACK_SIZE_FIX_THRESHOLD')) return null;
+  const floor = proposedSizeFloor(row, tunable('PACK_SIZE_FIX_HEADROOM_PCT'));
+  if (floor == null) return null;
+
+  markPackRejectionSuggested('size_below_min', bucket.quality);
+  audit('pack_size_fix_suggested', {
+    quality: bucket.quality, blockedPacks: row.sighting_count, seasons: row.season_count,
+    currentFloorMbPerMinute: row.limit_mb_per_minute, observedMbPerMinute: row.observed_mb_per_minute,
+    proposedFloorMbPerMinute: floor, seriesTitle, season: seasonNumber,
+  });
+  const buttons = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`packsize_approve:${bucket.quality}:${floor}`).setLabel(`Lower floor to ${floor} MB/min`).setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`packsize_dismiss:${bucket.quality}`).setLabel('Leave it — dismiss').setStyle(ButtonStyle.Secondary),
+  );
+  notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
+    .setTitle(`📏 Size Limit Is Blocking Season Packs — ${bucket.quality}`.slice(0, 256))
+    .setDescription([
+      `Sonarr has rejected **${row.sighting_count}** season pack${row.sighting_count === 1 ? '' : 's'} of quality \`${bucket.quality}\` across **${row.season_count}** season search${row.season_count === 1 ? '' : 'es'} for being under its minimum size — most recently **${seriesTitle} S${pad(seasonNumber)}**.`,
+      '',
+      `Current minimum: **${Number(row.limit_mb_per_minute || 0).toFixed(1)} MB/min**. The least dense pack it blocked offered **${Number(row.observed_mb_per_minute || 0).toFixed(1)} MB/min**.`,
+      `Most recent reason:\n\`${String(row.sample_reason || '').slice(0, 200)}\``,
+      '',
+      `This limit is about file size, not content — an efficient encode of a short episode trips it, and Sonarr applies the same per-minute test to a whole season pack, so this one setting blocks these packs library-wide.`,
+      `Approving sets that quality definition's minimum to **${floor} MB/min** (${tunable('PACK_SIZE_FIX_HEADROOM_PCT')}% under the smallest blocked pack). Only the minimum moves — the maximum and preferred sizes are left alone, and it is reversible in Sonarr → Settings → Quality.`,
+    ].join('\n').slice(0, 4000))], components: [buttons] });
+  return { quality: bucket.quality, floor };
 }
 
 function monitorSeasonSearch(args) {
@@ -8110,6 +8211,48 @@ async function handleButton(interaction) {
     } catch (err) {
       audit('external_api_error', { actorDiscordId: interaction.user.id, provider: 'sonarr', action: 'release_group_blocklist', group, error: err.message });
       return interaction.editReply({ content: `❌ Failed to blocklist \`${group}\`: ${err.message}` });
+    }
+  }
+
+  if (['packsize_approve', 'packsize_dismiss'].includes(action)) {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const quality = action === 'packsize_approve' ? parts.slice(0, -1).join(':') : parts.join(':');
+    const row = getPackRejectionSighting('size_below_min', quality);
+    if (!row) return interaction.reply({ content: '❌ No record of this size rejection anymore.', ephemeral: true });
+
+    if (action === 'packsize_dismiss') {
+      dismissPackRejectionSuggestion('size_below_min', quality);
+      audit('pack_size_fix_dismissed', { actorDiscordId: interaction.user.id, quality, blockedPacks: row.sighting_count });
+      return interaction.reply({ content: `✅ Dismissed — won't suggest lowering the \`${quality}\` size floor again unless it's reset.`, ephemeral: true });
+    }
+
+    if (!CONFIG.SONARR_URL) return interaction.reply({ content: '❌ SONARR_URL is not configured.', ephemeral: true });
+    const floor = Number(parts[parts.length - 1]);
+    if (!Number.isFinite(floor) || floor < 0) return interaction.reply({ content: '❌ That button carries no usable size.', ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const definitions = await listSonarrQualityDefinitions();
+      const definition = definitions.find(d => String(d.quality?.name || d.title || '') === quality);
+      if (!definition) {
+        return interaction.editReply({ content: `❌ Sonarr has no quality definition named \`${quality}\` anymore. Check Settings → Quality.` });
+      }
+      const before = Number(definition.minSize);
+      // Sonarr's floor may already have been lowered by hand since the suggestion was posted.
+      // Raising it back up would be the opposite of what was asked, so only ever move it down.
+      if (Number.isFinite(before) && before <= floor) {
+        markPackRejectionSuggested('size_below_min', quality);
+        return interaction.editReply({ content: `ℹ️ \`${quality}\` is already at ${before} MB/min, which is at or below the proposed ${floor} MB/min. Nothing changed.` });
+      }
+      const updated = await setSonarrQualityDefinitionMinSize(definition, floor);
+      resetPackRejectionSightings(quality);
+      audit('pack_size_fix_applied', {
+        actorDiscordId: interaction.user.id, quality, qualityDefinitionId: definition.id,
+        previousMinSize: before, newMinSize: updated?.minSize ?? floor, blockedPacks: row.sighting_count,
+      });
+      return interaction.editReply({ content: `📏 Lowered \`${quality}\` minimum size from **${before} MB/min** to **${updated?.minSize ?? floor} MB/min** in Sonarr. The next season sweep will re-search; reverse it in Sonarr → Settings → Quality if it starts pulling releases you don't want.` });
+    } catch (err) {
+      audit('pack_size_fix_failed', { actorDiscordId: interaction.user.id, quality, stage: 'apply', error: err.message });
+      return interaction.editReply({ content: `❌ Failed to update \`${quality}\`: ${err.message}` });
     }
   }
 

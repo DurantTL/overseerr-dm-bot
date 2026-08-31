@@ -322,6 +322,38 @@ Episode-fallback evidence recorded during such a sweep is kept. The fallback row
 when the season no longer needs a bounded episode fan-out — the season progressed, or a live
 queue item now covers it — never in the same pass that recorded the evidence.
 
+## Why Sonarr refuses a season pack
+
+Sonarr explains every refusal in prose, once, inside an interactive-search response that is
+otherwise discarded. Those reasons are now bucketed (`size_below_min`, `size_above_max`,
+`cutoff_met`, `custom_format_score`, `language`, `quality_not_wanted`, `blocklisted`,
+`not_monitored`, `unmatched_series`, `propers_repacks`, `other`) and counted per bucket and
+quality in `pack_rejection_sightings`. Wording Sonarr changes between versions falls into `other`
+with its text intact rather than being guessed into the wrong bucket. Each season alert gains a
+**Blocked by** field naming the setting that blocked the most packs, so a stalled season points at
+a cause instead of listing three unrelated rejection sentences.
+
+The **minimum size limit** is the bucket worth acting on. Sonarr's quality definitions are set in
+MB per minute of runtime, and it applies the same test to a whole season pack as to one episode —
+so a floor that is too high for a source rejects that source's packs library-wide. Efficient
+encodes (WeTV/DSNP H.265 rips of short episodes, most AvistaZ content) trip it routinely, and the
+rejection says nothing about whether the release is the right content.
+
+Once one floor has blocked `PACK_SIZE_FIX_THRESHOLD` packs of the same quality, the bot posts a
+suggestion naming the current floor, the least dense pack it blocked, and a proposed replacement
+`PACK_SIZE_FIX_HEADROOM_PCT` below it. Same posture as the release-group blocklist: nothing in
+Sonarr changes until an admin clicks Approve, only that quality's `minSize` moves (`maxSize` and
+`preferredSize` are left alone), and it is reversible in Sonarr → Settings → Quality. A floor
+already at or below the proposal is left as it is. A pack of that quality later passing resets the
+counts, so a fixed setting stops driving suggestions.
+
+`SEASON_PACK_FORCE_UNDERSIZED` (default off) lets `SEASON_PACK_FORCE_GRAB` push through a pack
+whose **only** rejection is that floor. This deliberately relaxes the rule that automatic
+force-grab never overrides a Sonarr rejection, so a pack Sonarr flagged as undersized for its
+claimed resolution can be grabbed with nobody reviewing it; a release carrying any second reason
+alongside the size one is still refused. Fixing the floor is the better tool — this is for
+operators who would have clicked through those alerts anyway.
+
 Repeated identical `no_grab` results do not repeat in Discord forever. The bot still performs
 every eligible search, but posts attempts 1, 2, and 4; attempt 4 announces that alerts are standing
 down. The durable state is per series and season and survives restarts. A changed aired-missing
