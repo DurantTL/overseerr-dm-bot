@@ -153,9 +153,17 @@ async function rtorrentCall(method, params = []) {
 
 // Push raw .torrent bytes and start it, labeled (d.custom1 is the field ruTorrent and the
 // *arrs read as the category — 'radarr'/'sonarr'). Returns the info-hash used for tracking.
+// RTORRENT_DOWNLOAD_DIR pins an absolute download directory on the torrents this bot adds.
+// Unset (the default) keeps rTorrent's own default, which is the historical behavior. It matters
+// when that default is relative: Sonarr and Radarr refuse to import a torrent whose path starts
+// with '.', and an operator without .rtorrent.rc access cannot fix the default itself. Setting it
+// here covers this bot's own grabs; the *arrs' own "Directory" field covers theirs.
 async function addTorrentToRtorrent(torrent, label) {
   const infoHash = computeInfoHash(torrent);
-  const commands = label ? [`d.custom1.set=${label}`] : [];
+  const commands = [];
+  if (label) commands.push(`d.custom1.set=${label}`);
+  const dir = String(CONFIG.RTORRENT_DOWNLOAD_DIR || '').replace(/\/+$/, '');
+  if (dir) commands.push(`d.directory.set=${dir}`);
   await rtorrentCall('load.raw_start', ['', torrent, ...commands]);
   return infoHash;
 }
@@ -202,4 +210,29 @@ async function getRtorrentVersion() {
   return rtorrentCall('system.client_version', []);
 }
 
-module.exports = { rtorrentConfigured, serializeXmlRpcCall, parseXmlRpcResponse, computeInfoHash, rtorrentCall, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion };
+// Where rTorrent puts downloads, as rTorrent itself reports it.
+//
+// This exists for the operator who cannot edit .rtorrent.rc — a managed seedbox, no shell. The
+// fix for a relative download path is then Sonarr/Radarr's own "Directory" field, which needs an
+// absolute path the operator has no obvious way to discover. rTorrent knows it: a relative
+// default resolves against its working directory, so system.cwd plus directory.default is the
+// answer.
+//
+// Every field is probed independently and best-effort: rTorrent builds vary in which methods
+// they expose, and one missing method must not cost the others.
+async function getRtorrentPaths() {
+  const probe = async method => {
+    try {
+      const value = await rtorrentCall(method, []);
+      return typeof value === 'string' ? value.trim() : null;
+    } catch (_err) {
+      return null;
+    }
+  };
+  const [cwd, defaultDirectory, sessionPath] = await Promise.all([
+    probe('system.cwd'), probe('directory.default'), probe('session.path'),
+  ]);
+  return { cwd, defaultDirectory, sessionPath };
+}
+
+module.exports = { rtorrentConfigured, serializeXmlRpcCall, parseXmlRpcResponse, computeInfoHash, rtorrentCall, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion, getRtorrentPaths };

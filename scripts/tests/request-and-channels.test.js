@@ -10,6 +10,7 @@ const express = require('express');
 const Database = require('better-sqlite3');
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { loadSandbox } = require('./extract');
+const { findUnprocessableTorrents, resolveAbsoluteDownloadDir } = require('../../src/adopt');
 const runtimeSettings = require('../../src/runtime-settings');
 const { detectStuckItems, groupStuckItems, isSeasonGroup } = require('../../src/stuck');
 const { nextSeasonNoGrabAlert } = require('../../src/season-alert');
@@ -348,6 +349,8 @@ test('alert cooldowns: a stuck-download alert stays suppressed after reload', as
     buildStuckAlert: () => ({ embed: {}, row: {} }),
     notifyChannel: () => { alerts++; },
     audit: () => {},
+    rtorrentConfigured: () => false,
+    RTORRENT_PATH_ALERT_KEY: 'rtorrent:relative-paths',
   };
   const names = ['getAlertedAt', 'setAlertedAt', 'listAlertCooldowns', 'clearAlertCooldown', 'planStuckDownloads', 'sweepStuckDownloads'];
   const first = loadSandbox(names, stubs);
@@ -598,5 +601,110 @@ test('stuck preview: evaluates the unsaved threshold without disturbing the live
   // preview must be doing that to a copy, or previewing would silently reset the real sweep's
   // freeze timers and delay every genuine alert.
   assert.strictEqual(JSON.stringify([...stuckTracker]), snapshot, 'the live tracker is untouched by a preview');
+  database.close();
+});
+
+test('stuck sweep: a relative rTorrent download path is reported even though no queue item exists', async () => {
+  // The failure the queue-based watchdog structurally cannot see: Sonarr refuses these torrents
+  // outright, so they finish downloading and are dropped with no queue item and no failure event.
+  const database = new Database(':memory:');
+  database.exec(`CREATE TABLE alert_cooldowns (
+    scope TEXT NOT NULL, alert_key TEXT NOT NULL, last_alerted_at INTEGER NOT NULL,
+    PRIMARY KEY (scope, alert_key)
+  ); CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT);`);
+  const notices = [];
+  const audits = [];
+  const torrents = [
+    { name: 'The.Road.to.Splendor.S01E34.1080p.DSNP.WEB-DL-ANDY.mkv', basePath: './The.Road.to.Splendor.S01E34.mkv' },
+    { name: 'The.Road.to.Splendor.S01.2026.1080p.WETV.WEB-DL-ANDY', basePath: './The.Road.to.Splendor.S01' },
+    { name: 'Healthy.Show.S01E01.mkv', basePath: '/home/seed/downloads/Healthy.Show.S01E01.mkv' },
+    { name: 'Not.Allocated.Yet', basePath: '' },
+  ];
+  const stubs = {
+    db: database,
+    stuckTracker: new Map(),
+    fetchArrQueues: async () => [],
+    detectStuckItems: () => [],
+    groupStuckItems: () => new Map(),
+    stuckGroupKey: () => 'sonarr:1',
+    tunable: () => 24,
+    getSetting: () => null,
+    buildStuckAlert: () => ({ embed: {}, row: {} }),
+    notifyChannel: (channel, msg) => notices.push({ channel, msg }),
+    audit: (action, detail) => audits.push({ action, detail }),
+    rtorrentConfigured: () => true,
+    listRtorrentTorrents: async () => torrents,
+    findUnprocessableTorrents,
+    resolveAbsoluteDownloadDir,
+    getRtorrentPaths: async () => ({ cwd: '/home/seed', defaultDirectory: './downloads' }),
+    RTORRENT_PATH_ALERT_KEY: 'rtorrent:relative-paths',
+    COLORS: { DANGER: 4 },
+    brandedEmbed: color => ({
+      color,
+      setTitle(value) { this.title = value; return this; },
+      setDescription(value) { this.description = value; return this; },
+    }),
+  };
+  const names = ['getAlertedAt', 'setAlertedAt', 'listAlertCooldowns', 'clearAlertCooldown', 'planStuckDownloads', 'sweepStuckDownloads'];
+  const first = loadSandbox(names, stubs);
+  const result = await first.run('sweepStuckDownloads()');
+  assert.strictEqual(result.unprocessable, 2, 'absolute paths and unallocated torrents are not misconfigurations');
+  assert.strictEqual(result.alerted, 1);
+  const embed = notices[0].msg.embeds[0];
+  assert.match(embed.title, /rTorrent Downloads Cannot Be Imported — 2 torrents/);
+  assert.match(embed.description, /never imported, and never reported as a failure/);
+  // The fix that needs no shell access is the *arrs' Directory field, and that needs an absolute
+  // path the operator cannot otherwise discover — so the alert works it out from rTorrent itself.
+  assert.match(embed.description, /Absolute path to use: `\/home\/seed\/downloads`/);
+  assert.match(embed.description, /Directory\*\* field on the rTorrent client/, 'the alert names the no-shell fix');
+  assert.ok(audits.some(row => row.detail.resolvedDownloadDir === '/home/seed/downloads'));
+  assert.ok(audits.some(row => row.action === 'rtorrent_unprocessable_paths' && row.detail.count === 2));
+
+  // One relative directory affects every torrent at once, so this is one alert for the whole
+  // condition, and it stays suppressed across a restart like any other stuck alert.
+  const afterRestart = loadSandbox(names, stubs);
+  assert.strictEqual((await afterRestart.run('sweepStuckDownloads()')).alerted, 0);
+  assert.strictEqual(notices.length, 1);
+  database.close();
+});
+
+test('stuck sweep: an unreadable rTorrent still reports the paths, just without a computed one', async () => {
+  // rTorrent builds vary in which introspection methods they expose. A probe that answers
+  // nothing must still leave the operator with the diagnosis, not swallow the whole alert.
+  const database = new Database(':memory:');
+  database.exec(`CREATE TABLE alert_cooldowns (
+    scope TEXT NOT NULL, alert_key TEXT NOT NULL, last_alerted_at INTEGER NOT NULL,
+    PRIMARY KEY (scope, alert_key)
+  ); CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT);`);
+  const notices = [];
+  const sandbox = loadSandbox(['getAlertedAt', 'setAlertedAt', 'listAlertCooldowns', 'clearAlertCooldown', 'planStuckDownloads', 'sweepStuckDownloads'], {
+    db: database,
+    stuckTracker: new Map(),
+    fetchArrQueues: async () => [],
+    detectStuckItems: () => [],
+    groupStuckItems: () => new Map(),
+    stuckGroupKey: () => 'sonarr:1',
+    tunable: () => 24,
+    getSetting: () => null,
+    buildStuckAlert: () => ({ embed: {}, row: {} }),
+    notifyChannel: (channel, msg) => notices.push({ channel, msg }),
+    audit: () => {},
+    rtorrentConfigured: () => true,
+    listRtorrentTorrents: async () => [{ name: 'Show.S01E01.mkv', basePath: './Show.S01E01.mkv' }],
+    findUnprocessableTorrents,
+    resolveAbsoluteDownloadDir,
+    getRtorrentPaths: async () => { throw new Error('unknown method'); },
+    RTORRENT_PATH_ALERT_KEY: 'rtorrent:relative-paths',
+    COLORS: { DANGER: 4 },
+    brandedEmbed: color => ({
+      color,
+      setTitle(value) { this.title = value; return this; },
+      setDescription(value) { this.description = value; return this; },
+    }),
+  });
+  assert.strictEqual((await sandbox.run('sweepStuckDownloads()')).alerted, 1);
+  const embed = notices[0].msg.embeds[0];
+  assert.doesNotMatch(embed.description, /Absolute path to use/, 'no path is claimed when none could be resolved');
+  assert.match(embed.description, /check ruTorrent for the full path/, 'and the operator is told how to find it');
   database.close();
 });

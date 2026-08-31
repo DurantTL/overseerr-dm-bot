@@ -322,6 +322,39 @@ Episode-fallback evidence recorded during such a sweep is kept. The fallback row
 when the season no longer needs a bounded episode fan-out — the season progressed, or a live
 queue item now covers it — never in the same pass that recorded the evidence.
 
+## Relative rTorrent download paths
+
+rTorrent reports `d.base_path` relative when its own download directory is configured relatively
+(a bare `directory.default.set = ./downloads`, or none at all). Sonarr and Radarr both refuse such
+a torrent outright — *"has a download path starting with '.' and will not be processed. Adjust
+this to an absolute path in rTorrent"* — so it downloads to completion and is then dropped: never
+imported, and never recorded as a failure either.
+
+Nothing else in this pipeline can see that. The stuck-download watchdog reads the *arr queue and
+these produce no queue item; the season sweep sees a grab that vanished with no `downloadFailed`
+event to explain it. One relative path in rTorrent's config stalls every grab from every source —
+the bot's own direct grabs and the *arrs' alike — until someone reads the rTorrent log, which is
+the only place it is written down.
+
+The stuck sweep therefore checks `d.base_path` on every listed torrent and posts one alert for the
+whole condition (not one per torrent). The alert's cooldown key is exempt from the queue-group
+pruning that clears ordinary stuck keys, and is cleared once no torrent has a relative path so a
+recurrence is reported promptly.
+
+On a managed seedbox `.rtorrent.rc` is often not editable, which leaves the **Directory** field on
+the rTorrent client in Sonarr/Radarr → Settings → Download Clients — and that needs an absolute
+path the operator has no obvious way to discover. rTorrent knows it: a relative default resolves
+against its working directory, so the alert asks rTorrent for `system.cwd` and `directory.default`
+and reports the resolved path to paste in. Each field is probed independently and best-effort,
+since builds differ in what they expose; when nothing resolves the alert says so and points at
+ruTorrent rather than guessing a path, because a wrong absolute path trades a diagnosable failure
+for a silent one.
+
+`RTORRENT_DOWNLOAD_DIR` pins that same absolute path on the torrents this bot adds itself. Unset
+(the default) keeps rTorrent's own default. The two settings cover the two halves: the *arrs add
+their own torrents to rTorrent directly, so their Directory field covers those, and this covers
+the bot's direct grabs.
+
 ## Why Sonarr refuses a season pack
 
 Sonarr explains every refusal in prose, once, inside an interactive-search response that is

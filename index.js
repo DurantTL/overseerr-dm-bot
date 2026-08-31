@@ -55,7 +55,7 @@ const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromo
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
-const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
+const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion, getRtorrentPaths } = require('./src/rtorrent');
 const { runBackup, rotateBackups, backupState, rehearseLatestBackup } = require('./scripts/backup-db');
 const { recordDiskSamples, pruneDiskSamples, forecastDisks, pathIsOnRoot, forecastLabel } = require('./src/capacity');
 const { webhookEventKey } = require('./src/webhook-events');
@@ -63,7 +63,7 @@ const { createWebhookHandlers, requireWebhookSecret } = require('./src/routes/we
 const { registerTierAgentRoutes } = require('./src/routes/tier-agent');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
 const { createApp } = require('./src/app');
-const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
+const { findUnprocessableTorrents, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate, planStuckTransferActions } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
 const { summarizeSeriesGaps, describeGaps, describeActivity, rankIncomplete } = require('./src/incomplete');
@@ -730,7 +730,12 @@ async function sweepStuckDownloads() {
   // Group keys for everything currently in the queue (not just the stuck ones) — used to prune
   // alert-cooldown rows and stale ignore flags once a group leaves the queue entirely.
   const activeGroups = new Set(items.map(stuckGroupKey));
-  for (const row of listAlertCooldowns('stuck')) if (!activeGroups.has(row.alert_key)) clearAlertCooldown('stuck', row.alert_key);
+  // The rTorrent path key is not a queue group — it describes a client-wide misconfiguration, so
+  // it is never "gone from the queue" and must survive this pruning. Without the exemption an
+  // empty queue clears it on every sweep and the alert repeats forever.
+  for (const row of listAlertCooldowns('stuck')) {
+    if (row.alert_key !== RTORRENT_PATH_ALERT_KEY && !activeGroups.has(row.alert_key)) clearAlertCooldown('stuck', row.alert_key);
+  }
 
   let alerted = 0;
   for (const [gk, group] of groups) {
@@ -749,8 +754,64 @@ async function sweepStuckDownloads() {
   for (const r of ignoreRows) {
     if (!activeGroups.has(r.key.slice('stuck_ignore:'.length))) db.prepare('DELETE FROM app_settings WHERE key = ?').run(r.key);
   }
-  return { detected: groups.size, alerted };
+
+  // The failure this watchdog structurally cannot see. Everything above reads the *arr queue; a
+  // torrent sitting at a relative path in rTorrent never produces a queue item at all, because
+  // Sonarr/Radarr refuse to process it. It downloads, completes, and is dropped — no import, no
+  // failure event, nothing to alert on — which is what a stalled season looks like from here.
+  // Best-effort: an unreachable seedbox loses this one extra check, never the whole sweep.
+  const unprocessable = rtorrentConfigured()
+    ? findUnprocessableTorrents(await listRtorrentTorrents().catch(() => []))
+    : [];
+  if (unprocessable.length && now - getAlertedAt('stuck', RTORRENT_PATH_ALERT_KEY) >= tunable('STUCK_ALERT_COOLDOWN_HOURS') * 3600000) {
+    setAlertedAt('stuck', RTORRENT_PATH_ALERT_KEY, now);
+    const examples = unprocessable.slice(0, 5)
+      .map(t => `• \`${String(t.name || '(unnamed)').slice(0, 90)}\` → \`${String(t.basePath).slice(0, 60)}\``)
+      .join('\n');
+    // Ask rTorrent where it actually puts things. The fix that needs no .rtorrent.rc access is
+    // the *arrs' own Directory field, and that needs an absolute path the operator otherwise has
+    // no way to discover — rTorrent resolves its relative default against its working directory,
+    // so it already knows the answer.
+    const paths = await getRtorrentPaths().catch(() => ({}));
+    const resolved = resolveAbsoluteDownloadDir(paths);
+    const pathLines = [
+      paths.cwd ? `rTorrent working directory: \`${String(paths.cwd).slice(0, 120)}\`` : null,
+      paths.defaultDirectory ? `rTorrent default directory: \`${String(paths.defaultDirectory).slice(0, 120)}\`` : null,
+      resolved ? `**Absolute path to use: \`${resolved.path.slice(0, 200)}\`** _(from ${resolved.from})_` : null,
+    ].filter(Boolean).join('\n');
+    notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle(`\u{1f6d1} rTorrent Downloads Cannot Be Imported — ${unprocessable.length} torrent${unprocessable.length === 1 ? '' : 's'}`.slice(0, 256))
+      .setDescription([
+        `**${unprocessable.length}** torrent${unprocessable.length === 1 ? ' has a' : 's have'} relative download path${unprocessable.length === 1 ? '' : 's'} in rTorrent. Sonarr and Radarr refuse these outright — *"has a download path starting with '.' and will not be processed"* — so they finish downloading and are then dropped: never imported, and never reported as a failure.`,
+        '',
+        'This is why a season can grab release after release without the missing count ever moving.',
+        '',
+        examples,
+        pathLines ? `\n${pathLines}` : '',
+        '',
+        resolved
+          ? `**Fix, no seedbox shell needed:** put \`${resolved.path.slice(0, 200)}\` in the **Directory** field on the rTorrent client in Sonarr/Radarr → Settings → Download Clients. Verify it against a working torrent in ruTorrent first. Set \`RTORRENT_DOWNLOAD_DIR\` to the same path so this bot's own grabs match.`
+          : '**Fix:** fill in the **Directory** field on the rTorrent client in Sonarr/Radarr → Settings → Download Clients with an absolute path, or set an absolute `directory.default.set` in the seedbox\'s `.rtorrent.rc`. rTorrent did not report its working directory, so check ruTorrent for the full path of a working torrent.',
+        'Existing torrents keep their bad path; re-downloading them after the fix is the simplest route.',
+      ].filter(line => line !== '').join('\n').slice(0, 4000))] });
+    audit('rtorrent_unprocessable_paths', {
+      count: unprocessable.length,
+      cwd: paths.cwd || null, defaultDirectory: paths.defaultDirectory || null,
+      resolvedDownloadDir: resolved?.path || null, resolvedFrom: resolved?.from || null,
+      samples: unprocessable.slice(0, 5).map(t => ({ name: t.name, basePath: t.basePath })),
+    });
+    alerted++;
+  } else if (!unprocessable.length) {
+    // Resolved — drop the cooldown so a recurrence is reported promptly rather than sitting
+    // silent for the rest of the window.
+    clearAlertCooldown('stuck', RTORRENT_PATH_ALERT_KEY);
+  }
+  return { detected: groups.size, alerted, unprocessable: unprocessable.length };
 }
+
+// Not a per-download key: one relative rTorrent directory affects every torrent at once, so this
+// alerts once per cooldown for the whole condition rather than once per affected torrent.
+const RTORRENT_PATH_ALERT_KEY = 'rtorrent:relative-paths';
 
 function planStuckDownloads(items, tracker, afterMinutes, now = Date.now()) {
   return groupStuckItems(detectStuckItems(items, tracker, { stuckAfterMs: afterMinutes * 60000, now }));
@@ -1142,7 +1203,13 @@ async function autoForceSeasonPack({ seriesId, seriesTitle, seasonNumber, candid
   return { status: 'grabbed' };
 }
 
-async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = null, seriesAliases = null, seasonNumber, missingAtSearch, commandId, searchedAt = 0, stallCount = 0 }) {
+// `searchedAt` bounds the history read to this search. It defaults to now — evaluated at call
+// time, so it lands within microseconds of the triggerSeasonSearch that precedes every call —
+// because the alternative default, 0, means "no date filter" in getSeasonDownloadHistory: the
+// fill summary then counts every grab the season has ever had (a real one reported 136 releases
+// for a single search), and the vanished-grab diagnosis can quote a months-old failure as if it
+// explained this sweep.
+async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = null, seriesAliases = null, seasonNumber, missingAtSearch, commandId, searchedAt = Date.now(), stallCount = 0 }) {
   const command = await pollArrCommand({ url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY }, commandId, 10 * 60000);
   const status = command.status || 'unknown';
   const [episodes, queue, history] = await Promise.all([
@@ -6906,10 +6973,11 @@ async function handleSeasonCommand(interaction) {
     return interaction.editReply(`📦 **${series.title}** S${pad(seasonNumber)} — ${statusText}`);
   }
 
+  const searchedAt = Date.now();
   const command = await triggerSeasonSearch(series.id, seasonNumber);
   clearSeasonAlertState(series.id, seasonNumber);
   const stallCount = recordSeasonSearch({ seriesId: series.id, seasonNumber, seriesTitle: series.title, missing: missing.length });
-  monitorSeasonSearch({ seriesId: series.id, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber, missingAtSearch: missing.length, commandId: command?.id, stallCount });
+  monitorSeasonSearch({ seriesId: series.id, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber, missingAtSearch: missing.length, commandId: command?.id, searchedAt, stallCount });
   audit('season_search_command', { actorDiscordId: interaction.user.id, seriesId: series.id, title: series.title, season: seasonNumber, route: 'sonarr', commandId: command?.id || null, force });
   return interaction.editReply(`📡 Sonarr accepted the S${pad(seasonNumber)} season search for **${series.title}**.${force ? ' (cooldown overridden)' : ''} Its own interactive-search report will follow in the downloads channel if it needs one.`);
 }
@@ -9830,10 +9898,11 @@ function startExpressServer() {
                     : `AvistaZ search failed: ${result.error || 'unknown error'}`;
             return res.json({ ok: result.status !== 'error', message: `${series.title} S${pad(seasonNumber)} — ${statusText}` });
           }
+          const searchedAt = Date.now();
           const command = await triggerSeasonSearch(seriesId, seasonNumber);
           clearSeasonAlertState(seriesId, seasonNumber);
           const stallCount = recordSeasonSearch({ seriesId, seasonNumber, seriesTitle: series.title, missing: missing.length });
-          monitorSeasonSearch({ seriesId, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber, missingAtSearch: missing.length, commandId: command?.id, stallCount });
+          monitorSeasonSearch({ seriesId, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber, missingAtSearch: missing.length, commandId: command?.id, searchedAt, stallCount });
           audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, seasonNumber, title: series.title, route: 'sonarr', commandId: command?.id || null, override: force });
           return res.json({ ok: true, message: `Sonarr accepted the S${pad(seasonNumber)} season search for ${series.title}.${force ? ' (cooldown overridden)' : ''}` });
         }

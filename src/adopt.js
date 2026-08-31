@@ -49,6 +49,51 @@ function remoteSubpathFor(basePath, remoteRoot) {
   return rel;
 }
 
+// Torrents rTorrent has placed at a relative path.
+//
+// rTorrent reports d.base_path relative when its own download directory is configured
+// relatively (a bare `directory.default.set = ./downloads`, or none at all, leaving the path
+// relative to rTorrent's working directory). Sonarr and Radarr both refuse such a torrent
+// outright — "has a download path starting with '.' and will not be processed. Adjust this to
+// an absolute path in rTorrent" — so it downloads to completion and is then simply dropped:
+// never imported, and never recorded as a failure either.
+//
+// That is invisible to everything else here. The stuck-download watchdog reads the *arr queue,
+// and these produce no queue item to read; the season sweep sees a grab that vanished without
+// a downloadFailed event to explain it. One relative path in rTorrent's config therefore stalls
+// every grab from every source — the bot's own direct grabs and the *arrs' — until someone
+// reads the rTorrent log, which is the one place it is written down.
+function findUnprocessableTorrents(torrents = []) {
+  return (torrents || []).filter(torrent => {
+    const base = String(torrent.basePath || '').trim();
+    // An empty base_path is a torrent rTorrent has not allocated yet, not a misconfiguration.
+    return base !== '' && !base.startsWith('/');
+  });
+}
+
+// The absolute download directory to hand Sonarr/Radarr's "Directory" field, worked out from
+// what rTorrent reports about itself (src/rtorrent.js getRtorrentPaths).
+//
+// rTorrent resolves a relative download directory against its own working directory, so an
+// absolute `directory.default` is the answer outright, and a relative one resolves against
+// `system.cwd`. An empty or '.' default means downloads land in the working directory itself.
+//
+// Returns null rather than guessing when cwd is unknown or itself relative: an operator pasting
+// a wrong absolute path into Sonarr trades a diagnosable failure for a silent one.
+function resolveAbsoluteDownloadDir({ cwd = '', defaultDirectory = '' } = {}) {
+  const trim = value => String(value || '').trim();
+  const stripTrailing = value => (value.length > 1 ? value.replace(/\/+$/, '') : value);
+  const configured = stripTrailing(trim(defaultDirectory));
+  if (configured.startsWith('/')) return { path: configured, from: 'directory.default' };
+  const base = stripTrailing(trim(cwd));
+  if (!base.startsWith('/')) return null;
+  const relative = configured.replace(/^\.\/+/, '').replace(/^\.$/, '');
+  if (!relative) return { path: base, from: 'system.cwd' };
+  // A default that climbs out of the working directory is not something to resolve blindly.
+  if (relative.split('/').some(part => part === '..')) return null;
+  return { path: `${base}/${relative}`, from: 'system.cwd + directory.default' };
+}
+
 // The adoption verdict for one existing torrent: refuse duplicates (an info-hash already in
 // grab_jobs is already owned by the pipeline), refuse target-less adoptions, and pick the
 // job's starting state from the torrent's completion.
@@ -147,4 +192,4 @@ function bulkTargetChoices(candidates, explicitTarget, cfg = CONFIG) {
   return [cfg.SONARR_URL ? 'sonarr' : null, cfg.RADARR_URL ? 'radarr' : null].filter(Boolean);
 }
 
-module.exports = { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices };
+module.exports = { findUnprocessableTorrents, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices };

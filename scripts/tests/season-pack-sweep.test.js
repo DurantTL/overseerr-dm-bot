@@ -465,6 +465,7 @@ test('season search history: keeps recent grabs/imports for the requested season
     { eventType: 'episodeFileDeleted', date: new Date(NOW + 1000).toISOString(), downloadId: 'delete', episode: { seasonNumber: 1, episodeNumber: 4 } },
     { eventType: 'downloadFailed', date: new Date(NOW + 3000).toISOString(), downloadId: 'pack-1', data: { message: 'Torrent was removed from the client' }, episode: { seasonNumber: 1, episodeNumber: 1 } },
     { eventType: 'downloadIgnored', date: new Date(NOW + 4000).toISOString(), downloadId: 'ignored-1', data: { reason: 'Manually ignored' }, episode: { seasonNumber: 1, episodeNumber: 5 } },
+    { eventType: 'downloadFailed', date: new Date(NOW - 90 * 86400000).toISOString(), downloadId: 'ancient', data: { message: 'Failed three months ago' }, episode: { seasonNumber: 1, episodeNumber: 6 } },
   ];
   const sandbox = loadSandbox(['parseReleaseName', 'getSeasonDownloadHistory'], {
     SEASON_FILL_EVENTS, SEASON_FAILURE_EVENTS,
@@ -483,6 +484,8 @@ test('season search history: keeps recent grabs/imports for the requested season
     ['Manually ignored', 'Torrent was removed from the client']);
   assert.ok(!result.some(row => row.eventType === 'episodefiledeleted'),
     'unrelated history events stay out of both sets');
+  assert.ok(!result.some(row => row.downloadId === 'ancient'),
+    'a failure from before this search is not evidence about it');
 });
 
 function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], queue = [], history = [], interactive = [], interactiveError = null, interactiveEnabled = true, autoForce = false, forceUndersized = false, duplicate = null, recheckQueue = null, forceError = null, alertDecision = null, sizeFixEnabled = true, sizeFixThreshold = 3, sighting = null }) {
@@ -494,6 +497,7 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
   const fallbackRecords = [];
   const clearedAlerts = [];
   const clearedFallbacks = [];
+  const historyCalls = [];
   const rejectionRecords = [];
   const rejectionResets = [];
   const forced = [];
@@ -531,7 +535,7 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
     pollArrCommand: async () => command,
     getSeriesEpisodes: async () => episodes,
     fetchArrQueues: async () => (++queueCalls === 1 ? queue : (recheckQueue ?? queue)),
-    getSeasonDownloadHistory: async () => history,
+    getSeasonDownloadHistory: async (seriesId, seasonNumber, since) => { historyCalls.push({ seriesId, seasonNumber, since }); return history; },
     interactiveSeasonSearch: async (seriesId, seasonNumber, episodeId) => {
       interactiveCalls.push({ seriesId, seasonNumber, episodeId });
       if (interactiveError) throw interactiveError;
@@ -573,7 +577,7 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
       addFields(...values) { this.fields.push(...values); return this; },
     }),
   });
-  return { sandbox, notices, audits, interactiveCalls, offers, alertRecords, fallbackRecords, clearedAlerts, clearedFallbacks, rejectionRecords, rejectionResets, suggestions, forced, get queueCalls() { return queueCalls; } };
+  return { sandbox, notices, audits, interactiveCalls, offers, alertRecords, fallbackRecords, clearedAlerts, clearedFallbacks, historyCalls, rejectionRecords, rejectionResets, suggestions, forced, get queueCalls() { return queueCalls; } };
 }
 
 test('season search verification: approved Revenge-like episode evidence records bounded fallback work', async () => {
@@ -838,6 +842,22 @@ test('season search verification: a stalled grab surfaces Sonarr\'s own queue wa
   assert.strictEqual(result.outcome, 'grabbed');
   const embed = h.notices[0].msg.embeds[0];
   assert.match(embed.description, /One or more episodes expected in this release were not imported/, 'Sonarr\'s own queue message is surfaced, not just "still stalled"');
+});
+
+test('season search verification: a caller that omits searchedAt still bounds history to this search', async () => {
+  // searchedAt = 0 means "no date filter" in getSeasonDownloadHistory, so the fill summary counts
+  // every grab the season has ever had (one live alert reported 136 releases for a single search)
+  // and the vanished-grab diagnosis can quote a months-old failure as this sweep's reason.
+  const before = Date.now();
+  const h = seasonVerifier({ command: { status: 'completed' } });
+  await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Drama', seasonNumber: 1, missingAtSearch: 3, commandId: 101 });
+  assert.strictEqual(h.historyCalls.length, 1);
+  const { since } = h.historyCalls[0];
+  assert.ok(since >= before, 'the window defaults to the moment monitoring started, never 0');
+  // And an explicit window is still honoured unchanged.
+  const explicit = seasonVerifier({ command: { status: 'completed' } });
+  await explicit.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Drama', seasonNumber: 1, missingAtSearch: 3, commandId: 101, searchedAt: 12345 });
+  assert.strictEqual(explicit.historyCalls[0].since, 12345);
 });
 
 test('season search verification: a grab with nothing in the queue is reported as vanished, not as progress', async () => {
