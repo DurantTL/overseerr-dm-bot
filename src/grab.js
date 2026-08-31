@@ -49,21 +49,32 @@ function grabTransferPreflight(cfg = CONFIG, readFileSync = fs.readFileSync) {
       message: `rclone config ${configPath} cannot be read: ${err.message}`,
     };
   }
+  // Section names only — never values. rclone.conf holds passwords and API keys, and this list
+  // is meant for a Discord message. The names alone answer the question that matters: whether
+  // the remote was renamed, or the file is not the one you think it is.
+  const availableRemotes = [...text.matchAll(/^\s*\[([^\]\n]+)\]\s*$/gm)].map(m => m[1].trim()).filter(Boolean);
   // rclone's own section lookup is case-sensitive ([RapidSeedbox] != [rapidseedbox]) — matching
   // case-insensitively here would report the pipeline healthy while every real transfer still
   // fails at runtime with "didn't find section in config file".
   const escaped = remoteName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   if (!new RegExp(`^\\s*\\[${escaped}\\]\\s*$`, 'm').test(text)) {
+    // A name that differs only by case is the single most likely cause and the least visible
+    // one, so it is called out rather than left for the operator to spot in a list.
+    const caseMatch = availableRemotes.find(name => name.toLowerCase() === remoteName.toLowerCase());
     return {
       ok: false,
       checked: true,
       reason: 'rclone_remote_missing',
       remoteName,
       configPath,
-      message: `rclone remote [${remoteName}] is missing from ${configPath}`,
+      availableRemotes,
+      caseMatch: caseMatch || null,
+      message: caseMatch
+        ? `rclone remote [${remoteName}] is missing from ${configPath} — but [${caseMatch}] is there, and rclone's section lookup is case-sensitive`
+        : `rclone remote [${remoteName}] is missing from ${configPath}`,
     };
   }
-  return { ok: true, checked: true, remoteName, configPath };
+  return { ok: true, checked: true, remoteName, configPath, availableRemotes };
 }
 
 // The full pipeline needs Prowlarr (search), rTorrent (download), and an rclone remote +

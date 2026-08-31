@@ -54,7 +54,7 @@ const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, par
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
-const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
+const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion, getRtorrentPaths } = require('./src/rtorrent');
 const { runBackup, rotateBackups, backupState, rehearseLatestBackup } = require('./scripts/backup-db');
 const { recordDiskSamples, pruneDiskSamples, forecastDisks, pathIsOnRoot, forecastLabel } = require('./src/capacity');
@@ -6758,6 +6758,20 @@ async function handleRtorrentCommand(interaction) {
       }
     } catch (err) {
       lines.push(`Seedbox rTorrent: ❌ ${err.message}`);
+    }
+    // The preflight already knows WHY rclone will fail — it reads the config file and checks the
+    // section — but that verdict was only ever consumed as a boolean by grabConfigured(). Showing
+    // it here is the difference between "didn't find section in config file" (rclone's generic
+    // error, true of a missing file, a renamed remote, and a case mismatch alike) and the one
+    // sentence that says which.
+    const preflight = grabTransferPreflight();
+    if (!preflight.ok && preflight.checked) {
+      lines.push('', `🛑 ${preflight.message}`);
+      if (preflight.availableRemotes?.length) {
+        lines.push(`Remotes defined in that file: ${preflight.availableRemotes.map(name => `\`${name}\``).join(', ')}`);
+      } else if (preflight.reason === 'rclone_remote_missing') {
+        lines.push('That file defines no remotes at all — it is probably not the rclone.conf you meant to mount.');
+      }
     }
     // What rclone actually sees at the remote root — the fastest way to spot a broken
     // rclone config or a root/download-folder mismatch when adoptions fail "not found".
