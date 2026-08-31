@@ -97,6 +97,7 @@ function planEpisodeFallback({
   seasonClaimed = false,
   pendingState = null,
   enabled = true,
+  downloadPathBlocked = false,
   now = Date.now(),
   budget = {},
 } = {}) {
@@ -104,6 +105,10 @@ function planEpisodeFallback({
   const base = { missing: missing.length, submitted: 0, deferred: missing.length, episodeIds: [] };
   if (!missing.length) return { ...base, action: 'resolved', reason: 'season_complete', deferred: 0 };
   if (!enabled) return { ...base, action: 'blocked', reason: 'fallback_disabled' };
+  // The download client cannot hand anything back right now, so every episode this would search
+  // for is a grab that provably cannot import. Submitting anyway spends metered tracker slots on
+  // files guaranteed to be refused — one live run burned 25 in a single hour that way.
+  if (downloadPathBlocked) return { ...base, action: 'blocked', reason: 'download_path_blocked' };
   if (evidence?.status === 'eligible_pack') return { ...base, action: 'blocked', reason: 'eligible_pack' };
   if (seasonQueued || seasonClaimed) return { ...base, action: 'blocked', reason: 'season_covered' };
   const nextEligibleAt = Number(pendingState?.nextEligibleAt);

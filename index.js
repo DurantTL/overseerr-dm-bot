@@ -1827,7 +1827,7 @@ function monitorEpisodeFallback(row) {
     });
 }
 
-async function drainSeasonEpisodeFallbacks({ seriesList, queue, preview = false, values = {} } = {}) {
+async function drainSeasonEpisodeFallbacks({ seriesList, queue, preview = false, values = {}, downloadPathBlocked = false } = {}) {
   const setting = key => preview ? previewRuntimeValue(values, key) : tunable(key);
   const enabled = setting('SEASON_PACK_EPISODE_FALLBACK');
   const perSeason = setting('SEASON_PACK_EPISODE_BATCH_SIZE');
@@ -1876,6 +1876,7 @@ async function drainSeasonEpisodeFallbacks({ seriesList, queue, preview = false,
       ...coverage,
       pendingState: episodeFallbackPendingState(row),
       enabled,
+      downloadPathBlocked,
       now,
       budget: { perSeason, remainingGlobal },
     });
@@ -1909,6 +1910,7 @@ async function drainSeasonEpisodeFallbacks({ seriesList, queue, preview = false,
       ...episodeFallbackCoverage({ series, seasonNumber: row.season_number, episodes: liveEpisodes, queue: liveQueue }),
       pendingState: episodeFallbackPendingState(liveRow),
       enabled,
+      downloadPathBlocked,
       now: Date.now(),
       budget: { perSeason, remainingGlobal },
     });
@@ -1938,12 +1940,37 @@ async function drainSeasonEpisodeFallbacks({ seriesList, queue, preview = false,
   return { submitted: setting('SEASON_PACK_EPISODE_MAX_PER_RUN') - remainingGlobal, items };
 }
 
+// The pipeline's precondition: rTorrent has to be able to hand files back. While torrents sit at
+// relative paths the *arrs refuse to import, every grab a sweep makes is provably wasted — a
+// metered AvistaZ slot spent on a file that cannot land, and one more dead release for the stall
+// counter to trip over. Returns null when the answer is unknown (guard off, rTorrent not
+// configured, listing failed): "cannot tell" must never read as "blocked", or an unreachable
+// seedbox would silently stop all searching.
+async function downloadPathBlock() {
+  if (!tunable('RTORRENT_PATH_GUARD') || !rtorrentConfigured()) return null;
+  let torrents;
+  try { torrents = await listRtorrentTorrents(); } catch (_err) { return null; }
+  const unprocessable = findUnprocessableTorrents(torrents);
+  return unprocessable.length ? { count: unprocessable.length, sample: unprocessable[0]?.name || null } : null;
+}
+
 async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
   if (!tunable('SEASON_PACK_FIRST') || !CONFIG.SONARR_URL) return;
   const cfg = seasonPackConfig();
   const now = Date.now();
   const [seriesList, queue] = await Promise.all([listSonarrSeries(), fetchArrQueues()]);
-  const fallback = await drainSeasonEpisodeFallbacks({ seriesList, queue });
+  // Checked before any new work is started, but deliberately NOT an early return: a fallback
+  // command already submitted still needs its outcome read and its state settled, or a blocked
+  // pipeline would leave rows stuck in 'submitted' forever.
+  const pathBlock = await downloadPathBlock();
+  const fallback = await drainSeasonEpisodeFallbacks({ seriesList, queue, downloadPathBlocked: !!pathBlock });
+  if (pathBlock) {
+    audit('season_pack_skipped', { reason: 'download_path_blocked', unprocessable: pathBlock.count, sample: pathBlock.sample });
+    notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle('⏸️ Season Searching Paused — rTorrent Paths')
+      .setDescription(`**${pathBlock.count}** torrent${pathBlock.count === 1 ? ' is' : 's are'} sitting at a relative path Sonarr and Radarr refuse to import, so no new season search or episode-fallback batch was started — every grab made in this state is a tracker slot spent on a file that cannot land.\n\nSearching resumes on its own once the paths are fixed. Set \`RTORRENT_PATH_GUARD=false\` to search anyway.`)] });
+    return { searched: 0, skipped: 'download_path_blocked', episodeFallbackSubmitted: fallback.submitted };
+  }
   const fallbackSeasons = new Map();
   for (const row of listSeasonEpisodeFallbacks()) {
     if (!fallbackSeasons.has(Number(row.series_id))) fallbackSeasons.set(Number(row.series_id), []);
@@ -6674,6 +6701,19 @@ async function handleRtorrentCommand(interaction) {
       const complete = torrents.filter(t => t.complete).length;
       lines.push(`Seedbox rTorrent: ✅ reachable (v${version})`);
       lines.push(`Torrents: **${torrents.length}** (${complete} complete, ${torrents.length - complete} downloading)`);
+      // On demand rather than only on the next sweep: this is what an operator needs the moment
+      // imports stop, and the absolute path is the one thing they cannot look up themselves.
+      const unprocessable = findUnprocessableTorrents(torrents);
+      if (unprocessable.length) {
+        const paths = await getRtorrentPaths().catch(() => ({}));
+        const resolved = resolveAbsoluteDownloadDir(paths);
+        lines.push('', `🛑 **${unprocessable.length}** torrent${unprocessable.length === 1 ? ' has a' : 's have'} relative path${unprocessable.length === 1 ? '' : 's'} — Sonarr/Radarr will not import ${unprocessable.length === 1 ? 'it' : 'them'}.`);
+        if (paths.cwd) lines.push(`Working directory: \`${String(paths.cwd).slice(0, 120)}\``);
+        if (paths.defaultDirectory) lines.push(`Default directory: \`${String(paths.defaultDirectory).slice(0, 120)}\``);
+        lines.push(resolved
+          ? `**Put this in Sonarr/Radarr → Download Clients → rTorrent → Directory:** \`${resolved.path.slice(0, 200)}\` _(${resolved.from})_`
+          : 'rTorrent did not report a usable working directory — check ruTorrent for the full path of a working torrent.');
+      }
     } catch (err) {
       lines.push(`Seedbox rTorrent: ❌ ${err.message}`);
     }

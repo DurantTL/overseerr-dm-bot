@@ -310,6 +310,7 @@ const CONFIG = (() => {
   // Absolute download directory pinned on torrents this bot adds. Unset keeps rTorrent's own
   // default; set it when that default is relative and .rtorrent.rc is not editable (#238).
   RTORRENT_DOWNLOAD_DIR: (process.env.RTORRENT_DOWNLOAD_DIR || '').replace(/\/+$/, ''),
+  RTORRENT_PATH_GUARD: parseBool(process.env.RTORRENT_PATH_GUARD, true),
   JANITOR_CHECK_MINUTES: Number.parseInt(process.env.JANITOR_CHECK_MINUTES || '60', 10),
   RETENTION_ENFORCEMENT: parseBool(process.env.RETENTION_ENFORCEMENT, false),
   RETENTION_CHECK_HOURS: Number.parseInt(process.env.RETENTION_CHECK_HOURS || '24', 10),
