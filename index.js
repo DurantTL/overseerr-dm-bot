@@ -54,7 +54,7 @@ const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, par
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
-const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
+const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion, getRtorrentPaths } = require('./src/rtorrent');
 const { runBackup, rotateBackups, backupState, rehearseLatestBackup } = require('./scripts/backup-db');
 const { recordDiskSamples, pruneDiskSamples, forecastDisks, pathIsOnRoot, forecastLabel } = require('./src/capacity');
@@ -63,7 +63,7 @@ const { createWebhookHandlers, requireWebhookSecret } = require('./src/routes/we
 const { registerTierAgentRoutes } = require('./src/routes/tier-agent');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
 const { createApp } = require('./src/app');
-const { findUnprocessableTorrents, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
+const { findUnprocessableTorrents, unacknowledgedTorrents, pruneAcknowledged, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate, planStuckTransferActions } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
 const { summarizeSeriesGaps, describeGaps, describeActivity, rankIncomplete } = require('./src/incomplete');
@@ -1946,12 +1946,26 @@ async function drainSeasonEpisodeFallbacks({ seriesList, queue, preview = false,
 // counter to trip over. Returns null when the answer is unknown (guard off, rTorrent not
 // configured, listing failed): "cannot tell" must never read as "blocked", or an unreachable
 // seedbox would silently stop all searching.
+// Hashes an admin has marked as historical. rTorrent never revisits a torrent's stored directory,
+// so the downloads that already landed relative stay relative for good — fixing the client
+// configuration cannot clear them. Without this the guard would block on them forever, which is
+// the deadlock version of the very failure it exists to prevent.
+const RTORRENT_PATH_ACK_KEY = 'rtorrent_relative_paths_ack';
+const readPathAcks = () => { try { return JSON.parse(getSetting(RTORRENT_PATH_ACK_KEY) || '[]'); } catch (_err) { return []; } };
+
 async function downloadPathBlock() {
   if (!tunable('RTORRENT_PATH_GUARD') || !rtorrentConfigured()) return null;
   let torrents;
   try { torrents = await listRtorrentTorrents(); } catch (_err) { return null; }
   const unprocessable = findUnprocessableTorrents(torrents);
-  return unprocessable.length ? { count: unprocessable.length, sample: unprocessable[0]?.name || null } : null;
+  // Keep the acknowledgement set honest on every pass: a torrent rTorrent no longer has cannot
+  // stay acknowledged, so removing and re-adding one makes it count as new breakage again.
+  const acked = pruneAcknowledged(readPathAcks(), torrents);
+  setSetting(RTORRENT_PATH_ACK_KEY, JSON.stringify(acked));
+  const live = unacknowledgedTorrents(unprocessable, new Set(acked));
+  return live.length
+    ? { count: live.length, total: unprocessable.length, acknowledged: acked.length, sample: live[0]?.name || null }
+    : null;
 }
 
 async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
@@ -1968,7 +1982,16 @@ async function sweepSeasonPacks({ rearmAlerts = false } = {}) {
     audit('season_pack_skipped', { reason: 'download_path_blocked', unprocessable: pathBlock.count, sample: pathBlock.sample });
     notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.WARN)
       .setTitle('⏸️ Season Searching Paused — rTorrent Paths')
-      .setDescription(`**${pathBlock.count}** torrent${pathBlock.count === 1 ? ' is' : 's are'} sitting at a relative path Sonarr and Radarr refuse to import, so no new season search or episode-fallback batch was started — every grab made in this state is a tracker slot spent on a file that cannot land.\n\nSearching resumes on its own once the paths are fixed. Set \`RTORRENT_PATH_GUARD=false\` to search anyway.`)] });
+      .setDescription([
+        `**${pathBlock.count}** torrent${pathBlock.count === 1 ? ' is' : 's are'} sitting at a relative path Sonarr and Radarr refuse to import, so no new season search or episode-fallback batch was started — every grab made in this state is a tracker slot spent on a file that cannot land.`,
+        pathBlock.acknowledged ? `(${pathBlock.acknowledged} already-acknowledged torrent${pathBlock.acknowledged === 1 ? '' : 's'} not counted.)` : null,
+        '',
+        'Fix the download directory first — `/rtorrent status` names the absolute path to use.',
+        'rTorrent keeps each torrent\'s directory as it was at add time, so the ones already downloaded stay relative even after the fix. **Acknowledge** them once the fix is in and searching resumes; anything that lands relative afterwards pauses it again.',
+        'Set `RTORRENT_PATH_GUARD=false` to search regardless.',
+      ].filter(line => line !== null).join('\n'))],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('rtorrent_paths_ack').setLabel('Acknowledge existing — resume searching').setStyle(ButtonStyle.Primary))] });
     return { searched: 0, skipped: 'download_path_blocked', episodeFallbackSubmitted: fallback.submitted };
   }
   const fallbackSeasons = new Map();
@@ -5249,13 +5272,19 @@ async function handleRequestCommand(interaction) {
     }
     upsertRequest(data?.id, mediaKey, mediaType, is4k, label, interaction.user.id, 'approved');
     // Self-requests (admin or auto-approved) skip the gate, so there's no "+ AvistaZ Fallback"
-    // button to click — pre-authorize the fallback automatically instead, which also puts the
-    // arr tag on right away like a gate pre-auth does.
-    const azPreAuth = canEscalate({ mediaType, is4k });
-    if (azPreAuth) {
-      recordEscalationWatch({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label, discordId: interaction.user.id, preAuthorized: true });
-      tagPreAuthorizedMedia({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label })
-        .catch(err => log.warn(`Approval-time AvistaZ tagging failed for ${label}: ${err.message}`));
+    // button to click. They used to be pre-authorized — and tagged — unconditionally, which meant
+    // every request an admin made reached the private tracker whether or not that was wanted.
+    // The watch is still recorded so the escalation asks when public indexers come up empty;
+    // only the automatic pre-authorization is gated, and an admin can opt in immediately below.
+    const azEligible = canEscalate({ mediaType, is4k });
+    const azPreAuth = azEligible && tunable('ESCALATION_SELF_REQUEST_PREAUTH');
+    let azWatch = null;
+    if (azEligible) {
+      azWatch = recordEscalationWatch({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label, discordId: interaction.user.id, preAuthorized: azPreAuth });
+      if (azPreAuth) {
+        tagPreAuthorizedMedia({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label })
+          .catch(err => log.warn(`Approval-time AvistaZ tagging failed for ${label}: ${err.message}`));
+      }
     }
     if (autoApprove) {
       const newScore = bumpTrustScore(interaction.user.id, 1);
@@ -5274,9 +5303,22 @@ async function handleRequestCommand(interaction) {
     } else {
       audit('media_requested', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seerrUserId, requestId: data?.id ?? null, azPreAuth });
     }
-    await interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
-      .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Request Sent`)
-      .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — ${autoApprove ? 'auto-approved (you\'re a trusted requester) and grabbing it now! 🚀' : 'approved and grabbing it now! 🚀'}\nYou'll get a DM when it's on Plex.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(mediaType)}.` : ''}`)] });
+    // The opt-in is admin-only, matching the escalation alert's own button: AvistaZ download
+    // slots are metered, so a trusted-but-not-admin requester reaching this path gets the
+    // ordinary "we'll ask an admin later" behavior rather than a button that would refuse them.
+    const azOptIn = azEligible && !azPreAuth && azWatch?.id && isAdminInteraction(interaction);
+    const azLine = azPreAuth
+      ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(mediaType)}.`
+      : azEligible
+        ? `\n-# Public indexers only for now — nothing is tagged \`${CONFIG.AVISTAZ_TAG}\`.${azOptIn ? ' Use the button to pre-authorize the private tracker for this title.' : ''} If nothing lands within ${escalationDelayLabel()}, the escalation asks an admin before using AvistaZ.`
+        : '';
+    await interaction.editReply({
+      embeds: [brandedEmbed(COLORS.SUCCESS)
+        .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Request Sent`)
+        .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — ${autoApprove ? 'auto-approved (you\'re a trusted requester) and grabbing it now! 🚀' : 'approved and grabbing it now! 🚀'}\nYou'll get a DM when it's on Plex.${azLine}`)],
+      components: azOptIn ? [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`az_optin:${azWatch.id}`).setLabel('Pre-authorize AvistaZ').setStyle(ButtonStyle.Secondary))] : [],
+    });
   } catch (err) {
     // Seerr answered but said no (rejection body, or the created-nothing shapes from
     // createSeerrRequestAs) vs. never answered at all — show which, so "Couldn't reach Seerr"
@@ -6716,6 +6758,20 @@ async function handleRtorrentCommand(interaction) {
       }
     } catch (err) {
       lines.push(`Seedbox rTorrent: ❌ ${err.message}`);
+    }
+    // The preflight already knows WHY rclone will fail — it reads the config file and checks the
+    // section — but that verdict was only ever consumed as a boolean by grabConfigured(). Showing
+    // it here is the difference between "didn't find section in config file" (rclone's generic
+    // error, true of a missing file, a renamed remote, and a case mismatch alike) and the one
+    // sentence that says which.
+    const preflight = grabTransferPreflight();
+    if (!preflight.ok && preflight.checked) {
+      lines.push('', `🛑 ${preflight.message}`);
+      if (preflight.availableRemotes?.length) {
+        lines.push(`Remotes defined in that file: ${preflight.availableRemotes.map(name => `\`${name}\``).join(', ')}`);
+      } else if (preflight.reason === 'rclone_remote_missing') {
+        lines.push('That file defines no remotes at all — it is probably not the rclone.conf you meant to mount.');
+      }
     }
     // What rclone actually sees at the remote root — the fastest way to spot a broken
     // rclone config or a root/download-folder mismatch when adoptions fail "not found".
@@ -8322,6 +8378,25 @@ async function handleButton(interaction) {
     }
   }
 
+  if (action === 'rtorrent_paths_ack') {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    await interaction.deferReply({ ephemeral: true });
+    let torrents;
+    try { torrents = await listRtorrentTorrents(); } catch (err) {
+      return interaction.editReply({ content: `❌ Could not read rTorrent to acknowledge: ${err.message}` });
+    }
+    const unprocessable = findUnprocessableTorrents(torrents);
+    if (!unprocessable.length) {
+      return interaction.editReply({ content: 'ℹ️ Nothing to acknowledge — no torrent is on a relative path any more.' });
+    }
+    // Acknowledge exactly what is broken right now. Anything that lands relative afterwards is
+    // new evidence the fix did not hold, and pauses searching again.
+    const acked = pruneAcknowledged([...readPathAcks(), ...unprocessable.map(t => t.hash)], torrents);
+    setSetting(RTORRENT_PATH_ACK_KEY, JSON.stringify(acked));
+    audit('rtorrent_paths_acknowledged', { actorDiscordId: interaction.user.id, count: unprocessable.length, acknowledged: acked.length });
+    return interaction.editReply({ content: `✅ Acknowledged **${unprocessable.length}** existing relative-path torrent${unprocessable.length === 1 ? '' : 's'}. Season searching resumes on the next sweep. If anything new lands on a relative path, it pauses again — those torrents still cannot import, so re-download them once the directory is right.` });
+  }
+
   if (['packsize_approve', 'packsize_dismiss'].includes(action)) {
     if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
     const quality = action === 'packsize_approve' ? parts.slice(0, -1).join(':') : parts.join(':');
@@ -8425,6 +8500,34 @@ async function handleButton(interaction) {
   }
 
   // AvistaZ escalation buttons (from the escalation watchdog's "nothing found yet" alerts).
+  // Opt in to the private tracker for one title, from the request confirmation. This is the
+  // deliberate counterpart to no longer pre-authorizing every self-request: nothing reaches
+  // AvistaZ automatically, but an admin who knows a title needs it does not have to wait out
+  // the escalation delay to say so.
+  if (action === 'az_optin') {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const row = getEscalationById(Number(parts[0]));
+    if (!row || !['watching', 'alerted'].includes(row.state)) {
+      return interaction.update({ content: 'ℹ️ Already handled (escalated, resolved, or dismissed).', components: [] });
+    }
+    if (row.pre_authorized) {
+      return interaction.update({ content: 'ℹ️ Already pre-authorized for AvistaZ.', components: [] });
+    }
+    await interaction.deferUpdate();
+    // Same upsert the request path uses; pre_authorized is MAX()'d, so this promotes the row
+    // without disturbing the clock the escalation delay is measured from.
+    recordEscalationWatch({
+      mediaType: row.media_type, tmdbId: row.tmdb_id, tvdbId: row.tvdb_id,
+      title: row.title, discordId: row.requested_by_discord_id, preAuthorized: true,
+    });
+    const tagged = await tagPreAuthorizedMedia({ mediaType: row.media_type, tmdbId: row.tmdb_id, tvdbId: row.tvdb_id, title: row.title })
+      .catch(err => ({ ok: false, reason: err.message }));
+    audit('avistaz_preauth_opted_in', { actorDiscordId: interaction.user.id, mediaId: row.media_id, title: row.title, tagged: !!tagged?.ok });
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle(`🔐 AvistaZ Pre-authorized — ${row.title}`)
+      .setDescription(`Pre-authorized by <@${interaction.user.id}>.${tagged?.ok ? ` Tagged \`${CONFIG.AVISTAZ_TAG}\`.` : ` The tag could not be applied yet (${tagged?.reason || 'unknown'}) — the escalation applies it when it fires.`} Public indexers still get ${escalationDelayLabel()} first; it ${preAuthOutcomeLabel(row.media_type)}.`)], components: [] });
+  }
+
   if (['escalate_az', 'escalate_ignore'].includes(action)) {
     if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
     const row = getEscalationById(Number(parts[0]));

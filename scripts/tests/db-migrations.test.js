@@ -116,3 +116,39 @@ test('pack rejection sightings accumulate counts and converge on the floor that 
     cleanup(fixture);
   }
 });
+
+test('recordEscalationWatch returns the row so a per-title action can address it', () => {
+  const fixture = freshDb();
+  try {
+    fixture.runMigrations();
+    const { recordEscalationWatch, getEscalationById } = fixture;
+
+    // Not pre-authorized: the request path still records the watch so the escalation asks when
+    // public indexers come up empty — only the automatic tagging is withheld.
+    const watching = recordEscalationWatch({
+      mediaType: 'tv', tmdbId: 4242, tvdbId: 99, title: 'The Road to Splendor',
+      discordId: '1', preAuthorized: false,
+    });
+    assert.ok(watching?.id, 'the row is returned so a button can carry its id');
+    assert.strictEqual(watching.pre_authorized, 0);
+    assert.strictEqual(watching.state, 'watching');
+
+    // Opting in re-runs the same upsert; pre_authorized is MAX()'d, so it promotes in place.
+    const promoted = recordEscalationWatch({
+      mediaType: 'tv', tmdbId: 4242, tvdbId: 99, title: 'The Road to Splendor',
+      discordId: '1', preAuthorized: true,
+    });
+    assert.strictEqual(promoted.id, watching.id, 'the same row, not a second one');
+    assert.strictEqual(promoted.pre_authorized, 1);
+
+    // And it never goes backwards: a later non-preauth write cannot silently un-authorize.
+    const again = recordEscalationWatch({
+      mediaType: 'tv', tmdbId: 4242, tvdbId: 99, title: 'The Road to Splendor',
+      discordId: '1', preAuthorized: false,
+    });
+    assert.strictEqual(again.pre_authorized, 1);
+    assert.strictEqual(getEscalationById(watching.id).pre_authorized, 1);
+  } finally {
+    cleanup(fixture);
+  }
+});

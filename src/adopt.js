@@ -71,6 +71,31 @@ function findUnprocessableTorrents(torrents = []) {
   });
 }
 
+// Which unprocessable torrents have not been acknowledged yet.
+//
+// rTorrent stores a torrent's directory at add time and never revisits it, so fixing the client
+// configuration does nothing for downloads that already landed — they stay relative until they
+// are removed and re-added. A guard that blocks while ANY relative path exists therefore never
+// releases, however completely the operator fixes the cause: 115 historical torrents would hold
+// searching shut forever. Acknowledgement is what separates "this is history" from "this is
+// still happening", and only the latter is worth withholding grabs over.
+// Both sides are normalized here rather than trusting the caller to have pruned first: rTorrent
+// reports uppercase hashes, stored acknowledgements may be any case, and a mismatch would
+// silently under-acknowledge — the guard would keep blocking on torrents it was told to ignore.
+function unacknowledgedTorrents(unprocessable = [], acknowledged = new Set()) {
+  const seen = new Set([...(acknowledged || [])].map(hash => String(hash || '').toUpperCase()));
+  return (unprocessable || []).filter(torrent => !seen.has(String(torrent.hash || '').toUpperCase()));
+}
+
+// Acknowledged hashes worth keeping: only the ones rTorrent still has. Pruning stops the set
+// growing without bound, and makes a torrent that was removed and re-added count as new breakage
+// again rather than inheriting an acknowledgement from its previous life.
+function pruneAcknowledged(acknowledged = [], torrents = []) {
+  const present = new Set((torrents || []).map(t => String(t.hash || '').toUpperCase()).filter(Boolean));
+  return [...new Set((acknowledged || []).map(hash => String(hash || '').toUpperCase()).filter(Boolean))]
+    .filter(hash => present.has(hash));
+}
+
 // The absolute download directory to hand Sonarr/Radarr's "Directory" field, worked out from
 // what rTorrent reports about itself (src/rtorrent.js getRtorrentPaths).
 //
@@ -192,4 +217,4 @@ function bulkTargetChoices(candidates, explicitTarget, cfg = CONFIG) {
   return [cfg.SONARR_URL ? 'sonarr' : null, cfg.RADARR_URL ? 'radarr' : null].filter(Boolean);
 }
 
-module.exports = { findUnprocessableTorrents, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices };
+module.exports = { findUnprocessableTorrents, unacknowledgedTorrents, pruneAcknowledged, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices };

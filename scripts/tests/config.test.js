@@ -254,3 +254,14 @@ test('config: a named rclone remote with no --config warns before a tracker down
     require('../../src/config');
   }
 });
+
+test('config: a request that skips the approval gate does not pre-authorize AvistaZ by default', () => {
+  // Self/admin requests never saw the gate's "+ AvistaZ Fallback" choice, so they used to reach
+  // the private tracker unconditionally. Nothing should get there without someone saying so.
+  assert.strictEqual(CONFIG.ESCALATION_SELF_REQUEST_PREAUTH, false);
+  const setting = runtimeSettings.settingByKey('ESCALATION_SELF_REQUEST_PREAUTH');
+  assert.strictEqual(setting.group, 'escalation', 'it lives with the rest of the escalation knobs');
+  assert.strictEqual(runtimeSettings.baseValue(setting, { config: {} }), false);
+  assert.strictEqual(runtimeSettings.baseValue(setting, { config: { ESCALATION_SELF_REQUEST_PREAUTH: true } }), true,
+    'and the old behavior is one setting away');
+});

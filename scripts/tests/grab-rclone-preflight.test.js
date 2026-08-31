@@ -64,3 +64,30 @@ test('pack-based whole-series plans still honor the configured cap', () => {
   assert.equal(plan.picks.length, 2);
   assert.equal(plan.trimmed, 1);
 });
+
+test('preflight names a case-mismatched remote instead of leaving it to be spotted', () => {
+  // rclone's own error ("didn't find section in config file") is identical for a missing file, a
+  // renamed remote, and a case mismatch. The last is the likeliest and the least visible, so it
+  // is called out by name rather than left in a list for the operator to scan.
+  const result = grabTransferPreflight(baseCfg, () => '[RapidSeedbox]\ntype = sftp\nhost = example\n[backup]\n');
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'rclone_remote_missing');
+  assert.equal(result.caseMatch, 'RapidSeedbox');
+  assert.match(result.message, /case-sensitive/);
+  assert.deepEqual(result.availableRemotes, ['RapidSeedbox', 'backup']);
+});
+
+test('preflight lists the remotes a config actually defines, and never their values', () => {
+  const conf = '[seedbox-sftp]\ntype = sftp\nhost = example.com\npass = SUPERSECRET\n\n[other]\ntype = s3\n';
+  const result = grabTransferPreflight(baseCfg, () => conf);
+  assert.equal(result.reason, 'rclone_remote_missing');
+  assert.deepEqual(result.availableRemotes, ['seedbox-sftp', 'other']);
+  assert.equal(result.caseMatch, null, 'a genuinely different name is not reported as a case problem');
+  // This list is rendered into Discord: section names only, never credentials.
+  assert.ok(!JSON.stringify(result).includes('SUPERSECRET'));
+
+  const healthy = grabTransferPreflight(baseCfg, () => '[rapidseedbox]\ntype = sftp\npass = SECRET\n');
+  assert.equal(healthy.ok, true);
+  assert.deepEqual(healthy.availableRemotes, ['rapidseedbox']);
+  assert.ok(!JSON.stringify(healthy).includes('SECRET'));
+});

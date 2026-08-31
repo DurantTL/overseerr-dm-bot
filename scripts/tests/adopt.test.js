@@ -7,7 +7,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const express = require('express');
 
-const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('../../src/adopt');
+const { pruneAcknowledged, unacknowledgedTorrents, findUnprocessableTorrents, matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('../../src/adopt');
 const { CONFIG } = require('../../src/config');
 
 const cfg = { RTORRENT_ADOPT_LABELS: ['sonarr', 'radarr', 'tv'], SONARR_URL: 'http://s', RADARR_URL: 'http://r' };
@@ -155,4 +155,28 @@ test('adopt: d.multicall2 listing against a mock XML-RPC endpoint', async () => 
   assert.strictEqual(listed[1].label, '', 'blank label survives as an empty string');
 
   server.close();
+});
+
+test('acknowledgement separates historical relative paths from ongoing breakage', () => {
+  const torrents = [
+    { hash: 'AAA', name: 'old-one', basePath: './old-one.mkv' },
+    { hash: 'BBB', name: 'new-one', basePath: './new-one.mkv' },
+    { hash: 'CCC', name: 'healthy', basePath: '/mnt/dl/healthy.mkv' },
+  ];
+  const unprocessable = findUnprocessableTorrents(torrents);
+  assert.deepStrictEqual(unprocessable.map(t => t.hash), ['AAA', 'BBB']);
+  assert.deepStrictEqual(unacknowledgedTorrents(unprocessable, new Set(['AAA'])).map(t => t.hash), ['BBB']);
+  assert.deepStrictEqual(unacknowledgedTorrents(unprocessable, new Set(['AAA', 'BBB'])), [],
+    'fully acknowledged history releases the guard');
+  // Hash comparison is case-insensitive: rTorrent reports uppercase, stored acks may not be.
+  assert.deepStrictEqual(unacknowledgedTorrents(unprocessable, new Set(['aaa'])).map(t => t.hash), ['BBB']);
+});
+
+test('acknowledgements are pruned to torrents rTorrent still has', () => {
+  const torrents = [{ hash: 'AAA' }, { hash: 'BBB' }];
+  assert.deepStrictEqual(pruneAcknowledged(['AAA', 'GONE'], torrents), ['AAA']);
+  // A torrent removed and re-added is fresh breakage, not an inherited acknowledgement.
+  assert.deepStrictEqual(pruneAcknowledged(['GONE'], torrents), []);
+  assert.deepStrictEqual(pruneAcknowledged(['aaa', 'AAA', ''], torrents), ['AAA'], 'deduped, normalized, blanks dropped');
+  assert.deepStrictEqual(pruneAcknowledged([], torrents), []);
 });
