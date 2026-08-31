@@ -55,7 +55,7 @@ const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromo
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
 const { grabConfigured, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
-const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion } = require('./src/rtorrent');
+const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion, getRtorrentPaths } = require('./src/rtorrent');
 const { runBackup, rotateBackups, backupState, rehearseLatestBackup } = require('./scripts/backup-db');
 const { recordDiskSamples, pruneDiskSamples, forecastDisks, pathIsOnRoot, forecastLabel } = require('./src/capacity');
 const { webhookEventKey } = require('./src/webhook-events');
@@ -63,7 +63,7 @@ const { createWebhookHandlers, requireWebhookSecret } = require('./src/routes/we
 const { registerTierAgentRoutes } = require('./src/routes/tier-agent');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
 const { createApp } = require('./src/app');
-const { findUnprocessableTorrents, matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
+const { findUnprocessableTorrents, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate, planStuckTransferActions } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
 const { summarizeSeriesGaps, describeGaps, describeActivity, rankIncomplete } = require('./src/incomplete');
@@ -768,6 +768,17 @@ async function sweepStuckDownloads() {
     const examples = unprocessable.slice(0, 5)
       .map(t => `• \`${String(t.name || '(unnamed)').slice(0, 90)}\` → \`${String(t.basePath).slice(0, 60)}\``)
       .join('\n');
+    // Ask rTorrent where it actually puts things. The fix that needs no .rtorrent.rc access is
+    // the *arrs' own Directory field, and that needs an absolute path the operator otherwise has
+    // no way to discover — rTorrent resolves its relative default against its working directory,
+    // so it already knows the answer.
+    const paths = await getRtorrentPaths().catch(() => ({}));
+    const resolved = resolveAbsoluteDownloadDir(paths);
+    const pathLines = [
+      paths.cwd ? `rTorrent working directory: \`${String(paths.cwd).slice(0, 120)}\`` : null,
+      paths.defaultDirectory ? `rTorrent default directory: \`${String(paths.defaultDirectory).slice(0, 120)}\`` : null,
+      resolved ? `**Absolute path to use: \`${resolved.path.slice(0, 200)}\`** _(from ${resolved.from})_` : null,
+    ].filter(Boolean).join('\n');
     notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.DANGER)
       .setTitle(`\u{1f6d1} rTorrent Downloads Cannot Be Imported — ${unprocessable.length} torrent${unprocessable.length === 1 ? '' : 's'}`.slice(0, 256))
       .setDescription([
@@ -776,11 +787,17 @@ async function sweepStuckDownloads() {
         'This is why a season can grab release after release without the missing count ever moving.',
         '',
         examples,
+        pathLines ? `\n${pathLines}` : '',
         '',
-        '**Fix (either one):** set an absolute `directory.default.set` in the seedbox\'s `.rtorrent.rc`, or fill in the **Directory** field on the rTorrent client in Sonarr/Radarr → Settings → Download Clients. Existing torrents need their path corrected too; re-downloading them after the fix is the simplest route.',
-      ].join('\n').slice(0, 4000))] });
+        resolved
+          ? `**Fix, no seedbox shell needed:** put \`${resolved.path.slice(0, 200)}\` in the **Directory** field on the rTorrent client in Sonarr/Radarr → Settings → Download Clients. Verify it against a working torrent in ruTorrent first. Set \`RTORRENT_DOWNLOAD_DIR\` to the same path so this bot's own grabs match.`
+          : '**Fix:** fill in the **Directory** field on the rTorrent client in Sonarr/Radarr → Settings → Download Clients with an absolute path, or set an absolute `directory.default.set` in the seedbox\'s `.rtorrent.rc`. rTorrent did not report its working directory, so check ruTorrent for the full path of a working torrent.',
+        'Existing torrents keep their bad path; re-downloading them after the fix is the simplest route.',
+      ].filter(line => line !== '').join('\n').slice(0, 4000))] });
     audit('rtorrent_unprocessable_paths', {
       count: unprocessable.length,
+      cwd: paths.cwd || null, defaultDirectory: paths.defaultDirectory || null,
+      resolvedDownloadDir: resolved?.path || null, resolvedFrom: resolved?.from || null,
       samples: unprocessable.slice(0, 5).map(t => ({ name: t.name, basePath: t.basePath })),
     });
     alerted++;

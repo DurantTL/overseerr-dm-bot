@@ -71,6 +71,29 @@ function findUnprocessableTorrents(torrents = []) {
   });
 }
 
+// The absolute download directory to hand Sonarr/Radarr's "Directory" field, worked out from
+// what rTorrent reports about itself (src/rtorrent.js getRtorrentPaths).
+//
+// rTorrent resolves a relative download directory against its own working directory, so an
+// absolute `directory.default` is the answer outright, and a relative one resolves against
+// `system.cwd`. An empty or '.' default means downloads land in the working directory itself.
+//
+// Returns null rather than guessing when cwd is unknown or itself relative: an operator pasting
+// a wrong absolute path into Sonarr trades a diagnosable failure for a silent one.
+function resolveAbsoluteDownloadDir({ cwd = '', defaultDirectory = '' } = {}) {
+  const trim = value => String(value || '').trim();
+  const stripTrailing = value => (value.length > 1 ? value.replace(/\/+$/, '') : value);
+  const configured = stripTrailing(trim(defaultDirectory));
+  if (configured.startsWith('/')) return { path: configured, from: 'directory.default' };
+  const base = stripTrailing(trim(cwd));
+  if (!base.startsWith('/')) return null;
+  const relative = configured.replace(/^\.\/+/, '').replace(/^\.$/, '');
+  if (!relative) return { path: base, from: 'system.cwd' };
+  // A default that climbs out of the working directory is not something to resolve blindly.
+  if (relative.split('/').some(part => part === '..')) return null;
+  return { path: `${base}/${relative}`, from: 'system.cwd + directory.default' };
+}
+
 // The adoption verdict for one existing torrent: refuse duplicates (an info-hash already in
 // grab_jobs is already owned by the pipeline), refuse target-less adoptions, and pick the
 // job's starting state from the torrent's completion.
@@ -169,4 +192,4 @@ function bulkTargetChoices(candidates, explicitTarget, cfg = CONFIG) {
   return [cfg.SONARR_URL ? 'sonarr' : null, cfg.RADARR_URL ? 'radarr' : null].filter(Boolean);
 }
 
-module.exports = { findUnprocessableTorrents, matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices };
+module.exports = { findUnprocessableTorrents, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices };

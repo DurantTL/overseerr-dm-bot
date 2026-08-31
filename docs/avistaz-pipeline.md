@@ -337,11 +337,23 @@ the bot's own direct grabs and the *arrs' alike — until someone reads the rTor
 the only place it is written down.
 
 The stuck sweep therefore checks `d.base_path` on every listed torrent and posts one alert for the
-whole condition (not one per torrent), naming the fix: an absolute `directory.default.set` in the
-seedbox's `.rtorrent.rc`, or the **Directory** field on the rTorrent client in Sonarr/Radarr →
-Settings → Download Clients. The alert's cooldown key is exempt from the queue-group pruning that
-clears ordinary stuck keys, and is cleared once no torrent has a relative path so a recurrence is
-reported promptly.
+whole condition (not one per torrent). The alert's cooldown key is exempt from the queue-group
+pruning that clears ordinary stuck keys, and is cleared once no torrent has a relative path so a
+recurrence is reported promptly.
+
+On a managed seedbox `.rtorrent.rc` is often not editable, which leaves the **Directory** field on
+the rTorrent client in Sonarr/Radarr → Settings → Download Clients — and that needs an absolute
+path the operator has no obvious way to discover. rTorrent knows it: a relative default resolves
+against its working directory, so the alert asks rTorrent for `system.cwd` and `directory.default`
+and reports the resolved path to paste in. Each field is probed independently and best-effort,
+since builds differ in what they expose; when nothing resolves the alert says so and points at
+ruTorrent rather than guessing a path, because a wrong absolute path trades a diagnosable failure
+for a silent one.
+
+`RTORRENT_DOWNLOAD_DIR` pins that same absolute path on the torrents this bot adds itself. Unset
+(the default) keeps rTorrent's own default. The two settings cover the two halves: the *arrs add
+their own torrents to rTorrent directly, so their Directory field covers those, and this covers
+the bot's direct grabs.
 
 ## Why Sonarr refuses a season pack
 
