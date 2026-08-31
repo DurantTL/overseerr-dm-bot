@@ -69,10 +69,17 @@ the call is an informed one.
   the button for anything else (see the table above).
 - Plain **Approve** gets the watchdog flavor instead: after the delay, the downloads channel gets
   a **⏳ Nothing Found Yet** embed with **Escalate to AvistaZ / Ignore** buttons.
-- Admin self-requests skip the gate entirely (no button to click), so they're pre-authorized
-  automatically — tagged at request time, and subject to the same Asian-origin auto-escalation
-  rule as **Approve + AvistaZ Fallback**. Movies trigger Radarr's search; TV may use the direct
-  seedbox planner before falling back to Sonarr's search.
+- Admin and auto-approved self-requests skip the gate entirely, so there is no button to click.
+  They used to be pre-authorized — and tagged — unconditionally, which meant every request an
+  admin made reached the private tracker whether or not that was wanted. They now behave like
+  plain **Approve**: the watch row is still recorded, nothing is tagged, and if nothing public
+  lands within `ESCALATION_DELAY_MINUTES` the escalation asks first. An admin who already knows a
+  title needs AvistaZ can skip the wait with the **Pre-authorize AvistaZ** button on the request
+  confirmation, which tags it immediately and restores the auto-escalation rule above; the button
+  is admin-only because AvistaZ download slots are metered. Set
+  `ESCALATION_SELF_REQUEST_PREAUTH=true` to restore the old always-pre-authorize behavior.
+  Movies trigger Radarr's search; TV may use the direct seedbox planner before falling back to
+  Sonarr's search.
 - A watch row resolves automatically the moment the media turns available, starts downloading, or
   the request is declined; unresolved rows expire after `ESCALATION_MAX_AGE_DAYS`.
 - If an approved request never lands in Radarr/Sonarr at all — Seerr can accept a request and

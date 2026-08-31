@@ -5249,13 +5249,19 @@ async function handleRequestCommand(interaction) {
     }
     upsertRequest(data?.id, mediaKey, mediaType, is4k, label, interaction.user.id, 'approved');
     // Self-requests (admin or auto-approved) skip the gate, so there's no "+ AvistaZ Fallback"
-    // button to click — pre-authorize the fallback automatically instead, which also puts the
-    // arr tag on right away like a gate pre-auth does.
-    const azPreAuth = canEscalate({ mediaType, is4k });
-    if (azPreAuth) {
-      recordEscalationWatch({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label, discordId: interaction.user.id, preAuthorized: true });
-      tagPreAuthorizedMedia({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label })
-        .catch(err => log.warn(`Approval-time AvistaZ tagging failed for ${label}: ${err.message}`));
+    // button to click. They used to be pre-authorized — and tagged — unconditionally, which meant
+    // every request an admin made reached the private tracker whether or not that was wanted.
+    // The watch is still recorded so the escalation asks when public indexers come up empty;
+    // only the automatic pre-authorization is gated, and an admin can opt in immediately below.
+    const azEligible = canEscalate({ mediaType, is4k });
+    const azPreAuth = azEligible && tunable('ESCALATION_SELF_REQUEST_PREAUTH');
+    let azWatch = null;
+    if (azEligible) {
+      azWatch = recordEscalationWatch({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label, discordId: interaction.user.id, preAuthorized: azPreAuth });
+      if (azPreAuth) {
+        tagPreAuthorizedMedia({ mediaType, tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: label })
+          .catch(err => log.warn(`Approval-time AvistaZ tagging failed for ${label}: ${err.message}`));
+      }
     }
     if (autoApprove) {
       const newScore = bumpTrustScore(interaction.user.id, 1);
@@ -5274,9 +5280,22 @@ async function handleRequestCommand(interaction) {
     } else {
       audit('media_requested', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seerrUserId, requestId: data?.id ?? null, azPreAuth });
     }
-    await interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
-      .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Request Sent`)
-      .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — ${autoApprove ? 'auto-approved (you\'re a trusted requester) and grabbing it now! 🚀' : 'approved and grabbing it now! 🚀'}\nYou'll get a DM when it's on Plex.${azPreAuth ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(mediaType)}.` : ''}`)] });
+    // The opt-in is admin-only, matching the escalation alert's own button: AvistaZ download
+    // slots are metered, so a trusted-but-not-admin requester reaching this path gets the
+    // ordinary "we'll ask an admin later" behavior rather than a button that would refuse them.
+    const azOptIn = azEligible && !azPreAuth && azWatch?.id && isAdminInteraction(interaction);
+    const azLine = azPreAuth
+      ? `\n🔐 AvistaZ fallback pre-authorized — tagging it \`${CONFIG.AVISTAZ_TAG}\` now. If nothing public is grabbed within ${escalationDelayLabel()} it ${preAuthOutcomeLabel(mediaType)}.`
+      : azEligible
+        ? `\n-# Public indexers only for now — nothing is tagged \`${CONFIG.AVISTAZ_TAG}\`.${azOptIn ? ' Use the button to pre-authorize the private tracker for this title.' : ''} If nothing lands within ${escalationDelayLabel()}, the escalation asks an admin before using AvistaZ.`
+        : '';
+    await interaction.editReply({
+      embeds: [brandedEmbed(COLORS.SUCCESS)
+        .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Request Sent`)
+        .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — ${autoApprove ? 'auto-approved (you\'re a trusted requester) and grabbing it now! 🚀' : 'approved and grabbing it now! 🚀'}\nYou'll get a DM when it's on Plex.${azLine}`)],
+      components: azOptIn ? [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`az_optin:${azWatch.id}`).setLabel('Pre-authorize AvistaZ').setStyle(ButtonStyle.Secondary))] : [],
+    });
   } catch (err) {
     // Seerr answered but said no (rejection body, or the created-nothing shapes from
     // createSeerrRequestAs) vs. never answered at all — show which, so "Couldn't reach Seerr"
@@ -8425,6 +8444,34 @@ async function handleButton(interaction) {
   }
 
   // AvistaZ escalation buttons (from the escalation watchdog's "nothing found yet" alerts).
+  // Opt in to the private tracker for one title, from the request confirmation. This is the
+  // deliberate counterpart to no longer pre-authorizing every self-request: nothing reaches
+  // AvistaZ automatically, but an admin who knows a title needs it does not have to wait out
+  // the escalation delay to say so.
+  if (action === 'az_optin') {
+    if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+    const row = getEscalationById(Number(parts[0]));
+    if (!row || !['watching', 'alerted'].includes(row.state)) {
+      return interaction.update({ content: 'ℹ️ Already handled (escalated, resolved, or dismissed).', components: [] });
+    }
+    if (row.pre_authorized) {
+      return interaction.update({ content: 'ℹ️ Already pre-authorized for AvistaZ.', components: [] });
+    }
+    await interaction.deferUpdate();
+    // Same upsert the request path uses; pre_authorized is MAX()'d, so this promotes the row
+    // without disturbing the clock the escalation delay is measured from.
+    recordEscalationWatch({
+      mediaType: row.media_type, tmdbId: row.tmdb_id, tvdbId: row.tvdb_id,
+      title: row.title, discordId: row.requested_by_discord_id, preAuthorized: true,
+    });
+    const tagged = await tagPreAuthorizedMedia({ mediaType: row.media_type, tmdbId: row.tmdb_id, tvdbId: row.tvdb_id, title: row.title })
+      .catch(err => ({ ok: false, reason: err.message }));
+    audit('avistaz_preauth_opted_in', { actorDiscordId: interaction.user.id, mediaId: row.media_id, title: row.title, tagged: !!tagged?.ok });
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle(`🔐 AvistaZ Pre-authorized — ${row.title}`)
+      .setDescription(`Pre-authorized by <@${interaction.user.id}>.${tagged?.ok ? ` Tagged \`${CONFIG.AVISTAZ_TAG}\`.` : ` The tag could not be applied yet (${tagged?.reason || 'unknown'}) — the escalation applies it when it fires.`} Public indexers still get ${escalationDelayLabel()} first; it ${preAuthOutcomeLabel(row.media_type)}.`)], components: [] });
+  }
+
   if (['escalate_az', 'escalate_ignore'].includes(action)) {
     if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
     const row = getEscalationById(Number(parts[0]));

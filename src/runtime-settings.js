@@ -128,6 +128,9 @@ const RUNTIME_SETTINGS = [
   { key: 'RELEASE_GROUP_BLOCKLIST_SCORE', group: 'release_group_blocklist', type: 'int', min: -10000, max: 0, source: 'config',
     label: 'Score applied once approved', unit: 'pts' },
 
+  { key: 'ESCALATION_SELF_REQUEST_PREAUTH', group: 'escalation', type: 'bool', source: 'config',
+    label: 'Pre-authorize AvistaZ on self/admin requests', help: 'Off by default. Requests that skip the approval gate never saw its "+ AvistaZ Fallback" choice, so they are no longer tagged automatically — the escalation still asks when public indexers come up empty, and an admin can opt in immediately from the request confirmation. Turn this on to restore the old behavior of tagging every self-request straight away.' },
+
   // ---- Season-pack size-floor fix (#236) ----
   { key: 'PACK_SIZE_FIX_ENABLED', group: 'pack_size_fix', type: 'bool', source: 'config',
     label: 'Suggest loosening a Sonarr size floor', help: 'When Sonarr’s minimum-size limit keeps rejecting season packs of the same quality, post a suggestion in the downloads channel. Approving it lowers that one quality definition’s minimum; nothing changes until an admin clicks.' },

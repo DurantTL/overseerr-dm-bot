@@ -702,6 +702,9 @@ function recordEscalationWatch({ mediaType, tmdbId, tvdbId, title, discordId, pr
       approved_at = excluded.approved_at,
       updated_at = CURRENT_TIMESTAMP`)
     .run(`tmdb:${tmdbId}`, mediaType, tmdbId, tvdbId ?? null, title, discordId || null, preAuthorized ? 1 : 0, Date.now());
+  // Returned so a caller that wants to offer a per-title action on this watch (the AvistaZ
+  // opt-in button) can address the row by id without a second lookup.
+  return db.prepare('SELECT * FROM escalations WHERE media_id = ?').get(`tmdb:${tmdbId}`) || null;
 }
 
 const getWatchingEscalations = () => db.prepare("SELECT * FROM escalations WHERE state = 'watching'").all();

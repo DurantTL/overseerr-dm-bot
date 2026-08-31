@@ -311,6 +311,10 @@ const CONFIG = (() => {
   // default; set it when that default is relative and .rtorrent.rc is not editable (#238).
   RTORRENT_DOWNLOAD_DIR: (process.env.RTORRENT_DOWNLOAD_DIR || '').replace(/\/+$/, ''),
   RTORRENT_PATH_GUARD: parseBool(process.env.RTORRENT_PATH_GUARD, true),
+  // Self/admin requests skip the approval gate, so they never saw the gate's
+  // "+ AvistaZ Fallback" choice and were pre-authorized (and tagged) unconditionally. Default
+  // off: nothing reaches the private tracker without someone saying so.
+  ESCALATION_SELF_REQUEST_PREAUTH: parseBool(process.env.ESCALATION_SELF_REQUEST_PREAUTH, false),
   JANITOR_CHECK_MINUTES: Number.parseInt(process.env.JANITOR_CHECK_MINUTES || '60', 10),
   RETENTION_ENFORCEMENT: parseBool(process.env.RETENTION_ENFORCEMENT, false),
   RETENTION_CHECK_HOURS: Number.parseInt(process.env.RETENTION_CHECK_HOURS || '24', 10),
