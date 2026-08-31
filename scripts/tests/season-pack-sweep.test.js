@@ -13,7 +13,7 @@ const { priorityKey, orderByPriority, isPinned } = require('../../src/priority')
 const { sha256, queueItemLooksUnhealthy } = require('../../src/util');
 const { normalizeTitle, splitTitleYear, releaseContentClaim, seriesAliasMatch } = require('../../src/grab');
 const { isAsianLanguageName } = require('../../src/asian');
-const { findUnprocessableTorrents } = require('../../src/adopt');
+const { findUnprocessableTorrents, unacknowledgedTorrents, pruneAcknowledged } = require('../../src/adopt');
 const sonarrSeriesAliases = series => [normalizeTitle(series?.title)].filter(Boolean);
 
 const DAY = 86400000;
@@ -52,11 +52,12 @@ function build({
   sonarrUntagged = true, avistazDirect = false, tagId = 7, seriesTags = {},
   indexer = { id: 9 }, directResult = { status: 'offered', detail: 'posted 1 candidate(s)' },
   activeGrabJobs = [], autoTagAfterStalls = 0, stallCounts = {}, maxBackoffSteps = 4,
-  everSweptSeriesIds = null, rtorrentTorrents = [],
+  everSweptSeriesIds = null, rtorrentTorrents = [], pathAcks = [],
 } = {}) {
   const calls = [];
   const recorded = [];
   const audits = [];
+  const settingWrites = [];
   const notices = [];
   const episodeFetches = [];
   const monitored = [];
@@ -131,8 +132,17 @@ function build({
     rtorrentConfigured: () => true,
     listRtorrentTorrents: async () => rtorrentTorrents,
     findUnprocessableTorrents,
+    unacknowledgedTorrents,
+    pruneAcknowledged,
+    RTORRENT_PATH_ACK_KEY: 'rtorrent_relative_paths_ack',
+    ActionRowBuilder: class { constructor() { this.components = []; } addComponents(...v) { this.components.push(...v); return this; } },
+    ButtonBuilder: class { setCustomId(v) { this.customId = v; return this; } setLabel(v) { this.label = v; return this; } setStyle(v) { this.style = v; return this; } },
+    ButtonStyle: { Primary: 'primary', Danger: 'danger', Secondary: 'secondary' },
+    readPathAcks: () => pathAcks,
+    getSetting: () => null,
+    setSetting: (key, value) => { settingWrites.push({ key, value }); },
   });
-  return { sandbox, calls, recorded, audits, notices, episodeFetches, monitored, rearmed, directCalls, tagCalls };
+  return { sandbox, calls, recorded, audits, settingWrites, notices, episodeFetches, monitored, rearmed, directCalls, tagCalls };
 }
 
 test('season-pack-sweep: old shows get season searches, airing shows are never touched', async () => {
@@ -197,6 +207,44 @@ test('season-pack-sweep: searching pauses while rTorrent holds paths the *arrs w
   assert.ok(h.audits.some(row => row.action === 'season_pack_skipped' && row.detail.reason === 'download_path_blocked'));
   assert.match(h.notices.at(-1).msg.embeds[0].title, /Season Searching Paused/);
   assert.match(h.notices.at(-1).msg.embeds[0].description, /RTORRENT_PATH_GUARD=false/, 'the opt-out is named');
+});
+
+test('season-pack-sweep: acknowledged relative paths stop blocking, new ones start again', async () => {
+  // rTorrent stores a torrent's directory at add time and never revisits it, so downloads that
+  // already landed relative stay relative for good. Blocking while any of them exists would hold
+  // searching shut forever, however completely the operator fixed the cause.
+  const historical = [
+    { name: 'Old.S01E01.mkv', basePath: './Old.S01E01.mkv', hash: 'AAA', label: 'sonarr' },
+    { name: 'Old.S01E02.mkv', basePath: './Old.S01E02.mkv', hash: 'BBB', label: 'sonarr' },
+  ];
+  const acked = build({ rtorrentTorrents: historical, pathAcks: ['AAA', 'BBB'] });
+  const result = await acked.sandbox.run('sweepSeasonPacks()');
+  assert.notStrictEqual(result.skipped, 'download_path_blocked', 'history alone must not hold the guard shut');
+  assert.ok(acked.calls.length > 0, 'searching really does resume');
+
+  // A torrent that lands relative AFTER the acknowledgement is new evidence the fix did not hold.
+  const regressed = build({
+    rtorrentTorrents: [...historical, { name: 'New.S01E03.mkv', basePath: './New.S01E03.mkv', hash: 'CCC', label: 'sonarr' }],
+    pathAcks: ['AAA', 'BBB'],
+  });
+  const blocked = await regressed.sandbox.run('sweepSeasonPacks()');
+  assert.strictEqual(blocked.skipped, 'download_path_blocked');
+  const detail = regressed.audits.find(row => row.action === 'season_pack_skipped').detail;
+  assert.strictEqual(detail.unprocessable, 1, 'only the unacknowledged one counts toward blocking');
+  assert.match(regressed.notices.at(-1).msg.embeds[0].description, /2 already-acknowledged torrents not counted/);
+});
+
+test('season-pack-sweep: an acknowledgement dies with the torrent it was made for', async () => {
+  // Otherwise a removed-and-re-added torrent would inherit an acknowledgement from its previous
+  // life and its fresh breakage would go unnoticed.
+  const h = build({
+    rtorrentTorrents: [{ name: 'Back.Again.mkv', basePath: './Back.Again.mkv', hash: 'CCC', label: 'sonarr' }],
+    pathAcks: ['AAA', 'BBB'],
+  });
+  const result = await h.sandbox.run('sweepSeasonPacks()');
+  assert.strictEqual(result.skipped, 'download_path_blocked', 'CCC was never acknowledged');
+  const written = h.settingWrites.filter(w => w.key === 'rtorrent_relative_paths_ack').at(-1);
+  assert.deepStrictEqual(JSON.parse(written.value), [], 'hashes rTorrent no longer has are pruned away');
 });
 
 test('season-pack-sweep: the path guard never blocks on an unknown answer', async () => {

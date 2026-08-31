@@ -357,8 +357,18 @@ since builds differ in what they expose; when nothing resolves the alert says so
 ruTorrent rather than guessing a path, because a wrong absolute path trades a diagnosable failure
 for a silent one.
 
-While the condition holds, `RTORRENT_PATH_GUARD` (default on) stops the season sweep starting new
-searches and stops the episode fallback submitting new batches — every grab made in that state is
+rTorrent stores a torrent's directory at add time and never revisits it, so downloads that already
+landed relative stay relative for good — fixing the client configuration cannot clear them, only
+removing and re-adding them can. The guard therefore counts only torrents an admin has **not**
+acknowledged: the alert carries an *Acknowledge existing* button that marks everything currently
+broken as historical, and anything that lands on a relative path afterwards pauses searching
+again. Without that split the guard would block on the same historical torrents forever, which is
+the deadlock version of the failure it exists to prevent. Acknowledgements are pruned to torrents
+rTorrent still has, so one that is removed and re-added counts as fresh breakage rather than
+inheriting an acknowledgement from its previous life.
+
+While unacknowledged torrents remain, `RTORRENT_PATH_GUARD` (default on) stops the season sweep
+starting new searches and stops the episode fallback submitting new batches — every grab made in that state is
 a metered tracker slot spent on a file that provably cannot land. Already-submitted fallback
 commands are still read to completion, so nothing is left stuck in `submitted`, and searching
 resumes on its own once the paths are fixed. "Cannot tell" never counts as blocked: an
