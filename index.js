@@ -63,7 +63,7 @@ const { createWebhookHandlers, requireWebhookSecret } = require('./src/routes/we
 const { registerTierAgentRoutes } = require('./src/routes/tier-agent');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
 const { createApp } = require('./src/app');
-const { matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
+const { findUnprocessableTorrents, matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate, planStuckTransferActions } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
 const { summarizeSeriesGaps, describeGaps, describeActivity, rankIncomplete } = require('./src/incomplete');
@@ -730,7 +730,12 @@ async function sweepStuckDownloads() {
   // Group keys for everything currently in the queue (not just the stuck ones) — used to prune
   // alert-cooldown rows and stale ignore flags once a group leaves the queue entirely.
   const activeGroups = new Set(items.map(stuckGroupKey));
-  for (const row of listAlertCooldowns('stuck')) if (!activeGroups.has(row.alert_key)) clearAlertCooldown('stuck', row.alert_key);
+  // The rTorrent path key is not a queue group — it describes a client-wide misconfiguration, so
+  // it is never "gone from the queue" and must survive this pruning. Without the exemption an
+  // empty queue clears it on every sweep and the alert repeats forever.
+  for (const row of listAlertCooldowns('stuck')) {
+    if (row.alert_key !== RTORRENT_PATH_ALERT_KEY && !activeGroups.has(row.alert_key)) clearAlertCooldown('stuck', row.alert_key);
+  }
 
   let alerted = 0;
   for (const [gk, group] of groups) {
@@ -749,8 +754,47 @@ async function sweepStuckDownloads() {
   for (const r of ignoreRows) {
     if (!activeGroups.has(r.key.slice('stuck_ignore:'.length))) db.prepare('DELETE FROM app_settings WHERE key = ?').run(r.key);
   }
-  return { detected: groups.size, alerted };
+
+  // The failure this watchdog structurally cannot see. Everything above reads the *arr queue; a
+  // torrent sitting at a relative path in rTorrent never produces a queue item at all, because
+  // Sonarr/Radarr refuse to process it. It downloads, completes, and is dropped — no import, no
+  // failure event, nothing to alert on — which is what a stalled season looks like from here.
+  // Best-effort: an unreachable seedbox loses this one extra check, never the whole sweep.
+  const unprocessable = rtorrentConfigured()
+    ? findUnprocessableTorrents(await listRtorrentTorrents().catch(() => []))
+    : [];
+  if (unprocessable.length && now - getAlertedAt('stuck', RTORRENT_PATH_ALERT_KEY) >= tunable('STUCK_ALERT_COOLDOWN_HOURS') * 3600000) {
+    setAlertedAt('stuck', RTORRENT_PATH_ALERT_KEY, now);
+    const examples = unprocessable.slice(0, 5)
+      .map(t => `• \`${String(t.name || '(unnamed)').slice(0, 90)}\` → \`${String(t.basePath).slice(0, 60)}\``)
+      .join('\n');
+    notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle(`\u{1f6d1} rTorrent Downloads Cannot Be Imported — ${unprocessable.length} torrent${unprocessable.length === 1 ? '' : 's'}`.slice(0, 256))
+      .setDescription([
+        `**${unprocessable.length}** torrent${unprocessable.length === 1 ? ' has a' : 's have'} relative download path${unprocessable.length === 1 ? '' : 's'} in rTorrent. Sonarr and Radarr refuse these outright — *"has a download path starting with '.' and will not be processed"* — so they finish downloading and are then dropped: never imported, and never reported as a failure.`,
+        '',
+        'This is why a season can grab release after release without the missing count ever moving.',
+        '',
+        examples,
+        '',
+        '**Fix (either one):** set an absolute `directory.default.set` in the seedbox\'s `.rtorrent.rc`, or fill in the **Directory** field on the rTorrent client in Sonarr/Radarr → Settings → Download Clients. Existing torrents need their path corrected too; re-downloading them after the fix is the simplest route.',
+      ].join('\n').slice(0, 4000))] });
+    audit('rtorrent_unprocessable_paths', {
+      count: unprocessable.length,
+      samples: unprocessable.slice(0, 5).map(t => ({ name: t.name, basePath: t.basePath })),
+    });
+    alerted++;
+  } else if (!unprocessable.length) {
+    // Resolved — drop the cooldown so a recurrence is reported promptly rather than sitting
+    // silent for the rest of the window.
+    clearAlertCooldown('stuck', RTORRENT_PATH_ALERT_KEY);
+  }
+  return { detected: groups.size, alerted, unprocessable: unprocessable.length };
 }
+
+// Not a per-download key: one relative rTorrent directory affects every torrent at once, so this
+// alerts once per cooldown for the whole condition rather than once per affected torrent.
+const RTORRENT_PATH_ALERT_KEY = 'rtorrent:relative-paths';
 
 function planStuckDownloads(items, tracker, afterMinutes, now = Date.now()) {
   return groupStuckItems(detectStuckItems(items, tracker, { stuckAfterMs: afterMinutes * 60000, now }));

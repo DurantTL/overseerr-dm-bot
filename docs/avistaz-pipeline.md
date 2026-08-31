@@ -322,6 +322,27 @@ Episode-fallback evidence recorded during such a sweep is kept. The fallback row
 when the season no longer needs a bounded episode fan-out — the season progressed, or a live
 queue item now covers it — never in the same pass that recorded the evidence.
 
+## Relative rTorrent download paths
+
+rTorrent reports `d.base_path` relative when its own download directory is configured relatively
+(a bare `directory.default.set = ./downloads`, or none at all). Sonarr and Radarr both refuse such
+a torrent outright — *"has a download path starting with '.' and will not be processed. Adjust
+this to an absolute path in rTorrent"* — so it downloads to completion and is then dropped: never
+imported, and never recorded as a failure either.
+
+Nothing else in this pipeline can see that. The stuck-download watchdog reads the *arr queue and
+these produce no queue item; the season sweep sees a grab that vanished with no `downloadFailed`
+event to explain it. One relative path in rTorrent's config stalls every grab from every source —
+the bot's own direct grabs and the *arrs' alike — until someone reads the rTorrent log, which is
+the only place it is written down.
+
+The stuck sweep therefore checks `d.base_path` on every listed torrent and posts one alert for the
+whole condition (not one per torrent), naming the fix: an absolute `directory.default.set` in the
+seedbox's `.rtorrent.rc`, or the **Directory** field on the rTorrent client in Sonarr/Radarr →
+Settings → Download Clients. The alert's cooldown key is exempt from the queue-group pruning that
+clears ordinary stuck keys, and is cleared once no torrent has a relative path so a recurrence is
+reported promptly.
+
 ## Why Sonarr refuses a season pack
 
 Sonarr explains every refusal in prose, once, inside an interactive-search response that is
