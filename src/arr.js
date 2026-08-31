@@ -5,6 +5,7 @@ const { audit } = require('./db');
 const { pad } = require('./util');
 const { normalizeTitle, parseReleaseName, buildSeriesAliases } = require('./grab');
 const { healthErrorDetail } = require('./health');
+const { SEASON_FILL_EVENTS, SEASON_FAILURE_EVENTS } = require('./season-pack');
 
 async function radarrGetFrom(url, apiKey, endpoint) {
   const res = await axios.get(`${url}/api/v3${endpoint}`, { params: { apikey: apiKey }, timeout: 10000 });
@@ -415,12 +416,17 @@ async function getSeasonDownloadHistory(seriesId, seasonNumber, since = 0) {
   return (data.records || []).filter(row => {
     const event = String(row.eventType || '').toLowerCase();
     const date = Date.parse(row.date || '');
-    return ['grabbed', 'downloadfolderimported'].includes(event)
+    return [...SEASON_FILL_EVENTS, ...SEASON_FAILURE_EVENTS].includes(event)
       && Number(row.episode?.seasonNumber ?? row.seasonNumber) === Number(seasonNumber)
       && (!since || (Number.isFinite(date) && date >= since));
   }).map(row => {
     const sourceTitle = row.sourceTitle || row.data?.sourceTitle || '';
+    const date = Date.parse(row.date || '');
     return {
+      eventType: String(row.eventType || '').toLowerCase(),
+      date: Number.isFinite(date) ? date : null,
+      // Sonarr puts a failed grab's reason in data.message, an ignored one's in data.reason.
+      message: String(row.data?.message || row.data?.reason || '').trim().slice(0, 300) || null,
       downloadId: row.downloadId || row.data?.downloadId || '',
       sourceTitle,
       episodeNumber: row.episode?.episodeNumber ?? row.episodeNumber ?? null,

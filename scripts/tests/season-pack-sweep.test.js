@@ -5,7 +5,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { loadSandbox } = require('./extract');
-const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('../../src/season-pack');
+const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity, SEASON_FILL_EVENTS, SEASON_FAILURE_EVENTS } = require('../../src/season-pack');
 const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('../../src/season-release');
 const { classifyEpisodeFallbackEvidence } = require('../../src/season-episode-fallback');
 const runtimeSettings = require('../../src/runtime-settings');
@@ -463,14 +463,26 @@ test('season search history: keeps recent grabs/imports for the requested season
     { eventType: 'grabbed', date: new Date(NOW - 1000).toISOString(), downloadId: 'old', sourceTitle: 'Drama.S01E03.1080p', episode: { seasonNumber: 1, episodeNumber: 3 } },
     { eventType: 'grabbed', date: new Date(NOW + 1000).toISOString(), downloadId: 'other-season', sourceTitle: 'Drama.S02.1080p', episode: { seasonNumber: 2, episodeNumber: 1 } },
     { eventType: 'episodeFileDeleted', date: new Date(NOW + 1000).toISOString(), downloadId: 'delete', episode: { seasonNumber: 1, episodeNumber: 4 } },
+    { eventType: 'downloadFailed', date: new Date(NOW + 3000).toISOString(), downloadId: 'pack-1', data: { message: 'Torrent was removed from the client' }, episode: { seasonNumber: 1, episodeNumber: 1 } },
+    { eventType: 'downloadIgnored', date: new Date(NOW + 4000).toISOString(), downloadId: 'ignored-1', data: { reason: 'Manually ignored' }, episode: { seasonNumber: 1, episodeNumber: 5 } },
   ];
   const sandbox = loadSandbox(['parseReleaseName', 'getSeasonDownloadHistory'], {
+    SEASON_FILL_EVENTS, SEASON_FAILURE_EVENTS,
     sonarrGet: async () => ({ records: rows }),
   });
   const result = await sandbox.getSeasonDownloadHistory(7, 1, NOW);
-  assert.strictEqual(result.length, 2);
-  assert.ok(result.every(row => row.downloadId === 'pack-1'));
-  assert.ok(result.every(row => row.fullSeason), 'S01 without an episode marker is a season pack');
+  const fills = result.filter(row => SEASON_FILL_EVENTS.includes(row.eventType));
+  assert.strictEqual(fills.length, 2);
+  assert.ok(fills.every(row => row.downloadId === 'pack-1'));
+  assert.ok(fills.every(row => row.fullSeason), 'S01 without an episode marker is a season pack');
+
+  // A grab that died leaves no queue item behind, so these history rows are the only record
+  // that it happened at all — and the only place its reason is written down.
+  const failures = result.filter(row => SEASON_FAILURE_EVENTS.includes(row.eventType));
+  assert.deepStrictEqual(failures.map(row => row.message).sort(),
+    ['Manually ignored', 'Torrent was removed from the client']);
+  assert.ok(!result.some(row => row.eventType === 'episodefiledeleted'),
+    'unrelated history events stay out of both sets');
 });
 
 function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], queue = [], history = [], interactive = [], interactiveError = null, interactiveEnabled = true, autoForce = false, duplicate = null, recheckQueue = null, forceError = null, alertDecision = null }) {
@@ -481,6 +493,7 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
   const alertRecords = [];
   const fallbackRecords = [];
   const clearedAlerts = [];
+  const clearedFallbacks = [];
   const forced = [];
   let queueCalls = 0;
   class FakeButton {
@@ -494,6 +507,7 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
   }
   const sandbox = loadSandbox(['seasonPackForceBlocker', 'autoForceSeasonPack', 'verifySeasonSearchCommand'], {
     CONFIG: { SONARR_URL: 'http://sonarr', SONARR_API_KEY: 'key', SEASON_PACK_INTERACTIVE: interactiveEnabled, SEASON_PACK_FORCE_GRAB: autoForce },
+    SEASON_FILL_EVENTS, SEASON_FAILURE_EVENTS,
     queueItemLooksUnhealthy,
     tunable: key => ({
       SEASON_PACK_INTERACTIVE: interactiveEnabled,
@@ -523,7 +537,7 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
     classifyEpisodeFallbackEvidence,
     describeRejections,
     recordSeasonEpisodeFallbackEvidence: detail => fallbackRecords.push(detail),
-    clearSeasonEpisodeFallback: () => {},
+    clearSeasonEpisodeFallback: (seriesId, seasonNumber) => { clearedFallbacks.push({ seriesId, seasonNumber }); },
     stashGrabOffer: payload => { offers.push(payload); return 'abc12345'; },
     sha256,
     recordSeasonNoGrab: detail => {
@@ -547,7 +561,7 @@ function seasonVerifier({ command, episodes = [ep(1, 1), ep(1, 2), ep(1, 3)], qu
       addFields(...values) { this.fields.push(...values); return this; },
     }),
   });
-  return { sandbox, notices, audits, interactiveCalls, offers, alertRecords, fallbackRecords, clearedAlerts, forced, get queueCalls() { return queueCalls; } };
+  return { sandbox, notices, audits, interactiveCalls, offers, alertRecords, fallbackRecords, clearedAlerts, clearedFallbacks, forced, get queueCalls() { return queueCalls; } };
 }
 
 test('season search verification: approved Revenge-like episode evidence records bounded fallback work', async () => {
@@ -708,6 +722,76 @@ test('season search verification: a stalled grab surfaces Sonarr\'s own queue wa
   assert.strictEqual(result.outcome, 'grabbed');
   const embed = h.notices[0].msg.embeds[0];
   assert.match(embed.description, /One or more episodes expected in this release were not imported/, 'Sonarr\'s own queue message is surfaced, not just "still stalled"');
+});
+
+test('season search verification: a grab with nothing in the queue is reported as vanished, not as progress', async () => {
+  // The screenshot case: Sonarr accepted a release, the queue is empty, and the missing count
+  // never moved. Nothing else in the pipeline can see this — the stuck-download watchdog only
+  // reads the *arr queue — so reporting it as a plain "grabbed" is how a season churns forever.
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 1 report downloaded.' },
+    queue: [],
+    history: [
+      { eventType: 'grabbed', date: NOW + 500, downloadId: 'pack-1', sourceTitle: 'Winter.Sonata.S01.1080p', fullSeason: true },
+      { eventType: 'downloadfailed', date: NOW + 1000, message: 'Torrent was removed from the client', downloadId: 'dead-2', sourceTitle: 'Winter.Sonata.S01.1080p', fullSeason: true },
+    ],
+  });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101, stallCount: 3 });
+  assert.strictEqual(result.outcome, 'grab_vanished');
+  const embed = h.notices[0].msg.embeds[0];
+  assert.match(embed.title, /Grab Vanished/);
+  assert.match(embed.description, /left the download client without importing/);
+  assert.match(embed.description, /Torrent was removed from the client/, 'Sonarr\'s own failure reason is named, not just "still stalled"');
+  assert.strictEqual(embed.color, 1, 'a vanished grab is a warning, not routine info (COLORS.WARN)');
+  assert.strictEqual(h.interactiveCalls.length, 1, 'there is no live download to wait on, so the interactive report is worth paying for');
+  const detail = h.audits.find(row => row.action === 'season_pack_search_result').detail;
+  assert.strictEqual(detail.outcome, 'grab_vanished');
+  assert.strictEqual(detail.failureEvent, 'downloadfailed');
+
+  // A failed grab contributed nothing, so it must not be counted alongside the release that was
+  // actually grabbed — the fill summary describes what was attempted, not how many times it died.
+  assert.strictEqual(result.fill.releaseCount, 1);
+  assert.strictEqual(result.fill.mode, 'pack');
+});
+
+test('season search verification: a vanished grab with no history event still says so plainly', async () => {
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 2 reports downloaded.' },
+    queue: [],
+    interactiveEnabled: false,
+  });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101, stallCount: 0 });
+  assert.strictEqual(result.outcome, 'grab_vanished');
+  const embed = h.notices[0].msg.embeds[0];
+  assert.match(embed.description, /\*\*2\*\* releases, but nothing is in its queue/);
+  assert.match(embed.fields.find(field => field.name === 'Next step').value, /never arrived/);
+  assert.ok(h.alertRecords.length, 'a vanished grab uses the same identical-result backoff as a no-grab, so it cannot spam the channel');
+});
+
+test('season search verification: episode-fallback evidence recorded this run is not deleted before the guarded sweep can act on it', async () => {
+  // Recording the evidence and then clearing the row in the same call is what left a stalled
+  // season reporting "Episode fallback: Pending" on every sweep while the fallback never ran.
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 1 report downloaded.' },
+    queue: [],
+    interactive: [{ title: 'Winter.Sonata.S01E01.1080p.WEB-DL', approved: true, downloadAllowed: true, seeders: 112, size: 2 * 1024 ** 3, indexer: 'AvistaZ' }],
+  });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101, stallCount: 3 });
+  assert.strictEqual(result.outcome, 'grab_vanished');
+  assert.strictEqual(h.fallbackRecords.length, 1, 'approved episode evidence is recorded');
+  assert.deepStrictEqual(h.clearedFallbacks, [], 'and survives the same call that wrote it');
+  assert.match(h.notices[0].msg.embeds[0].fields.find(field => field.name === 'Episode fallback').value, /Pending/);
+});
+
+test('season search verification: a healthy grab still clears a stale episode fallback', async () => {
+  const h = seasonVerifier({
+    command: { status: 'completed', message: 'Season search completed. 1 report downloaded.' },
+    queue: [{ source: { kind: 'tv' }, seriesId: 1, seasonNumber: 1 }],
+  });
+  const result = await h.sandbox.verifySeasonSearchCommand({ seriesId: 1, seriesTitle: 'Winter Sonata', seasonNumber: 1, missingAtSearch: 3, commandId: 101, stallCount: 0 });
+  assert.strictEqual(result.outcome, 'grabbed');
+  assert.deepStrictEqual(h.clearedFallbacks, [{ seriesId: 1, seasonNumber: 1 }],
+    'a live download owns the season, so any pending episode fan-out is dropped');
 });
 
 test('season search verification: a fresh grab (no stall history) is not treated as a problem', async () => {

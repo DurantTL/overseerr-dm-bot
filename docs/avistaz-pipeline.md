@@ -308,6 +308,20 @@ restarts. A still-running command is left alone; a terminal command is verified;
 command cools down before it can be retried. Disable `SEASON_PACK_EPISODE_FALLBACK` to leave
 recorded work visible but prevent new episode commands.
 
+A season search that Sonarr reports as having grabbed something, but which leaves **nothing in
+the queue** and fills no episode, is reported as **Grab Vanished** rather than as a successful
+grab. This is the one failure the stuck-download watchdog structurally cannot see: it reads the
+*arr queue, and by the time a grab dies the queue item is gone. Sonarr's history is the only
+surviving record, so the alert names the terminal event (`downloadFailed` / `downloadIgnored`)
+and its reason. A vanished grab pays for the interactive report on its first occurrence — there
+is no live download to wait on — and shares the identical-result stand-down below, so a season
+that dies the same way every sweep does not spam the channel. A changed failure reason re-arms
+the alert.
+
+Episode-fallback evidence recorded during such a sweep is kept. The fallback row is cleared only
+when the season no longer needs a bounded episode fan-out — the season progressed, or a live
+queue item now covers it — never in the same pass that recorded the evidence.
+
 Repeated identical `no_grab` results do not repeat in Discord forever. The bot still performs
 every eligible search, but posts attempts 1, 2, and 4; attempt 4 announces that alerts are standing
 down. The durable state is per series and season and survives restarts. A changed aired-missing

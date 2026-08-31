@@ -124,6 +124,16 @@ function describeSeasonSearch(seriesTitle, season) {
   return `**${seriesTitle}** S${String(season.season).padStart(2, '0')} — ${season.missing} of ${season.aired} aired episode(s) missing`;
 }
 
+// Sonarr history events that describe how a season got filled — what the fill-method summary
+// below is built from.
+const SEASON_FILL_EVENTS = ['grabbed', 'downloadfolderimported'];
+// ...and the terminal events for a grab that never filled anything. These matter because by the
+// time one is recorded the queue item is gone, so Sonarr's queue — the only thing the
+// stuck-download watchdog reads — has nothing left to report. History is the sole surviving
+// record that a release was accepted and then died, and the sole place its reason is written
+// down.
+const SEASON_FAILURE_EVENTS = ['downloadfailed', 'downloadignored'];
+
 // Collapse Sonarr queue/history rows into releases, then report whether the search filled the
 // season with one multi-episode release or with separate episode releases. Queue and history can
 // both contain one row per episode for the same download, so downloadId (falling back to the
@@ -161,4 +171,4 @@ function summarizeSeasonFillActivity(rows = []) {
   return { mode, releaseCount: releases.size, packReleases, episodeReleases, unknownReleases };
 }
 
-module.exports = { assessSeriesAge, planSeasonSearches, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity };
+module.exports = { assessSeriesAge, planSeasonSearches, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity, SEASON_FILL_EVENTS, SEASON_FAILURE_EVENTS };

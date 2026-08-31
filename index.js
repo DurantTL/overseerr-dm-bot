@@ -44,7 +44,7 @@ const { fetchSeerrRequests } = require('./src/seerr');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases,
   getArrTagId, addTagToSeries, listSonarrCustomFormats, createSonarrCustomFormat, scoreSonarrCustomFormatInAllProfiles } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed, usesDirectGrabEscalation } = require('./src/escalation');
-const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity } = require('./src/season-pack');
+const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity, SEASON_FILL_EVENTS, SEASON_FAILURE_EVENTS } = require('./src/season-pack');
 const { rankSeasonReleases, chooseSeasonPack, describeRejections } = require('./src/season-release');
 const { classifyEpisodeFallbackEvidence, planEpisodeFallback, orderPendingFallbacks } = require('./src/season-episode-fallback');
 const { assessAsianOrigin, describeAvistazFit, isAsianLanguageName } = require('./src/asian');
@@ -1142,7 +1142,12 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
   const remaining = missingEpisodes.length;
   const matchingQueue = queue.filter(item => item.source.kind === 'tv' && item.seriesId === seriesId && Number(item.seasonNumber) === seasonNumber);
   const queued = matchingQueue.length;
-  const fill = summarizeSeasonFillActivity([...matchingQueue, ...history]);
+  // Only grabs and imports describe how the season filled; a failed or ignored grab is not a
+  // release that contributed anything, so it must not inflate the fill-method summary.
+  const fillHistory = history.filter(row => !row.eventType || SEASON_FILL_EVENTS.includes(row.eventType));
+  const failureHistory = history.filter(row => SEASON_FAILURE_EVENTS.includes(row.eventType))
+    .sort((a, b) => (Number(b.date) || 0) - (Number(a.date) || 0));
+  const fill = summarizeSeasonFillActivity([...matchingQueue, ...fillHistory]);
   const commandText = [command.message, command.result, command.exception].filter(Boolean).join(' ');
   const downloadedMatch = /(\d+)\s+reports?\s+downloaded/i.exec(commandText);
   const downloaded = downloadedMatch ? Number(downloadedMatch[1]) : null;
@@ -1176,13 +1181,34 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
       : `Sonarr completed the search and every aired monitored episode now has a file${fill.mode === 'pack' ? ' from a season pack' : fill.mode === 'episodes' ? ' from individual episode releases' : ''}.`;
     if (remaining) nextStep = 'The remaining episodes still need an Interactive Search review in Sonarr.';
     color = COLORS.SUCCESS;
-  } else if (queued || (downloaded != null && downloaded > 0)) {
+  } else if (!queued && downloaded != null && downloaded > 0) {
+    // Sonarr accepted a release and no queue item is left for it — the grab left the download
+    // client without ever importing. Nothing else in the pipeline can notice this: the
+    // stuck-download watchdog only reads the *arr queue, and by now that queue is empty. Calling
+    // it a plain "grabbed" is how a season churns the same dead release every sweep while the
+    // alert reads like progress.
+    outcome = 'grab_vanished';
+    title = `📭 Grab Vanished — ${label}`;
+    description = `Sonarr accepted **${downloaded}** release${downloaded === 1 ? '' : 's'}, but nothing is in its queue and no episode was filled — the grab left the download client without importing.`
+      + (stallCount > 0 ? ` This makes **${stallCount + 1}** consecutive sweeps without the missing count shrinking.` : '');
+    // History is the only surviving record of why, so name the reason here instead of sending an
+    // admin to Sonarr's Activity tab to read the same line.
+    if (failureHistory.length) {
+      const failure = failureHistory[0];
+      const reason = String(failure.message || '').replace(/`/g, 'ˋ').slice(0, 300);
+      description += `\nSonarr's history: \`${failure.eventType}\`${reason ? ` — ${reason}` : ''}`;
+    }
+    nextStep = failureHistory.length
+      ? 'The download client dropped this release before it imported. Check the client (and Premiumize transfers) for the failed item; the next sweep or the episode fallback will try a different release.'
+      : 'No queue item and no failure event recorded. Check Sonarr → Activity → History and the download client for a grab that never arrived.';
+    color = COLORS.WARN;
+  } else if (queued) {
     outcome = 'grabbed';
     // A repeat of the exact same non-outcome — Sonarr "grabbed" something last time too, and the
     // missing count still hasn't moved — is the dead-release-churn pattern, not a real success.
     // Say so plainly rather than reporting a queued item as good news every single sweep.
     title = stallCount > 0 ? `📥 Season Release Grabbed (still stalled) — ${label}` : `📥 Season Release Grabbed — ${label}`;
-    description = `Sonarr accepted ${downloaded != null ? `**${downloaded}** release${downloaded === 1 ? '' : 's'}` : 'a release'}${queued ? ` and **${queued}** matching queue item${queued === 1 ? '' : 's'} ${queued === 1 ? 'is' : 'are'} active` : ''}.`
+    description = `Sonarr accepted ${downloaded != null ? `**${downloaded}** release${downloaded === 1 ? '' : 's'}` : 'a release'} and **${queued}** matching queue item${queued === 1 ? '' : 's'} ${queued === 1 ? 'is' : 'are'} active.`
       + (stallCount > 0 ? ` This makes **${stallCount + 1}** consecutive sweeps without the missing count actually shrinking — whatever got queued before likely never resolved.` : '');
     // On a repeat stall, Sonarr's own queue often already names the reason (import rejection,
     // stalled transfer, upgrade blocked) via trackedDownloadStatus/statusMessages — the same
@@ -1223,7 +1249,9 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
   let seasonGrabOffer = null;
   let autoForceResult = null;
   let episodeFallbackEvidence = null;
-  if ((['no_grab', 'partial'].includes(outcome) || stalledGrab) && tunable('SEASON_PACK_INTERACTIVE')) {
+  // 'grab_vanished' earns the interactive report on its first occurrence rather than only on a
+  // repeat: there is no live download left to wait on, so the season is already going nowhere.
+  if ((['no_grab', 'partial', 'grab_vanished'].includes(outcome) || stalledGrab) && tunable('SEASON_PACK_INTERACTIVE')) {
     try {
       const anchorEpisode = missingEpisodes.find(episode => Number.isInteger(Number(episode.id)) && Number(episode.id) > 0);
       const releases = await interactiveSeasonSearch(seriesId, seasonNumber, anchorEpisode?.id);
@@ -1373,11 +1401,15 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
   }
   let alertDecision = null;
   let shouldNotify = true;
-  if (outcome === 'no_grab') {
+  if (['no_grab', 'grab_vanished'].includes(outcome)) {
     const fingerprint = sha256(JSON.stringify({
+      outcome,
       missing: remaining,
       releases: interactiveFingerprint ?? (interactiveError ? 'unavailable' : 'disabled'),
       episodeFallback: episodeFallbackEvidence?.status || null,
+      // A new failure reason is new information — it must re-arm a stood-down alert rather than
+      // being collapsed into the previous sweep's identical-result count.
+      failure: failureHistory[0]?.message || failureHistory[0]?.eventType || null,
     }));
     alertDecision = recordSeasonNoGrab({
       seriesId, seasonNumber, seriesTitle, fingerprint, missingCount: remaining,
@@ -1391,7 +1423,16 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
     }
   } else {
     clearSeasonAlertState(seriesId, seasonNumber);
-    if (outcome !== 'partial') clearSeasonEpisodeFallback(seriesId, seasonNumber);
+    // Clearing the fallback row means "this season no longer needs a bounded episode fan-out".
+    // Two things make that false even when the outcome is not 'partial':
+    //   - this run just recorded approved-episode evidence (a stalled grab pays for the
+    //     interactive report precisely so the fallback can take over), and
+    //   - automatic force-grab stood down *because* a fallback command already owns the season.
+    // Deleting the row in either case is what left a stalled season reporting "Episode fallback:
+    // Pending" on every sweep while the guarded sweep never had a row to act on.
+    const fallbackOwnsSeason = episodeFallbackEvidence?.status === 'approved_episode'
+      || autoForceResult?.reason === 'episode_fallback';
+    if (outcome !== 'partial' && !fallbackOwnsSeason) clearSeasonEpisodeFallback(seriesId, seasonNumber);
   }
   // Do not create an offer that nobody can see during a backed-off alert. A changed candidate
   // list changes the fingerprint, re-arms the alert, and reaches this block normally.
@@ -1405,7 +1446,7 @@ async function verifySeasonSearchCommand({ seriesId, seriesTitle, seriesYear = n
   }
   if (nextStep) fields.push({ name: 'Next step', value: nextStep.slice(0, 1024), inline: false });
 
-  audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, fillMode: fill.mode, releaseCount: fill.releaseCount, packReleases: fill.packReleases, episodeReleases: fill.episodeReleases, interactiveSearched: interactive !== null || interactiveError !== null, interactiveReleaseCount: interactive?.releaseCount ?? null, interactivePackCount: interactive?.packCount ?? null, interactiveError, episodeFallbackEvidence: episodeFallbackEvidence?.status ?? null, episodeFallbackFingerprint: episodeFallbackEvidence?.fingerprint ?? null, autoForceStatus: autoForceResult?.status ?? null, autoForceReason: autoForceResult?.reason ?? null, autoForceError: autoForceResult?.error ?? null, alertPosted: shouldNotify, noGrabAttempts: alertDecision?.attemptCount ?? null, alertStoodDown: alertDecision?.stoodDown ?? false, message: commandText.slice(0, 1000) || null });
+  audit('season_pack_search_result', { seriesId, title: seriesTitle, season: seasonNumber, commandId, status, outcome, missingAtSearch, remaining, queued, downloaded, fillMode: fill.mode, releaseCount: fill.releaseCount, packReleases: fill.packReleases, episodeReleases: fill.episodeReleases, interactiveSearched: interactive !== null || interactiveError !== null, interactiveReleaseCount: interactive?.releaseCount ?? null, interactivePackCount: interactive?.packCount ?? null, interactiveError, failureEvent: failureHistory[0]?.eventType ?? null, failureReason: failureHistory[0]?.message ?? null, episodeFallbackEvidence: episodeFallbackEvidence?.status ?? null, episodeFallbackFingerprint: episodeFallbackEvidence?.fingerprint ?? null, autoForceStatus: autoForceResult?.status ?? null, autoForceReason: autoForceResult?.reason ?? null, autoForceError: autoForceResult?.error ?? null, alertPosted: shouldNotify, noGrabAttempts: alertDecision?.attemptCount ?? null, alertStoodDown: alertDecision?.stoodDown ?? false, message: commandText.slice(0, 1000) || null });
   const message = { embeds: [brandedEmbed(color)
     .setTitle(title.slice(0, 256))
     .setDescription(description.slice(0, 4000))
