@@ -43,4 +43,20 @@ function decideRatioRemoval({ torrent, watch, now = Date.now(), minRatioPermille
   return { action: 'watch', ratio, changedAt: now };
 }
 
-module.exports = { decideRatioRemoval };
+// Whether the seedbox-side data for a removed torrent is safe for a human to go delete by
+// hand. rTorrent's own d.erase never touches that data (see index.js sweepRatioCleanup), and
+// this bot has no destructive seedbox access of its own — so "safe" here means only "this
+// bot's pipeline has proof the release already landed in the media library", via the matching
+// grab_jobs row reaching its terminal 'verified' state (set once the leftover-file check
+// passes after the *arr's scan/import — see finishGrabJobImported in index.js). Anything
+// short of that — no grab_jobs row at all (adopted or added outside this bot, or never
+// matched), or one still mid-pipeline — is reported as unconfirmed rather than ever being
+// called safe: a torrent this bot didn't grab may have been placed there for a reason it
+// knows nothing about.
+function describeDeletionSafety(job) {
+  if (!job) return { safe: false, reason: 'no matching grab job — this bot never tracked it, so there is no confirmation it landed anywhere else' };
+  if (job.state === 'verified') return { safe: true, reason: 'imported and verified in the media library' };
+  return { safe: false, reason: `grab job #${job.id} is still '${job.state}' — import not confirmed yet` };
+}
+
+module.exports = { decideRatioRemoval, describeDeletionSafety };

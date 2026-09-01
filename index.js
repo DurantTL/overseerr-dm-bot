@@ -56,7 +56,7 @@ const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
 const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, eraseTorrent, getRtorrentVersion, getRtorrentPaths } = require('./src/rtorrent');
-const { decideRatioRemoval } = require('./src/ratio-cleanup');
+const { decideRatioRemoval, describeDeletionSafety } = require('./src/ratio-cleanup');
 const { runBackup, rotateBackups, backupState, rehearseLatestBackup } = require('./scripts/backup-db');
 const { recordDiskSamples, pruneDiskSamples, forecastDisks, pathIsOnRoot, forecastLabel } = require('./src/capacity');
 const { webhookEventKey } = require('./src/webhook-events');
@@ -839,11 +839,19 @@ async function sweepRatioCleanup() {
     const watch = getRatioWatch(torrent.hash);
     const verdict = decideRatioRemoval({ torrent, watch, now, minRatioPermille, stallDays, forceRatioPermille });
     if (verdict.action === 'remove') {
+      // Looked up BEFORE erasing: this is the only chance to know whether this bot's own
+      // pipeline ever confirmed the release landed in the media library, since d.erase drops
+      // rTorrent's own record of the torrent for good.
+      const job = getGrabJobByHash(torrent.hash);
+      const safety = describeDeletionSafety(job);
       try {
         await eraseTorrent(torrent.hash);
         deleteRatioWatch(torrent.hash);
-        removed.push({ name: torrent.name, ratio: verdict.ratio, reason: verdict.reason });
-        audit('rtorrent_ratio_removed', { hash: torrent.hash, name: torrent.name, ratioPermille: verdict.ratio, reason: verdict.reason });
+        const remotePath = safety.safe && CONFIG.GRAB_RCLONE_REMOTE
+          ? joinRemotePath(CONFIG.GRAB_RCLONE_REMOTE, job.remote_path || torrent.name)
+          : null;
+        removed.push({ name: torrent.name, ratio: verdict.ratio, reason: verdict.reason, safety, remotePath });
+        audit('rtorrent_ratio_removed', { hash: torrent.hash, name: torrent.name, ratioPermille: verdict.ratio, reason: verdict.reason, safeToDeleteData: safety.safe });
       } catch (err) {
         audit('external_api_error', { provider: 'rtorrent', error: err.message, action: 'ratio_erase', hash: torrent.hash, name: torrent.name });
       }
@@ -854,10 +862,19 @@ async function sweepRatioCleanup() {
     }
   }
   if (removed.length) {
-    const list = removed.map(r => `• **${r.name}** — ratio ${(r.ratio / 1000).toFixed(2)} (${r.reason === 'force' ? `≥ ${(forceRatioPermille / 1000).toFixed(2)}` : `stalled ${stallDays}d+`})`).join('\n').slice(0, 3500);
+    const line = r => `• **${r.name}** — ratio ${(r.ratio / 1000).toFixed(2)} (${r.reason === 'force' ? `≥ ${(forceRatioPermille / 1000).toFixed(2)}` : `stalled ${stallDays}d+`})`;
+    const safe = removed.filter(r => r.safety.safe);
+    const unsafe = removed.filter(r => !r.safety.safe);
+    const sections = [`Removed ${removed.length} finished torrent(s) from rTorrent for seeding enough. This only unregisters them from the client — the seedbox data itself is untouched; below is what's known about whether that data is safe to delete by hand.`];
+    if (safe.length) {
+      sections.push(`\n**✅ Safe to delete on the seedbox** — confirmed imported into the media library:\n${safe.map(r => `${line(r)}${r.remotePath ? `\n  \`${r.remotePath}\`` : ''}`).join('\n')}`);
+    }
+    if (unsafe.length) {
+      sections.push(`\n**⚠️ Leave alone for now** — no confirmed import, don't delete without checking:\n${unsafe.map(r => `${line(r)}\n  ${r.safety.reason}`).join('\n')}`);
+    }
     notifyChannel('cleanup', { embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle('🌱 rTorrent Ratio Cleanup')
-      .setDescription(`Removed ${removed.length} finished torrent(s) from rTorrent for seeding enough:\n${list}\n\nOnly removed from the client — the seedbox data itself was left alone.`)] });
+      .setDescription(sections.join('\n').slice(0, 4000))] });
   }
   return { checked: torrents.length, removed: removed.length };
 }

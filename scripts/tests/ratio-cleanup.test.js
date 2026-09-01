@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { decideRatioRemoval } = require('../../src/ratio-cleanup');
+const { decideRatioRemoval, describeDeletionSafety } = require('../../src/ratio-cleanup');
 const DB_MODULE = require.resolve('../../src/db');
 
 const DAY = 86400000;
@@ -81,6 +81,20 @@ test('ratio-cleanup: a ratio that drops back under the minimum clears an existin
 test('ratio-cleanup: minimum of 0 disables the stall trigger without a watch to clear', () => {
   const verdict = decideRatioRemoval({ torrent: torrent(50), watch: null, minRatioPermille: 0, stallDays: 7, forceRatioPermille: 2000 });
   assert.strictEqual(verdict.action, 'none');
+});
+
+test('ratio-cleanup: describeDeletionSafety only trusts a verified grab job', () => {
+  assert.deepStrictEqual(describeDeletionSafety(null), {
+    safe: false, reason: 'no matching grab job — this bot never tracked it, so there is no confirmation it landed anywhere else',
+  }, 'no tracked job at all — could be an adopted or manually-added torrent this bot knows nothing about');
+
+  assert.deepStrictEqual(describeDeletionSafety({ id: 12, state: 'transferring' }), {
+    safe: false, reason: "grab job #12 is still 'transferring' — import not confirmed yet",
+  }, 'mid-pipeline job is never safe, even though this bot is tracking it');
+
+  assert.deepStrictEqual(describeDeletionSafety({ id: 12, state: 'verified' }), {
+    safe: true, reason: 'imported and verified in the media library',
+  }, 'only the terminal verified state is safe');
 });
 
 test('ratio-cleanup: db helpers round-trip a watch row and prune stale hashes', () => {
