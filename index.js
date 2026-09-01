@@ -760,9 +760,13 @@ async function sweepStuckDownloads() {
   // Sonarr/Radarr refuse to process it. It downloads, completes, and is dropped — no import, no
   // failure event, nothing to alert on — which is what a stalled season looks like from here.
   // Best-effort: an unreachable seedbox loses this one extra check, never the whole sweep.
-  const unprocessable = rtorrentConfigured()
-    ? findUnprocessableTorrents(await listRtorrentTorrents().catch(() => []))
-    : [];
+  const relativePaths = rtorrentConfigured()
+    ? classifyRelativePathTorrents(await listRtorrentTorrents().catch(() => []))
+    : { unprocessable: [], acknowledged: [], live: [] };
+  // Only the unacknowledged ones are worth an alert. rTorrent never revisits a torrent's stored
+  // directory, so the historical ones stay relative for good — repeating their count every
+  // cooldown, after an admin has said "these are history", is noise that buries the new ones.
+  const unprocessable = relativePaths.live;
   if (unprocessable.length && now - getAlertedAt('stuck', RTORRENT_PATH_ALERT_KEY) >= tunable('STUCK_ALERT_COOLDOWN_HOURS') * 3600000) {
     setAlertedAt('stuck', RTORRENT_PATH_ALERT_KEY, now);
     const examples = unprocessable.slice(0, 5)
@@ -783,6 +787,7 @@ async function sweepStuckDownloads() {
       .setTitle(`\u{1f6d1} rTorrent Downloads Cannot Be Imported — ${unprocessable.length} torrent${unprocessable.length === 1 ? '' : 's'}`.slice(0, 256))
       .setDescription([
         `**${unprocessable.length}** torrent${unprocessable.length === 1 ? ' has a' : 's have'} relative download path${unprocessable.length === 1 ? '' : 's'} in rTorrent. Sonarr and Radarr refuse these outright — *"has a download path starting with '.' and will not be processed"* — so they finish downloading and are then dropped: never imported, and never reported as a failure.`,
+        relativePaths.acknowledged.length ? `(${relativePaths.acknowledged.length} already acknowledged as historical and not counted here.)` : null,
         '',
         'This is why a season can grab release after release without the missing count ever moving.',
         '',
@@ -792,10 +797,11 @@ async function sweepStuckDownloads() {
         resolved
           ? `**Fix, no seedbox shell needed:** put \`${resolved.path.slice(0, 200)}\` in the **Directory** field on the rTorrent client in Sonarr/Radarr → Settings → Download Clients. Verify it against a working torrent in ruTorrent first. Set \`RTORRENT_DOWNLOAD_DIR\` to the same path so this bot's own grabs match.`
           : '**Fix:** fill in the **Directory** field on the rTorrent client in Sonarr/Radarr → Settings → Download Clients with an absolute path, or set an absolute `directory.default.set` in the seedbox\'s `.rtorrent.rc`. rTorrent did not report its working directory, so check ruTorrent for the full path of a working torrent.',
-        'Existing torrents keep their bad path; re-downloading them after the fix is the simplest route.',
-      ].filter(line => line !== '').join('\n').slice(0, 4000))] });
+        'Setting that only fixes torrents added afterwards — rTorrent stores a directory at add time and never revisits it, so these keep their path whatever you change.',
+        'They do **not** need re-downloading: the files are already on the seedbox, and `/rtorrent adopt search:<name>` copies them home over rclone and imports them, which never consults the path Sonarr is refusing.',
+      ].filter(line => line !== '' && line !== null).join('\n').slice(0, 4000))] });
     audit('rtorrent_unprocessable_paths', {
-      count: unprocessable.length,
+      count: unprocessable.length, acknowledged: relativePaths.acknowledged.length,
       cwd: paths.cwd || null, defaultDirectory: paths.defaultDirectory || null,
       resolvedDownloadDir: resolved?.path || null, resolvedFrom: resolved?.from || null,
       samples: unprocessable.slice(0, 5).map(t => ({ name: t.name, basePath: t.basePath })),
@@ -1953,16 +1959,24 @@ async function drainSeasonEpisodeFallbacks({ seriesList, queue, preview = false,
 const RTORRENT_PATH_ACK_KEY = 'rtorrent_relative_paths_ack';
 const readPathAcks = () => { try { return JSON.parse(getSetting(RTORRENT_PATH_ACK_KEY) || '[]'); } catch (_err) { return []; } };
 
+// Split rTorrent's relative-path torrents into the ones an admin has already accepted as
+// historical and the ones still worth acting on. Every surface that reports this condition — the
+// stuck-sweep alert, /rtorrent status, and the season-search guard — reads it through here, so
+// acknowledging cannot release one and leave the others still shouting about the same torrents.
+function classifyRelativePathTorrents(torrents = []) {
+  const unprocessable = findUnprocessableTorrents(torrents);
+  const acknowledged = pruneAcknowledged(readPathAcks(), torrents);
+  return { unprocessable, acknowledged, live: unacknowledgedTorrents(unprocessable, new Set(acknowledged)) };
+}
+
 async function downloadPathBlock() {
   if (!tunable('RTORRENT_PATH_GUARD') || !rtorrentConfigured()) return null;
   let torrents;
   try { torrents = await listRtorrentTorrents(); } catch (_err) { return null; }
-  const unprocessable = findUnprocessableTorrents(torrents);
+  const { unprocessable, acknowledged: acked, live } = classifyRelativePathTorrents(torrents);
   // Keep the acknowledgement set honest on every pass: a torrent rTorrent no longer has cannot
   // stay acknowledged, so removing and re-adding one makes it count as new breakage again.
-  const acked = pruneAcknowledged(readPathAcks(), torrents);
   setSetting(RTORRENT_PATH_ACK_KEY, JSON.stringify(acked));
-  const live = unacknowledgedTorrents(unprocessable, new Set(acked));
   return live.length
     ? { count: live.length, total: unprocessable.length, acknowledged: acked.length, sample: live[0]?.name || null }
     : null;
@@ -6745,11 +6759,18 @@ async function handleRtorrentCommand(interaction) {
       lines.push(`Torrents: **${torrents.length}** (${complete} complete, ${torrents.length - complete} downloading)`);
       // On demand rather than only on the next sweep: this is what an operator needs the moment
       // imports stop, and the absolute path is the one thing they cannot look up themselves.
-      const unprocessable = findUnprocessableTorrents(torrents);
+      const relativePaths = classifyRelativePathTorrents(torrents);
+      const unprocessable = relativePaths.unprocessable;
       if (unprocessable.length) {
         const paths = await getRtorrentPaths().catch(() => ({}));
         const resolved = resolveAbsoluteDownloadDir(paths);
+        // Split the count: the acknowledged ones explain why the total is not falling, and the
+        // live ones are what is still arriving broken. Reporting only the total makes a correct
+        // fix look like it did nothing.
         lines.push('', `🛑 **${unprocessable.length}** torrent${unprocessable.length === 1 ? ' has a' : 's have'} relative path${unprocessable.length === 1 ? '' : 's'} — Sonarr/Radarr will not import ${unprocessable.length === 1 ? 'it' : 'them'}.`);
+        lines.push(relativePaths.live.length
+          ? `**${relativePaths.live.length}** of those ${relativePaths.live.length === 1 ? 'is' : 'are'} unacknowledged — new ones are still landing broken.`
+          : 'All of them are acknowledged as historical, so season searching is not paused. They still cannot import: `/rtorrent adopt search:<name>` copies them home over rclone instead of re-downloading.');
         if (paths.cwd) lines.push(`Working directory: \`${String(paths.cwd).slice(0, 120)}\``);
         if (paths.defaultDirectory) lines.push(`Default directory: \`${String(paths.defaultDirectory).slice(0, 120)}\``);
         lines.push(resolved

@@ -10,7 +10,7 @@ const express = require('express');
 const Database = require('better-sqlite3');
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { loadSandbox } = require('./extract');
-const { findUnprocessableTorrents, resolveAbsoluteDownloadDir } = require('../../src/adopt');
+const { findUnprocessableTorrents, unacknowledgedTorrents, pruneAcknowledged, resolveAbsoluteDownloadDir } = require('../../src/adopt');
 const runtimeSettings = require('../../src/runtime-settings');
 const { detectStuckItems, groupStuckItems, isSeasonGroup } = require('../../src/stuck');
 const { nextSeasonNoGrabAlert } = require('../../src/season-alert');
@@ -352,7 +352,7 @@ test('alert cooldowns: a stuck-download alert stays suppressed after reload', as
     rtorrentConfigured: () => false,
     RTORRENT_PATH_ALERT_KEY: 'rtorrent:relative-paths',
   };
-  const names = ['getAlertedAt', 'setAlertedAt', 'listAlertCooldowns', 'clearAlertCooldown', 'planStuckDownloads', 'sweepStuckDownloads'];
+  const names = ['getAlertedAt', 'setAlertedAt', 'listAlertCooldowns', 'clearAlertCooldown', 'planStuckDownloads', 'classifyRelativePathTorrents', 'sweepStuckDownloads'];
   const first = loadSandbox(names, stubs);
   assert.strictEqual((await first.run('sweepStuckDownloads()')).alerted, 1);
   const afterRestart = loadSandbox(names, stubs);
@@ -635,6 +635,9 @@ test('stuck sweep: a relative rTorrent download path is reported even though no 
     rtorrentConfigured: () => true,
     listRtorrentTorrents: async () => torrents,
     findUnprocessableTorrents,
+    unacknowledgedTorrents,
+    pruneAcknowledged,
+    readPathAcks: () => [],
     resolveAbsoluteDownloadDir,
     getRtorrentPaths: async () => ({ cwd: '/home/seed', defaultDirectory: './downloads' }),
     RTORRENT_PATH_ALERT_KEY: 'rtorrent:relative-paths',
@@ -645,7 +648,7 @@ test('stuck sweep: a relative rTorrent download path is reported even though no 
       setDescription(value) { this.description = value; return this; },
     }),
   };
-  const names = ['getAlertedAt', 'setAlertedAt', 'listAlertCooldowns', 'clearAlertCooldown', 'planStuckDownloads', 'sweepStuckDownloads'];
+  const names = ['getAlertedAt', 'setAlertedAt', 'listAlertCooldowns', 'clearAlertCooldown', 'planStuckDownloads', 'classifyRelativePathTorrents', 'sweepStuckDownloads'];
   const first = loadSandbox(names, stubs);
   const result = await first.run('sweepStuckDownloads()');
   assert.strictEqual(result.unprocessable, 2, 'absolute paths and unallocated torrents are not misconfigurations');
@@ -677,7 +680,7 @@ test('stuck sweep: an unreadable rTorrent still reports the paths, just without 
     PRIMARY KEY (scope, alert_key)
   ); CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT);`);
   const notices = [];
-  const sandbox = loadSandbox(['getAlertedAt', 'setAlertedAt', 'listAlertCooldowns', 'clearAlertCooldown', 'planStuckDownloads', 'sweepStuckDownloads'], {
+  const sandbox = loadSandbox(['getAlertedAt', 'setAlertedAt', 'listAlertCooldowns', 'clearAlertCooldown', 'planStuckDownloads', 'classifyRelativePathTorrents', 'sweepStuckDownloads'], {
     db: database,
     stuckTracker: new Map(),
     fetchArrQueues: async () => [],
@@ -692,6 +695,9 @@ test('stuck sweep: an unreadable rTorrent still reports the paths, just without 
     rtorrentConfigured: () => true,
     listRtorrentTorrents: async () => [{ name: 'Show.S01E01.mkv', basePath: './Show.S01E01.mkv' }],
     findUnprocessableTorrents,
+    unacknowledgedTorrents,
+    pruneAcknowledged,
+    readPathAcks: () => [],
     resolveAbsoluteDownloadDir,
     getRtorrentPaths: async () => { throw new Error('unknown method'); },
     RTORRENT_PATH_ALERT_KEY: 'rtorrent:relative-paths',
@@ -706,5 +712,75 @@ test('stuck sweep: an unreadable rTorrent still reports the paths, just without 
   const embed = notices[0].msg.embeds[0];
   assert.doesNotMatch(embed.description, /Absolute path to use/, 'no path is claimed when none could be resolved');
   assert.match(embed.description, /check ruTorrent for the full path/, 'and the operator is told how to find it');
+  database.close();
+});
+
+test('stuck sweep: acknowledged relative paths stop alerting, and the count says why', async () => {
+  // rTorrent never revisits a torrent's stored directory, so historical relative paths stay
+  // forever. Repeating their count every cooldown, after an admin has said "these are history",
+  // buries the ones that are genuinely still arriving broken.
+  const database = new Database(':memory:');
+  database.exec(`CREATE TABLE alert_cooldowns (
+    scope TEXT NOT NULL, alert_key TEXT NOT NULL, last_alerted_at INTEGER NOT NULL,
+    PRIMARY KEY (scope, alert_key)
+  ); CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT);`);
+  const torrents = [
+    { name: 'Old.S01E01.mkv', basePath: './Downloads/Old.S01E01.mkv', hash: 'AAA' },
+    { name: 'Old.S01E02.mkv', basePath: './Downloads/Old.S01E02.mkv', hash: 'BBB' },
+    { name: 'New.S01E03.mkv', basePath: './Downloads/New.S01E03.mkv', hash: 'CCC' },
+  ];
+  const run = acks => {
+    const notices = [];
+    const sandbox = loadSandbox(['getAlertedAt', 'setAlertedAt', 'listAlertCooldowns', 'clearAlertCooldown', 'planStuckDownloads', 'classifyRelativePathTorrents', 'sweepStuckDownloads'], {
+      db: database,
+      stuckTracker: new Map(),
+      fetchArrQueues: async () => [],
+      detectStuckItems: () => [],
+      groupStuckItems: () => new Map(),
+      stuckGroupKey: () => 'sonarr:1',
+      tunable: () => 0,
+      getSetting: () => null,
+      buildStuckAlert: () => ({ embed: {}, row: {} }),
+      notifyChannel: (channel, msg) => notices.push({ channel, msg }),
+      audit: () => {},
+      rtorrentConfigured: () => true,
+      listRtorrentTorrents: async () => torrents,
+      findUnprocessableTorrents,
+      unacknowledgedTorrents,
+      pruneAcknowledged,
+      readPathAcks: () => acks,
+      resolveAbsoluteDownloadDir,
+      getRtorrentPaths: async () => ({ cwd: '/mnt/001/seed', defaultDirectory: './Downloads' }),
+      RTORRENT_PATH_ALERT_KEY: 'rtorrent:relative-paths',
+      COLORS: { DANGER: 4 },
+      brandedEmbed: color => ({
+        color,
+        setTitle(value) { this.title = value; return this; },
+        setDescription(value) { this.description = value; return this; },
+      }),
+    });
+    return { sandbox, notices };
+  };
+
+  // Two acknowledged, one still arriving broken: alert on the one, explain the two.
+  const partial = run(['AAA', 'BBB']);
+  assert.strictEqual((await partial.sandbox.run('sweepStuckDownloads()')).unprocessable, 1);
+  const embed = partial.notices[0].msg.embeds[0];
+  assert.match(embed.title, /Cannot Be Imported — 1 torrent$/);
+  assert.match(embed.description, /2 already acknowledged as historical and not counted here/);
+  // The old advice ("re-downloading them after the fix is the simplest route") was wrong: the
+  // files are already on the seedbox and adoption copies them home over rclone, which never
+  // consults the path Sonarr is refusing.
+  assert.match(embed.description, /do \*\*not\*\* need re-downloading/);
+  assert.match(embed.description, /rtorrent adopt search/);
+  assert.match(embed.description, /stores a directory at add time and never revisits it/,
+    'and it says why fixing the Directory field cannot clear these');
+
+  // Everything acknowledged: silence, not a repeat of the same count forever.
+  database.exec('DELETE FROM alert_cooldowns');
+  const quiet = run(['AAA', 'BBB', 'CCC']);
+  const result = await quiet.sandbox.run('sweepStuckDownloads()');
+  assert.strictEqual(result.unprocessable, 0);
+  assert.strictEqual(quiet.notices.length, 0, 'a fully acknowledged history says nothing');
   database.close();
 });
