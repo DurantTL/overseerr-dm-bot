@@ -85,7 +85,7 @@ function build({
   // is exactly the behavior when nothing has been overridden.
   const store = { get: key => overrides[key.replace(runtimeSettings.OVERRIDE_PREFIX, '')] ?? null };
   const taggedSeries = SERIES.map(s => ({ ...s, tags: seriesTags[s.id] || [] }));
-  const sandbox = loadSandbox(['sweepSeasonPacks', 'downloadPathBlock', 'seasonPackConfig', 'queuedSeasons', 'activeGrabSeasonsFor', 'rtorrentSeasonsFor'], {
+  const sandbox = loadSandbox(['sweepSeasonPacks', 'downloadPathBlock', 'classifyRelativePathTorrents', 'seasonPackConfig', 'queuedSeasons', 'activeGrabSeasonsFor', 'rtorrentSeasonsFor'], {
     CONFIG,
     tunable: key => runtimeSettings.resolveRuntime(key, { config: CONFIG, store }),
     // Pinning reorders the candidate list; `pinned` maps tvdbId → rank.

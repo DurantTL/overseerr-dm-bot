@@ -357,8 +357,9 @@ since builds differ in what they expose; when nothing resolves the alert says so
 ruTorrent rather than guessing a path, because a wrong absolute path trades a diagnosable failure
 for a silent one.
 
-rTorrent stores a torrent's directory at add time and never revisits it, so downloads that already
-landed relative stay relative for good — fixing the client configuration cannot clear them, only
+Setting the *arrs' **Directory** field fixes torrents added *afterwards* and nothing else. rTorrent
+stores a torrent's directory at add time and never revisits it, so downloads that already landed
+relative stay relative for good — fixing the client configuration cannot clear them, only
 removing and re-adding them can. The guard therefore counts only torrents an admin has **not**
 acknowledged: the alert carries an *Acknowledge existing* button that marks everything currently
 broken as historical, and anything that lands on a relative path afterwards pauses searching
@@ -375,8 +376,17 @@ resumes on its own once the paths are fixed. "Cannot tell" never counts as block
 unreachable seedbox or a failed listing leaves searching alone, since silently halting every
 download is a worse failure than the waste the guard prevents.
 
+Those historical torrents do not need re-downloading. Their files are already on the seedbox, and
+adoption reaches them by a route that never consults the path Sonarr is refusing:
+`remoteSubpathCandidates` drops the leading `./` segment and hands rclone plain relative subpaths
+to verify, so `/rtorrent adopt search:<name>` copies the data home into `GRAB_STAGING_PATH` and
+lets the arr import from there. That path depends on rclone working, which is what the
+`--config` warning above protects.
+
 `/rtorrent status` reports the same diagnosis on demand, so the absolute path is available the
-moment imports stop rather than only on the next sweep.
+moment imports stop rather than only on the next sweep. It splits the count into acknowledged and
+still-arriving: reporting only the total makes a correct fix look like it did nothing, because the
+total cannot fall until the historical torrents are adopted or removed.
 
 `RTORRENT_DOWNLOAD_DIR` pins that same absolute path on the torrents this bot adds itself. Unset
 (the default) keeps rTorrent's own default. The two settings cover the two halves: the *arrs add
