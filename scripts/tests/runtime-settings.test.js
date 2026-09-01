@@ -66,7 +66,7 @@ test('runtime-settings: describe reports compose value, override state, and effe
   const store = memStore();
   rs.setOverride('ESCALATION_ENABLED', '1', { store });
   const groups = rs.describeRuntimeSettings({ config: CONFIG, store });
-  assert.deepStrictEqual(groups.map(g => g.id), ['request_progress', 'capacity', 'pending_approvals', 'stuck', 'escalation', 'season_pack', 'episode_recovery', 'premiumize', 'release_group_blocklist', 'pack_size_fix']);
+  assert.deepStrictEqual(groups.map(g => g.id), ['request_progress', 'capacity', 'pending_approvals', 'stuck', 'escalation', 'season_pack', 'episode_recovery', 'premiumize', 'release_group_blocklist', 'pack_size_fix', 'ratio_cleanup']);
   const esc = groups.find(g => g.id === 'escalation').settings.find(s => s.key === 'ESCALATION_ENABLED');
   assert.strictEqual(esc.envValue, false, 'compose says off');
   assert.strictEqual(esc.value, true, 'override says on');

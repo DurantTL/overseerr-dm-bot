@@ -381,6 +381,12 @@ const runMigrations = db.transaction(function runMigrationsInner() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS rtorrent_ratio_watch (
+      hash TEXT PRIMARY KEY,
+      ratio_permille INTEGER NOT NULL,
+      ratio_changed_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS tier_node_files (
       node TEXT NOT NULL,
       folder_id TEXT NOT NULL DEFAULT '',
@@ -1452,6 +1458,35 @@ function pruneAlertCooldowns(scope, before) {
   return db.prepare('DELETE FROM alert_cooldowns WHERE scope = ? AND last_alerted_at < ?').run(scope, before).changes;
 }
 
+// Per-hash state for the ratio-cleanup sweep (src/ratio-cleanup.js): the ratio last seen at or
+// above the configured minimum, and when it was last seen to change. Reset (deleted) whenever
+// the ratio drops back under the minimum, so a re-grab or reseed starts the stall clock over
+// rather than inheriting a stale timestamp from a previous life.
+function getRatioWatch(hash) {
+  return db.prepare('SELECT ratio_permille, ratio_changed_at FROM rtorrent_ratio_watch WHERE hash = ?').get(String(hash).toUpperCase()) || null;
+}
+
+function upsertRatioWatch(hash, ratioPermille, changedAt = Date.now()) {
+  db.prepare(`INSERT INTO rtorrent_ratio_watch (hash, ratio_permille, ratio_changed_at) VALUES (?, ?, ?)
+    ON CONFLICT(hash) DO UPDATE SET ratio_permille = excluded.ratio_permille, ratio_changed_at = excluded.ratio_changed_at`)
+    .run(String(hash).toUpperCase(), ratioPermille, changedAt);
+}
+
+function deleteRatioWatch(hash) {
+  db.prepare('DELETE FROM rtorrent_ratio_watch WHERE hash = ?').run(String(hash).toUpperCase());
+}
+
+// Drops watch rows for torrents rTorrent no longer has (removed manually, or by a previous
+// sweep run) so the table doesn't grow without bound.
+function pruneRatioWatch(presentHashes = []) {
+  const present = new Set((presentHashes || []).map(h => String(h).toUpperCase()));
+  const stale = db.prepare('SELECT hash FROM rtorrent_ratio_watch').all().map(r => r.hash).filter(h => !present.has(h));
+  if (!stale.length) return 0;
+  const stmt = db.prepare('DELETE FROM rtorrent_ratio_watch WHERE hash = ?');
+  for (const hash of stale) stmt.run(hash);
+  return stale.length;
+}
+
 const SEASON_ALERT_SCOPE = 'season-pack:no-grab';
 function seasonAlertKey(seriesId, seasonNumber) {
   return `${Number(seriesId)}:${Number(seasonNumber)}`;
@@ -1685,7 +1720,7 @@ function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k) {
   return null;
 }
 
-module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
+module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;
 Object.assign(module.exports, {
   recordPackRejections,

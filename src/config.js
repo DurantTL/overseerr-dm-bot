@@ -311,6 +311,21 @@ const CONFIG = (() => {
   // default; set it when that default is relative and .rtorrent.rc is not editable (#238).
   RTORRENT_DOWNLOAD_DIR: (process.env.RTORRENT_DOWNLOAD_DIR || '').replace(/\/+$/, ''),
   RTORRENT_PATH_GUARD: parseBool(process.env.RTORRENT_PATH_GUARD, true),
+  // ---- rTorrent ratio-based cleanup: remove finished torrents that have seeded enough ----
+  // Two independent triggers (src/ratio-cleanup.js): a torrent whose ratio has been sitting at
+  // or above RTORRENT_RATIO_MIN_PERMILLE without moving for RTORRENT_RATIO_STALL_DAYS gets
+  // removed, and any torrent at or above RTORRENT_RATIO_FORCE_PERMILLE gets removed immediately
+  // regardless of stall. Only removes the torrent from rTorrent (d.erase) — the downloaded data
+  // on the seedbox is untouched, since plain rTorrent XML-RPC has no call to delete it.
+  RTORRENT_RATIO_CLEANUP_ENABLED: parseBool(process.env.RTORRENT_RATIO_CLEANUP_ENABLED, false),
+  RTORRENT_RATIO_CLEANUP_CHECK_MINUTES: Number.parseInt(process.env.RTORRENT_RATIO_CLEANUP_CHECK_MINUTES || '60', 10),
+  // Ratio * 1000 (rTorrent's own unit — 500 = 0.5, 2000 = 2.0). Below this, a torrent is left
+  // alone entirely no matter how long it's been finished.
+  RTORRENT_RATIO_MIN_PERMILLE: Number.parseInt(process.env.RTORRENT_RATIO_MIN_PERMILLE || '500', 10),
+  // Days the ratio must sit unchanged at/above the minimum before it's removed for being stalled.
+  RTORRENT_RATIO_STALL_DAYS: Number.parseInt(process.env.RTORRENT_RATIO_STALL_DAYS || '7', 10),
+  // Ratio * 1000 that triggers immediate removal, stalled or not. 0 disables the force trigger.
+  RTORRENT_RATIO_FORCE_PERMILLE: Number.parseInt(process.env.RTORRENT_RATIO_FORCE_PERMILLE || '2000', 10),
   // Self/admin requests skip the approval gate, so they never saw the gate's
   // "+ AvistaZ Fallback" choice and were pre-authorized (and tagged) unconditionally. Default
   // off: nothing reaches the private tracker without someone saying so.
