@@ -130,8 +130,8 @@ test('adopt: d.multicall2 listing against a mock XML-RPC endpoint', async () => 
   const xmlValue = v2 => typeof v2 === 'number' ? `<i8>${v2}</i8>` : `<string>${v2}</string>`;
   const xmlRow = row => `<value><array><data>${row.map(c => `<value>${xmlValue(c)}</value>`).join('')}</data></array></value>`;
   const rows = [
-    ['abcdef0123456789', 'Blood.Vs.Duty.S01', 1, 'sonarr', '/home/localclient/Downloads/Blood.Vs.Duty.S01', 5000, 5000, 0],
-    ['fedcba9876543210', 'Half.Done.Movie.2020', 0, '', '/home/localclient/Downloads/Half.Done.Movie.2020.mkv', 9000, 4500, 123],
+    ['abcdef0123456789', 'Blood.Vs.Duty.S01', 1, 'sonarr', '/home/localclient/Downloads/Blood.Vs.Duty.S01', 5000, 5000, 0, 750],
+    ['fedcba9876543210', 'Half.Done.Movie.2020', 0, '', '/home/localclient/Downloads/Half.Done.Movie.2020.mkv', 9000, 4500, 123, 0],
   ];
   const app = express();
   app.use(express.text({ type: '*/*' }));
@@ -144,17 +144,19 @@ test('adopt: d.multicall2 listing against a mock XML-RPC endpoint', async () => 
   CONFIG.RTORRENT_URL = `http://127.0.0.1:${server.address().port}/rpc`;
   const { listRtorrentTorrents } = require('../../src/rtorrent');
 
-  const listed = await listRtorrentTorrents();
-  assert.ok(lastBody.includes('<methodName>d.multicall2</methodName>') && lastBody.includes('<string>d.custom1=</string>'), 'multicall requests the label field');
-  assert.strictEqual(listed.length, 2, 'every row becomes a torrent');
-  assert.deepStrictEqual(listed[0], {
-    hash: 'ABCDEF0123456789', name: 'Blood.Vs.Duty.S01', complete: true, label: 'sonarr',
-    basePath: '/home/localclient/Downloads/Blood.Vs.Duty.S01', sizeBytes: 5000, doneBytes: 5000, downRate: 0,
-  }, 'fields map by position, hash uppercased');
-  assert.strictEqual(listed[1].complete, false, 'd.complete=0 maps to false');
-  assert.strictEqual(listed[1].label, '', 'blank label survives as an empty string');
-
-  server.close();
+  try {
+    const listed = await listRtorrentTorrents();
+    assert.ok(lastBody.includes('<methodName>d.multicall2</methodName>') && lastBody.includes('<string>d.custom1=</string>'), 'multicall requests the label field');
+    assert.strictEqual(listed.length, 2, 'every row becomes a torrent');
+    assert.deepStrictEqual(listed[0], {
+      hash: 'ABCDEF0123456789', name: 'Blood.Vs.Duty.S01', complete: true, label: 'sonarr',
+      basePath: '/home/localclient/Downloads/Blood.Vs.Duty.S01', sizeBytes: 5000, doneBytes: 5000, downRate: 0, ratioPermille: 750,
+    }, 'fields map by position, hash uppercased, ratio kept in rTorrent\'s permille unit');
+    assert.strictEqual(listed[1].complete, false, 'd.complete=0 maps to false');
+    assert.strictEqual(listed[1].label, '', 'blank label survives as an empty string');
+  } finally {
+    server.close();
+  }
 });
 
 test('acknowledgement separates historical relative paths from ongoing breakage', () => {

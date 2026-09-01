@@ -144,6 +144,18 @@ const RUNTIME_SETTINGS = [
   { key: 'RTORRENT_PATH_GUARD', group: 'pack_size_fix', type: 'bool', source: 'config',
     label: 'Pause searching while rTorrent paths are unimportable', help: 'When torrents are sitting at relative paths Sonarr/Radarr refuse to import, stop starting new season searches and episode-fallback batches. Every grab made in that state is a metered tracker slot spent on a file that cannot land. Already-submitted work is still tracked to completion, and searching resumes on its own once the paths are fixed.' },
 
+  // ---- rTorrent ratio-based cleanup ----
+  { key: 'RTORRENT_RATIO_CLEANUP_ENABLED', group: 'ratio_cleanup', type: 'bool', source: 'config',
+    label: 'Remove finished torrents once they\'ve seeded enough' },
+  { key: 'RTORRENT_RATIO_CLEANUP_CHECK_MINUTES', group: 'ratio_cleanup', type: 'int', min: 0, max: 1440, source: 'config',
+    label: 'Check every', unit: 'min', help: '0 pauses the sweep without clearing the toggle.' },
+  { key: 'RTORRENT_RATIO_MIN_PERMILLE', group: 'ratio_cleanup', type: 'int', min: 0, max: 100000, source: 'config',
+    label: 'Minimum ratio before a stall counts', unit: '‰', help: 'rTorrent\'s own ratio unit: ratio × 1000, so 500 = 0.5. Below this a torrent is left alone no matter how long it\'s been finished.' },
+  { key: 'RTORRENT_RATIO_STALL_DAYS', group: 'ratio_cleanup', type: 'int', min: 1, max: 365, source: 'config',
+    label: 'Remove after the ratio sits unchanged for', unit: 'days' },
+  { key: 'RTORRENT_RATIO_FORCE_PERMILLE', group: 'ratio_cleanup', type: 'int', min: 0, max: 100000, source: 'config',
+    label: 'Remove immediately once ratio reaches', unit: '‰', help: 'Same ratio × 1000 unit — 2000 = 2.0. Removes right away, stalled or not. 0 disables this trigger.' },
+
   // ---- Premiumize→rTorrent reroute ----
   { key: 'PREMIUMIZE_REROUTE_ENABLED', group: 'premiumize', type: 'bool', source: 'config',
     label: 'Reroute dead transfers to seedbox rTorrent', help: 'When a Premiumize transfer is finally given up on, try to pick the same release back up through the seedbox rTorrent client instead of leaving it dead. Matched against the live Sonarr/Radarr queue entry — skipped if no match is found.' },
@@ -164,6 +176,7 @@ const GROUPS = [
   { id: 'premiumize', title: 'Premiumize transfers', blurb: 'Clears transfers that will never finish and batches the leftovers into one alert.' },
   { id: 'release_group_blocklist', title: 'Release-group blocklist', blurb: 'Suggests a Sonarr Custom Format when the same release-group tag keeps showing up in dead Premiumize auto-clears.' },
   { id: 'pack_size_fix', title: 'Season-pack size floors', blurb: 'Sonarr’s minimum-size limits reject efficient encodes. Counts which limit is blocking packs and offers to loosen it.' },
+  { id: 'ratio_cleanup', title: 'rTorrent ratio cleanup', blurb: 'Removes finished torrents from rTorrent once they\'ve seeded enough — either stalled at a healthy ratio for a while, or straight past a high-ratio bar.' },
 ];
 
 const BY_KEY = new Map(RUNTIME_SETTINGS.map(s => [s.key, s]));

@@ -31,7 +31,7 @@ const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, recordPackRejections, getPackRejectionSighting, markPackRejectionSuggested, dismissPackRejectionSuggestion, resetPackRejectionSightings, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, recordPackRejections, getPackRejectionSighting, markPackRejectionSuggested, dismissPackRejectionSuggestion, resetPackRejectionSightings, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeasonEpisodeFallbacks,
@@ -55,7 +55,8 @@ const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromo
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
 const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
-const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion, getRtorrentPaths } = require('./src/rtorrent');
+const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, eraseTorrent, getRtorrentVersion, getRtorrentPaths } = require('./src/rtorrent');
+const { decideRatioRemoval } = require('./src/ratio-cleanup');
 const { runBackup, rotateBackups, backupState, rehearseLatestBackup } = require('./scripts/backup-db');
 const { recordDiskSamples, pruneDiskSamples, forecastDisks, pathIsOnRoot, forecastLabel } = require('./src/capacity');
 const { webhookEventKey } = require('./src/webhook-events');
@@ -818,6 +819,48 @@ async function sweepStuckDownloads() {
 // Not a per-download key: one relative rTorrent directory affects every torrent at once, so this
 // alerts once per cooldown for the whole condition rather than once per affected torrent.
 const RTORRENT_PATH_ALERT_KEY = 'rtorrent:relative-paths';
+
+// Ratio-based cleanup (src/ratio-cleanup.js): removes finished torrents from rTorrent once
+// they've either stalled at a healthy ratio for a while, or blown well past a high-ratio bar.
+// Only d.erase's the torrent from the client — the seedbox data itself is untouched, since
+// plain rTorrent XML-RPC has no call to delete it, and the *arrs have already imported anything
+// that matters by the time a torrent is done seeding.
+async function sweepRatioCleanup() {
+  if (!rtorrentConfigured()) return { checked: 0, removed: 0 };
+  const torrents = await listRtorrentTorrents();
+  pruneRatioWatch(torrents.map(t => t.hash));
+  const minRatioPermille = tunable('RTORRENT_RATIO_MIN_PERMILLE');
+  const forceRatioPermille = tunable('RTORRENT_RATIO_FORCE_PERMILLE');
+  const stallDays = tunable('RTORRENT_RATIO_STALL_DAYS');
+  const now = Date.now();
+  const removed = [];
+  for (const torrent of torrents) {
+    if (!torrent.complete) continue; // only finished downloads actually seed a ratio worth watching
+    const watch = getRatioWatch(torrent.hash);
+    const verdict = decideRatioRemoval({ torrent, watch, now, minRatioPermille, stallDays, forceRatioPermille });
+    if (verdict.action === 'remove') {
+      try {
+        await eraseTorrent(torrent.hash);
+        deleteRatioWatch(torrent.hash);
+        removed.push({ name: torrent.name, ratio: verdict.ratio, reason: verdict.reason });
+        audit('rtorrent_ratio_removed', { hash: torrent.hash, name: torrent.name, ratioPermille: verdict.ratio, reason: verdict.reason });
+      } catch (err) {
+        audit('external_api_error', { provider: 'rtorrent', error: err.message, action: 'ratio_erase', hash: torrent.hash, name: torrent.name });
+      }
+    } else if (verdict.action === 'watch') {
+      upsertRatioWatch(torrent.hash, verdict.ratio, verdict.changedAt);
+    } else if (verdict.action === 'clear') {
+      deleteRatioWatch(torrent.hash);
+    }
+  }
+  if (removed.length) {
+    const list = removed.map(r => `• **${r.name}** — ratio ${(r.ratio / 1000).toFixed(2)} (${r.reason === 'force' ? `≥ ${(forceRatioPermille / 1000).toFixed(2)}` : `stalled ${stallDays}d+`})`).join('\n').slice(0, 3500);
+    notifyChannel('cleanup', { embeds: [brandedEmbed(COLORS.SUCCESS)
+      .setTitle('🌱 rTorrent Ratio Cleanup')
+      .setDescription(`Removed ${removed.length} finished torrent(s) from rTorrent for seeding enough:\n${list}\n\nOnly removed from the client — the seedbox data itself was left alone.`)] });
+  }
+  return { checked: torrents.length, removed: removed.length };
+}
 
 function planStuckDownloads(items, tracker, afterMinutes, now = Date.now()) {
   return groupStuckItems(detectStuckItems(items, tracker, { stuckAfterMs: afterMinutes * 60000, now }));
@@ -4437,6 +4480,10 @@ client.once('ready', async () => {
     setInterval(() => runGuardedSweep('adoption', sweepAdoptCandidates).catch(err => log.warn(`Adoption sweep failed: ${err.message}`)), CONFIG.RTORRENT_ADOPT_CHECK_MINUTES * 60000).unref();
     log.ok(`rTorrent adoption discovery running every ${CONFIG.RTORRENT_ADOPT_CHECK_MINUTES} min (labels: ${CONFIG.RTORRENT_ADOPT_LABELS.join(', ') || 'none'}, auto: ${CONFIG.RTORRENT_ADOPT_AUTO ? 'on' : 'off'})`);
   }
+  if (rtorrentConfigured()) {
+    scheduleTunableSweep({ label: 'rTorrent ratio-cleanup sweep', minutesKey: 'RTORRENT_RATIO_CLEANUP_CHECK_MINUTES', enabledKey: 'RTORRENT_RATIO_CLEANUP_ENABLED', fn: () => runGuardedSweep('ratio-cleanup', sweepRatioCleanup) });
+    log.ok(`rTorrent ratio cleanup ${tunable('RTORRENT_RATIO_CLEANUP_ENABLED') ? `on (every ${tunable('RTORRENT_RATIO_CLEANUP_CHECK_MINUTES')} min, stall ≥${(tunable('RTORRENT_RATIO_MIN_PERMILLE') / 1000).toFixed(2)} for ${tunable('RTORRENT_RATIO_STALL_DAYS')}d, force ≥${(tunable('RTORRENT_RATIO_FORCE_PERMILLE') / 1000).toFixed(2)})` : 'off (RTORRENT_RATIO_CLEANUP_ENABLED)'}`);
+  }
   if (CONFIG.JANITOR_CHECK_MINUTES > 0) {
     setInterval(() => runGuardedSweep('janitor', janitorSweep).catch(err => log.warn(`Janitor sweep failed: ${err.message}`)), CONFIG.JANITOR_CHECK_MINUTES * 60000).unref();
     log.ok(`Janitor running every ${CONFIG.JANITOR_CHECK_MINUTES} min (grace deletes: ${CONFIG.ENABLE_DELETION ? 'on' : 'off'}, retention: ${CONFIG.RETENTION_ENFORCEMENT ? 'on' : 'off'}, dry-run: ${CONFIG.DELETION_DRY_RUN ? 'on' : 'off'})`);
@@ -5443,6 +5490,7 @@ async function handleStatusCommand(interaction) {
     ['season-pack', tunable('SEASON_PACK_FIRST') ? tunable('SEASON_PACK_CHECK_MINUTES') : 0],
     ['grab', grabConfigured() ? CONFIG.GRAB_CHECK_MINUTES : 0],
     ['adoption', CONFIG.RTORRENT_ADOPT_ENABLED ? CONFIG.RTORRENT_ADOPT_CHECK_MINUTES : 0],
+    ['ratio-cleanup', rtorrentConfigured() && tunable('RTORRENT_RATIO_CLEANUP_ENABLED') ? tunable('RTORRENT_RATIO_CLEANUP_CHECK_MINUTES') : 0],
     ['janitor', CONFIG.JANITOR_CHECK_MINUTES],
     ['backup', CONFIG.BACKUP_INTERVAL_HOURS > 0 ? CONFIG.BACKUP_INTERVAL_HOURS * 60 : 0],
     ['monthly-recap', CONFIG.MONTHLY_RECAP_ENABLED ? 60 : 0],

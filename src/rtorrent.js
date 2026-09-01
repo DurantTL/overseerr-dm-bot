@@ -192,7 +192,7 @@ async function getRtorrentStatus(infoHash) {
 // uppercased to match computeInfoHash so grab_jobs lookups compare cleanly.
 async function listRtorrentTorrents() {
   const rows = await rtorrentCall('d.multicall2', ['', 'main',
-    'd.hash=', 'd.name=', 'd.complete=', 'd.custom1=', 'd.base_path=', 'd.size_bytes=', 'd.completed_bytes=', 'd.down.rate=']);
+    'd.hash=', 'd.name=', 'd.complete=', 'd.custom1=', 'd.base_path=', 'd.size_bytes=', 'd.completed_bytes=', 'd.down.rate=', 'd.ratio=']);
   return (rows || []).map(r => ({
     hash: String(r[0] || '').toUpperCase(),
     name: String(r[1] || ''),
@@ -202,7 +202,16 @@ async function listRtorrentTorrents() {
     sizeBytes: Number(r[5]) || 0,
     doneBytes: Number(r[6]) || 0,
     downRate: Number(r[7]) || 0,
+    // rTorrent reports d.ratio as the share ratio * 1000 (an integer) — kept in that unit
+    // (not converted to a float here) so it round-trips exactly through storage/comparisons.
+    ratioPermille: Number(r[8]) || 0,
   }));
+}
+
+// Removes a torrent from rTorrent's session (d.erase). This unregisters it from the client —
+// it does not touch the downloaded data on disk, which plain rTorrent XML-RPC has no call for.
+async function eraseTorrent(infoHash) {
+  await rtorrentCall('d.erase', [infoHash]);
 }
 
 // Cheap reachability probe for /avistaz status.
@@ -235,4 +244,4 @@ async function getRtorrentPaths() {
   return { cwd, defaultDirectory, sessionPath };
 }
 
-module.exports = { rtorrentConfigured, serializeXmlRpcCall, parseXmlRpcResponse, computeInfoHash, rtorrentCall, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, getRtorrentVersion, getRtorrentPaths };
+module.exports = { rtorrentConfigured, serializeXmlRpcCall, parseXmlRpcResponse, computeInfoHash, rtorrentCall, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, eraseTorrent, getRtorrentVersion, getRtorrentPaths };
