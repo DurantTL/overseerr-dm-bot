@@ -26,7 +26,7 @@ function request(port, { method = 'GET', path = '/', token, body } = {}) {
 function setup() {
   const settings = new Map([['tier_manifest:edge', JSON.stringify({ planHash: 'current' })]]);
   const plans = new Map([['edge', { published: { planHash: 'current' }, lastTelemetryLevel: 'unknown' }]]);
-  const calls = { heartbeats: [], reports: [], inventories: [], converged: [], missing: 0, recovered: 0 };
+  const calls = { heartbeats: [], reports: [], inventories: [], converged: [], missing: 0, recovered: 0, errorAlerts: [], agentReports: [] };
   const tokenHashes = new Map([['edge', sha256('valid')], ['edge2', sha256('valid2')]]);
   const app = createApp({ skipJsonPaths: ['/agent/'] });
   registerTierAgentRoutes(app, {
@@ -37,11 +37,16 @@ function setup() {
     getTierPlan: node => plans.get(node), getTierNode: () => ({ atime_mask: null }), listTierNodeFiles: () => [],
     recordTierAgentHeartbeat: (node, value) => calls.heartbeats.push({ node, value }),
     recordTierAgentReport: (node, value) => calls.reports.push({ node, value }),
+    recordTierErrorAlertState: (node, value) => {
+      calls.errorAlerts.push({ node, value });
+      plans.set(node, { ...(plans.get(node) || {}), errorAlert: value });
+    },
     replaceTierNodeFiles: (node, files) => calls.inventories.push({ node, files }),
     markTierPlanConverged: (node, value) => calls.converged.push({ node, value }),
     parseAtimeMask: () => null, maskSuspectAtimes: files => files,
     notifyTelemetryTransition: () => {}, notifyDriveMissing: () => { calls.missing += 1; },
-    notifyDriveRecovered: () => { calls.recovered += 1; }, notifyAgentReport: () => {},
+    notifyDriveRecovered: () => { calls.recovered += 1; },
+    notifyAgentReport: payload => calls.agentReports.push(payload),
   });
   return { app, settings, calls };
 }
@@ -98,5 +103,29 @@ test('tier-agent HTTP report preserves inventory cap and drive-missing transitio
     assert.strictEqual(response.statusCode, 200);
     assert.strictEqual(calls.recovered, 1);
     assert.strictEqual(calls.inventories[0].files.length, 200000);
+  } finally { await close(server); }
+});
+
+test('tier-agent HTTP report backs off repeated identical errors and posts one recovery note when they clear', async () => {
+  const { app, calls } = setup();
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const errorBody = { planHash: 'current', errors: ['timed out'] };
+    for (let i = 0; i < 4; i++) {
+      await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: errorBody });
+    }
+    // Attempts 1, 2, 4 alert; attempt 3 is suppressed by the backoff.
+    assert.deepStrictEqual(calls.agentReports.map(r => r.errorAlert.attemptCount), [1, 2, 4]);
+    assert.strictEqual(calls.agentReports[2].errorAlert.stoodDown, true);
+
+    await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { planHash: 'current', errors: ['timed out'] } });
+    // Attempt 5 is still stood down and silent.
+    assert.strictEqual(calls.agentReports.length, 3);
+
+    await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { planHash: 'current', converged: true } });
+    assert.strictEqual(calls.agentReports.length, 4);
+    assert.strictEqual(calls.agentReports[3].recoveredFromErrors, true);
+    assert.strictEqual(calls.agentReports[3].errors.length, 0);
   } finally { await close(server); }
 });

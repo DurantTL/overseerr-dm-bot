@@ -46,4 +46,16 @@ function telemetrySummary(telemetry, fmtSpace = value => `${value} B`) {
   ].filter(Boolean).join(' · ');
 }
 
-module.exports = { sanitizeNodeTelemetry, assessNodeTelemetry, telemetrySummary };
+const REBUILD_UPTIME_THRESHOLD_SECONDS = 3 * 3600;
+
+// A freshly (re)built node or one still catching up on its first Syncthing sync runs hot and slow
+// for a while — that's expected, not a fault. Surface it as context on hardware/report alerts so a
+// spike right after a rebuild doesn't read as an unexplained problem.
+function nodeUptimeHint(telemetry) {
+  const uptime = telemetry?.uptimeSeconds;
+  if (uptime == null || uptime >= REBUILD_UPTIME_THRESHOLD_SECONDS) return null;
+  const age = uptime < 3600 ? `${Math.max(1, Math.round(uptime / 60))}m` : `${(uptime / 3600).toFixed(1)}h`;
+  return `🔧 Node has only been up ${age} — likely still rebuilding or catching up on its initial Syncthing sync. Elevated load, temperature, and slower reports are expected until it settles.`;
+}
+
+module.exports = { sanitizeNodeTelemetry, assessNodeTelemetry, telemetrySummary, nodeUptimeHint };

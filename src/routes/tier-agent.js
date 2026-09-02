@@ -5,11 +5,12 @@ const { createBodyConcurrencyLimiter } = require('./body-concurrency-limit');
 const { createTierAgentAuth } = require('./tier-agent-auth');
 const { createTierAgentReportLimiter, createTierAgentReadLimiter } = require('./tier-agent-report-limit');
 const { sanitizeNodeTelemetry, assessNodeTelemetry } = require('../node-telemetry');
+const { nextRepeatAlert } = require('../repeat-alert');
 
 function registerTierAgentRoutes(app, deps) {
   const {
     config, getTierAgentTokenHash, sha256, safeEqual, audit, getSetting, setSetting,
-    getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, markTierPlanConverged,
+    getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, recordTierErrorAlertState, markTierPlanConverged,
     getTierNode, listTierNodeFiles, replaceTierNodeFiles, parseAtimeMask, maskSuspectAtimes,
     notifyTelemetryTransition, notifyDriveMissing, notifyDriveRecovered, notifyAgentReport,
     fileSystem = fs, projectRoot = path.join(__dirname, '..', '..'),
@@ -86,14 +87,25 @@ function registerTierAgentRoutes(app, deps) {
       }
     }
 
+    // Repeated identical errors (e.g. the same timeout on every 6h run) would otherwise post an
+    // unthrottled notification forever. Back off the same way season no-grab alerts do: alert on
+    // attempts 1, 2, 4, then stand down until the error text changes or clears, at which point a
+    // single recovery note replaces the silence.
+    const priorErrorAlert = getTierPlan(node)?.errorAlert || null;
+    const errorFingerprint = errors.length ? errors.slice().sort().join('\n') : null;
+    const errorAlert = errorFingerprint ? nextRepeatAlert(priorErrorAlert, { fingerprint: errorFingerprint }) : null;
+    const recoveredFromErrors = !errorFingerprint && !!priorErrorAlert;
+    recordTierErrorAlertState(node, errorAlert);
+
     recordTierAgentReport(node, { inventoryStored, errors, telemetry, telemetryLevel: telemetryHealth.level });
     emitTelemetry();
     const publishedHash = getTierPlan(node)?.published?.planHash || null;
     const converged = body.converged === true && errors.length === 0 && !!body.planHash && body.planHash === publishedHash;
     if (converged) markTierPlanConverged(node, { planHash: body.planHash });
-    audit('tier_agent_report', { node, planHash: body.planHash || null, publishedHash, converged, bytesFreed: body.bytesFreed || 0, droppedCount: (body.dropped || []).length, inventoryCount: Array.isArray(body.inventory) ? body.inventory.length : 0, errors: errors.join('; ').slice(0, 500) || undefined, skipped: skipped.join('; ').slice(0, 500) || undefined });
-    if ((body.bytesFreed || 0) > 0 || errors.length || skipped.length) {
-      notifyAgentReport({ node, body, errors, skipped, publishedHash, converged });
+    audit('tier_agent_report', { node, planHash: body.planHash || null, publishedHash, converged, bytesFreed: body.bytesFreed || 0, droppedCount: (body.dropped || []).length, inventoryCount: Array.isArray(body.inventory) ? body.inventory.length : 0, errors: errors.join('; ').slice(0, 500) || undefined, skipped: skipped.join('; ').slice(0, 500) || undefined, errorAlertAttempt: errorAlert?.attemptCount, errorAlertStoodDown: errorAlert?.stoodDown });
+    const shouldNotifyErrors = errors.length > 0 && (!errorAlert || errorAlert.shouldAlert);
+    if ((body.bytesFreed || 0) > 0 || shouldNotifyErrors || skipped.length || recoveredFromErrors) {
+      notifyAgentReport({ node, body, errors, skipped, publishedHash, converged, telemetry, errorAlert, recoveredFromErrors });
     }
     return res.json({ ok: true, converged });
   });

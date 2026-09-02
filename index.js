@@ -21,7 +21,7 @@ const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const bodyParser = require('body-parser');
 const multer = require('multer');
 const { createBodyConcurrencyLimiter } = require('./src/routes/body-concurrency-limit');
-const { assessNodeTelemetry, telemetrySummary } = require('./src/node-telemetry');
+const { assessNodeTelemetry, telemetrySummary, nodeUptimeHint } = require('./src/node-telemetry');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -31,7 +31,7 @@ const { log } = require('./src/log');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, recordPackRejections, getPackRejectionSighting, markPackRejectionSuggested, dismissPackRejectionSuggestion, resetPackRejectionSightings, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, recordPackRejections, getPackRejectionSighting, markPackRejectionSuggested, dismissPackRejectionSuggestion, resetPackRejectionSightings, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeasonEpisodeFallbacks,
@@ -9234,7 +9234,7 @@ function startExpressServer() {
   registerTierAgentRoutes(app, {
     config: CONFIG,
     getTierAgentTokenHash, sha256, safeEqual, audit, getSetting, setSetting,
-    getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, markTierPlanConverged,
+    getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, recordTierErrorAlertState, markTierPlanConverged,
     getTierNode, listTierNodeFiles, replaceTierNodeFiles, parseAtimeMask, maskSuspectAtimes,
     notifyTelemetryTransition: ({ node, telemetry, telemetryHealth, previousTelemetryLevel }) => {
       if (!telemetry || telemetryHealth.level === previousTelemetryLevel) return;
@@ -9242,7 +9242,10 @@ function startExpressServer() {
       const recovered = telemetryHealth.level === 'ok';
       notifyChannel('system', { embeds: [brandedEmbed(recovered ? COLORS.SUCCESS : telemetryHealth.level === 'critical' ? COLORS.DANGER : COLORS.WARN)
         .setTitle(`${recovered ? '✅' : telemetryHealth.level === 'critical' ? '🔥' : '⚠️'} Edge node hardware — ${node}`)
-        .setDescription(`${telemetryHealth.reason}\n${telemetrySummary(telemetry, fmtSpace)}${recovered ? `\nRecovered from ${previousTelemetryLevel}.` : ''}`)] });
+        .setDescription([
+          `${telemetryHealth.reason}\n${telemetrySummary(telemetry, fmtSpace)}${recovered ? `\nRecovered from ${previousTelemetryLevel}.` : ''}`,
+          nodeUptimeHint(telemetry),
+        ].filter(Boolean).join('\n'))] });
       audit('tier_agent_telemetry_transition', { node, from: previousTelemetryLevel, to: telemetryHealth.level, temperatureC: telemetry.temperatureC });
     },
     notifyDriveMissing: ({ node, mountErrors }) => notifyChannel('system', { embeds: [brandedEmbed(COLORS.DANGER)
@@ -9255,19 +9258,30 @@ function startExpressServer() {
     notifyDriveRecovered: ({ node }) => notifyChannel('system', { embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`🟢 ${node} media drive back online`)
       .setDescription('The external media drive is mounted again and the tier agent has resumed converging Syncthing.')] }),
-    notifyAgentReport: ({ node, body, errors, skipped, publishedHash, converged }) => {
+    // Identical errors on every run (a stuck timeout, a flaky mount) would otherwise post the same
+    // notification forever. errorAlert (src/repeat-alert.js) backs that off to attempts 1, 2, 4 and
+    // then stands down until the error text changes or clears — recoveredFromErrors fires the one
+    // "cleared" note that replaces the silence.
+    notifyAgentReport: ({ node, body, errors, skipped, publishedHash, converged, telemetry, errorAlert, recoveredFromErrors }) => {
       const statusLine = errors.length
         ? `⚠️ Plan \`${body.planHash || '?'}\` reported with errors — not marked converged.`
         : converged
           ? `✅ Plan \`${body.planHash}\` converged.`
           : `📤 Plan \`${body.planHash || '?'}\` reported${publishedHash && body.planHash !== publishedHash ? ` but does not match published \`${publishedHash}\`` : ''} — convergence not confirmed.`;
+      const backoffNote = errors.length && errorAlert && !errorAlert.changed
+        ? (errorAlert.stoodDown
+          ? `🔕 Same error as the last ${errorAlert.attemptCount - 1} report(s) — alerts stood down until it changes or clears.`
+          : `↻ Same error as last report (attempt ${errorAlert.attemptCount}) — next alert at attempt ${errorAlert.nextAlertAttempt} unless it clears first.`)
+        : null;
       notifyChannel('cleanup', { embeds: [brandedEmbed(errors.length ? COLORS.WARN : (converged ? COLORS.SUCCESS : COLORS.INFO))
-        .setTitle(`📦 Tier Agent Report — ${node}`)
+        .setTitle(`${recoveredFromErrors ? '✅' : '📦'} Tier Agent Report — ${node}`)
         .setDescription([
-          statusLine,
+          recoveredFromErrors ? '✅ Errors cleared — this report came back clean.' : statusLine,
           (body.bytesFreed || 0) > 0 ? `Freed **${fmtSpace(body.bytesFreed)}** across ${(body.dropped || []).length} title(s). Master copies untouched.` : null,
           errors.length ? `⚠️ Errors:\n${errors.map(e => `• ${e}`).join('\n')}` : null,
+          backoffNote,
           skipped.length ? `ℹ️ Not pruned (still ignored, node is on plan):\n${skipped.map(e => `• ${e}`).join('\n')}` : null,
+          nodeUptimeHint(telemetry),
         ].filter(Boolean).join('\n').slice(0, 4000))] });
     },
   });
