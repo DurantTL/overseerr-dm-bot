@@ -45,6 +45,7 @@ test('tier-agent-mountguard: guard-off default, drive-missing abort, recovery, f
   const stCalls = [];
   const st = express();
   st.get('/rest/config/folders/:id', (req, res) => { stCalls.push('config'); res.json({ id: req.params.id, type: 'receiveonly' }); });
+  st.get('/rest/db/status', (_req, res) => { stCalls.push('status'); res.json({ state: 'idle' }); });
   st.post('/rest/db/scan', (_req, res) => { stCalls.push('scan'); res.json({}); });
   st.get('/rest/db/ignores', (_req, res) => {
     stCalls.push('ignores');
@@ -112,7 +113,7 @@ test('tier-agent-mountguard: guard-off default, drive-missing abort, recovery, f
   assert.ok(!fs.existsSync(path.join(folderRoot, 'Old Movie (2001)')), 'dropped title pruned on the healthy run');
   assert.ok(fs.existsSync(path.join(folderRoot, 'Keep Movie (2024)/keep.mkv')), 'kept title untouched');
   assert.ok(reports.length >= 1 && Array.isArray(reports[reports.length - 1].inventory), 'healthy run reports an inventory');
-  assert.deepStrictEqual(stCalls, ['config', 'scan', 'ignores'], 'healthy run drives Syncthing normally');
+  assert.deepStrictEqual(stCalls, ['config', 'status', 'scan', 'ignores'], 'healthy run drives Syncthing normally');
   process.exitCode = 0;
 
   // --- drive missing: mount root points at a path that does not exist (drive not mounted) ---

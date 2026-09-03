@@ -17,7 +17,12 @@ One run does, in order:
 3. Writes the manifest's `.stignore` into the folder root — atomically (temp file in the same
    directory, fsynced, then renamed into place), so a crash or a rescan racing the write can
    never observe a truncated or empty ignore file.
-4. Triggers a rescan and **confirms Syncthing loaded the ignore patterns**.
+4. Checks the folder's Syncthing state (`GET /rest/db/status`) before forcing a rescan. If it's
+   still `scanning`/`syncing` — expected on a brand-new node with a large freshly-populated
+   library — the agent skips prune for that folder this run and retries on the next scheduled
+   cycle instead of forcing its own rescan on top of one already running (which is what used to
+   time out and fail the systemd unit). Otherwise it triggers a rescan and **confirms Syncthing
+   loaded the ignore patterns**.
 5. Prunes local files that are in `drop` *and* confirmed ignored (ignored files are never
    re-pulled). Every deletion is logged; paths are confined to the folder root. Deletion is
    asynchronous and one title at a time (`fs.promises.rm`, which yields to the event loop rather
