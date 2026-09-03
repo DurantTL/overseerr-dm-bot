@@ -44,7 +44,7 @@ function registerTierAgentRoutes(app, deps) {
     const body = req.body || {};
     const previousTelemetryLevel = getTierPlan(node)?.lastTelemetryLevel || 'unknown';
     const telemetry = sanitizeNodeTelemetry(body.telemetry);
-    const telemetryHealth = assessNodeTelemetry(telemetry, { warnC: config.NODE_TEMP_WARN_C, criticalC: config.NODE_TEMP_CRITICAL_C });
+    const telemetryHealth = assessNodeTelemetry(telemetry, { warnC: config.NODE_TEMP_WARN_C, criticalC: config.NODE_TEMP_CRITICAL_C, previousLevel: previousTelemetryLevel });
     const emitTelemetry = () => notifyTelemetryTransition({ node, telemetry, telemetryHealth, previousTelemetryLevel });
 
     if (body.heartbeat && !body.driveMissing) {

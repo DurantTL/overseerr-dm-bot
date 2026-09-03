@@ -5695,7 +5695,7 @@ async function handleDoctorCommand(interaction) {
       detail: heartbeatAge == null ? 'no heartbeat reported' : `last heartbeat ${fmtDuration(heartbeatAge)} ago${tierState?.lastErrors?.length ? ` · ${tierState.lastErrors[0]}` : ''}`,
     });
     const telemetry = tierState?.lastTelemetry;
-    const hardware = assessNodeTelemetry(telemetry, { warnC: CONFIG.NODE_TEMP_WARN_C, criticalC: CONFIG.NODE_TEMP_CRITICAL_C });
+    const hardware = assessNodeTelemetry(telemetry, { warnC: CONFIG.NODE_TEMP_WARN_C, criticalC: CONFIG.NODE_TEMP_CRITICAL_C, previousLevel: tierState?.lastTelemetryLevel });
     checks.push({
       name: `Hardware: ${node.name}`,
       status: hardware.level === 'critical' ? 'fail' : hardware.level === 'warn' || hardware.level === 'unknown' ? 'warn' : 'ok',
