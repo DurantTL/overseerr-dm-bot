@@ -22,11 +22,25 @@ function sanitizeNodeTelemetry(raw) {
   return Object.values(value).some(item => item !== null) ? value : null;
 }
 
-function assessNodeTelemetry(telemetry, { warnC = 80, criticalC = 90 } = {}) {
+// Hysteresis: a temperature riding right at a threshold (say 79-81°C against an 80°C warn line)
+// would otherwise flip level, and therefore alert, on every single report for hours. Once a level
+// has been entered, clearing it requires dropping clearMarginC below its threshold rather than
+// just ticking back under it — the classic Schmitt-trigger fix for flapping near a boundary.
+// previousLevel is the level the node was last recorded at (e.g. tier plan's lastTelemetryLevel);
+// omit it (or pass 'unknown') for a one-off, stateless read.
+function assessNodeTelemetry(telemetry, { warnC = 80, criticalC = 90, clearMarginC = 5, previousLevel = 'unknown' } = {}) {
   const temp = telemetry?.temperatureC;
   if (temp == null) return { level: 'unknown', reason: 'temperature unavailable' };
   if (temp >= criticalC) return { level: 'critical', reason: `CPU temperature ${temp.toFixed(1)}°C is at or above ${criticalC}°C` };
+  const criticalClearC = criticalC - clearMarginC;
+  if (previousLevel === 'critical' && temp >= criticalClearC) {
+    return { level: 'critical', reason: `CPU temperature ${temp.toFixed(1)}°C is still near critical (below ${criticalC}°C but above the ${criticalClearC}°C clear point)` };
+  }
   if (temp >= warnC) return { level: 'warn', reason: `CPU temperature ${temp.toFixed(1)}°C is at or above ${warnC}°C` };
+  const warnClearC = warnC - clearMarginC;
+  if ((previousLevel === 'warn' || previousLevel === 'critical') && temp >= warnClearC) {
+    return { level: 'warn', reason: `CPU temperature ${temp.toFixed(1)}°C is still elevated (below ${warnC}°C but above the ${warnClearC}°C clear point)` };
+  }
   return { level: 'ok', reason: `CPU temperature ${temp.toFixed(1)}°C` };
 }
 

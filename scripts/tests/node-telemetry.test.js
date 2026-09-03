@@ -53,6 +53,24 @@ test('server bounds telemetry and classifies configurable thermal transitions', 
   assert.match(telemetrySummary(value, bytes => `${bytes} bytes`), /85\.2°C CPU.*RAM 75% used.*100 bytes disk free/);
 });
 
+test('hysteresis keeps a temperature riding near a threshold from flapping level on every read', () => {
+  const opts = { warnC: 80, criticalC: 90 };
+  // A stateless read (no previousLevel) classifies purely on the raw threshold.
+  assert.strictEqual(assessNodeTelemetry({ temperatureC: 79 }, opts).level, 'ok');
+  assert.strictEqual(assessNodeTelemetry({ temperatureC: 81 }, opts).level, 'warn');
+
+  // Once "warn" has been entered, a dip back under 80°C that hasn't cleared the 5°C margin (75°C)
+  // stays "warn" instead of bouncing back to "ok" and re-arming the next uptick as a fresh alert.
+  assert.strictEqual(assessNodeTelemetry({ temperatureC: 79 }, { ...opts, previousLevel: 'warn' }).level, 'warn');
+  assert.strictEqual(assessNodeTelemetry({ temperatureC: 76 }, { ...opts, previousLevel: 'warn' }).level, 'warn');
+  // Actually clearing the margin (below 75°C) recovers to ok.
+  assert.strictEqual(assessNodeTelemetry({ temperatureC: 74 }, { ...opts, previousLevel: 'warn' }).level, 'ok');
+
+  // Same margin behavior guards the critical threshold (90°C, 85°C clear point).
+  assert.strictEqual(assessNodeTelemetry({ temperatureC: 87 }, { ...opts, previousLevel: 'critical' }).level, 'critical');
+  assert.strictEqual(assessNodeTelemetry({ temperatureC: 84 }, { ...opts, previousLevel: 'critical' }).level, 'warn');
+});
+
 test('invalid or unavailable sensor readings degrade to unavailable without failing collection', () => {
   const fsImpl = {
     readdirSync: () => { throw new Error('no sysfs'); },
