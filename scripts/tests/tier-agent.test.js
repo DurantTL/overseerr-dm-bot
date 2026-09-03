@@ -78,6 +78,7 @@ test('tier-agent: ignore-before-prune ordering, receive-only abort, path confine
 
   // --- mock Syncthing ---
   let folderType = 'receiveonly';
+  let folderScanState = 'idle'; // set to 'scanning' to exercise the initial-scan skip-and-retry path
   let doomedAtScan = 'movies/Old Movie (2001)/old.mkv'; // per run: the file the plan will prune
   const stCalls = [];
   const st = express();
@@ -85,6 +86,7 @@ test('tier-agent: ignore-before-prune ordering, receive-only abort, path confine
     stCalls.push('config');
     res.json({ id: req.params.id, type: folderType });
   });
+  st.get('/rest/db/status', (_req, res) => { stCalls.push('status'); res.json({ state: folderScanState }); });
   st.post('/rest/db/scan', (_req, res) => {
     // The whole point of the ordering: when the rescan happens, the ignore file must already
     // be on disk and the doomed file must still exist (prune comes after confirmation).
@@ -130,7 +132,7 @@ test('tier-agent: ignore-before-prune ordering, receive-only abort, path confine
 
   // --- run 1: full converge ---
   const r1 = await runOnce(ctx);
-  assert.deepStrictEqual(stCalls, ['config', 'scan', 'ignores'], 'receive-only asserted first, then rescan, then ignore confirmation');
+  assert.deepStrictEqual(stCalls, ['config', 'status', 'scan', 'ignores'], 'receive-only asserted first, then scan-state check, then rescan, then ignore confirmation');
   assert.ok(!fs.existsSync(path.join(folderRoot, 'movies/Old Movie (2001)')), 'dropped title pruned');
   assert.ok(fs.existsSync(path.join(folderRoot, 'movies/Keep Movie (2024)/keep.mkv')), 'kept title untouched');
   assert.ok(!fs.existsSync(path.join(tmp, 'outside')), 'path traversal confined to folder root');
@@ -216,6 +218,32 @@ test('tier-agent: ignore-before-prune ordering, receive-only abort, path confine
   assert.notStrictEqual(process.exitCode, 1, 'a benign skip does not fail the systemd unit');
   assert.ok(!fs.existsSync(path.join(folderRoot, 'movies/Skippable (1998)/s.mkv')), 'the legitimate drop in the same run is still pruned');
   assert.ok(!fs.existsSync(path.join(tmp, 'outside/evil.mkv')), 'the escaping path was never touched');
+
+  // --- a folder still doing its initial Syncthing scan must be a soft skip-and-retry, not a
+  // hard error/exit: a brand-new node populating a large library can stay "scanning" for a long
+  // time, and forcing our own rescan on top of that is what used to time out and fail the unit.
+  mkMedia('movies/Fresh Node (2025)/f.mkv', 1024);
+  manifest = mkManifest([{ relPath: 'movies/Fresh Node (2025)/f.mkv', sizeBytes: 1024 }]);
+  folderScanState = 'scanning';
+  stCalls.length = 0;
+  const beforeScanning = reports.length;
+  const r9 = await runOnce(ctx);
+  assert.deepStrictEqual(stCalls, ['config', 'status'], 'scan-state checked, but no rescan forced on top of an in-progress one');
+  assert.strictEqual(r9.converged, false, 'a folder mid-scan has not reached the plan yet');
+  assert.strictEqual(r9.errors.length, 0, 'a pending scan is not an error');
+  assert.ok(r9.skipped.some(s => /still scanning/.test(s)), 'the skip explains why, for visibility');
+  assert.notStrictEqual(process.exitCode, 1, 'a pending initial scan must not fail the systemd unit');
+  assert.ok(fs.existsSync(path.join(folderRoot, 'movies/Fresh Node (2025)/f.mkv')), 'nothing pruned while the folder is still scanning');
+  assert.strictEqual(reports.length, beforeScanning + 1, 'still reported to the bot so the dashboard reflects the pending state');
+
+  // The next run, once Syncthing finishes scanning, must retry the SAME plan (not treat it as
+  // already applied) and actually converge.
+  folderScanState = 'idle';
+  doomedAtScan = 'movies/Fresh Node (2025)/f.mkv'; // nothing to prune here, but keep the guard meaningful
+  stCalls.length = 0;
+  const r10 = await runOnce(ctx);
+  assert.ok(stCalls.includes('scan'), 'once idle, the same plan is retried and actually scanned');
+  assert.strictEqual(r10.converged, true, 'the retried plan converges once the folder is no longer scanning');
 
   botSrv.close();
   stSrv.close();

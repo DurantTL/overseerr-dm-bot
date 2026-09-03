@@ -533,11 +533,25 @@ async function runOnce(ctx) {
 
   const pruneResult = { dropped: [], bytesFreed: 0, errors: [], skipped: [] };
   let hardError = false; // a thrown safety abort / ignore-confirm failure (not a benign prune skip)
+  let scanPending = false; // a folder still mid-scan — benign, retry next run, not a failure
   if (planChanged) {
     for (const fp of folderPlans) {
       try {
         await assertReceiveOnly(ctx, fp.syncFolderId);                  // 2. topology guard
         writeStignore(ctx, fp);                                         // 3. ignore first
+        if (!ctx.dryRun) {
+          // A freshly-populated/just-registered folder's initial scan can legitimately run far
+          // longer than TIER_HTTP_TIMEOUT_MS. Forcing our own rescan (step 4 below) on top of one
+          // Syncthing is already running is what produces "operation aborted due to timeout" here
+          // — check first and treat it as a benign retry, not a hard error/exit.
+          const status = await syncthingApi(ctx, 'GET', `/rest/db/status?folder=${encodeURIComponent(fp.syncFolderId)}`);
+          if (status.state === 'scanning' || status.state === 'syncing') {
+            ctx.log(`folder '${fp.syncFolderId}' is still ${status.state} — skipping prune this run, will retry next cycle`);
+            pruneResult.skipped.push(`folder ${fp.syncFolderId}: still ${status.state} — retrying next cycle`);
+            scanPending = true;
+            continue;
+          }
+        }
         const loaded = ctx.dryRun ? new Set(fp.drop.map(e => `/${escapeStignore(e.relPath)}`)) : await rescanAndConfirmIgnores(ctx, fp); // 4. confirm loaded
         const pr = await pruneDrops(ctx, fp, loaded);                   // 5. then prune (async, non-blocking)
         pruneResult.dropped.push(...pr.dropped);
@@ -550,10 +564,11 @@ async function runOnce(ctx) {
         hardError = true;
       }
     }
-    // Advance the applied plan only if no folder hard-failed. Benign per-file prune skips (e.g. a
-    // manifest entry that escapes the root) still count as converged for hysteresis, matching v1 —
-    // a topology abort or unloaded-ignores failure must instead retry the whole plan next run.
-    if (!ctx.dryRun && !hardError) state.planHash = manifest.planHash;
+    // Advance the applied plan only if no folder hard-failed and none is still mid-scan. Benign
+    // per-file prune skips (e.g. a manifest entry that escapes the root) still count as converged
+    // for hysteresis, matching v1 — a topology abort, unloaded-ignores failure, or pending scan
+    // must instead retry the whole plan next run.
+    if (!ctx.dryRun && !hardError && !scanPending) state.planHash = manifest.planHash;
   }
 
   // Converged = this node reached the plan it was given. A benign per-file skip does not change
@@ -563,7 +578,7 @@ async function runOnce(ctx) {
   // a topology abort, unloaded ignores, or a delete that errored — blocks convergence.
   const report = {
     planHash: manifest.planHash,
-    converged: planChanged && !hardError && !pruneResult.errors.length,
+    converged: planChanged && !hardError && !scanPending && !pruneResult.errors.length,
     bytesFreed: pruneResult.bytesFreed,
     dropped: pruneResult.dropped,
     errors: pruneResult.errors,

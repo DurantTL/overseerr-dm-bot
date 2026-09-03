@@ -96,6 +96,7 @@ test('tier-agent-multifolder: converge, no-op skip, and a per-folder receive-onl
   const scanned = [];
   const st = express();
   st.get('/rest/config/folders/:id', (req, res) => res.json({ id: req.params.id, type: folderType[req.params.id] || 'receiveonly' }));
+  st.get('/rest/db/status', (_req, res) => res.json({ state: 'idle' }));
   st.post('/rest/db/scan', (req, res) => {
     const id = req.query.folder;
     scanned.push(id);

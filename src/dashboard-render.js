@@ -315,6 +315,7 @@ function renderTierNodeSetup(nodes) {
         <label>TIER_MOUNT_ROOT (optional)<input name="mountRoot" placeholder="/mnt/media"></label>
         <label>TIER_MOUNT_MARKER (optional)<input name="mountMarker" placeholder=".tier-media-ok"></label>
       </div>
+      <p class="setup-warning" id="tier-mount-guard-note">⚠️ Mount guard: <strong>NOT configured</strong> — if this node has an external/removable media drive, a failed remount after reboot will go undetected and the agent may report an empty inventory. Fill in both fields above to enable it; leave both blank only for a master/single-disk node.</p>
       <h3 class="setup-subheading">Syncthing folders</h3>
       <p class="muted">Enter every folder ID exactly as Syncthing shows it and the matching existing local path on this node. Linux paths are case-sensitive; verify capitalization before generating. Four rows are ready; add more if needed.</p>
       <div id="tier-folder-list">${folderRows}</div>
@@ -322,7 +323,7 @@ function renderTierNodeSetup(nodes) {
       <p class="setup-warning">Generating saves this complete folder list and rotates the node token immediately. Run the command as an administrator who can use sudo; any existing agent using the old token stops checking in.</p>
       <button class="btn danger" type="submit">Rotate token and generate command</button>
       <span class="save-note" id="tier-install-note"></span>
-      <div id="tier-install-result" hidden><p class="setup-warning">This command is shown once. Copy it before leaving or reloading this page.</p><pre class="setup-output" id="tier-install-command"></pre><button class="btn" type="button" id="tier-copy-command">Copy command</button></div>
+      <div id="tier-install-result" hidden><p class="setup-warning">This command is shown once. Copy it before leaving or reloading this page.</p><p class="setup-warning" id="tier-install-mount-status"></p><pre class="setup-output" id="tier-install-command"></pre><button class="btn" type="button" id="tier-copy-command">Copy command</button></div>
     </form>` : '<p class="muted">Register a node to generate its install command.</p>'}
   </div>`;
 }

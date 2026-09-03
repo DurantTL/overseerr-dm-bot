@@ -9807,6 +9807,16 @@ function startExpressServer() {
               folders.forEach(function (folder) { folderList.appendChild(folderRow(folder)); });
               ensureFourFolderRows();
             });
+            var mountGuardNote = document.getElementById('tier-mount-guard-note');
+            var updateMountGuardNote = function () {
+              if (!mountGuardNote || !installForm) return;
+              var configured = !!(installForm.elements.mountRoot.value.trim() && installForm.elements.mountMarker.value.trim());
+              mountGuardNote.innerHTML = configured
+                ? '✅ Mount guard: <strong>configured</strong>.'
+                : '⚠️ Mount guard: <strong>NOT configured</strong> — if this node has an external/removable media drive, a failed remount after reboot will go undetected and the agent may report an empty inventory. Fill in both fields above to enable it; leave both blank only for a master/single-disk node.';
+              mountGuardNote.className = 'setup-warning' + (configured ? ' ok' : '');
+            };
+            if (installForm) { updateMountGuardNote(); installForm.addEventListener('input', updateMountGuardNote); }
             [registerForm, installForm].filter(Boolean).forEach(function (form) {
               form.addEventListener('input', function () { window.__dirtySettings = true; });
             });
@@ -9841,12 +9851,17 @@ function startExpressServer() {
                 note.className = 'save-note bad';
                 return;
               }
-              if (!confirm('Save this complete folder list and rotate the node token? The existing agent will stop working until this new command is installed.')) return;
+              var mountGuardWarning = (!values.mountRoot && !values.mountMarker)
+                ? 'Mount guard: NOT configured for this node — an external drive that fails to remount will go undetected.\n\n'
+                : '';
+              if (!confirm(mountGuardWarning + 'Save this complete folder list and rotate the node token? The existing agent will stop working until this new command is installed.')) return;
               values.confirmed = true;
               var r = await fetch('/admin/action/tier-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
               var result = await r.json().catch(function () { return {}; });
               if (!r.ok || result.ok === false) { note.textContent = result.error || 'Command generation failed.'; note.className = 'save-note bad'; return; }
               document.getElementById('tier-install-command').textContent = result.command;
+              document.getElementById('tier-install-mount-status').textContent = (values.mountRoot && values.mountMarker)
+                ? '✅ Mount guard: configured.' : '⚠️ Mount guard: NOT configured on this node.';
               document.getElementById('tier-install-result').hidden = false;
               installForm.elements.node.options[installForm.elements.node.selectedIndex].dataset.folders = JSON.stringify(values.folders);
               note.textContent = 'Token rotated. Copy this command now.';
