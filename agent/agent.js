@@ -160,11 +160,23 @@ async function botApi(ctx, method, route, body) {
 }
 
 async function syncthingApi(ctx, method, route) {
-  const res = await fetch(`${ctx.syncthingUrl}${route}`, {
-    method,
-    headers: { 'X-API-Key': ctx.syncthingApiKey },
-    signal: AbortSignal.timeout(ctx.timeoutMs),
-  });
+  let res;
+  try {
+    res = await fetch(`${ctx.syncthingUrl}${route}`, {
+      method,
+      headers: { 'X-API-Key': ctx.syncthingApiKey },
+      signal: AbortSignal.timeout(ctx.timeoutMs),
+    });
+  } catch (err) {
+    // A rejected fetch() here means the TCP connect itself failed (ECONNREFUSED/ENOTFOUND/reset),
+    // not that Syncthing answered with an error — that's what a freshly-rebooted node looks like
+    // before the Syncthing service has finished starting and bound its REST port. Tag it distinctly
+    // from an HTTP-level failure so the caller can retry next cycle instead of hard-failing, the
+    // same treatment the mid-scan case below already gets.
+    const wrapped = new Error(`Syncthing ${method} ${route} unreachable — ${err.message}`);
+    wrapped.syncthingUnreachable = true;
+    throw wrapped;
+  }
   if (!res.ok) throw new Error(`Syncthing ${method} ${route} → HTTP ${res.status}`);
   const text = await res.text();
   try { return JSON.parse(text); } catch (_e) { return text; }
@@ -533,7 +545,7 @@ async function runOnce(ctx) {
 
   const pruneResult = { dropped: [], bytesFreed: 0, errors: [], skipped: [] };
   let hardError = false; // a thrown safety abort / ignore-confirm failure (not a benign prune skip)
-  let scanPending = false; // a folder still mid-scan — benign, retry next run, not a failure
+  let retryPending = false; // a folder still mid-scan, or Syncthing not reachable yet — benign, retry next run, not a failure
   if (planChanged) {
     for (const fp of folderPlans) {
       try {
@@ -548,7 +560,7 @@ async function runOnce(ctx) {
           if (status.state === 'scanning' || status.state === 'syncing') {
             ctx.log(`folder '${fp.syncFolderId}' is still ${status.state} — skipping prune this run, will retry next cycle`);
             pruneResult.skipped.push(`folder ${fp.syncFolderId}: still ${status.state} — retrying next cycle`);
-            scanPending = true;
+            retryPending = true;
             continue;
           }
         }
@@ -559,6 +571,16 @@ async function runOnce(ctx) {
         pruneResult.errors.push(...pr.errors);
         pruneResult.skipped.push(...pr.skipped);
       } catch (err) {
+        if (err.syncthingUnreachable) {
+          // Same benign-retry treatment as the mid-scan skip above: a node freshly rebooted (or
+          // whose Syncthing service is still starting) will fail every connect until the daemon
+          // binds its REST port. That is expected during a rebuild, not a plan failure — don't
+          // burn it as a hard error/alert, just retry next cycle.
+          ctx.log(`folder '${fp.syncFolderId}' — Syncthing unreachable (${err.message}) — skipping this run, will retry next cycle`);
+          pruneResult.skipped.push(`folder ${fp.syncFolderId}: Syncthing unreachable — retrying next cycle`);
+          retryPending = true;
+          continue;
+        }
         ctx.log(`ERROR [folder ${fp.syncFolderId || '(default)'}]: ${err.message}`);
         pruneResult.errors.push(err.message);
         hardError = true;
@@ -568,7 +590,7 @@ async function runOnce(ctx) {
     // per-file prune skips (e.g. a manifest entry that escapes the root) still count as converged
     // for hysteresis, matching v1 — a topology abort, unloaded-ignores failure, or pending scan
     // must instead retry the whole plan next run.
-    if (!ctx.dryRun && !hardError && !scanPending) state.planHash = manifest.planHash;
+    if (!ctx.dryRun && !hardError && !retryPending) state.planHash = manifest.planHash;
   }
 
   // Converged = this node reached the plan it was given. A benign per-file skip does not change
@@ -578,7 +600,7 @@ async function runOnce(ctx) {
   // a topology abort, unloaded ignores, or a delete that errored — blocks convergence.
   const report = {
     planHash: manifest.planHash,
-    converged: planChanged && !hardError && !scanPending && !pruneResult.errors.length,
+    converged: planChanged && !hardError && !retryPending && !pruneResult.errors.length,
     bytesFreed: pruneResult.bytesFreed,
     dropped: pruneResult.dropped,
     errors: pruneResult.errors,
