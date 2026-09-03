@@ -245,6 +245,32 @@ test('tier-agent: ignore-before-prune ordering, receive-only abort, path confine
   assert.ok(stCalls.includes('scan'), 'once idle, the same plan is retried and actually scanned');
   assert.strictEqual(r10.converged, true, 'the retried plan converges once the folder is no longer scanning');
 
+  // --- Syncthing not reachable at all (freshly rebooted node, daemon still starting) must be the
+  // same soft skip-and-retry as a mid-scan folder, not a hard error/alert: assertReceiveOnly's
+  // connect is the very first Syncthing call each run, so a refused connection used to hard-fail
+  // before the scan-state check even ran.
+  mkMedia('movies/Booting Node (2025)/b.mkv', 1024);
+  manifest = mkManifest([{ relPath: 'movies/Booting Node (2025)/b.mkv', sizeBytes: 1024 }]);
+  const deadPort = await new Promise((resolve, reject) => {
+    const probe = require('net').createServer();
+    probe.listen(0, () => { const { port } = probe.address(); probe.close(err => err ? reject(err) : resolve(port)); });
+  });
+  const unreachableCtx = { ...ctx, syncthingUrl: `http://127.0.0.1:${deadPort}` };
+  unreachableCtx.log = () => {};
+  const beforeUnreachable = reports.length;
+  const r11 = await runOnce(unreachableCtx);
+  assert.strictEqual(r11.converged, false, 'unreachable Syncthing has not reached the plan yet');
+  assert.strictEqual(r11.errors.length, 0, 'an unreachable Syncthing is not reported as a run error');
+  assert.ok(r11.skipped.some(s => /Syncthing unreachable/.test(s)), 'the skip explains why, for visibility');
+  assert.notStrictEqual(process.exitCode, 1, 'Syncthing still starting must not fail the systemd unit');
+  assert.ok(fs.existsSync(path.join(folderRoot, 'movies/Booting Node (2025)/b.mkv')), 'nothing pruned while Syncthing is unreachable');
+  assert.strictEqual(reports.length, beforeUnreachable + 1, 'still reported to the bot so the dashboard reflects the pending state');
+
+  // Once Syncthing comes up, the same plan is retried (not treated as already applied) and converges.
+  doomedAtScan = 'movies/Booting Node (2025)/b.mkv';
+  const r12 = await runOnce(ctx);
+  assert.strictEqual(r12.converged, true, 'the retried plan converges once Syncthing is reachable again');
+
   botSrv.close();
   stSrv.close();
   fs.rmSync(tmp, { recursive: true, force: true });
