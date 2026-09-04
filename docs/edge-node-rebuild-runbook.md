@@ -181,7 +181,41 @@ Recommended: on the first run, set `TIER_DRY_RUN=1` in `/etc/tier-agent.env`, ru
 `systemctl start tier-agent.service`, and read `journalctl -u tier-agent` before letting the
 timer loose unattended. Remove `TIER_DRY_RUN` once you're satisfied.
 
-## 6. Verify RTC wake before trusting it in production
+## 6. Verify the Syncthing connection is direct, not relayed
+
+Before assuming a slow initial sync is just "a big library, give it time," confirm the node is
+actually talking to the master directly. A node behind CGNAT (no public inbound IP — common for
+any edge node not port-forwarded on its own router) will silently fall back to Syncthing's public
+relay infrastructure, which is slow enough (observed as low as single-digit bytes/min) to be
+indistinguishable from "stuck" unless you check the connection type directly. See
+`docs/known-issues.md` ("CGNAT'd edge nodes silently fall back to Syncthing's public relay...")
+for the full writeup — this step is the summary.
+
+1. On the **master**, once the new node has connected at least once, check its connection type:
+
+   ```sh
+   curl -s http://127.0.0.1:8384/rest/system/connections -H "X-API-Key: <master-syncthing-api-key>" \
+     | jq '.connections["<node-device-id>"] | {connected, type, address}'
+   ```
+
+2. If `type` contains `relay` (e.g. `"relay-client"`), pin the node's Tailscale IP as a static
+   device address on the master so Syncthing stops relying on discovery to find a direct path:
+
+   ```sh
+   curl -X PATCH http://127.0.0.1:8384/rest/config/devices/<node-device-id> \
+     -H "X-API-Key: <master-syncthing-api-key>" \
+     -H "Content-Type: application/json" \
+     -d '{"addresses": ["tcp://<node-tailscale-ip>:22000", "dynamic"]}'
+   ```
+
+3. Re-check `/rest/system/connections` after the next reconnect — `type` should now read
+   `tcp-client`/`tcp-server` (or `quic-*`) with `address` showing the node's Tailscale IP
+   (`100.64.0.0/10`) on port `22000`, not a relay hostname.
+
+Do this **before** trusting any "initial sync is taking a while" read on a freshly rebuilt node —
+a relayed connection can make a healthy node look stuck for days.
+
+## 7. Verify RTC wake before trusting it in production
 
 If this node is expected to wake itself from suspend/sleep on a schedule (e.g. to run during an
 off-peak window), verify RTC wake works **before** relying on it, using a short, safe test rather
@@ -214,4 +248,5 @@ it in person.
 - [ ] Syncthing folders created via REST API as `receiveonly`, confirmed with a GET
 - [ ] Dashboard-generated install command run on the node, first pass with `TIER_DRY_RUN=1`
 - [ ] `journalctl -u tier-agent` reviewed before removing `TIER_DRY_RUN`
+- [ ] Syncthing connection type checked on the master (`/rest/system/connections`) — direct, not relay
 - [ ] RTC wake verified with `rtcwake -m off -s 120` before relying on scheduled wake

@@ -79,3 +79,81 @@ than expected to complete Syncthing's initial folder scan after a rebuild — wh
 the "operation aborted due to timeout" agent failure described in the tier-agent scanning issue,
 even though the actual root cause here is the USB driver, not the agent. Check `lsusb -t` on any
 freshly rebuilt edge node before assuming a slow initial sync is normal.
+
+## CGNAT'd edge nodes silently fall back to Syncthing's public relay instead of connecting direct over Tailscale
+
+**Symptom:** a folder on an edge node shows "Syncing" in Syncthing indefinitely, or for far longer
+than the library size and network should require. Nothing errors — Syncthing does not surface
+"stuck" as a distinct state from "genuinely slow" — and the node otherwise looks healthy: it's on
+the tailnet, `tailscale status` is clean, the mount guard passes, and the agent's heartbeat is
+current. **Confirmed** in production on two edge nodes behind CGNAT (no public inbound IP):
+throughput on the affected folders measured roughly 2–8 bytes/min, which is functionally
+indistinguishable from "stuck" without checking the connection type directly.
+
+**Cause:** Syncthing prefers a direct connection between two devices, but falls back to relaying
+through its public relay infrastructure whenever it can't establish one directly — and a node
+behind CGNAT has no public inbound IP for the master to dial, so Syncthing's own NAT traversal
+(UPnP/STUN/hole-punching) fails silently and it relays instead. This happens even when both nodes
+are already reachable directly via a private overlay network (e.g. Tailscale) — Syncthing has no
+awareness of the tailnet and never tries that path on its own. A node can be relaying like this
+from the day it was first set up without anyone noticing, since relay traffic still counts as
+"Syncing" rather than any kind of error state.
+
+**Diagnostic:** check the connection type Syncthing is actually using for the affected device, not
+just whether it's "Connected":
+
+```sh
+curl -s http://127.0.0.1:8384/rest/system/connections -H "X-API-Key: <your-syncthing-api-key>" \
+  | jq '.connections["<remote-device-id>"] | {connected, type, address}'
+```
+
+A `type` containing `relay` (e.g. `"relay-client"`) confirms the node is relaying. A direct
+connection instead reports a `tcp-client`/`tcp-server` (or `quic-*`) type with `address` showing
+the peer's actual IP:port — a Tailscale IP (typically `100.64.0.0/10`) and port `22000` if the fix
+below is in place.
+
+**Fix:** pin the node's known Tailscale IP into the *master's* Syncthing device config as a static
+address, so Syncthing tries it directly instead of relying on discovery/NAT traversal to find a
+path on its own:
+
+```sh
+curl -X PATCH http://127.0.0.1:8384/rest/config/devices/<remote-device-id> \
+  -H "X-API-Key: <master-syncthing-api-key>" \
+  -H "Content-Type: application/json" \
+  -d '{"addresses": ["tcp://<tailscale-ip>:22000", "dynamic"]}'
+```
+
+Keeping `"dynamic"` in the list preserves the normal discovery fallback if the Tailscale IP ever
+changes; it's just no longer the *only* path tried. This takes effect on the next reconnect —
+watch `/rest/system/connections` (or the Syncthing GUI) for the `type` to flip away from `relay-*`.
+In one measured case this improved throughput by roughly 18x.
+
+**Why this matters for edge nodes specifically:** every edge node behind CGNAT is a candidate for
+this from initial deployment — it is not something that develops later, so a node that has "always
+been slow" is more likely to be relaying than to have a genuinely slow link. See
+`docs/edge-node-rebuild-runbook.md` for the step that checks this during node setup, before initial
+sync is assumed to be simply slow.
+
+## Tier plans can go silently stale with no built-in alerting
+
+**Symptom:** an edge node keeps converging cleanly (`converged: true`, no errors, regular
+heartbeats) against a plan that is weeks old, while the actual demand on that node has moved on.
+Syncthing itself has no concept of "tier" or "plan age" — it just keeps mirroring whatever the
+master's folder contains under the current `.stignore`, so a node with a stale plan looks perfectly
+healthy on every signal the agent reports. **Confirmed** in production: one node's plan went
+unapplied for 46 days, during which the disk filled from healthy to 99% full and multiple large
+title syncs failed outright with "insufficient space" errors — a genuine operational outage caused
+entirely by nobody re-running `/tier apply`.
+
+**Cause:** `/tier apply` is a manual, admin-confirmed action by design (large rebalances require
+typing a confirmation code before anything prunes) — nothing currently re-publishes a plan on a
+schedule, and nothing flags a published plan's age until someone thinks to run `/tier preview` and
+read it off the `📤 Published … ago` line. The existing agent-liveness signals (`lastHeartbeatAt`,
+`lastAgentReportAt` — surfaced in `/tier-node list` and the dashboard) measure a completely
+different thing: "is the agent still checking in", not "is the plan it's converging on current".
+A node can heartbeat every 15 minutes for 46 days straight while converging against the same stale
+plan the entire time.
+
+**Status:** proposal only, not yet implemented — see the tier-plan-staleness discussion for the
+options under consideration (scheduled re-apply, a staleness alert threshold, and surfacing plan
+age in the routine status views rather than only in `/tier preview`).
