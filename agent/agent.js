@@ -160,6 +160,20 @@ async function botApi(ctx, method, route, body) {
 }
 
 async function syncthingApi(ctx, method, route) {
+  // Wraps BOTH failure points behind the same syncthingUnreachable tag: the TCP connect itself
+  // failing (ECONNREFUSED/ENOTFOUND/reset — a freshly-rebooted node whose Syncthing hasn't bound
+  // its REST port yet), and the request timing out via AbortSignal, which can fire in either of two
+  // places. Most commonly it fires before fetch() itself resolves — e.g. our own forced POST
+  // /rest/db/scan blocks server-side until a large folder's scan completes, so no response arrives
+  // at all before TIER_HTTP_TIMEOUT_MS. But it can also fire AFTER fetch() resolves, while res.text()
+  // is still streaming a large body (e.g. a big /rest/db/ignores list on a heavily-loaded node) — a
+  // narrower case, easy to miss, that used to fall through as an unwrapped hard error. Neither
+  // failure means the plan failed; both are retried whole next cycle by the caller.
+  const asUnreachable = err => {
+    const wrapped = new Error(`Syncthing ${method} ${route} unreachable — ${err.message}`);
+    wrapped.syncthingUnreachable = true;
+    return wrapped;
+  };
   let res;
   try {
     res = await fetch(`${ctx.syncthingUrl}${route}`, {
@@ -168,17 +182,15 @@ async function syncthingApi(ctx, method, route) {
       signal: AbortSignal.timeout(ctx.timeoutMs),
     });
   } catch (err) {
-    // A rejected fetch() here means the TCP connect itself failed (ECONNREFUSED/ENOTFOUND/reset),
-    // not that Syncthing answered with an error — that's what a freshly-rebooted node looks like
-    // before the Syncthing service has finished starting and bound its REST port. Tag it distinctly
-    // from an HTTP-level failure so the caller can retry next cycle instead of hard-failing, the
-    // same treatment the mid-scan case below already gets.
-    const wrapped = new Error(`Syncthing ${method} ${route} unreachable — ${err.message}`);
-    wrapped.syncthingUnreachable = true;
-    throw wrapped;
+    throw asUnreachable(err);
   }
   if (!res.ok) throw new Error(`Syncthing ${method} ${route} → HTTP ${res.status}`);
-  const text = await res.text();
+  let text;
+  try {
+    text = await res.text();
+  } catch (err) {
+    throw asUnreachable(err);
+  }
   try { return JSON.parse(text); } catch (_e) { return text; }
 }
 
