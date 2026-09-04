@@ -46,9 +46,15 @@ function registerTierAgentRoutes(app, deps) {
     const telemetry = sanitizeNodeTelemetry(body.telemetry);
     const telemetryHealth = assessNodeTelemetry(telemetry, { warnC: config.NODE_TEMP_WARN_C, criticalC: config.NODE_TEMP_CRITICAL_C, previousLevel: previousTelemetryLevel });
     const emitTelemetry = () => notifyTelemetryTransition({ node, telemetry, telemetryHealth, previousTelemetryLevel });
+    // Short self-reported hash of the agent's own source (see agent/agent.js's agentVersion()) —
+    // the only way the bot (or an admin reading /tier-node list / the dashboard) can tell what a
+    // node is actually running without SSHing in, since nothing pushes updates to a node after
+    // install. Not a trust boundary: capped and stored as an opaque display string, never
+    // interpreted or compared against anything server-side.
+    const agentVersion = typeof body.agentVersion === 'string' ? body.agentVersion.slice(0, 40) : null;
 
     if (body.heartbeat && !body.driveMissing) {
-      recordTierAgentHeartbeat(node, { errors: [], telemetry, telemetryLevel: telemetryHealth.level });
+      recordTierAgentHeartbeat(node, { errors: [], telemetry, telemetryLevel: telemetryHealth.level, agentVersion });
       emitTelemetry();
       audit('tier_agent_heartbeat', { node, planHash: body.planHash || null });
       return res.json({ ok: true, heartbeat: true });
@@ -61,7 +67,7 @@ function registerTierAgentRoutes(app, deps) {
       const previousMountState = getSetting(mountKey);
       setSetting(mountKey, 'missing');
       const mountErrors = (Array.isArray(body.mountErrors) ? body.mountErrors : []).slice(0, 8).map(e => String(e).slice(0, 300));
-      recordTierAgentHeartbeat(node, { errors: mountErrors.length ? mountErrors : ['media drive missing'], telemetry, telemetryLevel: telemetryHealth.level });
+      recordTierAgentHeartbeat(node, { errors: mountErrors.length ? mountErrors : ['media drive missing'], telemetry, telemetryLevel: telemetryHealth.level, agentVersion });
       emitTelemetry();
       audit('tier_agent_drive_missing', { node, mountErrors: mountErrors.join('; ').slice(0, 500) || undefined });
       if (previousMountState !== 'missing') notifyDriveMissing({ node, mountErrors });
@@ -97,7 +103,7 @@ function registerTierAgentRoutes(app, deps) {
     const recoveredFromErrors = !errorFingerprint && !!priorErrorAlert;
     recordTierErrorAlertState(node, errorAlert);
 
-    recordTierAgentReport(node, { inventoryStored, errors, telemetry, telemetryLevel: telemetryHealth.level });
+    recordTierAgentReport(node, { inventoryStored, errors, telemetry, telemetryLevel: telemetryHealth.level, agentVersion });
     emitTelemetry();
     const publishedHash = getTierPlan(node)?.published?.planHash || null;
     const converged = body.converged === true && errors.length === 0 && !!body.planHash && body.planHash === publishedHash;

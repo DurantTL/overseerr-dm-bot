@@ -256,19 +256,28 @@ function tierInstallCommand({ botUrl, node, token, folders, folderRoot, syncthin
   ].join('\n');
 }
 
-function tierNodeStatus(plan, report, now = Date.now()) {
+function tierNodeStatus(plan, report, now = Date.now(), staleDays = 14) {
   const checkIn = plan?.lastHeartbeatAt || (report ? sqliteUtcMs(report.at) : null);
   const publishedHash = plan?.published?.planHash || null;
   const convergedHash = plan?.converged?.planHash || null;
   const matches = !!publishedHash && publishedHash === convergedHash;
   const errors = plan?.lastErrors?.length ? plan.lastErrors.join('; ') : report?.errors;
+  // Plan AGE, distinct from checkIn (agent liveness) above: a node can heartbeat every 15 minutes
+  // for weeks while converging cleanly against a plan nobody has re-applied since — Syncthing has
+  // no notion of "tier", so nothing else here surfaces that drift. "stale" below already means
+  // "hasn't checked in" (agent liveness), so this uses its own wording to avoid conflating the two.
+  const publishedAt = plan?.published?.publishedAt || null;
+  const planAgeMs = publishedAt ? Math.max(0, now - publishedAt) : null;
+  const planIsStale = planAgeMs != null && planAgeMs > staleDays * 86400000;
   const details = [
     publishedHash ? `last plan ${publishedHash}` : 'no plan published',
+    publishedAt ? `applied ${fmtDuration(planAgeMs)} ago${planIsStale ? ` ⚠️ stale (>${staleDays}d, no re-apply since)` : ''}` : null,
     checkIn ? `last check-in ${fmtDuration(Math.max(0, now - checkIn))} ago` : 'never checked in',
     report?.bytesFreed ? `freed ${fmtSpace(report.bytesFreed)} last run` : 'freed 0 B last run',
     publishedHash ? `published manifest ${matches ? 'matches' : 'does not match'} last confirmed plan` : null,
     errors ? `errors: ${errors}` : null,
     plan?.errorAlert?.stoodDown ? `alerts stood down after ${plan.errorAlert.attemptCount} identical error report(s)` : null,
+    plan?.lastAgentVersion ? `agent ${plan.lastAgentVersion}` : 'agent version unknown (pre-upgrade)',
     plan?.lastTelemetry ? [
       plan.lastTelemetry.temperatureC != null ? `${Number(plan.lastTelemetry.temperatureC).toFixed(1)}°C CPU` : 'temperature unavailable',
       plan.lastTelemetry.load1 != null ? `load ${Number(plan.lastTelemetry.load1).toFixed(2)}` : null,
@@ -279,7 +288,7 @@ function tierNodeStatus(plan, report, now = Date.now()) {
   ].filter(Boolean).join(' · ');
   if (!checkIn) return { state: 'warn', status: 'never reported', details, setup: true };
   if (matches && now - checkIn > 45 * 60 * 1000) return { state: 'down', status: 'stale', details };
-  if (matches) return { state: errors ? 'warn' : 'ok', status: errors ? 'converged with errors' : 'converged', details };
+  if (matches) return { state: errors || planIsStale ? 'warn' : 'ok', status: errors ? 'converged with errors' : planIsStale ? 'converged, plan stale' : 'converged', details };
   return { state: 'warn', status: 'reported, not converged', details };
 }
 

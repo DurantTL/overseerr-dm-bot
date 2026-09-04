@@ -7965,6 +7965,7 @@ async function handleTierNodeCommand(interaction) {
   if (sub === 'list') {
     const nodes = listTierNodes();
     if (!nodes.length) return interaction.reply({ content: 'No tier nodes yet — `/tier-node add name:<node>` creates one.', ephemeral: true });
+    const now = Date.now();
     const lines = nodes.map(n => {
       const members = n.access === 'restricted' ? ` · ${listTierNodeMembers(n.name).length} member(s)` : '';
       const plan = getTierPlan(n.name);
@@ -7975,12 +7976,24 @@ async function handleTierNodeCommand(interaction) {
       const planNote = plan?.converged
         ? ` · plan \`${plan.converged.planHash}\`${plan.published && plan.published.planHash !== plan.converged.planHash ? ` (published \`${plan.published.planHash}\` pending)` : ''}`
         : plan?.published ? ` · published \`${plan.published.planHash}\` (pending)` : ' · no plan applied';
+      // Plan AGE, distinct from agent liveness below: a node can heartbeat every 15 minutes for
+      // weeks while converging cleanly against a plan nobody has re-applied since — Syncthing has
+      // no notion of "tier", so nothing else here would ever surface that drift. Flag it once it
+      // passes TIER_PLAN_STALE_DAYS so this is the routine view that catches it, not just
+      // `/tier preview`.
+      const publishedAt = plan?.published?.publishedAt;
+      const staleMs = CONFIG.TIER_PLAN_STALE_DAYS * 86400000;
+      const ageNote = publishedAt ? ` · applied ${fmtAgo(publishedAt)}${now - publishedAt > staleMs ? ' ⚠️ stale' : ''}` : '';
       // Agent liveness (heartbeat, bumped on every check-in incl. no-op runs) so a healthy idle
       // node reads differently from a stopped/unreachable one.
       const beatAt = plan?.lastHeartbeatAt || plan?.lastAgentReportAt || null;
       const beatNote = beatAt ? ` · agent ${fmtAgo(beatAt)}${plan?.lastErrors?.length ? ' ⚠️' : ''}` : ' · agent never reported';
+      // Self-reported agent version (short hash of the deployed agent.js) — the only way to tell
+      // what code a node is actually running without SSHing in, since nothing pushes updates to a
+      // node after install.
+      const versionNote = plan?.lastAgentVersion ? ` · agent \`${plan.lastAgentVersion}\`` : '';
       const hardwareNote = plan?.lastTelemetry ? ` · ${telemetrySummary(plan.lastTelemetry, fmtSpace)}` : ' · hardware telemetry unavailable';
-      return `${n.enabled ? '🟢' : '⚫'} **${n.name}** — ${fmtSpace(n.usable_bytes || 0)}, headroom ${n.headroom_pct}%${n.full ? ', **full master**' : ''}${n.sticky ? ', sticky' : ''} · ${n.access}/${n.demand_source}/${n.transport}${folderNote}${members}${planNote}${beatNote}${hardwareNote}`;
+      return `${n.enabled ? '🟢' : '⚫'} **${n.name}** — ${fmtSpace(n.usable_bytes || 0)}, headroom ${n.headroom_pct}%${n.full ? ', **full master**' : ''}${n.sticky ? ', sticky' : ''} · ${n.access}/${n.demand_source}/${n.transport}${folderNote}${members}${planNote}${ageNote}${beatNote}${versionNote}${hardwareNote}`;
     });
     return interaction.reply({ embeds: [brandedEmbed(COLORS.INFO).setTitle('📦 Tier Nodes').setDescription(lines.join('\n').slice(0, 4000))], ephemeral: true });
   }
@@ -9523,7 +9536,7 @@ function startExpressServer() {
       const tierItems = tierNodes.map(n => {
         const plan = getTierPlan(n.name);
         const rep = lastReportByNode[n.name];
-        const status = tierNodeStatus(plan, rep, now);
+        const status = tierNodeStatus(plan, rep, now, CONFIG.TIER_PLAN_STALE_DAYS);
         return {
           state: !n.enabled ? 'skip' : status.state,
           title: `${n.name}${n.full ? ' · full master' : ''}${n.sticky ? ' · sticky' : ''}`,

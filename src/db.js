@@ -1303,7 +1303,7 @@ function listRequestsByRequesters(discordIds, sinceDays) {
 //               drive-missing, or a lightweight no-op heartbeat) — it is the liveness signal;
 //               lastAgentReportAt tracks only full (convergence) reports.
 function emptyTierPlan() {
-  return { published: null, converged: null, lastAgentReportAt: null, lastInventoryAt: null, lastHeartbeatAt: null, lastErrors: [], lastTelemetry: null, lastTelemetryLevel: 'unknown', errorAlert: null };
+  return { published: null, converged: null, lastAgentReportAt: null, lastInventoryAt: null, lastHeartbeatAt: null, lastErrors: [], lastTelemetry: null, lastTelemetryLevel: 'unknown', errorAlert: null, lastAgentVersion: null };
 }
 
 // Read + normalize. Legacy records are migrated on read: an old "applied" plan was assumed-converged
@@ -1322,6 +1322,7 @@ function normalizeTierPlan(raw) {
       lastTelemetry: raw.lastTelemetry || null,
       lastTelemetryLevel: raw.lastTelemetryLevel || 'unknown',
       errorAlert: raw.errorAlert || null,
+      lastAgentVersion: raw.lastAgentVersion || null,
     };
   }
   if (!raw.planHash) return null;
@@ -1336,6 +1337,7 @@ function normalizeTierPlan(raw) {
     lastTelemetry: null,
     lastTelemetryLevel: 'unknown',
     errorAlert: null,
+    lastAgentVersion: null,
   };
 }
 
@@ -1364,7 +1366,7 @@ function markTierPlanConverged(node, { planHash, keepMediaIds }) {
 // §1.1 Record that the agent reported at all (any run — converged, still-working, or erroring), so
 // "no report in N hours" is distinguishable from "healthy idle". inventoryStored bumps
 // lastInventoryAt; errors are kept verbatim (capped) for the status surfaces.
-function recordTierAgentReport(node, { inventoryStored = false, errors = [], telemetry = null, telemetryLevel = 'unknown' } = {}) {
+function recordTierAgentReport(node, { inventoryStored = false, errors = [], telemetry = null, telemetryLevel = 'unknown', agentVersion = null } = {}) {
   const rec = getTierPlan(node) || emptyTierPlan();
   const now = Date.now();
   rec.lastAgentReportAt = now;
@@ -1375,6 +1377,7 @@ function recordTierAgentReport(node, { inventoryStored = false, errors = [], tel
     rec.lastTelemetry = telemetry;
     rec.lastTelemetryLevel = telemetryLevel;
   }
+  if (agentVersion) rec.lastAgentVersion = String(agentVersion).slice(0, 40);
   writeTierPlan(node, rec);
   return rec;
 }
@@ -1385,7 +1388,7 @@ function recordTierAgentReport(node, { inventoryStored = false, errors = [], tel
 // drive-missing run is proof of life but NOT healthy — its mount errors must show as warn/⚠️, not
 // a clean "recently checked in"). Pass `[]` on a clean no-op to clear any stale errors; omit it to
 // leave the last recorded errors untouched. Inventory/convergence are never touched here.
-function recordTierAgentHeartbeat(node, { errors, telemetry = null, telemetryLevel = 'unknown' } = {}) {
+function recordTierAgentHeartbeat(node, { errors, telemetry = null, telemetryLevel = 'unknown', agentVersion = null } = {}) {
   const rec = getTierPlan(node) || emptyTierPlan();
   rec.lastHeartbeatAt = Date.now();
   if (errors !== undefined) rec.lastErrors = Array.isArray(errors) ? errors.slice(0, 10) : [];
@@ -1393,6 +1396,7 @@ function recordTierAgentHeartbeat(node, { errors, telemetry = null, telemetryLev
     rec.lastTelemetry = telemetry;
     rec.lastTelemetryLevel = telemetryLevel;
   }
+  if (agentVersion) rec.lastAgentVersion = String(agentVersion).slice(0, 40);
   writeTierPlan(node, rec);
   return rec;
 }

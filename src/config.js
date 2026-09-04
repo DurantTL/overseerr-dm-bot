@@ -437,6 +437,10 @@ const CONFIG = (() => {
   TIER_FRESH_DAYS: Number.parseInt(process.env.TIER_FRESH_DAYS || '30', 10),
   TIER_REQUEST_GRACE_DAYS: Number.parseInt(process.env.TIER_REQUEST_GRACE_DAYS || '45', 10),
   TIER_HISTORY_DAYS: Number.parseInt(process.env.TIER_HISTORY_DAYS || '90', 10),
+  // A published plan this old, with no newer apply since, is flagged (⚠️) on /tier-node list and
+  // the dashboard — a node converges cleanly against a stale plan forever (Syncthing has no notion
+  // of "tier"), so nothing else surfaces this until it fails outright (e.g. a full disk).
+  TIER_PLAN_STALE_DAYS: Number.parseInt(process.env.TIER_PLAN_STALE_DAYS || '14', 10),
   // §1.4 anti-churn: a candidate must clear a meaningful net gain before it displaces kept titles.
   TIER_CHURN_MIN_ABSOLUTE: Number.parseFloat(process.env.TIER_CHURN_MIN_ABSOLUTE || '0.05'),
   TIER_CHURN_MIN_RELATIVE: Number.parseFloat(process.env.TIER_CHURN_MIN_RELATIVE || '0.2'),
