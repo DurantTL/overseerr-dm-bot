@@ -129,3 +129,26 @@ test('tier-agent HTTP report backs off repeated identical errors and posts one r
     assert.strictEqual(calls.agentReports[3].errors.length, 0);
   } finally { await close(server); }
 });
+
+test('tier-agent HTTP report passes the self-reported agent version through on every path, capped', async () => {
+  const { app, calls } = setup();
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { heartbeat: true, planHash: 'current', agentVersion: '5b09b3f7eb8c' } });
+    assert.strictEqual(calls.heartbeats[0].value.agentVersion, '5b09b3f7eb8c', 'heartbeat carries the version');
+
+    await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { driveMissing: true, mountErrors: ['gone'], agentVersion: '5b09b3f7eb8c' } });
+    assert.strictEqual(calls.heartbeats[1].value.agentVersion, '5b09b3f7eb8c', 'a drive-missing report (also a heartbeat) carries the version');
+
+    await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { planHash: 'current', converged: true, agentVersion: '5b09b3f7eb8c' } });
+    assert.strictEqual(calls.reports[0].value.agentVersion, '5b09b3f7eb8c', 'a full report carries the version');
+
+    const longVersion = 'x'.repeat(200);
+    await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { heartbeat: true, planHash: 'current', agentVersion: longVersion } });
+    assert.strictEqual(calls.heartbeats[2].value.agentVersion.length, 40, 'an oversized version string is capped, not stored raw');
+
+    await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { heartbeat: true, planHash: 'current', agentVersion: { not: 'a string' } } });
+    assert.strictEqual(calls.heartbeats[3].value.agentVersion, null, 'a non-string version is dropped rather than stored as-is');
+  } finally { await close(server); }
+});

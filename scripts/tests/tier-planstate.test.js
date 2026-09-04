@@ -37,4 +37,13 @@ test('tier-planstate: normalizeTierPlan migrates legacy shapes and defaults repo
   const beatOnly = norm({ published: null, converged: null, lastHeartbeatAt: 4242 });
   assert.strictEqual(beatOnly.lastHeartbeatAt, 4242, 'heartbeat-only record preserves lastHeartbeatAt');
   assert.strictEqual(beatOnly.published, null, 'heartbeat-only record has no published plan');
+
+  // Self-reported agent version (short hash of the deployed agent.js) round-trips on a new-shape
+  // record, and defaults to null on both a legacy record (the field never existed) and a record
+  // that predates this field being added at all — a node running old bot code should read as
+  // "unknown", not crash or silently keep some other node's stale value.
+  const withVersion = norm({ published: null, converged: null, lastAgentVersion: '5b09b3f7eb8c' });
+  assert.strictEqual(withVersion.lastAgentVersion, '5b09b3f7eb8c', 'new-shape record preserves lastAgentVersion');
+  assert.strictEqual(legacy.lastAgentVersion, null, 'legacy shape defaults lastAgentVersion to null');
+  assert.strictEqual(beatOnly.lastAgentVersion, null, 'a record predating this field defaults to null');
 });

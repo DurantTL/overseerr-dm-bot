@@ -166,6 +166,36 @@ test('dashboard-render: tier node status distinguishes lifecycle states', () => 
   assert.strictEqual(tierNodeStatus({ lastHeartbeatAt: now, published: { planHash: 'same' }, converged: { planHash: 'same' } }, null, now).status, 'converged');
 });
 
+test('dashboard-render: a converged node stops reading healthy once its plan is old — a node can heartbeat forever against a plan nobody re-applied', () => {
+  const now = Date.now();
+  const base = { lastHeartbeatAt: now, published: { planHash: 'same', publishedAt: now - 46 * 86400000 }, converged: { planHash: 'same' } };
+
+  // Default threshold (14 days): a 46-day-old plan is flagged, even though the agent is checking
+  // in cleanly and every convergence signal says "healthy" — this is exactly the case that let a
+  // node's disk fill silently for 46 days in production before anything noticed.
+  const stale = tierNodeStatus(base, null, now, 14);
+  assert.strictEqual(stale.state, 'warn', 'a stale plan downgrades an otherwise-ok node to warn');
+  assert.strictEqual(stale.status, 'converged, plan stale');
+  assert.match(stale.details, /applied .* ago ⚠️ stale \(>14d, no re-apply since\)/);
+
+  // A fresh plan under the same threshold reads as fully healthy.
+  const fresh = tierNodeStatus({ ...base, published: { planHash: 'same', publishedAt: now - 2 * 86400000 } }, null, now, 14);
+  assert.strictEqual(fresh.state, 'ok');
+  assert.strictEqual(fresh.status, 'converged');
+  assert.doesNotMatch(fresh.details, /stale/);
+
+  // Threshold is configurable — the same 46-day-old plan reads as fine under a longer threshold.
+  const relaxed = tierNodeStatus(base, null, now, 60);
+  assert.strictEqual(relaxed.state, 'ok');
+  assert.strictEqual(relaxed.status, 'converged');
+
+  // The self-reported agent version surfaces in the details line when present, and says so plainly
+  // when it's not (a node still running pre-upgrade code that never sent one).
+  const withVersion = tierNodeStatus({ ...base, lastAgentVersion: '5b09b3f7eb8c' }, null, now, 14);
+  assert.match(withVersion.details, /agent 5b09b3f7eb8c/);
+  assert.match(stale.details, /agent version unknown \(pre-upgrade\)/);
+});
+
 test('dashboard-render: tier setup contains no agent token', () => {
   const html = renderTierNodeSetup([{ name: 'edge-one', folders: [
     { folderId: 'movies', folderRoot: '/mnt/media/Movies' },

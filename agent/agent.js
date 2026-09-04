@@ -27,6 +27,24 @@ const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
 
+// A short hash of THIS FILE'S OWN bytes, reported alongside every heartbeat/report so the bot (and
+// an admin reading /tier-node list or the dashboard) can tell what a node is actually running
+// without SSHing in — nothing else in this system knows: /agent/source/:node only serves the bot's
+// OWN checkout, not what's installed on any given node, and nothing pushes updates to a node after
+// install. Deployment lag (a node still running a version that predates a fix merged since its last
+// install) is otherwise invisible until it fails the same way again. Computed once at load, not
+// per-call — the file doesn't change while the process is running.
+let agentVersionCache = null;
+function agentVersion({ fsImpl = fs } = {}) {
+  if (agentVersionCache) return agentVersionCache;
+  try {
+    agentVersionCache = crypto.createHash('sha256').update(fsImpl.readFileSync(__filename)).digest('hex').slice(0, 12);
+  } catch (_e) {
+    agentVersionCache = 'unknown'; // e.g. __filename unreadable in some packaging — never block a run over this
+  }
+  return agentVersionCache;
+}
+
 function collectSystemTelemetry(ctx, { fsImpl = fs, osImpl = os } = {}) {
   const sensors = [];
   const readSensors = (root, entries, prefix) => {
@@ -140,6 +158,7 @@ function buildCtx(env = process.env) {
     reportInventory: (env.TIER_REPORT_INVENTORY ?? '1') !== '0',
     dryRun: env.TIER_DRY_RUN === '1',
     timeoutMs: Number(env.TIER_HTTP_TIMEOUT_MS || 30000),
+    agentVersion: agentVersion(),
     log: (...a) => console.log(new Date().toISOString(), ...a),
   };
 }
@@ -489,6 +508,7 @@ async function runOnce(ctx) {
         dropped: [],
         errors: guard.reasons,
         telemetry,
+        agentVersion: ctx.agentVersion,
       });
     } catch (err) { ctx.log(`could not report drive-missing to the bot: ${err.message}`); }
     if (!ctx.dryRun && !state.driveMissing) { state.driveMissing = true; saveState(ctx, state); }
@@ -506,7 +526,7 @@ async function runOnce(ctx) {
     if (err.status !== 404) throw err;
     ctx.log('no manifest published yet — waiting for /tier apply');
     try {
-      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, awaitingManifest: true, telemetry });
+      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, awaitingManifest: true, telemetry, agentVersion: ctx.agentVersion });
       return { skipped: true, heartbeat: true, awaitingManifest: true };
     } catch (reportErr) {
       ctx.log(`waiting-for-manifest heartbeat failed: ${reportErr.message}`);
@@ -533,7 +553,7 @@ async function runOnce(ctx) {
     // timer) see a clean exit, or an unreachable bot stays masked behind a stale UI until someone
     // notices. Signal failure with a non-zero exit code, matching the failed-report path.
     try {
-      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, planHash: manifest.planHash, telemetry });
+      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, planHash: manifest.planHash, telemetry, agentVersion: ctx.agentVersion });
       return { skipped: true, heartbeat: true, planHash: manifest.planHash };
     } catch (err) {
       ctx.log(`heartbeat report failed: ${err.message}`);
@@ -606,6 +626,7 @@ async function runOnce(ctx) {
     errors: pruneResult.errors,
     skipped: pruneResult.skipped,
     telemetry,
+    agentVersion: ctx.agentVersion,
   };
   // Reconcile the snapshot against what actually got pruned THIS run instead of reporting the
   // pre-prune walk as-is: the bot's converged report and its file inventory used to arrive out
@@ -645,4 +666,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, collectSystemTelemetry, escapeStignore, loadState, saveState, writeStignore };
+module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, collectSystemTelemetry, escapeStignore, loadState, saveState, writeStignore, agentVersion };
