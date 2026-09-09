@@ -28,6 +28,8 @@ const path = require('path');
 const crypto = require('crypto');
 
 const { log } = require('./src/log');
+const { createMediaPanelFeature, mediaPanelCommand } = require('./src/media-panel');
+const { requestModal } = require('./src/setup-request-ui');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
@@ -4192,6 +4194,7 @@ function homeServerFor(discordId) {
 }
 
 const slashCommands = [
+  mediaPanelCommand,
   new SlashCommandBuilder().setName('download').setDescription('Get a secure download link').addStringOption(o => o.setName('title').setDescription('Movie or show title').setRequired(true)).addIntegerOption(o => o.setName('season').setDescription('Season number').setMinValue(0).setMaxValue(99)).addIntegerOption(o => o.setName('episode').setDescription('Episode number').setMinValue(1).setMaxValue(999)).addBooleanOption(o => o.setName('one_time').setDescription('One-time download link')),
   new SlashCommandBuilder().setName('request').setDescription('Request a movie or show (searches Seerr)').addStringOption(o => o.setName('title').setDescription('Start typing to search — pick from the list').setRequired(true).setAutocomplete(true)).addBooleanOption(o => o.setName('is4k').setDescription('Request the 4K version')),
   new SlashCommandBuilder().setName('link').setDescription('Link a user to Plex email (invites + sets up Seerr)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('email').setDescription('Plex email — start typing to search linked/Plex users').setRequired(true).setAutocomplete(true)),
@@ -4706,10 +4709,25 @@ client.on('messageCreate', async message => {
     : '❌ I saved your email, but I could not notify the admins. Please tell an admin to check `ADMIN_CHANNEL_ID`; the Request Plex Access button can retry the notice.');
 });
 
+const mediaPanelFeature = createMediaPanelFeature({
+  config: CONFIG,
+  getUserByDiscordId,
+  getSetting,
+  setSetting,
+  audit,
+  requestModal,
+  log,
+  forwardSlashCommand: handleSlashCommand,
+});
+
 client.on('interactionCreate', async interaction => {
   try {
     if (interaction.isAutocomplete()) return handleAutocomplete(interaction);
-    if (interaction.isChatInputCommand()) await handleSlashCommand(interaction);
+    if (interaction.isChatInputCommand()) {
+      await handleSlashCommand(interaction);
+      return;
+    }
+    if (await mediaPanelFeature.handleInteraction(interaction)) return;
     if (interaction.isButton()) {
       if (buttonActionsInFlight.has(interaction.customId)) {
         return interaction.reply({ content: '⏳ This action is already being processed.', ephemeral: true });
@@ -4970,6 +4988,7 @@ async function handleAutocomplete(interaction) {
 
 async function handleSlashCommand(interaction) {
   const n = interaction.commandName;
+  if (n === 'media-panel') return handleMediaPanelCommand(interaction);
   if (n === 'download') return handleDownloadCommand(interaction);
   if (n === 'request') return handleRequestCommand(interaction);
   if (n === 'link') return handleLinkCommand(interaction);
@@ -5018,6 +5037,10 @@ async function handleSlashCommand(interaction) {
   if (n === 'tier-node') return handleTierNodeCommand(interaction);
   if (n === 'tier-member') return handleTierMemberCommand(interaction);
   if (n === 'revoke-downloads') return handleRevokeDownloadsCommand(interaction);
+}
+
+function handleMediaPanelCommand(interaction) {
+  return mediaPanelFeature.handleInteraction(interaction);
 }
 
 async function requireAdmin(interaction) {

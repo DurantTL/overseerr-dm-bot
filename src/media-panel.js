@@ -8,23 +8,20 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  Client,
   EmbedBuilder,
   ModalBuilder,
   PermissionFlagsBits,
-  REST,
   SlashCommandBuilder,
   TextInputBuilder,
   TextInputStyle,
 } = require('discord.js');
 
-const { CONFIG } = require('./config');
-const { getUserByDiscordId, getSetting, setSetting, audit } = require('./db');
-const { requestModal } = require('./setup-request-ui');
-const { log } = require('./log');
-
-const INSTALL_MARK = Symbol.for('durant.mediaPanelInstalled');
 const PANEL_KEY_PREFIX = 'discord_media_panel:';
+
+const mediaPanelCommand = new SlashCommandBuilder()
+  .setName('media-panel')
+  .setDescription('Post or refresh the pinned Media Center control panel in this channel')
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
 function brandedEmbed(color = 0xe5a00d) {
   return new EmbedBuilder().setColor(color).setFooter({ text: 'Durant Media Server' }).setTimestamp();
@@ -57,17 +54,17 @@ function panelPayload() {
   return { embeds: [embed], components: [row1, row2] };
 }
 
-function isAdmin(interaction) {
+function isAdmin(interaction, config) {
   return interaction.memberPermissions?.has?.(PermissionFlagsBits.Administrator)
-    || String(interaction.user?.id || '') === String(CONFIG.ADMIN_USER_ID || '');
+    || String(interaction.user?.id || '') === String(config.ADMIN_USER_ID || '');
 }
 
 function panelSettingKey(guildId, channelId) {
   return `${PANEL_KEY_PREFIX}${guildId}:${channelId}`;
 }
 
-async function createOrRefreshPanel(interaction) {
-  if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Administrator permission is required.', ephemeral: true });
+async function createOrRefreshPanel(interaction, { config, getSetting, setSetting, audit, log }) {
+  if (!isAdmin(interaction, config)) return interaction.reply({ content: '❌ Administrator permission is required.', ephemeral: true });
   if (!interaction.guildId || !interaction.channel?.isTextBased?.()) {
     return interaction.reply({ content: '❌ Run `/media-panel` in the server text channel where you want the pinned panel.', ephemeral: true });
   }
@@ -157,7 +154,7 @@ function supportModal(kind) {
   return modal;
 }
 
-async function notifyAdmins(interaction, kind) {
+async function notifyAdmins(interaction, kind, { config, audit, log }) {
   await interaction.deferReply({ ephemeral: true });
   const title = ['remove', 'report'].includes(kind) ? String(interaction.fields.getTextInputValue('title') || '').trim() : '';
   const details = String(interaction.fields.getTextInputValue('details') || '').trim();
@@ -170,7 +167,7 @@ async function notifyAdmins(interaction, kind) {
 
   let sent = false;
   try {
-    const channel = CONFIG.ADMIN_CHANNEL_ID ? await interaction.client.channels.fetch(CONFIG.ADMIN_CHANNEL_ID) : null;
+    const channel = config.ADMIN_CHANNEL_ID ? await interaction.client.channels.fetch(config.ADMIN_CHANNEL_ID) : null;
     if (channel?.isTextBased?.()) {
       const embed = brandedEmbed(color)
         .setTitle(heading)
@@ -208,39 +205,15 @@ function owns(interaction) {
   return false;
 }
 
-function installMediaPanel() {
-  if (globalThis[INSTALL_MARK]) return;
-  globalThis[INSTALL_MARK] = true;
-
-  // Add the admin-only /media-panel installer without changing index.js's command list.
-  const originalPut = REST.prototype.put;
-  if (!originalPut.__durantMediaPanelWrapped) {
-    async function wrappedPut(route, options = {}) {
-      const isBotCommandRegistration = Array.isArray(options?.body)
-        && options.body.some(c => c?.name === 'request' || c?.name === 'setup');
-      if (isBotCommandRegistration && !options.body.some(c => c?.name === 'media-panel')) {
-        const command = new SlashCommandBuilder()
-          .setName('media-panel')
-          .setDescription('Post or refresh the pinned Media Center control panel in this channel')
-          .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-          .toJSON();
-        options = { ...options, body: [...options.body, command] };
-      }
-      return originalPut.call(this, route, options);
-    }
-    wrappedPut.__durantMediaPanelWrapped = true;
-    REST.prototype.put = wrappedPut;
+function createMediaPanelFeature({ config, getUserByDiscordId, getSetting, setSetting, audit, requestModal, log, forwardSlashCommand }) {
+  if (!config || !getUserByDiscordId || !getSetting || !setSetting || !audit || !requestModal || !log || !forwardSlashCommand) {
+    throw new TypeError('Media panel dependencies are required');
   }
 
-  const downstreamEmit = Client.prototype.emit;
-  if (downstreamEmit.__durantMediaPanelWrapped) return;
-
-  function wrappedEmit(event, ...args) {
-    const interaction = args[0];
-    if (event !== 'interactionCreate' || !owns(interaction)) return downstreamEmit.call(this, event, ...args);
-
+  async function handleInteraction(interaction) {
+    if (!owns(interaction)) return false;
     if (interaction.isChatInputCommand?.() && interaction.commandName === 'media-panel') {
-      Promise.resolve(createOrRefreshPanel(interaction)).catch(err => log.error(`Media panel command failed: ${err.stack || err.message}`));
+      await createOrRefreshPanel(interaction, { config, getSetting, setSetting, audit, log });
       return true;
     }
 
@@ -249,24 +222,30 @@ function installMediaPanel() {
       if (id === 'media:request') {
         const linked = getUserByDiscordId(interaction.user.id);
         if (!linked) {
-          Promise.resolve(interaction.reply({ content: '❌ Your Discord account is not linked yet. Use **Setup / Troubleshooting** or ask an admin to finish your access setup.', ephemeral: true })).catch(() => {});
+          await interaction.reply({ content: '❌ Your Discord account is not linked yet. Use **Setup / Troubleshooting** or ask an admin to finish your access setup.', ephemeral: true });
         } else {
-          Promise.resolve(interaction.showModal(requestModal())).catch(err => log.warn(`Media panel request modal failed: ${err.message}`));
+          await interaction.showModal(requestModal());
         }
         return true;
       }
-      if (id === 'media:myrequests') return downstreamEmit.call(this, 'interactionCreate', simpleCommandProxy(interaction, 'myrequests'));
-      if (id === 'media:queue') return downstreamEmit.call(this, 'interactionCreate', simpleCommandProxy(interaction, 'queue'));
+      if (id === 'media:myrequests') {
+        await forwardSlashCommand(simpleCommandProxy(interaction, 'myrequests'));
+        return true;
+      }
+      if (id === 'media:queue') {
+        await forwardSlashCommand(simpleCommandProxy(interaction, 'queue'));
+        return true;
+      }
       if (id === 'media:remove') {
-        Promise.resolve(interaction.showModal(supportModal('remove'))).catch(err => log.warn(`Remove modal failed: ${err.message}`));
+        await interaction.showModal(supportModal('remove'));
         return true;
       }
       if (id === 'media:report') {
-        Promise.resolve(interaction.showModal(supportModal('report'))).catch(err => log.warn(`Report modal failed: ${err.message}`));
+        await interaction.showModal(supportModal('report'));
         return true;
       }
       if (id === 'media:support') {
-        Promise.resolve(interaction.showModal(supportModal('support'))).catch(err => log.warn(`Support modal failed: ${err.message}`));
+        await interaction.showModal(supportModal('support'));
         return true;
       }
     }
@@ -274,15 +253,21 @@ function installMediaPanel() {
     if (interaction.isModalSubmit?.()) {
       const match = String(interaction.customId || '').match(/^media:(remove|report|support)_modal$/);
       if (match) {
-        Promise.resolve(notifyAdmins(interaction, match[1])).catch(err => log.error(`Media panel form failed: ${err.stack || err.message}`));
+        await notifyAdmins(interaction, match[1], { config, audit, log });
         return true;
       }
     }
-    return downstreamEmit.call(this, event, ...args);
+    return false;
   }
 
-  wrappedEmit.__durantMediaPanelWrapped = true;
-  Client.prototype.emit = wrappedEmit;
+  return { command: mediaPanelCommand, handleInteraction, owns };
 }
 
-module.exports = { installMediaPanel, panelPayload, panelSettingKey, supportModal, simpleCommandProxy };
+module.exports = {
+  createMediaPanelFeature,
+  mediaPanelCommand,
+  panelPayload,
+  panelSettingKey,
+  supportModal,
+  simpleCommandProxy,
+};
