@@ -81,7 +81,9 @@ Discord events + slash commands are handled in the bot process, which also runs 
 
 ### Code layout
 - `index.js` — composition root: the Discord client, notification routing, slash/button handlers, webhooks, dashboard/express routes, and the periodic sweeps.
-- `src/` — service modules with **no Discord dependencies** (they never import discord.js or reach back into index.js): `config.js` (env + validation + warnings), `log.js`, `util.js` (pure helpers), `db.js` (SQLite schema + every row helper), `seerr.js`, `plex.js`, `arr.js` (Radarr/Sonarr), `tautulli.js`, `premiumize.js`.
+- `src/` — dependency-injected services and feature modules. Most service modules do not import
+  Discord; Discord-facing modules such as `media-panel.js` own their builders and accept runtime
+  integrations explicitly.
 - `src/routes/` — named Express handler factories with explicit dependencies; `index.js` supplies those dependencies and registers middleware and route paths.
 - `scripts/tests/` — the `npm test` suite; service modules are imported directly, index.js-resident functions are exercised via source extraction.
 
@@ -448,10 +450,9 @@ This project is available under the [`MIT License`](LICENSE), copyright 2026 Dur
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for how changes are proposed and accepted, and report suspected
 vulnerabilities privately through [`SECURITY.md`](SECURITY.md).
 
-Before changing the repository, read [`AGENTS.md`](AGENTS.md), then use
-[`CLAUDE.md`](CLAUDE.md) as the shared source of truth for architecture, commands, validation, and
-security invariants. The live GitHub issue and its numbered packet define the scope for
-issue-driven work.
+Before changing the repository, read [`CONTRIBUTING.md`](CONTRIBUTING.md) and the
+[architecture map](docs/obsidian/Architecture.md). The live GitHub issue and its numbered packet
+define the scope for issue-driven work.
 
 ## Testing Webhooks / Helpers
 - Seerr test webhook: send sample payload to `/webhook/overseerr`.

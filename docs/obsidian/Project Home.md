@@ -5,15 +5,15 @@ aliases:
 tags:
   - project/overseerr-dm-bot
   - map-of-content
-reviewed: 2026-08-21
-source_commit: 937f379
-github_snapshot: 16 open issues
+reviewed: 2026-09-09
+source_commit: 7d2e045
+github_snapshot: 20 open issues
 ---
 
 # Durant Media Server Bot project home
 
-This vault maps `DurantTL/overseerr-dm-bot` at commit `937f379` and the 16 open GitHub issues
-reviewed on 2026-08-21. GitHub remains authoritative after that dated snapshot.
+This vault maps `DurantTL/overseerr-dm-bot` at commit `7d2e045` and the 20 open GitHub issues
+reviewed on 2026-09-09. GitHub remains authoritative after that dated snapshot.
 
 The product is a Discord-first concierge for private Plex communities. It links Discord members
 to Plex and Seerr, gates requests, reports request progress, and adds an operator layer for
@@ -42,8 +42,6 @@ has since shipped.
 - [HTTP handler factories](../../src/routes)
 - [Edge agent](../../agent/README.md)
 - [Tests](../../scripts/tests)
-- [Contributor workflow](../../AGENTS.md)
-- [Shared engineering guide](../../CLAUDE.md)
 - [Contribution policy](../../CONTRIBUTING.md)
 - [Security reporting](../../SECURITY.md)
 - [MIT License](../../LICENSE)
@@ -58,10 +56,10 @@ The application targets Node.js 24 and currently combines three responsibilities
 3. Periodic automation for request reconciliation, search/recovery, transfers, retention,
    backups, staging, and tiering.
 
-At this working-tree audit, `index.js` is 9,417 lines. The test suite contains 53 `*.test.js`
-files and `npm test` reports 336 passing tests. SQLite is the durable coordination layer; external
-services remain authoritative for requests, libraries, queues, indexers, playback, and file
-movement.
+`index.js` remains the large composition root while route and Discord feature extraction proceeds
+under #178 and #257. The test suite lives in `scripts/tests/` and is counted by the test runner
+rather than duplicated in documentation. SQLite is the durable coordination layer; external
+services remain authoritative for requests, libraries, queues, indexers, playback, and file movement.
 
 ## Graph conventions
 

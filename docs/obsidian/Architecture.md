@@ -29,7 +29,7 @@ HTTP-integration boundary.
 | --- | --- | --- |
 | Discord surface | Slash commands, buttons, modals, DMs, onboarding, approvals | [index.js](../../index.js) |
 | HTTP composition | Middleware, route registration, dashboard and agent routes | [index.js](../../index.js) |
-| Extracted HTTP handlers | Dependency-injected webhook behavior | [src/routes/webhooks.js](../../src/routes/webhooks.js) |
+| Extracted HTTP handlers | Dependency-injected health/download, tier-agent, and webhook behavior | [src/routes](../../src/routes) |
 | Configuration and bootstrap | Environment parsing, validation, warnings, diagnostic startup | [src/config.js](../../src/config.js), [bootstrap.js](../../bootstrap.js) |
 | Durable state | SQLite schema, migrations, row-level functions, audit | [src/db.js](../../src/db.js) |
 | Request systems | Seerr API and local request reconciliation | [src/seerr.js](../../src/seerr.js), [src/request-tracking.js](../../src/request-tracking.js) |
