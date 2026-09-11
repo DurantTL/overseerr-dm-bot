@@ -74,10 +74,17 @@ function requireDirectory(fs, directory, mode, label) {
   fs.accessSync(directory, mode);
 }
 
-function createHealthChecker({ config, client, db, fs, axios, audit, getSetting, backupState, getPlexToken, plexApiGet }) {
+function createHealthChecker({ config, client, db, fs, axios, audit, getSetting, backupState, getPlexToken, plexApiGet, discordState }) {
   return async function gatherHealth() {
     const checks = { overall: 'ok', timestamp: new Date().toISOString(), errors: {} };
-    checks.discord = client.isReady() ? 'ok' : 'down';
+    const lifecycle = discordState?.();
+    checks.discord = client.isReady() && lifecycle?.discord !== 'stopping' && lifecycle?.discord !== 'stopped' ? 'ok' : 'down';
+    checks.discordReadiness = checks.discord === 'ok' ? 'ready' : (lifecycle?.discord || 'unavailable');
+    checks.discordLoginAttempts = lifecycle?.loginAttempts || 0;
+    checks.discordReadyAt = lifecycle?.discordReadyAt || null;
+    checks.discordDisconnectedAt = lifecycle?.discordDisconnectedAt || null;
+    checks.discordNextRetryAt = lifecycle?.nextDiscordRetryAt || null;
+    if (lifecycle?.lastDiscordError) checks.errors.discord = healthErrorDetail(new Error(lifecycle.lastDiscordError));
     try {
       db.prepare('SELECT 1').get();
       checks.sqlite = 'ok';
@@ -163,7 +170,10 @@ function createHealthChecker({ config, client, db, fs, axios, audit, getSetting,
       }),
     ]);
 
-    const ignored = new Set(['overall', 'timestamp', 'tunnelDomain', 'errors', 'backupLastSuccessfulAt', 'backupAgeMs']);
+    const ignored = new Set([
+      'overall', 'timestamp', 'tunnelDomain', 'errors', 'backupLastSuccessfulAt', 'backupAgeMs',
+      'discordReadiness', 'discordLoginAttempts', 'discordReadyAt', 'discordDisconnectedAt', 'discordNextRetryAt',
+    ]);
     const healthy = new Set(['ok', 'configured', 'skipped', 'disabled']);
     checks.overall = Object.entries(checks).some(([key, value]) => !ignored.has(key) && !healthy.has(value)) ? 'degraded' : 'ok';
     return checks;
