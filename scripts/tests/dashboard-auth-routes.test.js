@@ -3,6 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const http = require('node:http');
 const path = require('node:path');
+const { rateLimit } = require('express-rate-limit');
 const { createApp, listen, close } = require('../../src/app');
 const {
   createDashboardSession,
@@ -60,8 +61,8 @@ function createFixture(overrides = {}) {
     passkeyClientPath: path.join(__dirname, '..', '..', 'src', 'passkey-client.js'),
     webauthnBrowserPath: require.resolve('@simplewebauthn/browser'),
   });
-  app.get('/admin', dashboardAuth, (_req, res) => res.send('dashboard'));
-  app.post('/admin/protected', dashboardAuth, (_req, res) => res.json({ ok: true }));
+  app.get('/admin', rateLimit({ windowMs: 60000, limit: 120 }), dashboardAuth, (_req, res) => res.send('dashboard'));
+  app.post('/admin/protected', rateLimit({ windowMs: 60000, limit: 120 }), dashboardAuth, (_req, res) => res.json({ ok: true }));
   return { app, session, audits };
 }
 
