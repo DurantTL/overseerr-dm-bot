@@ -192,12 +192,24 @@ function registerDashboardAuthRoutes(app, {
     return res.redirect('/admin');
   });
 
-  app.post('/admin/logout', (_req, res) => {
+  app.post('/admin/logout', rateLimit({
+    windowMs: 15 * 60000,
+    limit: 60,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+  }), (_req, res) => {
     res.setHeader('Set-Cookie', 'dm_session=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0');
     return res.redirect('/admin/login');
   });
 
-  app.post('/admin/passkey/registration-options', dashboardAuth, async (req, res) => {
+  app.post('/admin/passkey/registration-options', rateLimit({
+    windowMs: 15 * 60000,
+    limit: 60,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+  }), dashboardAuth, async (req, res) => {
     try {
       const options = await passkeyService.registrationOptions(session.readCookie(req, 'dm_session'), req.body?.label);
       res.setHeader('Cache-Control', 'no-store');
@@ -206,7 +218,13 @@ function registerDashboardAuthRoutes(app, {
       return res.status(400).json({ error: err.message });
     }
   });
-  app.post('/admin/passkey/register', dashboardAuth, async (req, res) => {
+  app.post('/admin/passkey/register', rateLimit({
+    windowMs: 15 * 60000,
+    limit: 60,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+  }), dashboardAuth, async (req, res) => {
     try {
       const passkey = await passkeyService.finishRegistration(session.readCookie(req, 'dm_session'), req.body);
       audit('dashboard_passkey_enrolled', dashboardActor(req));
@@ -216,7 +234,13 @@ function registerDashboardAuthRoutes(app, {
       return res.status(400).json({ error: 'Passkey enrollment failed.' });
     }
   });
-  app.post('/admin/passkey/rename', dashboardAuth, (req, res) => {
+  app.post('/admin/passkey/rename', rateLimit({
+    windowMs: 15 * 60000,
+    limit: 60,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+  }), dashboardAuth, (req, res) => {
     const credentialId = String(req.body?.credentialId || '');
     const label = String(req.body?.label || '').trim();
     if (!credentialId || !label || label.length > 64) return res.status(400).json({ error: 'Credential and a label of 1 to 64 characters are required.' });
@@ -224,7 +248,13 @@ function registerDashboardAuthRoutes(app, {
     audit('dashboard_passkey_renamed', dashboardActor(req));
     return res.json({ ok: true });
   });
-  app.post('/admin/passkey/revoke', dashboardAuth, (req, res) => {
+  app.post('/admin/passkey/revoke', rateLimit({
+    windowMs: 15 * 60000,
+    limit: 60,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+  }), dashboardAuth, (req, res) => {
     const credentialId = String(req.body?.credentialId || '');
     if (listPasskeys().length === 1 && !config.DASHBOARD_ADMIN_PASSWORD && !config.DASHBOARD_ADMIN_TOKEN) {
       return res.status(409).json({ error: 'Configure the password fallback before revoking the last passkey.' });
