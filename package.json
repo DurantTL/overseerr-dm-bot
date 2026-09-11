@@ -4,7 +4,7 @@
   "main": "bootstrap.js",
   "scripts": {
     "start": "node bootstrap.js",
-    "test": "node scripts/check-docs.js && node --check index.js && node --check bootstrap.js && node --check src/episode-recovery.js && node --test",
+    "test": "node scripts/check-docs.js && node --check index.js && node --check bootstrap.js && node --check src/episode-recovery.js && node --check agent/agent.js && node --test",
     "test:docs": "node scripts/check-docs.js",
     "test:helpers": "node scripts/test-security.js",
     "lint": "eslint .",
@@ -27,5 +27,8 @@
     "eslint": "^10.8.0",
     "eslint-plugin-security": "^4.0.1",
     "globals": "^17.11.0"
+  },
+  "engines": {
+    "node": ">=24 <25"
   }
 }
