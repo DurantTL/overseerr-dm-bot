@@ -134,7 +134,7 @@ been slow" is more likely to be relaying than to have a genuinely slow link. See
 `docs/edge-node-rebuild-runbook.md` for the step that checks this during node setup, before initial
 sync is assumed to be simply slow.
 
-## Tier plans can go silently stale with no built-in alerting
+## Tier plans require manual review and re-apply
 
 **Symptom:** an edge node keeps converging cleanly (`converged: true`, no errors, regular
 heartbeats) against a plan that is weeks old, while the actual demand on that node has moved on.
@@ -145,15 +145,15 @@ unapplied for 46 days, during which the disk filled from healthy to 99% full and
 title syncs failed outright with "insufficient space" errors — a genuine operational outage caused
 entirely by nobody re-running `/tier apply`.
 
-**Cause:** `/tier apply` is a manual, admin-confirmed action by design (large rebalances require
-typing a confirmation code before anything prunes) — nothing currently re-publishes a plan on a
-schedule, and nothing flags a published plan's age until someone thinks to run `/tier preview` and
-read it off the `📤 Published … ago` line. The existing agent-liveness signals (`lastHeartbeatAt`,
+**Cause:** `/tier apply` remains a manual, admin-confirmed action by design (large rebalances
+require typing a confirmation code before anything prunes). The existing agent-liveness signals (`lastHeartbeatAt`,
 `lastAgentReportAt` — surfaced in `/tier-node list` and the dashboard) measure a completely
 different thing: "is the agent still checking in", not "is the plan it's converging on current".
 A node can heartbeat every 15 minutes for 46 days straight while converging against the same stale
 plan the entire time.
 
-**Status:** proposal only, not yet implemented — see the tier-plan-staleness discussion for the
-options under consideration (scheduled re-apply, a staleness alert threshold, and surfacing plan
-age in the routine status views rather than only in `/tier preview`).
+**Current safeguard:** the plan age is shown in `/tier-node list` and the dashboard. An hourly
+monitor posts a System alert once the age exceeds `TIER_PLAN_STALE_DAYS`, repeats with bounded
+backoff, stands down after repeated identical checks, and posts a recovery when a newer plan is
+published. The alert points operators to `/tier preview`; it deliberately does not publish a plan
+or prune files automatically, preserving the large-rebalance confirmation gate.
