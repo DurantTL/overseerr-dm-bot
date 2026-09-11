@@ -1,10 +1,10 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 
-// Shared app-factory seam for the HTTP server. Route groups still register themselves directly
-// on the returned app (see index.js) — this only owns the plumbing common to all of them, so it
-// can be assembled and torn down on an ephemeral port in tests without touching Discord or any
-// other external service. Extracting route groups onto this seam is tracked incrementally.
+// Shared app-factory seam for the HTTP server. Dependency-injected route modules register on the
+// returned app while index.js supplies production integrations. This owns the plumbing common to
+// all of them, so tests can assemble and tear down an ephemeral server without Discord or any
+// other external service.
 function createApp({ trustProxy = false, jsonLimit = '1mb', skipJsonPaths = [] } = {}) {
   const app = express();
   app.disable('x-powered-by');
