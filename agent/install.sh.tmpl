@@ -44,36 +44,36 @@ node_major() {
 install_node() {
   setup_file=$(mktemp) || die "could not create a temporary file for Node.js setup"
   if command -v apt-get >/dev/null 2>&1; then
-    say "→ installing Node.js 22 from NodeSource (apt)"
-    curl -fsSL https://deb.nodesource.com/setup_22.x -o "$setup_file" \
+    say "→ installing Node.js 24 from NodeSource (apt)"
+    curl -fsSL https://deb.nodesource.com/setup_24.x -o "$setup_file" \
       && sh "$setup_file" \
       && DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs \
-      || { rm -f "$setup_file"; die "could not install Node.js 22 with apt"; }
+      || { rm -f "$setup_file"; die "could not install Node.js 24 with apt"; }
   elif command -v dnf >/dev/null 2>&1; then
-    say "→ installing Node.js 22 from NodeSource (dnf)"
-    curl -fsSL https://rpm.nodesource.com/setup_22.x -o "$setup_file" \
+    say "→ installing Node.js 24 from NodeSource (dnf)"
+    curl -fsSL https://rpm.nodesource.com/setup_24.x -o "$setup_file" \
       && sh "$setup_file" \
       && dnf install -y nodejs \
-      || { rm -f "$setup_file"; die "could not install Node.js 22 with dnf"; }
+      || { rm -f "$setup_file"; die "could not install Node.js 24 with dnf"; }
   elif command -v yum >/dev/null 2>&1; then
-    say "→ installing Node.js 22 from NodeSource (yum)"
-    curl -fsSL https://rpm.nodesource.com/setup_22.x -o "$setup_file" \
+    say "→ installing Node.js 24 from NodeSource (yum)"
+    curl -fsSL https://rpm.nodesource.com/setup_24.x -o "$setup_file" \
       && sh "$setup_file" \
       && yum install -y nodejs \
-      || { rm -f "$setup_file"; die "could not install Node.js 22 with yum"; }
+      || { rm -f "$setup_file"; die "could not install Node.js 24 with yum"; }
   else
     rm -f "$setup_file"
-    die "Node.js 18+ is missing and this Linux package manager is unsupported (expected apt, dnf, or yum)"
+    die "Node.js 24 is required and this Linux package manager is unsupported (expected apt, dnf, or yum)"
   fi
   rm -f "$setup_file"
 }
 
 NODE_MAJOR=$(node_major)
-if [ "$NODE_MAJOR" -lt 18 ]; then
+if [ "$NODE_MAJOR" -lt 24 ]; then
   install_node
   NODE_MAJOR=$(node_major)
 fi
-[ "$NODE_MAJOR" -ge 18 ] || die "Node.js installation completed but node $NODE_MAJOR was found; version 18+ is required"
+[ "$NODE_MAJOR" -eq 24 ] || die "Node.js 24 is required but node $NODE_MAJOR was found; install Node.js 24 before continuing"
 
 # Parse the same JSON/compact multi-folder format as agent.js, validate every root before changing
 # the host, and pre-render systemd's write allowlist with correct quoting for paths containing spaces.
