@@ -396,8 +396,8 @@ function collectInventory(ctx, folderPlans = ctx.folders.map(f => ({ folderId: f
   const out = [];
   const seen = new Set(); // dedupe if two folder plans share a root (single-folder manifests)
   for (const fp of folderPlans) {
-    if (seen.has(`${fp.folderId} ${fp.folderRoot}`)) continue;
-    seen.add(`${fp.folderId} ${fp.folderRoot}`);
+    if (seen.has(`${fp.folderId}\u0000${fp.folderRoot}`)) continue;
+    seen.add(`${fp.folderId}\u0000${fp.folderRoot}`);
     const walk = dir => {
       let entries;
       try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_e) { return; }

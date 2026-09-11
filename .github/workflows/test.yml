@@ -27,6 +27,11 @@ jobs:
         with:
           context: .
           push: false
+      - name: Build tier-agent image (no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: agent
+          push: false
 
   test:
     runs-on: ubuntu-latest

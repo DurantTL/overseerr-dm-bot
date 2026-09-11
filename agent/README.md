@@ -35,9 +35,10 @@ One run does, in order:
    reflects this run's real end state, not a stale pre-prune snapshot the bot would otherwise
    have to wait a whole extra cycle to correct.
 
-Requires Node 18+ (uses global `fetch`). The installer provisions Node.js 22 through NodeSource
-when Node 18+ is not already present on an apt-, dnf-, or yum-based Linux host. No other runtime
-dependencies are needed.
+Requires Node.js 24, matching the bot image, CI, and package runtime contract. The installer
+provisions Node.js 24 through NodeSource when an older runtime is present on an apt-, dnf-, or
+yum-based Linux host. A newer unsupported major fails with an actionable message instead of being
+used silently. No other runtime dependencies are needed.
 
 ## Install (one command)
 
