@@ -67,6 +67,7 @@ const { registerHealthAndDownloadRoutes } = require('./src/routes/health-downloa
 const { createDashboardSession, createDashboardAuth, createDashboardGateActor, dashboardActor, registerDashboardAuthRoutes } = require('./src/routes/dashboard-auth');
 const { createApp } = require('./src/app');
 const { createRuntimeLifecycle, createDiscordReadyGuard } = require('./src/runtime-lifecycle');
+const { evaluateTierPlanStaleness, scheduleTierPlanStaleness } = require('./src/tier-plan-staleness');
 const { findUnprocessableTorrents, unacknowledgedTorrents, pruneAcknowledged, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate, planStuckTransferActions } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
@@ -153,6 +154,48 @@ async function runGuardedSweep(name, fn) {
   } finally {
     runningSweeps.delete(name);
   }
+}
+
+function tierPlanStaleAlertState(node) {
+  const raw = getSetting(`tier_plan_stale_alert:${String(node).toLowerCase()}`);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (_err) { return null; }
+}
+
+async function sweepTierPlanStaleAlerts() {
+  const events = evaluateTierPlanStaleness({
+    nodes: listTierNodes(),
+    getPlan: getTierPlan,
+    getAlertState: tierPlanStaleAlertState,
+    setAlertState: (node, state) => setSetting(`tier_plan_stale_alert:${String(node).toLowerCase()}`, JSON.stringify(state)),
+    clearAlertState: node => deleteSetting(`tier_plan_stale_alert:${String(node).toLowerCase()}`),
+    staleDays: CONFIG.TIER_PLAN_STALE_DAYS,
+  });
+  for (const event of events) {
+    if (event.type === 'stale') {
+      const age = fmtDuration(event.state.ageMs);
+      notifyChannel('system', { embeds: [brandedEmbed(COLORS.WARN)
+        .setTitle(`⚠️ Tier plan stale — ${event.node}`)
+        .setDescription([
+          `The published tier plan is **${age} old**, beyond the configured ${event.state.staleDays}-day threshold.`,
+          `Plan: \`${event.state.planHash}\``,
+          `Review \`/tier preview node:${event.node}\` and apply it manually when safe.`,
+          '**No plan was automatically applied and no files were pruned.**',
+          event.state.stoodDown ? `Repeated alerts are now stood down after ${event.state.attemptCount} checks; publishing a newer plan clears this state.` : null,
+        ].filter(Boolean).join('\n'))] });
+      audit('tier_plan_stale_alerted', { node: event.node, planHash: event.state.planHash, ageMs: event.state.ageMs, attemptCount: event.state.attemptCount, stoodDown: event.state.stoodDown });
+    } else {
+      notifyChannel('system', { embeds: [brandedEmbed(COLORS.SUCCESS)
+        .setTitle(`✅ Tier plan refreshed — ${event.node}`)
+        .setDescription(`A newer tier plan is published for **${event.node}**. The stale-plan alert has recovered.`)] });
+      audit('tier_plan_stale_recovered', { node: event.node, planHash: event.plan?.published?.planHash || null });
+    }
+  }
+  return {
+    checked: listTierNodes().filter(node => node.enabled).length,
+    staleAlerts: events.filter(event => event.type === 'stale').length,
+    recoveries: events.filter(event => event.type === 'recovered').length,
+  };
 }
 
 function channelFor(kind) {
@@ -4413,6 +4456,11 @@ async function startDiscordWorkers() {
   rehydratePendingEmails();
   startExpressServer();
   registerSlashCommands();
+  scheduleTierPlanStaleness({
+    run: () => runGuardedSweep('tier-plan-stale-alert', sweepTierPlanStaleAlerts)
+      .catch(err => log.warn(`Tier-plan staleness check failed: ${err.message}`)),
+  });
+  log.ok(`Tier-plan staleness alert checks hourly (warning after ${CONFIG.TIER_PLAN_STALE_DAYS}d; automatic re-apply disabled)`);
   scheduleTunableSweep({ label: 'Pending-approval sweep', minutesKey: 'PENDING_APPROVAL_CHECK_MINUTES', fn: () => runGuardedSweep('pending-approvals', sweepPendingApprovals) });
   log.ok(`Pending-approval sweep every ${tunable('PENDING_APPROVAL_CHECK_MINUTES')} min (nudge ${tunable('PENDING_APPROVAL_NUDGE_HOURS')}h, requester update ${tunable('PENDING_APPROVAL_REQUESTER_HOURS')}h, expire ${tunable('PENDING_APPROVAL_EXPIRE_DAYS')}d)`);
   if (CONFIG.REQUEST_RECONCILE_MINUTES > 0) {
