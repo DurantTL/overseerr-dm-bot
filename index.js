@@ -16,7 +16,6 @@ const {
   PermissionFlagsBits,
 } = require('discord.js');
 
-const express = require('express');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const bodyParser = require('body-parser');
 const multer = require('multer');
@@ -65,6 +64,7 @@ const { webhookEventKey } = require('./src/webhook-events');
 const { createWebhookHandlers, requireWebhookSecret } = require('./src/routes/webhooks');
 const { registerTierAgentRoutes } = require('./src/routes/tier-agent');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
+const { createDashboardSession, createDashboardAuth, createDashboardGateActor, dashboardActor, registerDashboardAuthRoutes } = require('./src/routes/dashboard-auth');
 const { createApp } = require('./src/app');
 const { findUnprocessableTorrents, unacknowledgedTorrents, pruneAcknowledged, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate, planStuckTransferActions } = require('./src/premiumize');
@@ -97,54 +97,12 @@ function brandedEmbed(color) {
   return e;
 }
 
-// Secret used to sign dashboard session cookies. validateConfig() refuses to start with
-// DASHBOARD_ENABLED=true unless SESSION_SECRET is set, so this is never derived from the admin
-// password/token (a captured cookie would otherwise hand an attacker a known HMAC message/
-// signature pair, guessable offline at SHA-256 speed) and never falls back to a per-process value
-// (which would silently invalidate every session on restart instead of failing loudly).
-function sessionSecret() {
-  return CONFIG.SESSION_SECRET;
-}
-
-// Signed, stateless session token: base64url(payload).hmac. No external cookie/session deps.
-function signSession(ttlMs) {
-  const payload = Buffer.from(JSON.stringify({ exp: Date.now() + ttlMs })).toString('base64url');
-  const sig = crypto.createHmac('sha256', sessionSecret()).update(payload).digest('base64url');
-  return `${payload}.${sig}`;
-}
-
-function verifySession(token) {
-  if (!token || typeof token !== 'string' || !token.includes('.')) return false;
-  const [payload, sig] = token.split('.');
-  const expected = crypto.createHmac('sha256', sessionSecret()).update(payload).digest('base64url');
-  const a = Buffer.from(sig);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return false;
-  try {
-    const { exp } = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    return typeof exp === 'number' && Date.now() < exp;
-  } catch (_e) {
-    return false;
-  }
-}
-
-function setDashboardSessionCookie(req, res) {
-  const ttlMs = CONFIG.SESSION_TTL_HOURS * 3600000;
-  const secure = req.secure || (req.headers['x-forwarded-proto'] || '').includes('https');
-  res.setHeader('Set-Cookie', `dm_session=${signSession(ttlMs)}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=${Math.floor(ttlMs / 1000)}${secure ? '; Secure' : ''}`);
-}
-
-// Minimal cookie parser — pulls a single named cookie from the request header.
-function readCookie(req, name) {
-  const header = req.headers.cookie;
-  if (!header) return undefined;
-  for (const part of header.split(';')) {
-    const idx = part.indexOf('=');
-    if (idx === -1) continue;
-    if (part.slice(0, idx).trim() === name) return decodeURIComponent(part.slice(idx + 1).trim());
-  }
-  return undefined;
-}
+const dashboardSession = createDashboardSession({
+  secret: CONFIG.SESSION_SECRET,
+  ttlHours: CONFIG.SESSION_TTL_HOURS,
+});
+const dashboardAuth = createDashboardAuth({ config: CONFIG, session: dashboardSession, safeEqual });
+const dashboardGateActor = createDashboardGateActor({ sha256 });
 
 // Per-topic notification routing. Every kind falls back to ADMIN_CHANNEL_ID when its channel
 // isn't configured, so single-channel deployments behave exactly as before. Exception: 'deploy'
@@ -9048,47 +9006,6 @@ async function handleButton(interaction) {
   }
 }
 
-function dashboardAuth(req, res, next) {
-  // Primary path for humans: a valid signed session cookie set at /admin/login.
-  // Header auth stays for scripts/automation (e.g. scripts/smoke-test.sh).
-  // The old ?password= URL path is gone — it leaked credentials into history and logs.
-  const sessionOk = verifySession(readCookie(req, 'dm_session'));
-  const pwd = req.headers['x-admin-password'];
-  const token = req.headers['x-admin-token'];
-  const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && safeEqual(pwd, CONFIG.DASHBOARD_ADMIN_PASSWORD);
-  const tokenOk = CONFIG.DASHBOARD_ADMIN_TOKEN && safeEqual(token, CONFIG.DASHBOARD_ADMIN_TOKEN);
-  if (!sessionOk && !passOk && !tokenOk) {
-    // Browsers hitting a page get sent to the login form; API/non-GET callers get 401.
-    if (req.method === 'GET' && (req.headers.accept || '').includes('text/html')) {
-      return res.redirect('/admin/login');
-    }
-    return res.status(401).send('Unauthorized');
-  }
-
-  if (CONFIG.STRICT_DASHBOARD_POST_AUTH && req.method !== 'GET') {
-    // Exact host match. Substring matching allowed e.g. https://myhost.com.evil.net through.
-    const sameHost = headerValue => {
-      if (!headerValue) return true; // header absent — nothing to compare
-      try { return new URL(headerValue).host === req.get('host'); } catch (_e) { return false; }
-    };
-    if (!sameHost(req.get('origin')) || !sameHost(req.get('referer'))) {
-      return res.status(403).send('Cross-site POST denied');
-    }
-  }
-  return next();
-}
-
-function dashboardActor(req) {
-  return { actor: 'dashboard', actorIp: req.ip || req.socket.remoteAddress || 'unknown' };
-}
-
-function dashboardGateActor(req) {
-  const session = readCookie(req, 'dm_session');
-  const ip = req.ip || req.socket.remoteAddress || 'unknown';
-  const id = session ? `session:${sha256(session).slice(0, 12)}` : `header:${ip}`;
-  return { kind: 'dashboard', id, label: `Dashboard operator ${id}` };
-}
-
 function dashboardGateResponse(result, operation) {
   if (result.error === 'already_handled') return { ok: false, error: 'This request was already handled or expired.', retryable: false };
   if (!result.ok) {
@@ -9323,89 +9240,22 @@ function startExpressServer() {
   });
 
   if (CONFIG.DASHBOARD_ENABLED) {
-    const adminForm = express.urlencoded({ extended: false, limit: '16kb' });
     const webauthnBrowserPath = path.join(path.dirname(require.resolve('@simplewebauthn/browser')), '..', 'dist', 'bundle', 'index.es5.umd.min.js');
     const passkeyClientPath = path.join(__dirname, 'src', 'passkey-client.js');
-
-    app.get('/admin/passkey-client.js', rateLimit({
-      windowMs: 60000,
-      limit: 120,
-      keyGenerator: httpRateLimitKey,
-      standardHeaders: 'draft-8',
-      legacyHeaders: false,
-    }), (_req, res) => res.sendFile(passkeyClientPath, { headers: { 'Cache-Control': 'no-cache' } }));
-    app.get('/admin/webauthn-browser.js', (_req, res) => res.sendFile(webauthnBrowserPath, { headers: { 'Cache-Control': 'public, max-age=31536000, immutable' } }));
-
-    app.get('/admin/login', (req, res) => {
-      if (verifySession(readCookie(req, 'dm_session'))) return res.redirect('/admin');
-      res.type('html').send(renderLogin(!!req.query.error, null, { passkeyEnabled: listPasskeys().length > 0 }));
-    });
-
-    app.get('/admin/passkey/authentication-options', rateLimit({
-      windowMs: 15 * 60000,
-      limit: 10,
-      keyGenerator: httpRateLimitKey,
-      standardHeaders: 'draft-8',
-      legacyHeaders: false,
-      handler: (_req, res) => res.status(429).json({ error: 'Too many attempts. Try again in a few minutes.' }),
-    }), async (req, res) => {
-      const ip = req.ip || req.socket.remoteAddress || 'unknown';
-      if (!listPasskeys().length) return res.status(404).json({ error: 'No passkeys are enrolled.' });
-      const binding = crypto.randomBytes(32).toString('base64url');
-      const secure = req.secure || (req.headers['x-forwarded-proto'] || '').includes('https');
-      try {
-        const options = await passkeyService.authenticationOptions(binding);
-        res.setHeader('Cache-Control', 'no-store');
-        res.setHeader('Set-Cookie', `dm_webauthn=${binding}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=300${secure ? '; Secure' : ''}`);
-        return res.json(options);
-      } catch (_err) {
-        audit('dashboard_passkey_login_failed', { ip, reason: 'options_failed' });
-        return res.status(400).json({ error: 'Could not start passkey sign-in.' });
-      }
-    });
-
-    app.post('/admin/passkey/authenticate', async (req, res) => {
-      const ip = req.ip || req.socket.remoteAddress || 'unknown';
-      try {
-        await passkeyService.finishAuthentication(readCookie(req, 'dm_webauthn'), req.body);
-        setDashboardSessionCookie(req, res);
-        res.append('Set-Cookie', 'dm_webauthn=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0');
-        audit('dashboard_login_success', { ip, method: 'passkey' });
-        return res.json({ verified: true });
-      } catch (_err) {
-        audit('dashboard_passkey_login_failed', { ip, reason: 'verification_failed' });
-        return res.status(401).json({ verified: false, error: 'Passkey sign-in failed.' });
-      }
-    });
-
-    app.post('/admin/login', adminForm, rateLimit({
-      windowMs: 15 * 60000,
-      limit: 5,
-      keyGenerator: httpRateLimitKey,
-      standardHeaders: 'draft-8',
-      legacyHeaders: false,
-      handler: (_req, res) => res.status(429).type('html').send(renderLogin(
-        false,
-        'Too many attempts. Try again in a few minutes.',
-        { passkeyEnabled: listPasskeys().length > 0 },
-      )),
-    }), (req, res) => {
-      const ip = req.ip || req.socket.remoteAddress || 'unknown';
-      const pwd = req.body?.password || '';
-      const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && safeEqual(pwd, CONFIG.DASHBOARD_ADMIN_PASSWORD);
-      const tokenOk = CONFIG.DASHBOARD_ADMIN_TOKEN && safeEqual(pwd, CONFIG.DASHBOARD_ADMIN_TOKEN);
-      if (!passOk && !tokenOk) {
-        audit('dashboard_login_failed', { ip });
-        return res.redirect('/admin/login?error=1');
-      }
-      setDashboardSessionCookie(req, res);
-      audit('dashboard_login_success', { ip, method: 'password' });
-      res.redirect('/admin');
-    });
-
-    app.post('/admin/logout', (req, res) => {
-      res.setHeader('Set-Cookie', 'dm_session=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0');
-      res.redirect('/admin/login');
+    registerDashboardAuthRoutes(app, {
+      config: CONFIG,
+      session: dashboardSession,
+      dashboardAuth,
+      httpRateLimitKey,
+      renderLogin,
+      listPasskeys,
+      passkeyService,
+      safeEqual,
+      audit,
+      renamePasskey,
+      revokePasskey,
+      passkeyClientPath,
+      webauthnBrowserPath,
     });
 
     app.get('/admin', dashboardAuth, async (_req, res) => {
@@ -10047,42 +9897,6 @@ function startExpressServer() {
       } catch (err) {
         return res.status(500).json({ ok: false, error: dashboardActionError(err), retryable: false });
       }
-    });
-    app.post('/admin/passkey/registration-options', dashboardAuth, async (req, res) => {
-      try {
-        const options = await passkeyService.registrationOptions(readCookie(req, 'dm_session'), req.body?.label);
-        res.setHeader('Cache-Control', 'no-store');
-        return res.json(options);
-      } catch (err) {
-        return res.status(400).json({ error: err.message });
-      }
-    });
-    app.post('/admin/passkey/register', dashboardAuth, async (req, res) => {
-      try {
-        const passkey = await passkeyService.finishRegistration(readCookie(req, 'dm_session'), req.body);
-        audit('dashboard_passkey_enrolled', dashboardActor(req));
-        return res.json({ ok: true, label: passkey.label });
-      } catch (_err) {
-        audit('dashboard_passkey_enrollment_failed', { ...dashboardActor(req), reason: 'verification_failed' });
-        return res.status(400).json({ error: 'Passkey enrollment failed.' });
-      }
-    });
-    app.post('/admin/passkey/rename', dashboardAuth, (req, res) => {
-      const credentialId = String(req.body?.credentialId || '');
-      const label = String(req.body?.label || '').trim();
-      if (!credentialId || !label || label.length > 64) return res.status(400).json({ error: 'Credential and a label of 1 to 64 characters are required.' });
-      if (!renamePasskey(credentialId, label)) return res.status(404).json({ error: 'Passkey not found.' });
-      audit('dashboard_passkey_renamed', dashboardActor(req));
-      return res.json({ ok: true });
-    });
-    app.post('/admin/passkey/revoke', dashboardAuth, (req, res) => {
-      const credentialId = String(req.body?.credentialId || '');
-      if (listPasskeys().length === 1 && !CONFIG.DASHBOARD_ADMIN_PASSWORD && !CONFIG.DASHBOARD_ADMIN_TOKEN) {
-        return res.status(409).json({ error: 'Configure the password fallback before revoking the last passkey.' });
-      }
-      if (!revokePasskey(credentialId)) return res.status(404).json({ error: 'Passkey not found.' });
-      audit('dashboard_passkey_revoked', dashboardActor(req));
-      return res.json({ ok: true });
     });
     app.post('/admin/action/tier-node', dashboardAuth, (req, res) => {
       const name = String(req.body?.name || '').trim().toLowerCase();
