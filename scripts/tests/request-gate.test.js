@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 const { test } = require('node:test');
 const assert = require('node:assert');
+const crypto = require('node:crypto');
 const { createRequestGate } = require('../../src/request-gate');
+const { createDashboardGateActor } = require('../../src/routes/dashboard-auth');
 const { loadSandbox } = require('./extract');
 
 const pendingRequest = () => ({
@@ -203,11 +205,11 @@ test('request-gate: denial never sends a request to Seerr', async () => {
 });
 
 test('request-gate: dashboard actor uses a stable session identity', () => {
-  const sandbox = loadSandbox(['readCookie', 'dashboardGateActor'], {
-    sha256: value => require('crypto').createHash('sha256').update(value).digest('hex'),
+  const dashboardGateActor = createDashboardGateActor({
+    sha256: value => crypto.createHash('sha256').update(value).digest('hex'),
   });
-  sandbox.req = { headers: { cookie: 'dm_session=signed-session; other=value' }, ip: '127.0.0.1', socket: {} };
-  const actor = sandbox.run('dashboardGateActor(req)');
+  const req = { headers: { cookie: 'dm_session=signed-session; other=value' }, ip: '127.0.0.1', socket: {} };
+  const actor = dashboardGateActor(req);
   assert.strictEqual(actor.kind, 'dashboard');
   assert.match(actor.id, /^session:[0-9a-f]{12}$/);
   assert.strictEqual(actor.id.includes('signed-session'), false);
