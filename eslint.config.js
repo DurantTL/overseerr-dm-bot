@@ -6,7 +6,7 @@ const globals = require('globals');
 
 module.exports = [
   {
-    ignores: ['node_modules/**', 'data/**', 'agent/**'],
+    ignores: ['node_modules/**', 'data/**'],
   },
   js.configs.recommended,
   security.configs.recommended,
