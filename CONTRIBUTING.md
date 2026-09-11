@@ -9,8 +9,8 @@ change does not guarantee that it will be accepted or merged.
    architecture change, migration, or security-sensitive behavior change.
 2. Report vulnerabilities privately through the process in [SECURITY.md](SECURITY.md), never in a
    public issue or pull request.
-3. Read [AGENTS.md](AGENTS.md) for the repository workflow and [CLAUDE.md](CLAUDE.md) for the
-   architecture, commands, validation gates, and security invariants.
+3. Read the [architecture map](docs/obsidian/Architecture.md), this contribution policy, and the
+   issue's acceptance criteria before changing code.
 4. Keep one change focused on one issue or numbered issue packet. Preserve unrelated worktree
    changes.
 

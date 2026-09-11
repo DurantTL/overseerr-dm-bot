@@ -2,35 +2,32 @@
 tags:
   - project/overseerr-dm-bot
   - backlog
-reviewed: 2026-08-21
-source_commit: 937f379
-github_snapshot: 16 open issues
+reviewed: 2026-09-09
+source_commit: 7d2e045
+github_snapshot: 20 open issues
 ---
 
 # Backlog
 
 [[Project Home]] | [[Project Graph]] | [[Project Review]] | [[Architecture]]
 
-This is a snapshot of the live issue tracker on 2026-08-21. GitHub remains authoritative. The
-open program contains umbrella issue [#175](https://github.com/DurantTL/overseerr-dm-bot/issues/175)
-and 15 open child issues, #176, #178–#191 (#177 closed via PR #205 — session secret enforcement
-landed). PR #226 (rclone preflight case-sensitivity, Premiumize dead-transfer detection,
-season-pack/rTorrent dedupe) merged today; it closes out further iterations of already-closed
-tickets (#211, #212, #198) and does not correspond to any open issue below.
+This is a snapshot of the live issue tracker on 2026-09-09. GitHub remains authoritative. The
+open program contains umbrella issue [#175](https://github.com/DurantTL/overseerr-dm-bot/issues/175),
+14 open children from #178–#191, and five review follow-ups (#252 and #254–#257). Issues #176 and
+#177 are closed.
 
 ## P0 — public HTTP security
 
-- [#176](https://github.com/DurantTL/overseerr-dm-bot/issues/176) — authenticate and throttle
-  public HTTP work before large body parsing. **Partial:** pre-auth ordering (PR #203) and the
-  tier-agent rate limit (PR #204) landed; broader route/concurrency review still open.
+- ~~#176 — authenticate and throttle public HTTP work before large body parsing.~~ **Closed**
+  after the pre-auth ordering and tier-agent admission-control work landed.
 - ~~#177 — require an explicit, high-entropy dashboard session signing secret.~~ **Closed**
   (PR #205).
 
 ## P1 — reliability and testability
 
 - [#178](https://github.com/DurantTL/overseerr-dm-bot/issues/178) — extract and integration-test
-  the remaining HTTP surface. **Partial:** the `createApp()` seam landed (PR #207); route-group
-  extraction remains.
+  the remaining HTTP surface. **Partial:** the app factory, health/download, tier-agent, and
+  webhook modules landed; authentication/passkeys and dashboard groups remain.
 - [#179](https://github.com/DurantTL/overseerr-dm-bot/issues/179) — add versioned,
   transactional SQLite migrations and upgrade fixtures. **Partial:** transaction + version ledger
   landed (PR #208); ordered/historical fixtures remain.
@@ -70,10 +67,23 @@ tickets (#211, #212, #198) and does not correspond to any open issue below.
 - [#189](https://github.com/DurantTL/overseerr-dm-bot/issues/189) — cache and scope dashboard data
   with explicit freshness.
 
+## 2026-09-09 feature-review follow-ups
+
+- [#252](https://github.com/DurantTL/overseerr-dm-bot/issues/252) — add proactive stale tier-plan
+  alerts while preserving the manual large-rebalance confirmation gate.
+- [#254](https://github.com/DurantTL/overseerr-dm-bot/issues/254) — preserve unavailable telemetry
+  and identify temperature sensor sources correctly.
+- [#255](https://github.com/DurantTL/overseerr-dm-bot/issues/255) — select TV seasons consistently
+  across mobile and slash-command requests.
+- [#256](https://github.com/DurantTL/overseerr-dm-bot/issues/256) — persist support cases through
+  assignment and resolution.
+- [#257](https://github.com/DurantTL/overseerr-dm-bot/issues/257) — replace Discord prototype
+  interception incrementally. The Media Center slice landed in PR #258.
+
 ## Dependency order
 
-Finish #176 (#177 is done). Establish the #178 HTTP seam before expanding route behavior, and
-define #186's automation registry before migrating dashboard automation. For edge playback,
+Continue #178 before deeper dashboard route work, and complete #188 before moving scheduler
+ownership into #186's automation registry. For edge playback,
 verify fallback under #181 before California promotion under #182; season-level planning under
 #183 should precede unrestricted TV promotion. Coordinate #190 with #191 so strict WebAuthn
 verification consumes a verified HTTPS origin.
