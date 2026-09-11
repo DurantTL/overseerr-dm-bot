@@ -66,6 +66,7 @@ const { registerTierAgentRoutes } = require('./src/routes/tier-agent');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
 const { createDashboardSession, createDashboardAuth, createDashboardGateActor, dashboardActor, registerDashboardAuthRoutes } = require('./src/routes/dashboard-auth');
 const { createApp } = require('./src/app');
+const { createRuntimeLifecycle, createDiscordReadyGuard } = require('./src/runtime-lifecycle');
 const { findUnprocessableTorrents, unacknowledgedTorrents, pruneAcknowledged, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate, planStuckTransferActions } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
@@ -420,6 +421,7 @@ const client = new Client({
   ],
   partials: [Partials.Channel, Partials.Message],
 });
+let runtimeLifecycle = null;
 const gatherHealth = createHealthChecker({
   config: CONFIG,
   client,
@@ -431,6 +433,10 @@ const gatherHealth = createHealthChecker({
   backupState,
   getPlexToken,
   plexApiGet,
+  discordState: () => runtimeLifecycle?.snapshot() || { discord: 'initializing', loginAttempts: 0 },
+});
+const discordReadyGuard = createDiscordReadyGuard({
+  snapshot: () => runtimeLifecycle?.snapshot() || { discord: 'initializing' },
 });
 
 // Seerr request ids the bot already announced in Discord (admin /request creates and gate
@@ -4384,7 +4390,7 @@ async function sweepRequestProgressNotifications(remoteRequests) {
   return counts;
 }
 
-client.once('ready', async () => {
+async function startDiscordWorkers() {
   log.ok(`Discord bot online as ${client.user.tag}`);
   const warnings = configWarnings();
   for (const w of warnings) log.warn(`Config: ${w.replace(/\*\*/g, '')}`);
@@ -4505,7 +4511,7 @@ client.once('ready', async () => {
     setInterval(() => runGuardedSweep('tunnel', sweepTunnelHealth).catch(err => log.warn(`Tunnel health sweep failed: ${err.message}`)), CONFIG.PH_TUNNEL_CHECK_MINUTES * 60000).unref();
     log.ok(`PH tunnel watchdog running every ${CONFIG.PH_TUNNEL_CHECK_MINUTES} min (alert after ${CONFIG.PH_TUNNEL_FAILS_BEFORE_ALERT} failures)`);
   }
-});
+}
 
 client.on('guildMemberAdd', async member => {
   // Set the pending flag regardless of whether the DM lands, so that if this member has DMs
@@ -9133,6 +9139,7 @@ function seasonAlertDashboardItems(rows = []) {
 }
 
 function startExpressServer() {
+  if (httpServer) return Promise.resolve(httpServer);
   // Shared plumbing (x-powered-by, trust proxy, the global JSON body parser) lives in the
   // src/app.js factory so it can be exercised with real HTTP requests on an ephemeral port
   // without booting Discord — see scripts/tests/app-factory.test.js. Route registration below is
@@ -9874,13 +9881,27 @@ function startExpressServer() {
 
     app.get('/admin/health', dashboardAuth, async (_req, res) => res.json(await gatherHealth()));
     app.get('/admin/doctor', dashboardAuth, async (_req, res) => res.json({ checks: await runEdgeDiagnostics({ live: true }), tierNodes: listTierNodes().map(n => ({ name: n.name, enabled: !!n.enabled, full: !!n.full, usableBytes: n.usable_bytes })) }));
-    app.get('/admin/action/sync-preview', dashboardAuth, async (_req, res) => res.json(await buildSyncPreview()));
+    app.get('/admin/action/sync-preview', rateLimit({
+      windowMs: 15 * 60000,
+      limit: 30,
+      keyGenerator: httpRateLimitKey,
+      standardHeaders: 'draft-8',
+      legacyHeaders: false,
+      handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many dashboard actions. Wait a moment and try again.' }),
+    }), dashboardAuth, discordReadyGuard, async (_req, res) => res.json(await buildSyncPreview()));
     app.get('/admin/action/cleanup-preview', dashboardAuth, async (_req, res) => {
       const users = await fetchOverseerrUsers().catch(() => []);
       const toDelete = users.filter(u => u.userType !== 1 && ['displayName', 'email', 'username'].some(k => (u[k] || '').toLowerCase().startsWith('deleted_user')));
       res.json({ wouldRemove: toDelete.length, users: toDelete.map(u => ({ id: u.id, email: u.email, username: u.username })) });
     });
-    app.post('/admin/action/gate', dashboardAuth, async (req, res) => {
+    app.post('/admin/action/gate', rateLimit({
+      windowMs: 15 * 60000,
+      limit: 30,
+      keyGenerator: httpRateLimitKey,
+      standardHeaders: 'draft-8',
+      legacyHeaders: false,
+      handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many dashboard actions. Wait a moment and try again.' }),
+    }), dashboardAuth, discordReadyGuard, async (req, res) => {
       const operation = req.body?.operation;
       const nonce = String(req.body?.nonce || '');
       if (!['approve', 'approve_az', 'deny'].includes(operation) || !/^[0-9a-f]{8}$/.test(nonce)) {
@@ -10181,7 +10202,21 @@ function startExpressServer() {
     res.status(500).json({ error: 'Internal Server Error' });
   });
 
-  httpServer = app.listen(CONFIG.PORT, () => log.ok(`Express server listening on port ${CONFIG.PORT}`));
+  return new Promise((resolve, reject) => {
+    const server = app.listen(CONFIG.PORT);
+    httpServer = server;
+    const onBindError = err => {
+      if (httpServer === server) httpServer = null;
+      reject(err);
+    };
+    server.once('error', onBindError);
+    server.once('listening', () => {
+      server.removeListener('error', onBindError);
+      server.on('error', err => log.error(`HTTP server error: ${err.message}`));
+      log.ok(`Express server listening on port ${CONFIG.PORT}`);
+      resolve(server);
+    });
+  });
 }
 
 // Resolve who actually made an Overseerr request.
@@ -10637,16 +10672,13 @@ async function shutdown(sig, exitCode = 0) {
     process.exit(exitCode);
   }, CONFIG.SHUTDOWN_DRAIN_SECONDS * 1000).unref();
 
-  // Stop accepting new HTTP connections first (webhooks, dashboard, in-flight /download/:token
-  // streams) and give existing ones up to SHUTDOWN_DRAIN_SECONDS to finish before moving on.
-  if (httpServer) {
-    await new Promise(resolve => httpServer.close(err => {
-      if (err) log.warn(`HTTP server close error: ${err.message}`);
-      resolve();
-    }));
+  // Stop HTTP first, then Discord. The lifecycle also cancels a pending login retry and safely
+  // closes a server whose bind completed while shutdown was already in progress.
+  if (runtimeLifecycle) {
+    try { await runtimeLifecycle.stop(); } catch (err) { log.warn(`Runtime shutdown error: ${err.message}`); }
+  } else {
+    try { await client.destroy(); } catch (err) { log.warn(`Discord client destroy error: ${err.message}`); }
   }
-
-  try { await client.destroy(); } catch (err) { log.warn(`Discord client destroy error: ${err.message}`); }
   try { db.pragma('wal_checkpoint(TRUNCATE)'); db.close(); } catch (err) { log.warn(`DB close error: ${err.message}`); }
 
   clearTimeout(hardTimeout);
@@ -10654,11 +10686,25 @@ async function shutdown(sig, exitCode = 0) {
 }
 ['SIGTERM', 'SIGINT'].forEach(s => process.on(s, () => shutdown(s)));
 
-try {
+async function startRuntime() {
   validateConfig();
   runMigrations();
-  client.login(CONFIG.DISCORD_BOT_TOKEN);
-} catch (err) {
+  runtimeLifecycle = createRuntimeLifecycle({
+    client,
+    token: CONFIG.DISCORD_BOT_TOKEN,
+    startHttp: startExpressServer,
+    stopHttp: server => new Promise(resolve => server.close(err => {
+      if (err) log.warn(`HTTP server close error: ${err.message}`);
+      if (httpServer === server) httpServer = null;
+      resolve();
+    })),
+    startDiscordWorkers,
+    log,
+  });
+  await runtimeLifecycle.start();
+}
+
+startRuntime().catch(err => {
   log.error(err.message);
   process.exit(1);
-}
+});
