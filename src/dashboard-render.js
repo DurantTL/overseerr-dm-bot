@@ -465,8 +465,42 @@ function renderSettingsGroup(group) {
   </div>`;
 }
 
+function renderAutomationRegistry(items) {
+  const rows = (items || []).map(item => {
+    const state = item.state || {};
+    const cadence = item.cadence || {};
+    const status = item.running ? 'running' : !item.enabled ? 'disabled' : state.status || 'not run';
+    const outcome = state.status === 'failed'
+      ? state.error || 'failed'
+      : state.resultSummary || 'No completed run recorded.';
+    const timing = state.finishedAt
+      ? `${fmtAgo(state.finishedAt)} · ${fmtDuration(state.durationMs || 0)} · ${state.trigger || 'unknown'} · ${state.resultCount ?? 0} result(s)`
+      : 'No completed run recorded.';
+    const cadenceMode = cadence.mutable ? ' · live editable' : cadence.restartRequired ? ' · restart required' : '';
+    const cadenceText = cadence.minutes > 0
+      ? `Every ${cadence.minutes} min · ${cadence.source}${cadenceMode}`
+      : `Disabled · ${cadence.source || 'compose'}${cadenceMode}`;
+    const next = state.nextRunAt
+      ? item.enabled ? `Next expected ${fmtAgo(state.nextRunAt)}` : `No run scheduled; eligibility rechecked ${fmtAgo(state.nextRunAt)}`
+      : 'Next run not scheduled.';
+    const manual = item.manual?.enabled
+      ? `${item.previewable ? 'Preview and run-now available.' : 'Run-now available.'}`
+      : `Manual unavailable: ${item.manual?.reason || 'scheduled execution only.'}`;
+    const action = item.manual?.enabled
+      ? `<button class="btn" type="button" data-post="/admin/action/sweep" data-body="${escapeHtml(JSON.stringify({ name: item.id }))}"${item.enabled ? '' : ' disabled'}>Run now</button>`
+      : '';
+    return `<div class="setting">
+      <div class="setting-main"><div class="setting-name">${escapeHtml(item.label)} <span class="tag${item.enabled ? ' on' : ''}">${escapeHtml(status)}</span></div>
+      <div class="setting-help">${escapeHtml(item.enabled ? cadenceText : `Disabled: ${item.disabledReason} · ${cadenceText}`)} · ${escapeHtml(timing)}<br>${escapeHtml(outcome)} · ${escapeHtml(next)} · ${escapeHtml(manual)}</div></div>
+      <div class="setting-ctl">${action}</div>
+    </div>`;
+  }).join('');
+  return `<div class="card" id="automation-registry"><h2>Automation registry<span class="sub">Every scheduled worker, its effective source, persisted outcome, and safe manual policy.</span></h2>${rows || '<p class="muted">Registry is starting.</p>'}</div>`;
+}
+
 module.exports = {
   renderSettingsGroup,
+  renderAutomationRegistry,
   DASHBOARD_CSS,
   escapeHtml,
   renderPage,

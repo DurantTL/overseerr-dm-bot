@@ -22,6 +22,7 @@ function registerDashboardReadRoutes(app, deps) {
     forecastLabel,
     gatherHealth,
     gatherIncompleteRequests,
+    getAutomationRegistry = () => null,
     getGuildMembers,
     getTierPlan,
     grabDailyAllowance,
@@ -43,6 +44,7 @@ function registerDashboardReadRoutes(app, deps) {
     queuePercent,
     quotaBlockReason,
     rateLimit,
+    renderAutomationRegistry = () => '',
     renderHealthBadges,
     renderItemList,
     renderPage,
@@ -210,12 +212,13 @@ function registerDashboardReadRoutes(app, deps) {
       ],
     }));
     const seasonAlertItems = seasonAlertDashboardItems(listSeasonAlertStates({ stoodDownOnly: true }));
-    const sweepItems = [
-      ['stuck', 'Stuck-download sweep'],
-      ['escalation', 'Escalation sweep'],
-      ['season-pack', 'Season-pack sweep'],
-      ['episode-recovery', 'Episode-recovery sweep'],
-    ].map(([name, title]) => ({ state: 'skip', title, actions: [{ label: 'Run now', url: '/admin/action/sweep', body: { name } }] }));
+    const automationInventory = getAutomationRegistry()?.list() || [];
+    const sweepItems = automationInventory.filter(item => item.manual.enabled).map(item => ({
+      state: item.enabled ? 'skip' : 'warn',
+      title: item.label,
+      sub: item.enabled ? 'Registry-approved manual action' : item.disabledReason,
+      actions: [{ label: 'Run now', url: '/admin/action/sweep', body: { name: item.id }, disabled: !item.enabled }],
+    }));
 
     const tierItems = tierNodes.map(n => {
       const plan = getTierPlan(n.name);
@@ -328,6 +331,7 @@ function registerDashboardReadRoutes(app, deps) {
           <h2>Season-search alert stand-downs<span class="sub">Searches still run. Only repeated identical no-release messages are muted.</span></h2>
           ${renderItemList(seasonAlertItems, 'No season-search alerts are stood down.')}
         </div>
+        ${renderAutomationRegistry(automationInventory)}
         ${settingsGroups.map(renderSettingsGroup).join('')}
       </section>
 
