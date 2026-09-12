@@ -556,6 +556,7 @@ function startStartupErrorServer(error, {
   overall = 'startup_error',
   details = {},
   label = 'Startup',
+  healthMessage = 'Startup failed; inspect the service logs for the internal diagnostic.',
 } = {}) {
   const message = error instanceof Error ? error.message : String(error);
   const sentence = /[.!?]$/.test(message) ? message : `${message}.`;
@@ -570,7 +571,7 @@ function startStartupErrorServer(error, {
     res.setHeader('Content-Type', 'application/json');
     if (req.method === 'GET' && req.url === '/health') {
       res.statusCode = 503;
-      return res.end(JSON.stringify({ overall, error: message, ...details }));
+      return res.end(JSON.stringify({ overall, error: healthMessage, ...details }));
     }
     res.statusCode = 404;
     return res.end(JSON.stringify({ error: 'Not Found' }));
@@ -582,6 +583,7 @@ function startConfigErrorServer(error, fatalPath = '/app/data/last-fatal.txt') {
     fatalPath,
     overall: 'config_error',
     label: 'Startup validation',
+    healthMessage: 'Configuration is invalid; inspect the service logs or last-fatal.txt for details.',
   });
 }
 

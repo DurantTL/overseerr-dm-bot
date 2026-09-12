@@ -216,7 +216,10 @@ test('config: validation failure stays reachable through health', async () => {
     if (!server.listening) await once(server, 'listening');
     const response = await fetch(`http://127.0.0.1:${server.address().port}/health`);
     assert.strictEqual(response.status, 503);
-    assert.deepStrictEqual(await response.json(), { overall: 'config_error', error: validationError.message });
+    assert.deepStrictEqual(await response.json(), {
+      overall: 'config_error',
+      error: 'Configuration is invalid; inspect the service logs or last-fatal.txt for details.',
+    });
     assert.match(fs.readFileSync(fatalPath, 'utf8'), /DISCORD_BOT_TOKEN/);
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));
@@ -237,6 +240,7 @@ test('migration failure health exposes bounded version context without internal 
       fatalPath,
       overall: 'migration_error',
       label: 'Database migration',
+      healthMessage: 'Database migration failed; application workers were not started.',
       details: {
         migration: {
           status: 'failed', version: 1, targetVersion: 2,
@@ -249,6 +253,7 @@ test('migration failure health exposes bounded version context without internal 
     assert.strictEqual(response.status, 503);
     const body = await response.json();
     assert.strictEqual(body.overall, 'migration_error');
+    assert.strictEqual(body.error, 'Database migration failed; application workers were not started.');
     assert.deepStrictEqual(body.migration, {
       status: 'failed', version: 1, targetVersion: 2,
       failedVersion: 2, failedName: 'bounded-data-repairs', backupCreated: true,

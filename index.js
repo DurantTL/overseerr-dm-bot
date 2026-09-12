@@ -10717,6 +10717,7 @@ startRuntime().catch(err => {
       fatalPath: path.join(path.dirname(DB_PATH), 'last-migration-error.txt'),
       overall: 'migration_error',
       label: 'Database migration',
+      healthMessage: 'Database migration failed; application workers were not started.',
       details: {
         migration: {
           status: 'failed',
