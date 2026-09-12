@@ -16,7 +16,6 @@ const {
   PermissionFlagsBits,
 } = require('discord.js');
 
-const express = require('express');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const bodyParser = require('body-parser');
 const multer = require('multer');
@@ -55,7 +54,7 @@ const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = requi
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
-const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
+const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
 const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, eraseTorrent, getRtorrentVersion, getRtorrentPaths } = require('./src/rtorrent');
 const { decideRatioRemoval, describeDeletionSafety } = require('./src/ratio-cleanup');
@@ -65,7 +64,12 @@ const { webhookEventKey } = require('./src/webhook-events');
 const { createWebhookHandlers, requireWebhookSecret } = require('./src/routes/webhooks');
 const { registerTierAgentRoutes } = require('./src/routes/tier-agent');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
+const { registerDashboardReadRoutes } = require('./src/routes/dashboard-read');
+const { createDashboardSession, createDashboardAuth, createDashboardGateActor, dashboardActor, registerDashboardAuthRoutes } = require('./src/routes/dashboard-auth');
 const { createApp } = require('./src/app');
+const { createRuntimeLifecycle, createDiscordReadyGuard } = require('./src/runtime-lifecycle');
+const { createAutomationRegistry } = require('./src/automation-registry');
+const { evaluateTierPlanStaleness } = require('./src/tier-plan-staleness');
 const { findUnprocessableTorrents, unacknowledgedTorrents, pruneAcknowledged, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate, planStuckTransferActions } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
@@ -73,7 +77,7 @@ const { summarizeSeriesGaps, describeGaps, describeActivity, rankIncomplete } = 
 const { priorityKey, orderByPriority, isPinned, nextRank } = require('./src/priority');
 const { summarizeImportRejections, renderRejectionLines, looksLikeMappingProblem } = require('./src/import-rejections');
 const { normalizeSearchQuery, searchDashboard } = require('./src/search');
-const { runEpisodeRecoverySweep, previewEpisodeRecoverySweep } = require('./src/episode-recovery');
+const { initializeEpisodeRecovery, runEpisodeRecoverySweep, previewEpisodeRecoverySweep } = require('./src/episode-recovery');
 const { createRequestGate } = require('./src/request-gate');
 const { passkeyRp, createPasskeyService } = require('./src/passkeys');
 const { prepareTierNodeInstall } = require('./src/tier-node-setup');
@@ -97,54 +101,12 @@ function brandedEmbed(color) {
   return e;
 }
 
-// Secret used to sign dashboard session cookies. validateConfig() refuses to start with
-// DASHBOARD_ENABLED=true unless SESSION_SECRET is set, so this is never derived from the admin
-// password/token (a captured cookie would otherwise hand an attacker a known HMAC message/
-// signature pair, guessable offline at SHA-256 speed) and never falls back to a per-process value
-// (which would silently invalidate every session on restart instead of failing loudly).
-function sessionSecret() {
-  return CONFIG.SESSION_SECRET;
-}
-
-// Signed, stateless session token: base64url(payload).hmac. No external cookie/session deps.
-function signSession(ttlMs) {
-  const payload = Buffer.from(JSON.stringify({ exp: Date.now() + ttlMs })).toString('base64url');
-  const sig = crypto.createHmac('sha256', sessionSecret()).update(payload).digest('base64url');
-  return `${payload}.${sig}`;
-}
-
-function verifySession(token) {
-  if (!token || typeof token !== 'string' || !token.includes('.')) return false;
-  const [payload, sig] = token.split('.');
-  const expected = crypto.createHmac('sha256', sessionSecret()).update(payload).digest('base64url');
-  const a = Buffer.from(sig);
-  const b = Buffer.from(expected);
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return false;
-  try {
-    const { exp } = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    return typeof exp === 'number' && Date.now() < exp;
-  } catch (_e) {
-    return false;
-  }
-}
-
-function setDashboardSessionCookie(req, res) {
-  const ttlMs = CONFIG.SESSION_TTL_HOURS * 3600000;
-  const secure = req.secure || (req.headers['x-forwarded-proto'] || '').includes('https');
-  res.setHeader('Set-Cookie', `dm_session=${signSession(ttlMs)}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=${Math.floor(ttlMs / 1000)}${secure ? '; Secure' : ''}`);
-}
-
-// Minimal cookie parser — pulls a single named cookie from the request header.
-function readCookie(req, name) {
-  const header = req.headers.cookie;
-  if (!header) return undefined;
-  for (const part of header.split(';')) {
-    const idx = part.indexOf('=');
-    if (idx === -1) continue;
-    if (part.slice(0, idx).trim() === name) return decodeURIComponent(part.slice(idx + 1).trim());
-  }
-  return undefined;
-}
+const dashboardSession = createDashboardSession({
+  secret: CONFIG.SESSION_SECRET,
+  ttlHours: CONFIG.SESSION_TTL_HOURS,
+});
+const dashboardAuth = createDashboardAuth({ config: CONFIG, session: dashboardSession, safeEqual });
+const dashboardGateActor = createDashboardGateActor({ sha256 });
 
 // Per-topic notification routing. Every kind falls back to ADMIN_CHANNEL_ID when its channel
 // isn't configured, so single-channel deployments behave exactly as before. Exception: 'deploy'
@@ -160,40 +122,86 @@ const passkeyService = createPasskeyService({
   store: { listPasskeys, getPasskey, savePasskey, updatePasskeyUse },
   ...PASSKEY_RP,
 });
-// A sweep whose cadence and on/off state are runtime-tunable. setInterval is wrong for these:
-// its period is fixed when it is created, so a cadence changed from the dashboard would not take
-// effect until the process restarted, and a sweep whose env value was 0 at boot would never exist
-// to be re-enabled at all. This re-reads both on every tick instead. While paused (interval 0, or
-// `enabled` false) it keeps waking once a minute purely to notice being switched back on.
-function scheduleTunableSweep({ label, minutesKey, enabledKey, fn, firstRunDelayMs }) {
-  const paused = () => (enabledKey && !tunable(enabledKey)) || tunable(minutesKey) <= 0;
-  const tick = () => {
-    if (!paused()) Promise.resolve().then(fn).catch(err => log.warn(`${label} failed: ${err.message}`));
-    setTimeout(tick, (paused() ? 1 : tunable(minutesKey)) * 60000).unref();
+let automationRegistry = null;
+
+const runtimeCadence = key => {
+  const raw = getSetting(`${runtimeSettings.OVERRIDE_PREFIX}${key}`);
+  const setting = runtimeSettings.settingByKey(key);
+  return {
+    minutes: tunable(key),
+    source: raw != null && runtimeSettings.validate(setting, raw).ok ? 'override' : 'compose',
+    mutable: true,
+    settingKey: key,
   };
-  setTimeout(tick, firstRunDelayMs ?? (paused() ? 60000 : tunable(minutesKey) * 60000)).unref();
+};
+const staticCadence = (minutes, settingKey) => ({ minutes, source: 'compose', mutable: false, restartRequired: true, settingKey });
+const enabled = (condition, reason) => condition ? { enabled: true } : { enabled: false, reason };
+const safeManual = { enabled: true };
+const scheduledOnly = reason => ({ enabled: false, reason });
+
+function createAutomationDefinitions() {
+  return [
+    { id: 'tier-plan-stale-alert', label: 'Tier plan staleness', cadence: () => staticCadence(60, 'TIER_PLAN_STALE_DAYS'), prerequisite: () => enabled(true), firstRunDelayMs: 120000, runOnStartup: true, run: sweepTierPlanStaleAlerts, manual: scheduledOnly('Read-only operator alert; scheduled execution only.') },
+    { id: 'pending-approvals', label: 'Pending approvals', cadence: () => runtimeCadence('PENDING_APPROVAL_CHECK_MINUTES'), prerequisite: () => enabled(true), run: sweepPendingApprovals, manual: scheduledOnly('Uses notification and expiry timing; scheduled execution only.') },
+    { id: 'request-reconcile', label: 'Request reconciliation', cadence: () => staticCadence(CONFIG.REQUEST_RECONCILE_MINUTES, 'REQUEST_RECONCILE_MINUTES'), prerequisite: () => enabled(true), firstRunDelayMs: 60000, runOnStartup: true, run: sweepRequestStatuses, manual: scheduledOnly('May notify many requesters; scheduled execution only.') },
+    { id: 'stuck', label: 'Stuck downloads', cadence: () => runtimeCadence('STUCK_CHECK_MINUTES'), prerequisite: () => enabled(arrSources().length > 0, 'Radarr or Sonarr is not configured.'), run: sweepStuckDownloads, preview: () => previewAutomation('stuck'), manual: safeManual },
+    { id: 'escalation', label: 'AvistaZ escalation', cadence: () => runtimeCadence('ESCALATION_CHECK_MINUTES'), prerequisite: () => enabled(tunable('ESCALATION_ENABLED') && !!(CONFIG.RADARR_URL || CONFIG.SONARR_URL), tunable('ESCALATION_ENABLED') ? 'Radarr or Sonarr is not configured.' : 'ESCALATION_ENABLED is off.'), run: sweepEscalations, preview: values => previewAutomation('escalation', values), manual: safeManual },
+    { id: 'season-pack', label: 'Season packs', cadence: () => runtimeCadence('SEASON_PACK_CHECK_MINUTES'), prerequisite: () => enabled(tunable('SEASON_PACK_FIRST') && !!CONFIG.SONARR_URL, tunable('SEASON_PACK_FIRST') ? 'Sonarr is not configured.' : 'SEASON_PACK_FIRST is off.'), firstRunDelayMs: 120000, runOnStartup: true, run: sweepSeasonPacks, manualRun: () => sweepSeasonPacks({ rearmAlerts: true }), preview: values => previewAutomation('season-pack', values), manual: safeManual },
+    { id: 'grab', label: 'Grab transfers', cadence: () => staticCadence(CONFIG.GRAB_CHECK_MINUTES, 'GRAB_CHECK_MINUTES'), prerequisite: () => enabled(grabConfigured(), 'AvistaZ/rTorrent grab pipeline is not configured.'), firstRunDelayMs: 1, runOnStartup: true, startupIgnoresCadence: true, startupRun: pumpGrabTransfers, run: sweepGrabJobs, manual: scheduledOnly('Moves files and triggers imports; scheduled execution only.') },
+    { id: 'adoption', label: 'rTorrent adoption', cadence: () => staticCadence(CONFIG.RTORRENT_ADOPT_CHECK_MINUTES, 'RTORRENT_ADOPT_CHECK_MINUTES'), prerequisite: () => enabled(CONFIG.RTORRENT_ADOPT_ENABLED && adoptPipelineReady(), CONFIG.RTORRENT_ADOPT_ENABLED ? 'Adoption pipeline is incomplete.' : 'RTORRENT_ADOPT_ENABLED is off.'), run: sweepAdoptCandidates, manual: scheduledOnly('Creates import jobs; use /rtorrent adopt for reviewed execution.') },
+    { id: 'ratio-cleanup', label: 'rTorrent ratio cleanup', cadence: () => runtimeCadence('RTORRENT_RATIO_CLEANUP_CHECK_MINUTES'), prerequisite: () => enabled(rtorrentConfigured() && tunable('RTORRENT_RATIO_CLEANUP_ENABLED'), tunable('RTORRENT_RATIO_CLEANUP_ENABLED') ? 'rTorrent is not configured.' : 'RTORRENT_RATIO_CLEANUP_ENABLED is off.'), run: sweepRatioCleanup, manual: scheduledOnly('Can remove torrents; scheduled execution only.') },
+    { id: 'janitor', label: 'Janitor', cadence: () => staticCadence(CONFIG.JANITOR_CHECK_MINUTES, 'JANITOR_CHECK_MINUTES'), prerequisite: () => enabled(true), run: janitorSweep, manual: scheduledOnly('Can enforce retention and deletion policy; scheduled execution only.') },
+    { id: 'backup', label: 'Database backup', cadence: () => staticCadence(CONFIG.BACKUP_INTERVAL_HOURS * 60, 'BACKUP_INTERVAL_HOURS'), prerequisite: () => enabled(true), run: sweepBackup, manual: scheduledOnly('Use /backup-rehearse for the safe read-only action.') },
+    { id: 'monthly-recap', label: 'Monthly recap', cadence: () => staticCadence(60, 'MONTHLY_RECAP_ENABLED'), prerequisite: () => enabled(CONFIG.MONTHLY_RECAP_ENABLED, 'MONTHLY_RECAP_ENABLED is off.'), run: sweepMonthlyRecap, manual: scheduledOnly('Posts to Discord; scheduled execution only.') },
+    { id: 'transcode', label: 'Transcode watchdog', cadence: () => staticCadence(CONFIG.PLAYBACK_CHECK_MINUTES, 'PLAYBACK_CHECK_MINUTES'), prerequisite: () => enabled(tautulliConfigured(), 'Tautulli is not configured.'), run: sweepTranscodes, manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
+    { id: 'premiumize', label: 'Premiumize transfers', cadence: () => staticCadence(CONFIG.PREMIUMIZE_CHECK_MINUTES, 'PREMIUMIZE_CHECK_MINUTES'), prerequisite: () => enabled(premiumizeConfigured(), 'Premiumize is not configured.'), run: sweepPremiumizeTransfers, manual: scheduledOnly('Can retry, clear, or reroute transfers; scheduled execution only.') },
+    { id: 'stage-queue', label: 'Stage queue', cadence: () => staticCadence(CONFIG.STAGE_CHECK_MINUTES, 'STAGE_CHECK_MINUTES'), prerequisite: () => enabled(stagingConfigured(), 'Plex Home staging is not configured.'), firstRunDelayMs: 1, runOnStartup: true, startupIgnoresCadence: true, run: pumpStageQueue, manual: scheduledOnly('Copies media over the WAN; scheduled execution only.') },
+    { id: 'stage-reconcile', label: 'Stage reconciliation', cadence: () => staticCadence(CONFIG.STAGE_RECONCILE_MINUTES, 'STAGE_RECONCILE_MINUTES'), prerequisite: () => enabled(stagingConfigured(), 'Plex Home staging is not configured.'), firstRunDelayMs: 1, runOnStartup: true, startupIgnoresCadence: true, run: sweepStagedReconciliation, manual: scheduledOnly('Reconciles durable cache state; scheduled execution only.') },
+    { id: 'tunnel', label: 'Tunnel health', cadence: () => staticCadence(CONFIG.PH_TUNNEL_CHECK_MINUTES, 'PH_TUNNEL_CHECK_MINUTES'), prerequisite: () => enabled(!!CONFIG.PH_TUNNEL_HEALTH_URL, 'PH_TUNNEL_HEALTH_URL is not configured.'), run: sweepTunnelHealth, manual: scheduledOnly('May send availability alerts; scheduled execution only.') },
+    { id: 'episode-recovery', label: 'Episode recovery', cadence: () => runtimeCadence('EPISODE_RECOVERY_CHECK_MINUTES'), prerequisite: () => enabled(tunable('EPISODE_RECOVERY_ENABLED') && !!(CONFIG.SONARR_URL && CONFIG.PROWLARR_URL && CONFIG.RTORRENT_URL), tunable('EPISODE_RECOVERY_ENABLED') ? 'Sonarr, Prowlarr, and rTorrent are required.' : 'EPISODE_RECOVERY_ENABLED is off.'), firstRunDelayMs: 30000, runOnStartup: true, run: runEpisodeRecoverySweep, preview: values => previewEpisodeRecoverySweep(values), manual: safeManual },
+  ];
 }
 
-const runningSweeps = new Set();
-const automationRuns = new Map();
-function recordAutomationRun(name, state) {
-  automationRuns.set(name, state);
-  setSetting(`automation_run:${name}`, JSON.stringify(state));
+function tierPlanStaleAlertState(node) {
+  const raw = getSetting(`tier_plan_stale_alert:${String(node).toLowerCase()}`);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (_err) { return null; }
 }
-async function runGuardedSweep(name, fn) {
-  if (runningSweeps.has(name)) return { ok: false, busy: true };
-  runningSweeps.add(name);
-  try {
-    recordAutomationRun(name, { status: 'running', startedAt: Date.now(), finishedAt: null, error: null });
-    const result = await fn();
-    recordAutomationRun(name, { status: 'ok', startedAt: automationRuns.get(name).startedAt, finishedAt: Date.now(), error: null });
-    return { ok: true, result };
-  } catch (err) {
-    recordAutomationRun(name, { status: 'failed', startedAt: automationRuns.get(name).startedAt, finishedAt: Date.now(), error: err.message });
-    throw err;
-  } finally {
-    runningSweeps.delete(name);
+
+async function sweepTierPlanStaleAlerts() {
+  const events = evaluateTierPlanStaleness({
+    nodes: listTierNodes(),
+    getPlan: getTierPlan,
+    getAlertState: tierPlanStaleAlertState,
+    setAlertState: (node, state) => setSetting(`tier_plan_stale_alert:${String(node).toLowerCase()}`, JSON.stringify(state)),
+    clearAlertState: node => deleteSetting(`tier_plan_stale_alert:${String(node).toLowerCase()}`),
+    staleDays: CONFIG.TIER_PLAN_STALE_DAYS,
+  });
+  for (const event of events) {
+    if (event.type === 'stale') {
+      const age = fmtDuration(event.state.ageMs);
+      notifyChannel('system', { embeds: [brandedEmbed(COLORS.WARN)
+        .setTitle(`⚠️ Tier plan stale — ${event.node}`)
+        .setDescription([
+          `The published tier plan is **${age} old**, beyond the configured ${event.state.staleDays}-day threshold.`,
+          `Plan: \`${event.state.planHash}\``,
+          `Review \`/tier preview node:${event.node}\` and apply it manually when safe.`,
+          '**No plan was automatically applied and no files were pruned.**',
+          event.state.stoodDown ? `Repeated alerts are now stood down after ${event.state.attemptCount} checks; publishing a newer plan clears this state.` : null,
+        ].filter(Boolean).join('\n'))] });
+      audit('tier_plan_stale_alerted', { node: event.node, planHash: event.state.planHash, ageMs: event.state.ageMs, attemptCount: event.state.attemptCount, stoodDown: event.state.stoodDown });
+    } else {
+      notifyChannel('system', { embeds: [brandedEmbed(COLORS.SUCCESS)
+        .setTitle(`✅ Tier plan refreshed — ${event.node}`)
+        .setDescription(`A newer tier plan is published for **${event.node}**. The stale-plan alert has recovered.`)] });
+      audit('tier_plan_stale_recovered', { node: event.node, planHash: event.plan?.published?.planHash || null });
+    }
   }
+  return {
+    checked: listTierNodes().filter(node => node.enabled).length,
+    staleAlerts: events.filter(event => event.type === 'stale').length,
+    recoveries: events.filter(event => event.type === 'recovered').length,
+  };
 }
 
 function channelFor(kind) {
@@ -462,6 +470,7 @@ const client = new Client({
   ],
   partials: [Partials.Channel, Partials.Message],
 });
+let runtimeLifecycle = null;
 const gatherHealth = createHealthChecker({
   config: CONFIG,
   client,
@@ -473,6 +482,10 @@ const gatherHealth = createHealthChecker({
   backupState,
   getPlexToken,
   plexApiGet,
+  discordState: () => runtimeLifecycle?.snapshot() || { discord: 'initializing', loginAttempts: 0 },
+});
+const discordReadyGuard = createDiscordReadyGuard({
+  snapshot: () => runtimeLifecycle?.snapshot() || { discord: 'initializing' },
 });
 
 // Seerr request ids the bot already announced in Discord (admin /request creates and gate
@@ -4203,10 +4216,10 @@ const slashCommands = [
   new SlashCommandBuilder().setName('status').setDescription('Show status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('automation').setDescription('Preview or run an automation sweep').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption(o => o.setName('sweep').setDescription('Automation sweep').setRequired(true).addChoices(
-      { name: 'stuck downloads', value: 'stuck' },
+      { name: 'Stuck downloads', value: 'stuck' },
       { name: 'AvistaZ escalation', value: 'escalation' },
-      { name: 'season packs', value: 'season-pack' },
-      { name: 'episode recovery', value: 'episode-recovery' },
+      { name: 'Season packs', value: 'season-pack' },
+      { name: 'Episode recovery', value: 'episode-recovery' },
     ))
     .addStringOption(o => o.setName('mode').setDescription('Preview makes no changes').setRequired(true).addChoices(
       { name: 'preview', value: 'preview' },
@@ -4239,7 +4252,14 @@ const slashCommands = [
     .addStringOption(o => o.setName('details').setDescription('Describe the problem').setRequired(true)),
   new SlashCommandBuilder().setName('watching').setDescription('Show current Plex playback (via Tautulli)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('indexers').setDescription('Prowlarr indexer + Byparr health').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-  new SlashCommandBuilder().setName('debrid').setDescription('Premiumize account + transfer status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('debrid').setDescription('Premiumize account + transfer status, and importing manually-added cloud downloads').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(s => s.setName('status').setDescription('Premiumize account usage + active/failed transfers'))
+    .addSubcommand(s => s.setName('import').setDescription('Trigger a Sonarr/Radarr import scan of the Premiumize downloads folder')
+      .addStringOption(o => o.setName('target').setDescription('Which arr should import').setRequired(true).addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }))
+      .addStringOption(o => o.setName('folder').setDescription('Subfolder of the Premiumize downloads folder (default: the whole folder)'))
+      .addStringOption(o => o.setName('mode').setDescription('move (default, cleans up the folder) or copy (leaves the files in place)').addChoices({ name: 'move', value: 'move' }, { name: 'copy', value: 'copy' })))
+    .addSubcommand(s => s.setName('staging').setDescription('Why-won\'t-it-import report: per-folder match/rejection summary of the Premiumize downloads folder')
+      .addStringOption(o => o.setName('target').setDescription('Which arr to ask (default sonarr)').addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }))),
   new SlashCommandBuilder().setName('avistaz').setDescription('AvistaZ direct grab (Prowlarr search → seedbox rTorrent)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('search').setDescription('Search AvistaZ and pick a release to send to the seedbox')
       .addStringOption(o => o.setName('title').setDescription('Title to search for').setRequired(true))
@@ -4426,7 +4446,7 @@ async function sweepRequestProgressNotifications(remoteRequests) {
   return counts;
 }
 
-client.once('ready', async () => {
+async function startDiscordWorkers() {
   log.ok(`Discord bot online as ${client.user.tag}`);
   const warnings = configWarnings();
   for (const w of warnings) log.warn(`Config: ${w.replace(/\*\*/g, '')}`);
@@ -4449,22 +4469,7 @@ client.once('ready', async () => {
   rehydratePendingEmails();
   startExpressServer();
   registerSlashCommands();
-  scheduleTunableSweep({ label: 'Pending-approval sweep', minutesKey: 'PENDING_APPROVAL_CHECK_MINUTES', fn: () => runGuardedSweep('pending-approvals', sweepPendingApprovals) });
-  log.ok(`Pending-approval sweep every ${tunable('PENDING_APPROVAL_CHECK_MINUTES')} min (nudge ${tunable('PENDING_APPROVAL_NUDGE_HOURS')}h, requester update ${tunable('PENDING_APPROVAL_REQUESTER_HOURS')}h, expire ${tunable('PENDING_APPROVAL_EXPIRE_DAYS')}d)`);
-  if (CONFIG.REQUEST_RECONCILE_MINUTES > 0) {
-    // Seerr often starts alongside the bot. Give it one minute to bind its port, then let the
-    // inventory reader retry transient connection failures before recording a failed run.
-    setTimeout(() => runGuardedSweep('request-reconcile', sweepRequestStatuses)
-      .catch(err => log.warn(`Request reconciliation failed: ${err.message}`)), 60000).unref();
-    setInterval(() => runGuardedSweep('request-reconcile', sweepRequestStatuses).catch(err => log.warn(`Request reconciliation failed: ${err.message}`)), CONFIG.REQUEST_RECONCILE_MINUTES * 60000).unref();
-    log.ok(`Seerr request reconciliation starts after 1 min and runs every ${CONFIG.REQUEST_RECONCILE_MINUTES} min`);
-  }
-  // The arr URLs are a static prerequisite (no arrs configured, nothing to watch); the cadence and
-  // thresholds are runtime-tunable, so the timer is armed either way and decides per tick.
-  if (arrSources().length) {
-    scheduleTunableSweep({ label: 'Stuck-download sweep', minutesKey: 'STUCK_CHECK_MINUTES', fn: () => runGuardedSweep('stuck', sweepStuckDownloads) });
-    log.ok(`Stuck-download watchdog every ${tunable('STUCK_CHECK_MINUTES')} min (threshold ${tunable('STUCK_AFTER_MINUTES')} min)`);
-  }
+  await initializeEpisodeRecovery();
   if (CONFIG.RADARR_URL || CONFIG.SONARR_URL) {
     // Non-fatal setup check: escalation fails with tag_missing until the AvistaZ tag exists.
     if (tunable('ESCALATION_ENABLED')) verifyAvistazTags(CONFIG.AVISTAZ_TAG).then(missing => {
@@ -4475,79 +4480,24 @@ client.once('ready', async () => {
           .setDescription(missing.map(w => `• ${w}`).join('\n').slice(0, 4000))] });
       }
     }).catch(err => log.warn(`AvistaZ tag check failed: ${err.message}`));
-    scheduleTunableSweep({ label: 'Escalation sweep', minutesKey: 'ESCALATION_CHECK_MINUTES', enabledKey: 'ESCALATION_ENABLED', fn: () => runGuardedSweep('escalation', sweepEscalations) });
-    log.ok(`AvistaZ escalation watchdog every ${tunable('ESCALATION_CHECK_MINUTES')} min (delay ${escalationDelayLabel()}, tag '${CONFIG.AVISTAZ_TAG}')`);
-  }
-  if (CONFIG.SONARR_URL) {
-    // A first pass shortly after boot, then on the interval — Sonarr needs a moment to settle
-    // after a restart, and the sweep is capped per run anyway. sweepSeasonPacks() re-checks the
-    // SEASON_PACK_FIRST toggle itself, so a paused tick costs nothing.
-    scheduleTunableSweep({ label: 'Season-pack sweep', minutesKey: 'SEASON_PACK_CHECK_MINUTES', enabledKey: 'SEASON_PACK_FIRST', fn: () => runGuardedSweep('season-pack', sweepSeasonPacks), firstRunDelayMs: 120000 });
-    log.ok(`Season-pack-first search every ${tunable('SEASON_PACK_CHECK_MINUTES')} min (old = ended or ${tunable('SEASON_PACK_DORMANT_DAYS')}d dormant, max ${tunable('SEASON_PACK_MAX_PER_RUN')}/run)`);
   }
   if (grabConfigured()) {
     // A restart mid-transfer leaves 'transferring' rows behind; put them back in the queue
     // (rclone copy skips files that already made it across).
     const resumed = resetInterruptedGrabTransfers();
     if (resumed) log.info(`Re-queued ${resumed} AvistaZ transfer(s) interrupted by restart`);
-    if (CONFIG.GRAB_CHECK_MINUTES > 0) {
-      setInterval(() => runGuardedSweep('grab', sweepGrabJobs).catch(err => log.warn(`Grab sweep failed: ${err.message}`)), CONFIG.GRAB_CHECK_MINUTES * 60000).unref();
-    }
-    pumpGrabTransfers().catch(err => log.warn(`Grab transfer pump failed: ${err.message}`));
-    log.ok(`AvistaZ direct grab enabled → seedbox rTorrent (sweep every ${CONFIG.GRAB_CHECK_MINUTES} min, mode ${CONFIG.GRAB_MODE}, daily limit ${CONFIG.AVISTAZ_DAILY_GRAB_LIMIT || 'unlimited'})`);
-  }
-  if (CONFIG.RTORRENT_ADOPT_ENABLED && adoptPipelineReady() && CONFIG.RTORRENT_ADOPT_CHECK_MINUTES > 0) {
-    setInterval(() => runGuardedSweep('adoption', sweepAdoptCandidates).catch(err => log.warn(`Adoption sweep failed: ${err.message}`)), CONFIG.RTORRENT_ADOPT_CHECK_MINUTES * 60000).unref();
-    log.ok(`rTorrent adoption discovery running every ${CONFIG.RTORRENT_ADOPT_CHECK_MINUTES} min (labels: ${CONFIG.RTORRENT_ADOPT_LABELS.join(', ') || 'none'}, auto: ${CONFIG.RTORRENT_ADOPT_AUTO ? 'on' : 'off'})`);
-  }
-  if (rtorrentConfigured()) {
-    scheduleTunableSweep({ label: 'rTorrent ratio-cleanup sweep', minutesKey: 'RTORRENT_RATIO_CLEANUP_CHECK_MINUTES', enabledKey: 'RTORRENT_RATIO_CLEANUP_ENABLED', fn: () => runGuardedSweep('ratio-cleanup', sweepRatioCleanup) });
-    log.ok(`rTorrent ratio cleanup ${tunable('RTORRENT_RATIO_CLEANUP_ENABLED') ? `on (every ${tunable('RTORRENT_RATIO_CLEANUP_CHECK_MINUTES')} min, stall ≥${(tunable('RTORRENT_RATIO_MIN_PERMILLE') / 1000).toFixed(2)} for ${tunable('RTORRENT_RATIO_STALL_DAYS')}d, force ≥${(tunable('RTORRENT_RATIO_FORCE_PERMILLE') / 1000).toFixed(2)})` : 'off (RTORRENT_RATIO_CLEANUP_ENABLED)'}`);
-  }
-  if (CONFIG.JANITOR_CHECK_MINUTES > 0) {
-    setInterval(() => runGuardedSweep('janitor', janitorSweep).catch(err => log.warn(`Janitor sweep failed: ${err.message}`)), CONFIG.JANITOR_CHECK_MINUTES * 60000).unref();
-    log.ok(`Janitor running every ${CONFIG.JANITOR_CHECK_MINUTES} min (grace deletes: ${CONFIG.ENABLE_DELETION ? 'on' : 'off'}, retention: ${CONFIG.RETENTION_ENFORCEMENT ? 'on' : 'off'}, dry-run: ${CONFIG.DELETION_DRY_RUN ? 'on' : 'off'})`);
-  }
-  if (CONFIG.BACKUP_INTERVAL_HOURS > 0) {
-    setInterval(() => runGuardedSweep('backup', sweepBackup).catch(err => log.warn(`Backup sweep failed: ${err.message}`)), CONFIG.BACKUP_INTERVAL_HOURS * 3600000).unref();
-    log.ok(`DB backup running every ${CONFIG.BACKUP_INTERVAL_HOURS}h → ${CONFIG.BACKUP_DIR} (keeping last ${CONFIG.BACKUP_KEEP_COUNT})`);
-  }
-  if (CONFIG.MONTHLY_RECAP_ENABLED) {
-    // Checked hourly, like the other "last_run" gated sweeps in janitorSweep, but this one fires
-    // rarely enough to run on its own interval rather than folding into that sweep.
-    setInterval(() => runGuardedSweep('monthly-recap', sweepMonthlyRecap).catch(err => log.warn(`Monthly recap sweep failed: ${err.message}`)), 3600000).unref();
-    log.ok('Monthly community recap enabled — posts to the whats_new channel roughly every 30 days');
-  }
-  if (tautulliConfigured() && CONFIG.PLAYBACK_CHECK_MINUTES > 0) {
-    setInterval(() => runGuardedSweep('transcode', sweepTranscodes).catch(err => log.warn(`Transcode sweep failed: ${err.message}`)), CONFIG.PLAYBACK_CHECK_MINUTES * 60000).unref();
-    log.ok(`Transcode watchdog running every ${CONFIG.PLAYBACK_CHECK_MINUTES} min`);
-  }
-  if (premiumizeConfigured() && CONFIG.PREMIUMIZE_CHECK_MINUTES > 0) {
-    setInterval(() => runGuardedSweep('premiumize', sweepPremiumizeTransfers).catch(err => log.warn(`Premiumize sweep failed: ${err.message}`)), CONFIG.PREMIUMIZE_CHECK_MINUTES * 60000).unref();
-    log.ok(`Premiumize transfer watchdog running every ${CONFIG.PREMIUMIZE_CHECK_MINUTES} min (stuck after ${CONFIG.PREMIUMIZE_STUCK_AFTER_MINUTES} min)`);
   }
   if (stagingConfigured()) {
     // A restart mid-copy leaves 'copying' rows behind; put them back in the queue and let the
     // worker pick them up (rclone skips files that already made it across).
     const resumed = resetInterruptedStageJobs();
     if (resumed) log.info(`Re-queued ${resumed} stage job(s) interrupted by restart`);
-    if (CONFIG.STAGE_CHECK_MINUTES > 0) {
-      setInterval(() => runGuardedSweep('stage-queue', pumpStageQueue).catch(err => log.warn(`Stage queue pump failed: ${err.message}`)), CONFIG.STAGE_CHECK_MINUTES * 60000).unref();
-    }
-    pumpStageQueue().catch(err => log.warn(`Stage queue pump failed: ${err.message}`));
-    // §Phase2: reconcile the staged_items DB against the cache drive once at startup (the DB may have
-    // drifted while the process was down) and then periodically.
-    sweepStagedReconciliation().catch(err => log.warn(`Stage reconciliation failed: ${err.message}`));
-    if (CONFIG.STAGE_RECONCILE_MINUTES > 0) {
-      setInterval(() => runGuardedSweep('stage-reconcile', sweepStagedReconciliation).catch(err => log.warn(`Stage reconciliation failed: ${err.message}`)), CONFIG.STAGE_RECONCILE_MINUTES * 60000).unref();
-    }
-    log.ok(`Plex Home staging enabled → ${CONFIG.STAGE_RCLONE_REMOTE} (queue check every ${CONFIG.STAGE_CHECK_MINUTES} min, min free ${CONFIG.STAGE_MIN_FREE_GB} GB)`);
   }
-  if (CONFIG.PH_TUNNEL_HEALTH_URL && CONFIG.PH_TUNNEL_CHECK_MINUTES > 0) {
-    setInterval(() => runGuardedSweep('tunnel', sweepTunnelHealth).catch(err => log.warn(`Tunnel health sweep failed: ${err.message}`)), CONFIG.PH_TUNNEL_CHECK_MINUTES * 60000).unref();
-    log.ok(`PH tunnel watchdog running every ${CONFIG.PH_TUNNEL_CHECK_MINUTES} min (alert after ${CONFIG.PH_TUNNEL_FAILS_BEFORE_ALERT} failures)`);
-  }
-});
+  automationRegistry = createAutomationRegistry({ definitions: createAutomationDefinitions(), store: settingsStore, logger: log });
+  automationRegistry.start();
+  const active = automationRegistry.list().filter(item => item.enabled).length;
+  log.ok(`Automation registry started: ${active}/${automationRegistry.ids().length} workers enabled`);
+}
 
 client.on('guildMemberAdd', async member => {
   // Set the pending flag regardless of whether the DM lands, so that if this member has DMs
@@ -5475,20 +5425,16 @@ async function handleAutomationCommand(interaction) {
   const mode = interaction.options.getString('mode');
   await interaction.deferReply({ ephemeral: true });
   if (mode === 'preview') {
-    const items = await previewAutomation(name);
+    const preview = await automationRegistry.preview(name);
+    if (!preview.ok) return interaction.editReply(preview.busy ? `${name} is already running.` : preview.reason);
+    const items = preview.result;
     const lines = items.length
       ? items.map(item => `- ${item.title}: ${item.stage} — ${item.reason}`)
       : ['No items would be actioned.'];
     return interaction.editReply([`**${name} preview**`, ...lines].join('\n').slice(0, 2000));
   }
-  const sweeps = {
-    stuck: sweepStuckDownloads,
-    escalation: sweepEscalations,
-    'season-pack': () => sweepSeasonPacks({ rearmAlerts: true }),
-    'episode-recovery': runEpisodeRecoverySweep,
-  };
-  const outcome = await runGuardedSweep(name, sweeps[name]);
-  if (!outcome.ok || outcome.result?.busy) return interaction.editReply(`${name} is already running.`);
+  const outcome = await automationRegistry.run(name, { trigger: 'manual' });
+  if (!outcome.ok) return interaction.editReply(outcome.busy ? `${name} is already running.` : outcome.reason || 'Automation is unavailable.');
   const result = outcome.result || {};
   const count = result.searched ?? result.acted ?? result.alerted ?? 0;
   return interaction.editReply(`${name} sweep finished with ${count} action(s).`);
@@ -5522,41 +5468,18 @@ async function handleStatusCommand(interaction) {
   const activeLinks = db.prepare('SELECT COUNT(*) AS c FROM download_tokens WHERE revoked = 0 AND expires_at > ?').get(Date.now()).c;
   const warnings = configWarnings();
 
-  const automationConfig = [
-    ['pending-approvals', tunable('PENDING_APPROVAL_CHECK_MINUTES')],
-    ['request-reconcile', CONFIG.REQUEST_RECONCILE_MINUTES],
-    ['stuck', tunable('STUCK_CHECK_MINUTES')],
-    ['escalation', tunable('ESCALATION_ENABLED') ? tunable('ESCALATION_CHECK_MINUTES') : 0],
-    ['season-pack', tunable('SEASON_PACK_FIRST') ? tunable('SEASON_PACK_CHECK_MINUTES') : 0],
-    ['grab', grabConfigured() ? CONFIG.GRAB_CHECK_MINUTES : 0],
-    ['adoption', CONFIG.RTORRENT_ADOPT_ENABLED ? CONFIG.RTORRENT_ADOPT_CHECK_MINUTES : 0],
-    ['ratio-cleanup', rtorrentConfigured() && tunable('RTORRENT_RATIO_CLEANUP_ENABLED') ? tunable('RTORRENT_RATIO_CLEANUP_CHECK_MINUTES') : 0],
-    ['janitor', CONFIG.JANITOR_CHECK_MINUTES],
-    ['backup', CONFIG.BACKUP_INTERVAL_HOURS > 0 ? CONFIG.BACKUP_INTERVAL_HOURS * 60 : 0],
-    ['monthly-recap', CONFIG.MONTHLY_RECAP_ENABLED ? 60 : 0],
-    ['transcode', tautulliConfigured() ? CONFIG.PLAYBACK_CHECK_MINUTES : 0],
-    ['premiumize', premiumizeConfigured() ? CONFIG.PREMIUMIZE_CHECK_MINUTES : 0],
-    ['stage-queue', stagingConfigured() ? CONFIG.STAGE_CHECK_MINUTES : 0],
-    ['stage-reconcile', stagingConfigured() ? CONFIG.STAGE_RECONCILE_MINUTES : 0],
-    ['tunnel', CONFIG.PH_TUNNEL_HEALTH_URL ? CONFIG.PH_TUNNEL_CHECK_MINUTES : 0],
-  ];
   let automationDegraded = false;
-  const automationLines = automationConfig.map(([name, minutes]) => {
-    if (minutes <= 0) return `⏭️ ${name}: disabled`;
-    let run = automationRuns.get(name);
-    if (!run) {
-      const stored = getSetting(`automation_run:${name}`);
-      if (stored) {
-        try { run = JSON.parse(stored); } catch (err) { run = { status: 'failed', finishedAt: null, error: `invalid stored run state: ${err.message}` }; }
-      }
-    }
-    if (!run) return `❔ ${name}: every ${minutes}m · not run since boot`;
+  const automationLines = (automationRegistry?.list() || []).map(item => {
+    const { id: name, state: run, cadence } = item;
+    const minutes = cadence.minutes;
+    if (!item.enabled) return `⏭️ ${name}: disabled · ${item.disabledReason}`;
+    if (!run) return `❔ ${name}: every ${minutes}m (${cadence.source}) · not run yet`;
     if (run.status === 'running') {
       const runningOverdue = run.startedAt && Date.now() - run.startedAt > Math.max(minutes * 2, minutes + 5) * 60000;
       if (runningOverdue) automationDegraded = true;
       return `${runningOverdue ? '⚠️' : '⏳'} ${name}: ${runningOverdue ? 'running unusually long' : 'running'} since ${discordTimestamp(run.startedAt)}`;
     }
-    const detail = run.status === 'failed' ? ` · ${String(run.error).slice(0, 100)}` : '';
+    const detail = run.status === 'failed' ? ` · ${String(run.error).slice(0, 100)}` : ` · ${run.resultCount ?? 0} result(s) in ${fmtDuration(run.durationMs || 0)}`;
     const overdue = run.finishedAt && Date.now() - run.finishedAt > Math.max(minutes * 2, minutes + 5) * 60000;
     if (run.status === 'failed' || overdue) automationDegraded = true;
     return `${run.status === 'ok' && !overdue ? '✅' : run.status === 'failed' ? '❌' : '⚠️'} ${name}: ${overdue ? 'overdue · last ' : `${run.status} `}${run.finishedAt ? discordTimestamp(run.finishedAt, 'R') : 'unknown'}${detail}`;
@@ -6713,6 +6636,27 @@ async function handleIndexersCommand(interaction) {
 // /debrid — Premiumize account usage + active transfers.
 async function handleDebridCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
+  const sub = interaction.options.getSubcommand();
+
+  // Manual import trigger + staging report for the folder a Premiumize downloader (e.g.
+  // Premiumizearr) syncs completed cloud transfers into — for multi-season packs dropped
+  // straight into Premiumize's "My Files" that the arr's own watch-folder scan didn't pick up.
+  // Shares the same helpers as /rtorrent import + /rtorrent staging, just pointed at the
+  // PREMIUMIZE_STAGING_PATH/PREMIUMIZE_IMPORT_PATH pair instead of the GRAB_* one.
+  if (sub === 'import') {
+    return runManualImportSub(interaction, {
+      stagingPath: CONFIG.PREMIUMIZE_STAGING_PATH, importPath: CONFIG.PREMIUMIZE_IMPORT_PATH,
+      sourceLabel: 'Premiumize', auditAction: 'debrid_manual_import',
+    });
+  }
+  if (sub === 'staging') {
+    return runStagingReportSub(interaction, {
+      importPath: CONFIG.PREMIUMIZE_IMPORT_PATH, sourceLabel: 'Premiumize', title: '🩺 Staging Report (Premiumize)',
+      importHint: '/debrid import',
+    });
+  }
+
+  // sub === 'status'
   await interaction.deferReply({ ephemeral: true });
   if (!premiumizeConfigured()) return interaction.editReply('❌ Premiumize isn\'t configured — set `PREMIUMIZE_API_KEY`.');
   try {
@@ -6824,6 +6768,92 @@ async function handleAvistazCommand(interaction) {
   } catch (err) {
     audit('external_api_error', { provider: 'prowlarr', error: err.message, action: 'avistaz_search' });
     return interaction.editReply(`❌ AvistaZ search failed: ${err.message}`);
+  }
+}
+
+// Manual import trigger, shared by /rtorrent import (seedbox staging via GRAB_STAGING_PATH/
+// GRAB_IMPORT_PATH) and /debrid import (a Premiumize downloader's DownloadsDirectory via
+// PREMIUMIZE_STAGING_PATH/PREMIUMIZE_IMPORT_PATH) — hand a folder straight to the arr for files
+// that got there outside the normal pipeline (manual rclone copies, a season pack dropped
+// straight into Premiumize's "My Files" that never auto-imported). mode:copy leaves the source
+// files in place; mode:move (default) is what the automated pipelines themselves use.
+async function runManualImportSub(interaction, { stagingPath, importPath, sourceLabel, auditAction }) {
+  if (!stagingPath || !importPath) return interaction.reply({ content: `❌ ${sourceLabel} isn't configured (needs both a staging and an import path).`, ephemeral: true });
+  const target = interaction.options.getString('target');
+  const arr = target === 'sonarr'
+    ? { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, cmd: 'DownloadedEpisodesScan', label: 'Sonarr' }
+    : { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr' };
+  if (!arr.url) return interaction.reply({ content: `❌ ${arr.label} isn't configured.`, ephemeral: true });
+  // Strip wrapping quotes: Discord passes option strings verbatim, and admins used to
+  // shell quoting will type folder:"Name With Spaces" — the quotes are not part of the name.
+  const clean = String(interaction.options.getString('folder') || '').trim().replace(/^["']+|["']+$/g, '').replace(/^\/+|\/+$/g, '');
+  if (clean && clean.split('/').some(p => !p || p === '.' || p === '..')) return interaction.reply({ content: '❌ Unsafe folder path.', ephemeral: true });
+  if (clean === '.incoming' || clean.startsWith('.incoming/')) return interaction.reply({ content: '❌ `.incoming` holds in-flight copies — never import from there.', ephemeral: true });
+  const mode = interaction.options.getString('mode') === 'copy' ? 'Copy' : 'Move';
+  await interaction.deferReply({ ephemeral: true });
+  // The bot and the arr see the same share at different mount points; existence is
+  // checked through the bot's view before asking the arr to scan its own.
+  const localPath = clean ? path.join(stagingPath, clean) : stagingPath;
+  if (!fs.existsSync(localPath)) return interaction.editReply(`❌ \`${clean || '(folder root)'}\` doesn't exist under \`${stagingPath}\`.`);
+  if (!clean) {
+    const incoming = path.join(stagingPath, '.incoming');
+    const busy = fs.existsSync(incoming) && fs.readdirSync(incoming).length > 0;
+    if (busy) return interaction.editReply('❌ A transfer is mid-copy (`.incoming` isn\'t empty) — scanning the whole folder now could import half-copied files. Scan a specific `folder:`, or wait for the transfers to finish.');
+  }
+  const fullImportPath = clean ? `${importPath}/${clean}` : importPath;
+  try {
+    const res = await axios.post(`${arr.url}/api/v3/command`, { name: arr.cmd, path: fullImportPath, importMode: mode },
+      { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
+    audit(auditAction, { actorDiscordId: interaction.user.id, target, path: fullImportPath, mode });
+    // Same post-scan verification the grab pipeline gets: silent declines surface as the
+    // decline alert (with the Map to a Series… wizard for TV) instead of nothing happening.
+    // Copy mode is excluded — files staying put is expected there, not a decline.
+    if (mode === 'Move') {
+      verifyArrImport({ id: null, title: clean || `${sourceLabel} import`, media_type: target === 'sonarr' ? 'tv' : 'movie' },
+        { url: arr.url, key: arr.key, label: arr.label }, res.data?.id, fullImportPath, localPath)
+        .catch(err => log.warn(`Manual-import verification failed: ${err.message}`));
+    }
+    return interaction.editReply(`📦 ${arr.label} is scanning \`${fullImportPath}\` (import mode: **${mode}**, command #${res.data?.id ?? '?'}). ${mode === 'Copy' ? 'The source files stay where they are.' : 'Imported files are moved out — if the import is declined, an alert with next steps lands in the downloads channel.'}`);
+  } catch (err) {
+    audit('external_api_error', { provider: target, error: err.message, action: auditAction });
+    return interaction.editReply(`❌ ${arr.label} command failed: ${err.message}`);
+  }
+}
+
+// The "why won't it import" report, shared by /rtorrent staging and /debrid staging: the arr's
+// own manual-import preview, aggregated per folder — match counts and rejection reasons at a
+// glance, no API spelunking.
+async function runStagingReportSub(interaction, { importPath, sourceLabel, title, importHint }) {
+  if (!importPath) return interaction.reply({ content: `❌ ${sourceLabel} isn't configured (needs an import path).`, ephemeral: true });
+  const target = interaction.options.getString('target') || 'sonarr';
+  const arr = arrForMediaType(target === 'radarr' ? 'movie' : 'tv');
+  if (!arr.url) return interaction.reply({ content: `❌ ${arr.label} isn't configured.`, ephemeral: true });
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    const preview = await axios.get(`${arr.url}/api/v3/manualimport`, {
+      params: { folder: importPath, filterExistingFiles: false }, headers: { 'X-Api-Key': arr.key }, timeout: 120000,
+    }).then(r => r.data || []);
+    if (!preview.length) return interaction.editReply(`${sourceLabel} looks empty to ${arr.label} — nothing at \`${importPath}\`.`);
+    const byFolder = new Map();
+    for (const f of preview) {
+      const rel = f.relativePath || f.path || '';
+      const folder = rel.includes('/') ? rel.split('/')[0] : '(loose files)';
+      const b = byFolder.get(folder) || { files: 0, matched: 0, reasons: new Map() };
+      b.files++;
+      if (target === 'radarr' ? f.movie : f.series) b.matched++;
+      for (const rej of (f.rejections || [])) b.reasons.set(rej.reason, (b.reasons.get(rej.reason) || 0) + 1);
+      byFolder.set(folder, b);
+    }
+    const lines = [...byFolder.entries()].map(([folder, b]) => {
+      const rej = [...b.reasons.entries()].map(([r, n]) => `${r} ×${n}`).join('; ');
+      const verdict = !b.reasons.size && b.matched === b.files ? '✅ importable' : rej ? `⚠️ ${rej}` : '⚠️ some files unmatched';
+      return `**${folder.slice(0, 80)}** — ${b.files} file(s), ${b.matched} matched\n${verdict}`;
+    });
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle(title)
+      .setDescription(`${lines.join('\n\n')}\n\n✅ folders import with \`${importHint}\`; "Unknown Series" needs the series added/matched in ${arr.label}; "Invalid season or episode" usually means the series type or numbering doesn't fit (try Series Type: Anime for absolute-numbered dramas); already-imported leftovers show as matched with no rejections.`.slice(0, 4000))] });
+  } catch (err) {
+    return interaction.editReply(`❌ ${arr.label} manual-import preview failed: ${err.message}`);
   }
 }
 
@@ -6997,86 +7027,19 @@ async function handleRtorrentCommand(interaction) {
     }
   }
 
-  // Manual import trigger: hand a staging folder straight to the arr — for files that got
-  // there outside the pipeline (manual rclone copies, the pre-adoption era). mode:copy
-  // leaves the staging files in place; mode:move (default) is what the pipeline itself uses.
+  // Manual import trigger + staging report share their implementation with /debrid import and
+  // /debrid staging — see runManualImportSub/runStagingReportSub.
   if (sub === 'import') {
-    if (!CONFIG.GRAB_STAGING_PATH || !CONFIG.GRAB_IMPORT_PATH) return interaction.reply({ content: '❌ Staging isn\'t configured (`GRAB_STAGING_PATH` + `GRAB_IMPORT_PATH`).', ephemeral: true });
-    const target = interaction.options.getString('target');
-    const arr = target === 'sonarr'
-      ? { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, cmd: 'DownloadedEpisodesScan', label: 'Sonarr' }
-      : { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr' };
-    if (!arr.url) return interaction.reply({ content: `❌ ${arr.label} isn't configured.`, ephemeral: true });
-    // Strip wrapping quotes: Discord passes option strings verbatim, and admins used to
-    // shell quoting will type folder:"Name With Spaces" — the quotes are not part of the name.
-    const clean = String(interaction.options.getString('folder') || '').trim().replace(/^["']+|["']+$/g, '').replace(/^\/+|\/+$/g, '');
-    if (clean && clean.split('/').some(p => !p || p === '.' || p === '..')) return interaction.reply({ content: '❌ Unsafe folder path.', ephemeral: true });
-    if (clean === '.incoming' || clean.startsWith('.incoming/')) return interaction.reply({ content: '❌ `.incoming` holds in-flight copies — never import from there.', ephemeral: true });
-    const mode = interaction.options.getString('mode') === 'copy' ? 'Copy' : 'Move';
-    await interaction.deferReply({ ephemeral: true });
-    // The bot and the arr see the same share at different mount points; existence is
-    // checked through the bot's view before asking the arr to scan its own.
-    const localPath = clean ? path.join(CONFIG.GRAB_STAGING_PATH, clean) : CONFIG.GRAB_STAGING_PATH;
-    if (!fs.existsSync(localPath)) return interaction.editReply(`❌ \`${clean || '(staging root)'}\` doesn't exist under \`${CONFIG.GRAB_STAGING_PATH}\`.`);
-    if (!clean) {
-      const incoming = path.join(CONFIG.GRAB_STAGING_PATH, '.incoming');
-      const busy = fs.existsSync(incoming) && fs.readdirSync(incoming).length > 0;
-      if (busy) return interaction.editReply('❌ A transfer is mid-copy (`.incoming` isn\'t empty) — scanning the whole staging folder now could import half-copied files. Scan a specific `folder:`, or wait for the transfers to finish.');
-    }
-    const importPath = clean ? `${CONFIG.GRAB_IMPORT_PATH}/${clean}` : CONFIG.GRAB_IMPORT_PATH;
-    try {
-      const res = await axios.post(`${arr.url}/api/v3/command`, { name: arr.cmd, path: importPath, importMode: mode },
-        { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
-      audit('rtorrent_manual_import', { actorDiscordId: interaction.user.id, target, path: importPath, mode });
-      // Same post-scan verification the grab pipeline gets: silent declines surface as the
-      // decline alert (with the Map to a Series… wizard for TV) instead of nothing happening.
-      // Copy mode is excluded — files staying put is expected there, not a decline.
-      if (mode === 'Move') {
-        verifyArrImport({ id: null, title: clean || 'staging import', media_type: target === 'sonarr' ? 'tv' : 'movie' },
-          { url: arr.url, key: arr.key, label: arr.label }, res.data?.id, importPath, localPath)
-          .catch(err => log.warn(`Manual-import verification failed: ${err.message}`));
-      }
-      return interaction.editReply(`📦 ${arr.label} is scanning \`${importPath}\` (import mode: **${mode}**, command #${res.data?.id ?? '?'}). ${mode === 'Copy' ? 'The staging files stay where they are.' : 'Imported files are moved out of staging — if the import is declined, an alert with next steps lands in the downloads channel.'}`);
-    } catch (err) {
-      audit('external_api_error', { provider: target, error: err.message, action: 'rtorrent_manual_import' });
-      return interaction.editReply(`❌ ${arr.label} command failed: ${err.message}`);
-    }
+    return runManualImportSub(interaction, {
+      stagingPath: CONFIG.GRAB_STAGING_PATH, importPath: CONFIG.GRAB_IMPORT_PATH,
+      sourceLabel: 'seedbox staging', auditAction: 'rtorrent_manual_import',
+    });
   }
-
-  // The "why won't it import" report: the arr's own manual-import preview, aggregated per
-  // staging folder — match counts and rejection reasons at a glance, no API spelunking.
   if (sub === 'staging') {
-    if (!CONFIG.GRAB_IMPORT_PATH) return interaction.reply({ content: '❌ Staging isn\'t configured (`GRAB_IMPORT_PATH`).', ephemeral: true });
-    const target = interaction.options.getString('target') || 'sonarr';
-    const arr = arrForMediaType(target === 'radarr' ? 'movie' : 'tv');
-    if (!arr.url) return interaction.reply({ content: `❌ ${arr.label} isn't configured.`, ephemeral: true });
-    await interaction.deferReply({ ephemeral: true });
-    try {
-      const preview = await axios.get(`${arr.url}/api/v3/manualimport`, {
-        params: { folder: CONFIG.GRAB_IMPORT_PATH, filterExistingFiles: false }, headers: { 'X-Api-Key': arr.key }, timeout: 120000,
-      }).then(r => r.data || []);
-      if (!preview.length) return interaction.editReply(`Staging looks empty to ${arr.label} — nothing at \`${CONFIG.GRAB_IMPORT_PATH}\`.`);
-      const byFolder = new Map();
-      for (const f of preview) {
-        const rel = f.relativePath || f.path || '';
-        const folder = rel.includes('/') ? rel.split('/')[0] : '(loose files)';
-        const b = byFolder.get(folder) || { files: 0, matched: 0, reasons: new Map() };
-        b.files++;
-        if (target === 'radarr' ? f.movie : f.series) b.matched++;
-        for (const rej of (f.rejections || [])) b.reasons.set(rej.reason, (b.reasons.get(rej.reason) || 0) + 1);
-        byFolder.set(folder, b);
-      }
-      const lines = [...byFolder.entries()].map(([folder, b]) => {
-        const rej = [...b.reasons.entries()].map(([r, n]) => `${r} ×${n}`).join('; ');
-        const verdict = !b.reasons.size && b.matched === b.files ? '✅ importable' : rej ? `⚠️ ${rej}` : '⚠️ some files unmatched';
-        return `**${folder.slice(0, 80)}** — ${b.files} file(s), ${b.matched} matched\n${verdict}`;
-      });
-      return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
-        .setTitle(`🩺 Staging Report (${arr.label})`)
-        .setDescription(`${lines.join('\n\n')}\n\n✅ folders import with \`/rtorrent import\`; "Unknown Series" needs the series added/matched in ${arr.label}; "Invalid season or episode" usually means the series type or numbering doesn't fit (try Series Type: Anime for absolute-numbered dramas); already-imported leftovers show as matched with no rejections.`.slice(0, 4000))] });
-    } catch (err) {
-      return interaction.editReply(`❌ ${arr.label} manual-import preview failed: ${err.message}`);
-    }
+    return runStagingReportSub(interaction, {
+      importPath: CONFIG.GRAB_IMPORT_PATH, sourceLabel: 'seedbox staging', title: '🩺 Staging Report',
+      importHint: '/rtorrent import',
+    });
   }
 
   // sub === 'adopted'
@@ -7627,7 +7590,7 @@ async function handleHelpCommand(interaction) {
       '`/seerr-test` — Self-test Seerr Discord linking with a throwaway user',
       '`/watching` — Current Plex playback (via Tautulli)',
       '`/indexers` — Prowlarr indexer + Byparr health',
-      '`/debrid` — Premiumize account + transfer status',
+      '`/debrid` — Premiumize account + transfer status, plus importing manually-added cloud downloads',
       '`/cleanup-suggestions` — Largest/oldest media that could be cleaned up',
     ];
     const infrastructureCommands = [
@@ -9048,47 +9011,6 @@ async function handleButton(interaction) {
   }
 }
 
-function dashboardAuth(req, res, next) {
-  // Primary path for humans: a valid signed session cookie set at /admin/login.
-  // Header auth stays for scripts/automation (e.g. scripts/smoke-test.sh).
-  // The old ?password= URL path is gone — it leaked credentials into history and logs.
-  const sessionOk = verifySession(readCookie(req, 'dm_session'));
-  const pwd = req.headers['x-admin-password'];
-  const token = req.headers['x-admin-token'];
-  const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && safeEqual(pwd, CONFIG.DASHBOARD_ADMIN_PASSWORD);
-  const tokenOk = CONFIG.DASHBOARD_ADMIN_TOKEN && safeEqual(token, CONFIG.DASHBOARD_ADMIN_TOKEN);
-  if (!sessionOk && !passOk && !tokenOk) {
-    // Browsers hitting a page get sent to the login form; API/non-GET callers get 401.
-    if (req.method === 'GET' && (req.headers.accept || '').includes('text/html')) {
-      return res.redirect('/admin/login');
-    }
-    return res.status(401).send('Unauthorized');
-  }
-
-  if (CONFIG.STRICT_DASHBOARD_POST_AUTH && req.method !== 'GET') {
-    // Exact host match. Substring matching allowed e.g. https://myhost.com.evil.net through.
-    const sameHost = headerValue => {
-      if (!headerValue) return true; // header absent — nothing to compare
-      try { return new URL(headerValue).host === req.get('host'); } catch (_e) { return false; }
-    };
-    if (!sameHost(req.get('origin')) || !sameHost(req.get('referer'))) {
-      return res.status(403).send('Cross-site POST denied');
-    }
-  }
-  return next();
-}
-
-function dashboardActor(req) {
-  return { actor: 'dashboard', actorIp: req.ip || req.socket.remoteAddress || 'unknown' };
-}
-
-function dashboardGateActor(req) {
-  const session = readCookie(req, 'dm_session');
-  const ip = req.ip || req.socket.remoteAddress || 'unknown';
-  const id = session ? `session:${sha256(session).slice(0, 12)}` : `header:${ip}`;
-  return { kind: 'dashboard', id, label: `Dashboard operator ${id}` };
-}
-
 function dashboardGateResponse(result, operation) {
   if (result.error === 'already_handled') return { ok: false, error: 'This request was already handled or expired.', retryable: false };
   if (!result.ok) {
@@ -9216,6 +9138,7 @@ function seasonAlertDashboardItems(rows = []) {
 }
 
 function startExpressServer() {
+  if (httpServer) return Promise.resolve(httpServer);
   // Shared plumbing (x-powered-by, trust proxy, the global JSON body parser) lives in the
   // src/app.js factory so it can be exercised with real HTTP requests on an ephemeral port
   // without booting Discord — see scripts/tests/app-factory.test.js. Route registration below is
@@ -9323,714 +9246,95 @@ function startExpressServer() {
   });
 
   if (CONFIG.DASHBOARD_ENABLED) {
-    const adminForm = express.urlencoded({ extended: false, limit: '16kb' });
     const webauthnBrowserPath = path.join(path.dirname(require.resolve('@simplewebauthn/browser')), '..', 'dist', 'bundle', 'index.es5.umd.min.js');
     const passkeyClientPath = path.join(__dirname, 'src', 'passkey-client.js');
-
-    app.get('/admin/passkey-client.js', rateLimit({
-      windowMs: 60000,
-      limit: 120,
-      keyGenerator: httpRateLimitKey,
-      standardHeaders: 'draft-8',
-      legacyHeaders: false,
-    }), (_req, res) => res.sendFile(passkeyClientPath, { headers: { 'Cache-Control': 'no-cache' } }));
-    app.get('/admin/webauthn-browser.js', (_req, res) => res.sendFile(webauthnBrowserPath, { headers: { 'Cache-Control': 'public, max-age=31536000, immutable' } }));
-
-    app.get('/admin/login', (req, res) => {
-      if (verifySession(readCookie(req, 'dm_session'))) return res.redirect('/admin');
-      res.type('html').send(renderLogin(!!req.query.error, null, { passkeyEnabled: listPasskeys().length > 0 }));
+    registerDashboardAuthRoutes(app, {
+      config: CONFIG,
+      session: dashboardSession,
+      dashboardAuth,
+      httpRateLimitKey,
+      renderLogin,
+      listPasskeys,
+      passkeyService,
+      safeEqual,
+      audit,
+      renamePasskey,
+      revokePasskey,
+      passkeyClientPath,
+      webauthnBrowserPath,
     });
 
-    app.get('/admin/passkey/authentication-options', rateLimit({
+    registerDashboardReadRoutes(app, {
+      CONFIG,
+      PASSKEY_RP,
+      arrSources,
+      buildSyncPreview,
+      canEscalate,
+      dashboardActionError,
+      dashboardAuth,
+      db,
+      discordReadyGuard,
+      escapeHtml,
+      fetchArrQueues,
+      fetchDiskSpace,
+      fetchOverseerrUsers,
+      fmtAgo,
+      fmtDuration,
+      fmtSpace,
+      forecastDisks,
+      forecastLabel,
+      gatherHealth,
+      gatherIncompleteRequests,
+      getAutomationRegistry: () => automationRegistry,
+      getGuildMembers,
+      getTierPlan,
+      grabDailyAllowance,
+      httpRateLimitKey,
+      listActiveGrabJobs,
+      listActiveStageJobs,
+      listMediaPriority,
+      listPasskeys,
+      listPendingRequests,
+      listRadarrMovies,
+      listSeasonAlertStates,
+      listSonarrMissingEpisodes,
+      listSonarrSeries,
+      listTierNodeFolders,
+      listTierNodes,
+      mediaTypeLabel,
+      normalizeSearchQuery,
+      queueItemLooksUnhealthy,
+      queuePercent,
+      quotaBlockReason,
+      rateLimit,
+      renderAutomationRegistry,
+      renderHealthBadges,
+      renderItemList,
+      renderPage,
+      renderPasskeyManagement,
+      renderSettingsGroup,
+      renderStat,
+      renderTable,
+      renderTierNodeSetup,
+      runEdgeDiagnostics,
+      runtimeSettings,
+      searchDashboard,
+      seasonAlertDashboardItems,
+      settingsStore,
+      sqliteUtcMs,
+      tautulliApi,
+      tautulliConfigured,
+      tierNodeStatus,
+      tunable,
+    });
+    app.post('/admin/action/gate', rateLimit({
       windowMs: 15 * 60000,
-      limit: 10,
+      limit: 30,
       keyGenerator: httpRateLimitKey,
       standardHeaders: 'draft-8',
       legacyHeaders: false,
-      handler: (_req, res) => res.status(429).json({ error: 'Too many attempts. Try again in a few minutes.' }),
-    }), async (req, res) => {
-      const ip = req.ip || req.socket.remoteAddress || 'unknown';
-      if (!listPasskeys().length) return res.status(404).json({ error: 'No passkeys are enrolled.' });
-      const binding = crypto.randomBytes(32).toString('base64url');
-      const secure = req.secure || (req.headers['x-forwarded-proto'] || '').includes('https');
-      try {
-        const options = await passkeyService.authenticationOptions(binding);
-        res.setHeader('Cache-Control', 'no-store');
-        res.setHeader('Set-Cookie', `dm_webauthn=${binding}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=300${secure ? '; Secure' : ''}`);
-        return res.json(options);
-      } catch (_err) {
-        audit('dashboard_passkey_login_failed', { ip, reason: 'options_failed' });
-        return res.status(400).json({ error: 'Could not start passkey sign-in.' });
-      }
-    });
-
-    app.post('/admin/passkey/authenticate', async (req, res) => {
-      const ip = req.ip || req.socket.remoteAddress || 'unknown';
-      try {
-        await passkeyService.finishAuthentication(readCookie(req, 'dm_webauthn'), req.body);
-        setDashboardSessionCookie(req, res);
-        res.append('Set-Cookie', 'dm_webauthn=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0');
-        audit('dashboard_login_success', { ip, method: 'passkey' });
-        return res.json({ verified: true });
-      } catch (_err) {
-        audit('dashboard_passkey_login_failed', { ip, reason: 'verification_failed' });
-        return res.status(401).json({ verified: false, error: 'Passkey sign-in failed.' });
-      }
-    });
-
-    app.post('/admin/login', adminForm, rateLimit({
-      windowMs: 15 * 60000,
-      limit: 5,
-      keyGenerator: httpRateLimitKey,
-      standardHeaders: 'draft-8',
-      legacyHeaders: false,
-      handler: (_req, res) => res.status(429).type('html').send(renderLogin(
-        false,
-        'Too many attempts. Try again in a few minutes.',
-        { passkeyEnabled: listPasskeys().length > 0 },
-      )),
-    }), (req, res) => {
-      const ip = req.ip || req.socket.remoteAddress || 'unknown';
-      const pwd = req.body?.password || '';
-      const passOk = CONFIG.DASHBOARD_ADMIN_PASSWORD && safeEqual(pwd, CONFIG.DASHBOARD_ADMIN_PASSWORD);
-      const tokenOk = CONFIG.DASHBOARD_ADMIN_TOKEN && safeEqual(pwd, CONFIG.DASHBOARD_ADMIN_TOKEN);
-      if (!passOk && !tokenOk) {
-        audit('dashboard_login_failed', { ip });
-        return res.redirect('/admin/login?error=1');
-      }
-      setDashboardSessionCookie(req, res);
-      audit('dashboard_login_success', { ip, method: 'password' });
-      res.redirect('/admin');
-    });
-
-    app.post('/admin/logout', (req, res) => {
-      res.setHeader('Set-Cookie', 'dm_session=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0');
-      res.redirect('/admin/login');
-    });
-
-    app.get('/admin', dashboardAuth, async (_req, res) => {
-      const now = Date.now();
-      const pendingApprovals = listPendingRequests();
-      const passkeys = listPasskeys();
-      // Live activity: every external read is failure-tolerant so one dead integration never
-      // takes the dashboard down — null means "couldn't reach it", rendered as such.
-      const [health, sessions, queue, disks, edgeChecks, members, pendingQuota] = await Promise.all([
-        gatherHealth(),
-        tautulliConfigured() ? tautulliApi('get_activity').then(d => d?.sessions || []).catch(() => null) : Promise.resolve(null),
-        arrSources().length ? fetchArrQueues().catch(() => null) : Promise.resolve(null),
-        arrSources().length ? fetchDiskSpace().catch(() => null) : Promise.resolve(null),
-        runEdgeDiagnostics({ live: false }).catch(() => []),
-        pendingApprovals.length ? getGuildMembers().catch(() => []) : Promise.resolve([]),
-        Promise.all(pendingApprovals.map(pending => quotaBlockReason(pending.seerrUserId, pending.discordId, pending.mediaType, { tmdbId: pending.tmdbId, is4k: pending.is4k }, true)
-          .then(warning => ({ warning, error: null }))
-          .catch(err => ({ warning: null, error: dashboardActionError(err) })))),
-      ]);
-      const grabJobs = listActiveGrabJobs();
-      const stageJobs = listActiveStageJobs();
-      const escalations = db.prepare("SELECT * FROM escalations WHERE state IN ('watching','alerted','error') ORDER BY approved_at").all();
-      // Depends on the queue above, so it runs after rather than inside that Promise.all. Null on
-      // failure (Sonarr unreachable) so the card says so instead of claiming everything is fine.
-      const incomplete = await gatherIncompleteRequests({ queue: queue || [], grabJobs, escalations, now }).catch(() => null);
-      const pendingDeletions = db.prepare("SELECT * FROM pending_deletions WHERE status = 'pending' ORDER BY delete_after LIMIT 25").all();
-      const tierNodes = listTierNodes();
-      // Latest agent report per tier node, from the audit log.
-      const lastReportByNode = {};
-      for (const r of db.prepare("SELECT * FROM audit_log WHERE action = 'tier_agent_report' ORDER BY id DESC LIMIT 100").all()) {
-        try {
-          const m = JSON.parse(r.metadata_json);
-          if (m.node && !lastReportByNode[m.node]) lastReportByNode[m.node] = { ...m, at: r.created_at };
-        } catch (_e) {}
-      }
-
-      const pendingPlex = db.prepare('SELECT * FROM users WHERE invited = 0 ORDER BY requested_at DESC LIMIT 25').all();
-      const pendingRequestCount = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get().c;
-      const recentRequests = db.prepare('SELECT * FROM requests ORDER BY id DESC LIMIT 50').all();
-      const linkedUsers = db.prepare('SELECT discord_id, email, invited, requested_at, home_server FROM users ORDER BY requested_at DESC LIMIT 100').all();
-      const recentDownloads = db.prepare('SELECT * FROM download_access_log ORDER BY id DESC LIMIT 25').all();
-      const auditRows = db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 50').all();
-      const linkedTotal = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
-      const activeLinks = db.prepare('SELECT COUNT(*) AS c FROM download_tokens WHERE revoked = 0 AND expires_at > ?').get(now).c;
-
-      const memberNames = new Map(members.map(member => [member.user.id, member.displayName || member.user.globalName || member.user.username || member.user.tag]));
-      const approvalItems = pendingApprovals.map((pending, index) => {
-        const quota = pendingQuota[index];
-        const azAvailable = canEscalate(pending);
-        const createdAt = typeof pending.createdAt === 'number' ? pending.createdAt : sqliteUtcMs(pending.createdAt);
-        return {
-          state: quota.error || quota.warning ? 'warn' : 'ok',
-          title: pending.label,
-          sub: `${memberNames.get(pending.discordId) || pending.discordId} · ${mediaTypeLabel(pending.mediaType, pending.is4k)} · quota: ${quota.error ? `unavailable (${quota.error})` : (quota.warning || 'within limit')} · AvistaZ pre-auth ${azAvailable ? 'available' : 'unavailable'}`,
-          right: createdAt ? `waiting ${fmtDuration(Math.max(0, now - createdAt))}` : 'waiting age unknown',
-          actions: [
-            { label: 'Approve', url: '/admin/action/gate', body: { operation: 'approve', nonce: pending.nonce }, inline: true },
-            { label: 'Approve + AvistaZ fallback', url: '/admin/action/gate', body: { operation: 'approve_az', nonce: pending.nonce }, inline: true, disabled: !azAvailable, title: azAvailable ? '' : 'AvistaZ pre-auth is unavailable for this request.' },
-            { label: 'Deny', url: '/admin/action/gate', body: { operation: 'deny', nonce: pending.nonce }, inline: true, danger: true },
-          ],
-        };
-      });
-
-      const stats = [
-        renderStat('Streaming', sessions === null ? '—' : sessions.length),
-        renderStat('Downloading', queue === null ? '—' : queue.length),
-        renderStat('Active jobs', grabJobs.length + stageJobs.length),
-        renderStat('Watching', escalations.length),
-        renderStat('Incomplete', incomplete === null ? '—' : incomplete.length),
-        renderStat('Tier nodes', `${tierNodes.filter(n => n.enabled).length}/${tierNodes.length}`),
-        renderStat('Pending requests', pendingRequestCount),
-        renderStat('Linked users', linkedTotal),
-        renderStat('Download links', activeLinks),
-      ].join('');
-
-      const decisionLabel = s => (s.transcode_decision === 'transcode' || s.video_decision === 'transcode' ? '🔥 transcoding'
-        : s.transcode_decision === 'copy' ? '📼 direct stream' : '▶️ direct play');
-      const nowPlayingItems = (sessions || []).map(s => ({
-        state: (s.transcode_decision === 'transcode' || s.video_decision === 'transcode') ? 'warn' : 'ok',
-        title: s.full_title || 'Unknown',
-        sub: `${s.friendly_name || s.user || 'Unknown'} · ${decisionLabel(s)}${s.stream_video_full_resolution ? ` · ${s.stream_video_full_resolution}` : ''}${s.player ? ` · ${s.player}` : ''}`,
-        pct: Number(s.progress_percent) || 0,
-      }));
-
-      const queueItems = (queue || []).map(q => ({
-        state: queueItemLooksUnhealthy(q) ? 'warn' : 'ok',
-        title: q.title,
-        sub: `${q.source.label} · ${q.status}${q.trackedState ? ` (${q.trackedState})` : ''}${q.messages.length ? ` · ⚠️ ${q.messages[0]}` : ''}`,
-        right: `${fmtSpace(Math.max(0, q.size - q.sizeleft))} / ${fmtSpace(q.size)}${q.timeleft ? ` · ${q.timeleft}` : ''}`,
-        pct: queuePercent(q),
-      }));
-
-      const jobItems = [
-        ...grabJobs.map(j => ({
-          state: j.state === 'failed' ? 'down' : 'ok',
-          title: j.release_title || j.title,
-          sub: `seedbox grab #${j.id} · ${j.state}${j.error ? ` · ${j.error}` : ''}`,
-          right: `${fmtSpace(j.size_bytes || 0)}${j.sent_at ? ` · started ${fmtAgo(j.sent_at)}` : ''}`,
-        })),
-        ...stageJobs.map(j => ({
-          state: j.status === 'failed' ? 'down' : 'ok',
-          title: j.title,
-          sub: `PH stage #${j.id} · ${j.status}`,
-          right: `${fmtSpace(j.size_bytes || 0)}${j.started_at ? ` · started ${fmtAgo(j.started_at)}` : ''}`,
-        })),
-      ];
-      const allowance = grabDailyAllowance();
-      const watchItems = [
-        ...escalations.map(e => ({
-          state: 'warn',
-          title: e.title,
-          sub: `escalation watch · ${e.state}${e.pre_authorized ? ' · pre-authorized' : ''}`,
-          right: `approved ${fmtAgo(e.approved_at)}`,
-          actions: [{
-            label: allowance.limited ? `Escalate now (${allowance.remaining} left)` : 'Escalate now',
-            url: '/admin/action/escalate',
-            body: { id: e.id },
-            confirm: allowance.limited
-              ? `Escalate ${e.title} now? This can spend one of ${allowance.remaining} remaining AvistaZ downloads today.`
-              : `Escalate ${e.title} to AvistaZ now?`,
-            danger: true,
-            disabled: allowance.exhausted,
-          }],
-        })),
-        ...pendingDeletions.map(p => ({
-          state: 'skip',
-          title: p.title || p.media_id,
-          sub: 'pending deletion (finished-watching prompt)',
-          right: `deletes ${fmtAgo(p.delete_after)}`,
-        })),
-      ];
-      const priorityItems = listMediaPriority().map((item, index, all) => ({
-        state: 'ok',
-        title: item.title,
-        sub: `${mediaTypeLabel(item.media_type, false)} · ${item.key}`,
-        right: `rank ${item.rank}`,
-        actions: [
-          { label: 'Up', url: '/admin/action/priority', body: { operation: 'move', key: item.key, direction: -1 }, disabled: index === 0 },
-          { label: 'Down', url: '/admin/action/priority', body: { operation: 'move', key: item.key, direction: 1 }, disabled: index === all.length - 1 },
-          { label: 'Unpin', url: '/admin/action/priority', body: { operation: 'unpin', key: item.key } },
-        ],
-      }));
-      const seasonAlertItems = seasonAlertDashboardItems(listSeasonAlertStates({ stoodDownOnly: true }));
-      const sweepItems = [
-        ['stuck', 'Stuck-download sweep'],
-        ['escalation', 'Escalation sweep'],
-        ['season-pack', 'Season-pack sweep'],
-        ['episode-recovery', 'Episode-recovery sweep'],
-      ].map(([name, title]) => ({ state: 'skip', title, actions: [{ label: 'Run now', url: '/admin/action/sweep', body: { name } }] }));
-
-      const tierItems = tierNodes.map(n => {
-        const plan = getTierPlan(n.name);
-        const rep = lastReportByNode[n.name];
-        const status = tierNodeStatus(plan, rep, now, CONFIG.TIER_PLAN_STALE_DAYS);
-        return {
-          state: !n.enabled ? 'skip' : status.state,
-          title: `${n.name}${n.full ? ' · full master' : ''}${n.sticky ? ' · sticky' : ''}`,
-          sub: `${n.access} · ${n.demand_source}${n.demand_source === 'atime' && n.atime_mask ? ` (mask ${n.atime_mask})` : ''} · ${n.transport} · ${fmtSpace(n.usable_bytes || 0)} @ ${n.headroom_pct}% headroom · ${status.details}`,
-          right: status.status,
-          actions: status.setup ? [{ label: 'Set up this node', setupNode: n.name }] : [],
-        };
-      });
-
-      const diskItems = forecastDisks(db, disks || [], now).map(d => {
-        const used = (d.totalSpace || 0) - (d.freeSpace || 0);
-        const pct = d.totalSpace ? Math.round((used / d.totalSpace) * 100) : 0;
-        return {
-          state: (tunable('DISK_SPACE_WARN_GB') > 0 && (d.freeSpace || 0) < tunable('DISK_SPACE_WARN_GB') * 1024 ** 3)
-            || (tunable('DISK_FORECAST_WARN_DAYS') > 0 && d.forecast.status === 'projected' && d.forecast.daysRemaining <= tunable('DISK_FORECAST_WARN_DAYS')) ? 'warn' : 'ok',
-          title: d.root,
-          sub: `${fmtSpace(d.freeSpace || 0)} free of ${fmtSpace(d.totalSpace || 0)} · ${forecastLabel(d.forecast)}`,
-          right: `${pct}% used`,
-          pct,
-        };
-      });
-
-      const plexUserRows = pendingPlex.map(u => ({ email: u.email, discord: u.discord_id, requested: fmtAgo(u.requested_at) }));
-      const requestRows = recentRequests.map(r => ({ title: r.title, status: r.status, type: mediaTypeLabel(r.media_type, r.is_4k), seerr: r.overseerr_request_id || 'provisional', requester: r.requested_by_discord_id || '—', when: fmtAgo(sqliteUtcMs(r.created_at)) }));
-      const linkedRows = linkedUsers.map(u => ({ email: u.email, discord: u.discord_id, group: u.home_server === 'ph' ? 'Philippines' : 'Main', invited: u.invited ? '✅' : '⏳', since: fmtAgo(u.requested_at) }));
-      const downloadRows = recentDownloads.map(d => ({ when: fmtAgo(sqliteUtcMs(d.created_at)), file: (d.file_path || '').split('/').pop() || '—', status: d.status, sent: d.bytes_sent ? fmtSpace(d.bytes_sent) : '', ip: d.ip || '' }));
-      const auditTableRows = auditRows.map(a => ({ when: fmtAgo(sqliteUtcMs(a.created_at)), action: a.action, details: String(a.metadata_json || '').slice(0, 160) }));
-
-      const unavailable = which => `<p class="muted">${escapeHtml(which)} unreachable or not configured.</p>`;
-      const nav = [['overview', 'Overview'], ['operations', 'Operations'], ['automation', 'Automation'], ['edge', 'Edge'], ['people', 'People'], ['logs', 'Logs']];
-      const settingsGroups = runtimeSettings.describeRuntimeSettings({ config: CONFIG, store: settingsStore });
-      const overriddenCount = settingsGroups.reduce((n, g) => n + g.settings.filter(x => x.overridden).length, 0);
-
-      const body = `
-        <div class="overall ${health.overall === 'ok' ? 'ok' : 'warn'}">
-          <span>Overall: <strong>${escapeHtml(String(health.overall).toUpperCase())}</strong></span>
-          <span class="updated">updated ${new Date(now).toISOString().slice(11, 19)} UTC · auto-refreshes</span>
-        </div>
-        <div class="stats">${stats}</div>
-
-        <section class="panel" data-panel="overview">
-          ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID)}
-          <div class="card">
-            <h2>Integrations</h2>
-            <div class="badges">${renderHealthBadges(health)}</div>
-            ${Object.keys(health.errors || {}).length ? renderItemList(Object.entries(health.errors).map(([name, error]) => ({ state: 'down', title: name, sub: error })), '') : ''}
-          </div>
-          <div class="card">
-            <h2>▶️ Now Streaming</h2>
-            ${sessions === null ? unavailable('Tautulli') : renderItemList(nowPlayingItems, 'Nobody is streaming right now.')}
-          </div>
-          <div class="card">
-            <h2>⬇️ Downloading</h2>
-            ${queue === null ? unavailable('Radarr/Sonarr') : renderItemList(queueItems, 'Nothing in the download queues.')}
-          </div>
-          <div class="card">
-            <h2>💾 Disk Space</h2>
-            ${disks === null ? unavailable('*arr diskspace') : renderItemList(diskItems, 'No disks reported.')}
-          </div>
-        </section>
-
-        <section class="panel" data-panel="operations">
-          <div class="card">
-            <h2>Pending Approval<span class="sub">Requests waiting for an administrator. Quota changes are warnings and do not block approval.</span></h2>
-            ${renderItemList(approvalItems, 'No requests are waiting for approval.')}
-          </div>
-          <div class="card">
-            <h2>🧩 Not Watchable Yet<span class="sub">Requests still missing content — including series Seerr already calls "available" but that are missing aired episodes. Worst first.</span></h2>
-            ${incomplete === null ? unavailable('Sonarr') : renderItemList(incomplete, 'Every request is complete — nothing missing.')}
-          </div>
-          <div class="card">
-            <h2>⚙️ Active Jobs</h2>
-            ${renderItemList(jobItems, 'No seedbox grabs or staging copies running.')}
-          </div>
-          <div class="card">
-            <h2>👀 Watching / Scheduled</h2>
-            ${renderItemList(watchItems, 'No escalation watches or pending deletions.')}
-          </div>
-          <div class="card">
-            <h2>Pinned Media<span class="sub">Pinned titles run first in capped Sonarr sweeps. Reorder them here.</span></h2>
-            ${renderItemList(priorityItems, 'No titles are pinned.')}
-          </div>
-          <div class="card">
-            <h2>Recent Media Requests</h2>
-            ${renderTable(requestRows)}
-          </div>
-          <div class="card">
-            <h2>Manual Actions</h2>
-            ${renderItemList(sweepItems, '')}
-            <div class="actions">
-              <a class="btn" href="/admin/health">Health JSON</a>
-              <a class="btn" href="/admin/doctor">Edge Doctor JSON</a>
-              <a class="btn" href="/admin/action/sync-preview">Sync Preview</a>
-              <a class="btn" href="/admin/action/cleanup-preview">Cleanup Preview</a>
-              <button class="btn danger" type="button" onclick="revokeAll()">Revoke All Download Links</button>
-            </div>
-          </div>
-        </section>
-
-        <section class="panel" data-panel="automation">
-          <p class="panel-intro">These take effect on the next sweep — no redeploy. Compose stays the default:
-            <strong>Reset to compose</strong> drops the override and the stack file's value applies again.
-            ${overriddenCount ? `<strong>${overriddenCount}</strong> setting${overriddenCount === 1 ? ' is' : 's are'} currently overridden here.` : 'Nothing is overridden right now.'}</p>
-          <div class="card">
-            <h2>Season-search alert stand-downs<span class="sub">Searches still run. Only repeated identical no-release messages are muted.</span></h2>
-            ${renderItemList(seasonAlertItems, 'No season-search alerts are stood down.')}
-          </div>
-          ${settingsGroups.map(renderSettingsGroup).join('')}
-        </section>
-
-        <section class="panel" data-panel="edge">
-          <div class="card">
-            <h2>📦 Tier Nodes</h2>
-            ${renderItemList(tierItems, 'No tier nodes registered yet.')}
-          </div>
-          ${renderTierNodeSetup(tierNodes.map(node => ({ ...node, folders: listTierNodeFolders(node.name) })))}
-          <div class="card">
-            <h2>🩺 Edge Readiness</h2>
-            ${renderItemList(edgeChecks.map(c => ({ state: c.status === 'fail' ? 'down' : c.status, title: c.name, sub: c.detail })), 'No edge checks available.')}
-          </div>
-        </section>
-
-        <section class="panel" data-panel="people">
-          <div class="card">
-            <h2>Pending Plex Users</h2>
-            ${renderTable(plexUserRows)}
-          </div>
-          <div class="card">
-            <h2>Linked Users</h2>
-            ${renderTable(linkedRows)}
-          </div>
-        </section>
-
-        <section class="panel" data-panel="logs">
-          <div class="card">
-            <h2>Recent Downloads</h2>
-            ${renderTable(downloadRows)}
-          </div>
-          <div class="card">
-            <h2>Recent Audit Log</h2>
-            ${renderTable(auditTableRows)}
-          </div>
-        </section>
-
-        <script src="/admin/passkey-client.js"></script>
-        <script src="/admin/webauthn-browser.js"></script>
-        <script>
-          async function revokeAll() {
-            if (!confirm('Revoke ALL active download links? This cannot be undone.')) return;
-            const r = await fetch('/admin/action/revoke-all', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-            alert(r.ok ? 'All active download links revoked.' : 'Failed: ' + r.status);
-            if (r.ok) location.reload();
-          }
-          document.querySelectorAll('[data-post]').forEach(function (btn) {
-            btn.addEventListener('click', async function () {
-              var prompt = btn.dataset.confirm;
-              if (prompt && !confirm(prompt)) return;
-              var body = JSON.parse(btn.dataset.body || '{}');
-              if (prompt) body.confirmed = true;
-              var item = btn.closest('.item-main');
-              var buttons = btn.dataset.inline && item ? [].slice.call(item.querySelectorAll('[data-post]')) : [btn];
-              var buttonStates = buttons.map(function (button) { return { button: button, disabled: button.disabled }; });
-              var note = btn.dataset.inline && item ? item.querySelector('.action-result') : null;
-              buttons.forEach(function (button) { button.disabled = true; });
-              if (note) { note.textContent = 'Workingâ€¦'; note.className = 'action-result'; }
-              try {
-                var r = await fetch(btn.dataset.post, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-                var result = await r.json().catch(function () { return {}; });
-                var ok = r.ok && result.ok !== false;
-                var message = ok ? (result.message || 'Action completed.') : (result.error || 'Request failed: ' + r.status);
-                if (note) {
-                  note.textContent = message;
-                  note.className = 'action-result ' + (ok ? 'ok' : 'bad');
-                  if (!ok && result.retryable) buttonStates.forEach(function (state) { state.button.disabled = state.disabled; });
-                } else {
-                  alert(message);
-                  if (ok) location.reload();
-                }
-              } catch (err) {
-                var message = String(err && err.message || err);
-                if (note) { note.textContent = message; note.className = 'action-result bad'; }
-                else alert(message);
-                buttonStates.forEach(function (state) { state.button.disabled = state.disabled; });
-              }
-            });
-          });
-          (function () {
-            var enroll = document.getElementById('passkey-enroll');
-            var note = document.getElementById('passkey-note');
-            var passkeyReady = !enroll || (!!window.PasskeyClient && window.PasskeyClient.preparePasskeyAction(enroll, note, window));
-            if (enroll && !window.PasskeyClient) {
-              enroll.disabled = true;
-              note.textContent = 'Passkey support could not be checked. Open this HTTPS dashboard in Safari, Chrome, Edge, or another WebAuthn-capable browser.';
-              note.className = 'save-note bad';
-            }
-            var post = async function (url, body) {
-              var response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-              var result = await response.json().catch(function () { return {}; });
-              if (!response.ok) throw new Error(result.error || 'Passkey request failed.');
-              return result;
-            };
-            if (enroll && passkeyReady) enroll.addEventListener('click', async function () {
-              var label = document.getElementById('passkey-label').value.trim();
-              if (!label) { note.textContent = 'Enter a device label.'; note.className = 'save-note bad'; return; }
-              enroll.disabled = true;
-              try {
-                var optionsJSON = await post('/admin/passkey/registration-options', { label: label });
-                var response = await SimpleWebAuthnBrowser.startRegistration({ optionsJSON: optionsJSON });
-                await post('/admin/passkey/register', response);
-                location.hash = 'overview';
-                location.reload();
-              } catch (error) {
-                note.textContent = window.PasskeyClient ? window.PasskeyClient.passkeyErrorMessage(error, window) : (error.message || String(error));
-                note.className = 'save-note bad';
-                enroll.disabled = false;
-              }
-            });
-            document.querySelectorAll('[data-passkey-rename]').forEach(function (button) {
-              button.addEventListener('click', async function () {
-                var row = button.closest('[data-passkey]');
-                try { await post('/admin/passkey/rename', { credentialId: row.dataset.passkey, label: row.querySelector('input').value }); location.reload(); }
-                catch (error) { note.textContent = error.message || String(error); note.className = 'save-note bad'; }
-              });
-            });
-            document.querySelectorAll('[data-passkey-revoke]').forEach(function (button) {
-              button.addEventListener('click', async function () {
-                if (!confirm('Revoke this passkey? That device will no longer be able to sign in.')) return;
-                var row = button.closest('[data-passkey]');
-                try { await post('/admin/passkey/revoke', { credentialId: row.dataset.passkey }); location.reload(); }
-                catch (error) { note.textContent = error.message || String(error); note.className = 'save-note bad'; }
-              });
-            });
-          })();
-          document.querySelectorAll('[data-setup-node]').forEach(function (btn) {
-            btn.addEventListener('click', function () {
-              var form = document.getElementById('tier-install-form');
-              if (!form) return;
-              form.elements.node.value = btn.dataset.setupNode;
-              form.elements.node.dispatchEvent(new Event('change'));
-              document.getElementById('tier-node-setup').scrollIntoView({ behavior: 'smooth' });
-              var firstFolder = form.querySelector('[name="folderId"]');
-              if (firstFolder) firstFolder.focus();
-            });
-          });
-          (function () {
-            var registerForm = document.getElementById('tier-register-form');
-            var installForm = document.getElementById('tier-install-form');
-            var folderList = document.getElementById('tier-folder-list');
-            var folderRow = function (folder) {
-              var row = document.createElement('div');
-              row.className = 'tier-folder-row';
-              row.innerHTML = '<label>Syncthing folder ID<input name="folderId" placeholder="e.g. movies"></label>'
-                + '<label>Local folder path<input name="folderRoot" placeholder="/mnt/media/Media/Movies"></label>'
-                + '<button class="btn tier-folder-remove" type="button">Remove</button>';
-              row.querySelector('[name="folderId"]').value = folder && (folder.folderId || folder.id) || '';
-              row.querySelector('[name="folderRoot"]').value = folder && (folder.folderRoot || folder.path) || '';
-              return row;
-            };
-            var ensureFourFolderRows = function () {
-              if (!folderList) return;
-              while (folderList.children.length < 4) folderList.appendChild(folderRow());
-            };
-            if (folderList) {
-              folderList.addEventListener('click', function (event) {
-                var button = event.target.closest('.tier-folder-remove');
-                if (!button) return;
-                button.closest('.tier-folder-row').remove();
-                ensureFourFolderRows();
-                window.__dirtySettings = true;
-              });
-              document.getElementById('tier-folder-add').addEventListener('click', function () {
-                folderList.appendChild(folderRow());
-                window.__dirtySettings = true;
-              });
-            }
-            if (installForm) installForm.elements.node.addEventListener('change', function () {
-              var option = this.options[this.selectedIndex];
-              var folders = [];
-              try { folders = JSON.parse(option.dataset.folders || '[]'); } catch (_e) {}
-              folderList.replaceChildren();
-              folders.forEach(function (folder) { folderList.appendChild(folderRow(folder)); });
-              ensureFourFolderRows();
-            });
-            var mountGuardNote = document.getElementById('tier-mount-guard-note');
-            var updateMountGuardNote = function () {
-              if (!mountGuardNote || !installForm) return;
-              var configured = !!(installForm.elements.mountRoot.value.trim() && installForm.elements.mountMarker.value.trim());
-              mountGuardNote.innerHTML = configured
-                ? '✅ Mount guard: <strong>configured</strong>.'
-                : '⚠️ Mount guard: <strong>NOT configured</strong> — if this node has an external/removable media drive, a failed remount after reboot will go undetected and the agent may report an empty inventory. Fill in both fields above to enable it; leave both blank only for a master/single-disk node.';
-              mountGuardNote.className = 'setup-warning' + (configured ? ' ok' : '');
-            };
-            if (installForm) { updateMountGuardNote(); installForm.addEventListener('input', updateMountGuardNote); }
-            [registerForm, installForm].filter(Boolean).forEach(function (form) {
-              form.addEventListener('input', function () { window.__dirtySettings = true; });
-            });
-            if (registerForm) registerForm.addEventListener('submit', async function (event) {
-              event.preventDefault();
-              var values = Object.fromEntries(new FormData(registerForm));
-              values.full = registerForm.elements.full.checked;
-              var note = document.getElementById('tier-register-note');
-              var r = await fetch('/admin/action/tier-node', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
-              var result = await r.json().catch(function () { return {}; });
-              if (!r.ok || result.ok === false) { note.textContent = result.error || 'Registration failed.'; note.className = 'save-note bad'; return; }
-              window.__dirtySettings = false;
-              location.hash = 'edge';
-              location.reload();
-            });
-            if (installForm) installForm.addEventListener('submit', async function (event) {
-              event.preventDefault();
-              var values = Object.fromEntries(new FormData(installForm));
-              values.folders = [].slice.call(folderList.querySelectorAll('.tier-folder-row')).map(function (row) {
-                return { id: row.querySelector('[name="folderId"]').value.trim(), path: row.querySelector('[name="folderRoot"]').value.trim() };
-              }).filter(function (folder) { return folder.id || folder.path; });
-              delete values.folderId;
-              delete values.folderRoot;
-              var note = document.getElementById('tier-install-note');
-              if (!values.folders.length || values.folders.some(function (folder) { return !folder.id || !folder.path; })) {
-                note.textContent = 'Add at least one complete folder ID/path pair; remove or finish partial rows.';
-                note.className = 'save-note bad';
-                return;
-              }
-              if (!!values.mountRoot !== !!values.mountMarker) {
-                note.textContent = 'Mount root and mount marker must be supplied together.';
-                note.className = 'save-note bad';
-                return;
-              }
-              var mountGuardWarning = (!values.mountRoot && !values.mountMarker)
-                ? 'Mount guard: NOT configured for this node — an external drive that fails to remount will go undetected.\n\n'
-                : '';
-              if (!confirm(mountGuardWarning + 'Save this complete folder list and rotate the node token? The existing agent will stop working until this new command is installed.')) return;
-              values.confirmed = true;
-              var r = await fetch('/admin/action/tier-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
-              var result = await r.json().catch(function () { return {}; });
-              if (!r.ok || result.ok === false) { note.textContent = result.error || 'Command generation failed.'; note.className = 'save-note bad'; return; }
-              document.getElementById('tier-install-command').textContent = result.command;
-              document.getElementById('tier-install-mount-status').textContent = (values.mountRoot && values.mountMarker)
-                ? '✅ Mount guard: configured.' : '⚠️ Mount guard: NOT configured on this node.';
-              document.getElementById('tier-install-result').hidden = false;
-              installForm.elements.node.options[installForm.elements.node.selectedIndex].dataset.folders = JSON.stringify(values.folders);
-              note.textContent = 'Token rotated. Copy this command now.';
-              note.className = 'save-note ok';
-            });
-            var copy = document.getElementById('tier-copy-command');
-            if (copy) copy.addEventListener('click', async function () {
-              await navigator.clipboard.writeText(document.getElementById('tier-install-command').textContent);
-              copy.textContent = 'Copied';
-            });
-          })();
-          (function () {
-            var note = function (group, text, cls) {
-              var el = document.querySelector('[data-note="' + group + '"]');
-              if (el) { el.textContent = text; el.className = 'save-note' + (cls ? ' ' + cls : ''); }
-            };
-            var inputsFor = function (group) {
-              return [].slice.call(document.querySelectorAll('[data-group="' + group + '"] [data-key]'));
-            };
-            // Any edit blocks the auto-refresh until it is saved, so a pending change can't be
-            // silently thrown away by the 60s reload.
-            document.addEventListener('input', function (e) { if (e.target.dataset && e.target.dataset.key) window.__dirtySettings = true; });
-            document.addEventListener('change', function (e) { if (e.target.dataset && e.target.dataset.key) window.__dirtySettings = true; });
-            var post = async function (url, payload, group, okText) {
-              note(group, 'Saving…');
-              try {
-                var r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-                var body = await r.json().catch(function () { return {}; });
-                if (!r.ok || body.ok === false) { note(group, (body.errors || ['Failed: ' + r.status]).join('; '), 'bad'); return; }
-                window.__dirtySettings = false;
-                note(group, okText, 'ok');
-                setTimeout(function () { location.reload(); }, 700);
-              } catch (err) { note(group, String(err && err.message || err), 'bad'); }
-            };
-            document.querySelectorAll('[data-preview]').forEach(function (btn) {
-              btn.addEventListener('click', async function () {
-                var group = btn.dataset.preview;
-                var values = {};
-                inputsFor(group).forEach(function (el) {
-                  values[el.dataset.key] = el.dataset.type === 'bool' ? (el.checked ? '1' : '0') : el.value;
-                });
-                note(group, 'Calculating preview...');
-                try {
-                  var sweep = group.replace(/_/g, '-');
-                  var r = await fetch('/admin/action/sweep-preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: sweep, values: values }) });
-                  var body = await r.json().catch(function () { return {}; });
-                  if (!r.ok || body.ok === false) { note(group, body.error || 'Preview failed.', 'bad'); return; }
-                  var result = document.querySelector('[data-preview-result="' + group + '"]');
-                  result.replaceChildren();
-                  var heading = document.createElement('p');
-                  heading.textContent = body.items.length ? body.items.length + ' item(s) evaluated:' : 'No items would be actioned.';
-                  result.appendChild(heading);
-                  if (body.items.length) {
-                    var list = document.createElement('ul');
-                    body.items.forEach(function (item) {
-                      var row = document.createElement('li');
-                      row.textContent = item.title + ': ' + item.stage + ' — ' + item.reason;
-                      list.appendChild(row);
-                    });
-                    result.appendChild(list);
-                  }
-                  note(group, 'Preview uses the unsaved values above.', 'ok');
-                } catch (err) { note(group, String(err && err.message || err), 'bad'); }
-              });
-            });
-            document.querySelectorAll('[data-save]').forEach(function (btn) {
-              btn.addEventListener('click', function () {
-                var group = btn.dataset.save;
-                var values = {};
-                inputsFor(group).forEach(function (el) {
-                  values[el.dataset.key] = el.dataset.type === 'bool' ? (el.checked ? '1' : '0') : el.value;
-                });
-                post('/admin/settings', { values: values }, group, 'Saved.');
-              });
-            });
-            document.querySelectorAll('[data-reset]').forEach(function (btn) {
-              btn.addEventListener('click', function () {
-                var group = btn.dataset.reset;
-                if (!confirm('Drop the overrides for this group and use the compose values again?')) return;
-                post('/admin/settings/reset', { keys: inputsFor(group).map(function (el) { return el.dataset.key; }) }, group, 'Reset to compose.');
-              });
-            });
-          })();
-        </script>`;
-      res.type('html').send(renderPage('Dashboard', body, { showLogout: true, showSearch: true, nav, autoRefresh: true, tabs: true }));
-    });
-
-    app.get('/admin/search', dashboardAuth, async (req, res) => {
-      const normalized = normalizeSearchQuery(req.query.q);
-      if (!normalized.query) {
-        return res.type('html').send(renderPage('Search', '<div class="card"><h2>Search</h2><p class="muted">Enter at least 2 characters.</p></div>', { showLogout: true, showSearch: true }));
-      }
-      if (normalized.error) {
-        return res.status(400).type('html').send(renderPage('Search', `<div class="card"><h2>Search</h2><div class="error">${escapeHtml(normalized.error)}</div></div>`, { showLogout: true, showSearch: true, searchQuery: normalized.query }));
-      }
-      const [members, queues, series, missingEpisodes, movies] = await Promise.all([
-        getGuildMembers().catch(() => []),
-        arrSources().length ? fetchArrQueues().catch(() => []) : Promise.resolve([]),
-        CONFIG.SONARR_URL ? listSonarrSeries().catch(() => []) : Promise.resolve([]),
-        CONFIG.SONARR_URL ? listSonarrMissingEpisodes().catch(() => []) : Promise.resolve([]),
-        (CONFIG.RADARR_URL || CONFIG.RADARR_4K_URL) ? listRadarrMovies().catch(() => []) : Promise.resolve([]),
-      ]);
-      const now = Date.now();
-      const results = searchDashboard({
-        query: normalized.query,
-        requests: db.prepare('SELECT * FROM requests ORDER BY id DESC').all(),
-        users: db.prepare('SELECT * FROM users ORDER BY requested_at DESC').all(),
-        auditRows: db.prepare('SELECT created_at, action, metadata_json FROM audit_log ORDER BY id DESC').all(),
-        downloadTokens: db.prepare('SELECT discord_id, revoked, expires_at FROM download_tokens').all(),
-        members: members.filter(member => !member.user?.bot).map(member => ({ discordId: member.user.id, name: member.displayName || member.user.globalName || member.user.username || member.user.tag })),
-        queues, series, missingEpisodes, movies, now,
-      });
-      const requestRows = results.requests.map(row => ({ title: row.title, status: row.status, type: row.type, requester: row.requestedBy, when: fmtAgo(sqliteUtcMs(row.requestedAt)), progress: row.progress }));
-      const userRows = results.users.map(row => ({ discord: row.discord, name: row.name, email: row.email, linked: row.linked, server: row.homeServer, invited: row.invited, requests: row.requests, links: row.activeLinks }));
-      const libraryRows = results.library.map(row => ({ title: row.title, type: row.type, status: row.status, complete: row.completeness, gaps: row.gaps, source: row.source }));
-      const auditRows = results.audit.map(row => ({ when: fmtAgo(sqliteUtcMs(row.when)), action: row.action, matched: row.match }));
-      const body = `<div class="actions"><a class="btn" href="/admin">Back to dashboard</a></div>
-        <div class="card"><h2>Requests <span class="sub">${requestRows.length} result${requestRows.length === 1 ? '' : 's'}</span></h2>${renderTable(requestRows)}</div>
-        <div class="card"><h2>Users <span class="sub">${userRows.length} result${userRows.length === 1 ? '' : 's'}</span></h2>${renderTable(userRows)}</div>
-        <div class="card"><h2>Library <span class="sub">${libraryRows.length} result${libraryRows.length === 1 ? '' : 's'}</span></h2>${renderTable(libraryRows)}</div>
-        <div class="card"><h2>Audit <span class="sub">${auditRows.length} result${auditRows.length === 1 ? '' : 's'} · metadata is searchable but hidden</span></h2>${renderTable(auditRows)}</div>`;
-      res.type('html').send(renderPage(`Search: ${normalized.query}`, body, { showLogout: true, showSearch: true, searchQuery: normalized.query }));
-    });
-
-    app.get('/admin/health', dashboardAuth, async (_req, res) => res.json(await gatherHealth()));
-    app.get('/admin/doctor', dashboardAuth, async (_req, res) => res.json({ checks: await runEdgeDiagnostics({ live: true }), tierNodes: listTierNodes().map(n => ({ name: n.name, enabled: !!n.enabled, full: !!n.full, usableBytes: n.usable_bytes })) }));
-    app.get('/admin/action/sync-preview', dashboardAuth, async (_req, res) => res.json(await buildSyncPreview()));
-    app.get('/admin/action/cleanup-preview', dashboardAuth, async (_req, res) => {
-      const users = await fetchOverseerrUsers().catch(() => []);
-      const toDelete = users.filter(u => u.userType !== 1 && ['displayName', 'email', 'username'].some(k => (u[k] || '').toLowerCase().startsWith('deleted_user')));
-      res.json({ wouldRemove: toDelete.length, users: toDelete.map(u => ({ id: u.id, email: u.email, username: u.username })) });
-    });
-    app.post('/admin/action/gate', dashboardAuth, async (req, res) => {
+      handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many dashboard actions. Wait a moment and try again.' }),
+    }), dashboardAuth, discordReadyGuard, async (req, res) => {
       const operation = req.body?.operation;
       const nonce = String(req.body?.nonce || '');
       if (!['approve', 'approve_az', 'deny'].includes(operation) || !/^[0-9a-f]{8}$/.test(nonce)) {
@@ -10047,42 +9351,6 @@ function startExpressServer() {
       } catch (err) {
         return res.status(500).json({ ok: false, error: dashboardActionError(err), retryable: false });
       }
-    });
-    app.post('/admin/passkey/registration-options', dashboardAuth, async (req, res) => {
-      try {
-        const options = await passkeyService.registrationOptions(readCookie(req, 'dm_session'), req.body?.label);
-        res.setHeader('Cache-Control', 'no-store');
-        return res.json(options);
-      } catch (err) {
-        return res.status(400).json({ error: err.message });
-      }
-    });
-    app.post('/admin/passkey/register', dashboardAuth, async (req, res) => {
-      try {
-        const passkey = await passkeyService.finishRegistration(readCookie(req, 'dm_session'), req.body);
-        audit('dashboard_passkey_enrolled', dashboardActor(req));
-        return res.json({ ok: true, label: passkey.label });
-      } catch (_err) {
-        audit('dashboard_passkey_enrollment_failed', { ...dashboardActor(req), reason: 'verification_failed' });
-        return res.status(400).json({ error: 'Passkey enrollment failed.' });
-      }
-    });
-    app.post('/admin/passkey/rename', dashboardAuth, (req, res) => {
-      const credentialId = String(req.body?.credentialId || '');
-      const label = String(req.body?.label || '').trim();
-      if (!credentialId || !label || label.length > 64) return res.status(400).json({ error: 'Credential and a label of 1 to 64 characters are required.' });
-      if (!renamePasskey(credentialId, label)) return res.status(404).json({ error: 'Passkey not found.' });
-      audit('dashboard_passkey_renamed', dashboardActor(req));
-      return res.json({ ok: true });
-    });
-    app.post('/admin/passkey/revoke', dashboardAuth, (req, res) => {
-      const credentialId = String(req.body?.credentialId || '');
-      if (listPasskeys().length === 1 && !CONFIG.DASHBOARD_ADMIN_PASSWORD && !CONFIG.DASHBOARD_ADMIN_TOKEN) {
-        return res.status(409).json({ error: 'Configure the password fallback before revoking the last passkey.' });
-      }
-      if (!revokePasskey(credentialId)) return res.status(404).json({ error: 'Passkey not found.' });
-      audit('dashboard_passkey_revoked', dashboardActor(req));
-      return res.json({ ok: true });
     });
     app.post('/admin/action/tier-node', dashboardAuth, (req, res) => {
       const name = String(req.body?.name || '').trim().toLowerCase();
@@ -10258,32 +9526,35 @@ function startExpressServer() {
       standardHeaders: 'draft-8',
       legacyHeaders: false,
       handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many previews. Wait a moment and try again.' }),
-    }), dashboardAuth, async (req, res) => {
+    }), dashboardAuth, discordReadyGuard, async (req, res) => {
       try {
-        const items = await previewAutomation(req.body?.name, req.body?.values || {});
-        return res.json({ ok: true, items });
+        const outcome = await automationRegistry.preview(req.body?.name, req.body?.values || {});
+        if (!outcome.ok) return res.status(outcome.busy ? 409 : 400).json({ ok: false, error: outcome.reason || 'Preview unavailable.' });
+        return res.json({ ok: true, items: outcome.result });
       } catch (err) {
         return res.status(400).json({ ok: false, error: dashboardActionError(err) });
       }
     });
 
-    app.post('/admin/action/sweep', dashboardAuth, async (req, res) => {
+    app.post('/admin/action/sweep', rateLimit({
+      windowMs: 60000,
+      limit: 10,
+      keyGenerator: httpRateLimitKey,
+      standardHeaders: 'draft-8',
+      legacyHeaders: false,
+      handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many run-now requests. Wait a moment and try again.' }),
+    }), dashboardAuth, discordReadyGuard, async (req, res) => {
       const name = req.body?.name;
-      const sweeps = {
-        stuck: sweepStuckDownloads,
-        escalation: sweepEscalations,
-        'season-pack': () => sweepSeasonPacks({ rearmAlerts: true }),
-        'episode-recovery': runEpisodeRecoverySweep,
-      };
-      if (!sweeps[name]) {
+      if (!automationRegistry?.ids().includes(name)) {
         audit('dashboard_sweep', { ...dashboardActor(req), ok: false, name, reason: 'invalid_sweep' });
         return res.status(400).json({ ok: false, error: 'Unknown sweep.' });
       }
       try {
-        const outcome = await runGuardedSweep(name, sweeps[name]);
-        if (!outcome.ok || outcome.result?.busy) {
-          audit('dashboard_sweep', { ...dashboardActor(req), ok: false, name, reason: 'already_running' });
-          return res.status(409).json({ ok: false, error: `${name} sweep is already running.` });
+        const outcome = await automationRegistry.run(name, { trigger: 'manual' });
+        if (!outcome.ok) {
+          const reason = outcome.busy ? 'already_running' : outcome.disabled ? 'disabled' : 'manual_unavailable';
+          audit('dashboard_sweep', { ...dashboardActor(req), ok: false, name, reason });
+          return res.status(outcome.busy ? 409 : 400).json({ ok: false, error: outcome.busy ? `${name} sweep is already running.` : outcome.reason });
         }
         const result = outcome.result || {};
         const count = result.searched ?? result.acted ?? result.alerted ?? 0;
@@ -10367,7 +9638,21 @@ function startExpressServer() {
     res.status(500).json({ error: 'Internal Server Error' });
   });
 
-  httpServer = app.listen(CONFIG.PORT, () => log.ok(`Express server listening on port ${CONFIG.PORT}`));
+  return new Promise((resolve, reject) => {
+    const server = app.listen(CONFIG.PORT);
+    httpServer = server;
+    const onBindError = err => {
+      if (httpServer === server) httpServer = null;
+      reject(err);
+    };
+    server.once('error', onBindError);
+    server.once('listening', () => {
+      server.removeListener('error', onBindError);
+      server.on('error', err => log.error(`HTTP server error: ${err.message}`));
+      log.ok(`Express server listening on port ${CONFIG.PORT}`);
+      resolve(server);
+    });
+  });
 }
 
 // Resolve who actually made an Overseerr request.
@@ -10823,16 +10108,14 @@ async function shutdown(sig, exitCode = 0) {
     process.exit(exitCode);
   }, CONFIG.SHUTDOWN_DRAIN_SECONDS * 1000).unref();
 
-  // Stop accepting new HTTP connections first (webhooks, dashboard, in-flight /download/:token
-  // streams) and give existing ones up to SHUTDOWN_DRAIN_SECONDS to finish before moving on.
-  if (httpServer) {
-    await new Promise(resolve => httpServer.close(err => {
-      if (err) log.warn(`HTTP server close error: ${err.message}`);
-      resolve();
-    }));
+  // Stop scheduler timers before HTTP and Discord. The lifecycle also cancels a pending login
+  // retry and safely closes a server whose bind completed while shutdown was already in progress.
+  automationRegistry?.stop();
+  if (runtimeLifecycle) {
+    try { await runtimeLifecycle.stop(); } catch (err) { log.warn(`Runtime shutdown error: ${err.message}`); }
+  } else {
+    try { await client.destroy(); } catch (err) { log.warn(`Discord client destroy error: ${err.message}`); }
   }
-
-  try { await client.destroy(); } catch (err) { log.warn(`Discord client destroy error: ${err.message}`); }
   try { db.pragma('wal_checkpoint(TRUNCATE)'); db.close(); } catch (err) { log.warn(`DB close error: ${err.message}`); }
 
   clearTimeout(hardTimeout);
@@ -10840,11 +10123,25 @@ async function shutdown(sig, exitCode = 0) {
 }
 ['SIGTERM', 'SIGINT'].forEach(s => process.on(s, () => shutdown(s)));
 
-try {
+async function startRuntime() {
   validateConfig();
   runMigrations();
-  client.login(CONFIG.DISCORD_BOT_TOKEN);
-} catch (err) {
+  runtimeLifecycle = createRuntimeLifecycle({
+    client,
+    token: CONFIG.DISCORD_BOT_TOKEN,
+    startHttp: startExpressServer,
+    stopHttp: server => new Promise(resolve => server.close(err => {
+      if (err) log.warn(`HTTP server close error: ${err.message}`);
+      if (httpServer === server) httpServer = null;
+      resolve();
+    })),
+    startDiscordWorkers,
+    log,
+  });
+  await runtimeLifecycle.start();
+}
+
+startRuntime().catch(err => {
   log.error(err.message);
   process.exit(1);
-}
+});

@@ -51,12 +51,12 @@ function fakeFs({ failIncoming = false } = {}) {
   };
 }
 
-function checkerBed({ config = baseConfig(), fs = fakeFs(), plexApiGet, axiosGet } = {}) {
+function checkerBed({ config = baseConfig(), fs = fakeFs(), plexApiGet, axiosGet, client, discordState } = {}) {
   const calls = [];
   const audits = [];
   const gatherHealth = createHealthChecker({
     config,
-    client: { isReady: () => true },
+    client: client || { isReady: () => true },
     db: { prepare: () => ({ get: () => ({ ok: 1 }) }) },
     fs,
     axios: { get: async (url, options) => {
@@ -69,6 +69,7 @@ function checkerBed({ config = baseConfig(), fs = fakeFs(), plexApiGet, axiosGet
     backupState: () => ({ status: 'disabled', lastSuccessfulAt: null, ageMs: null }),
     getPlexToken: async () => 'plex-token',
     plexApiGet: plexApiGet || (async path => { calls.push({ plexPath: path }); return {}; }),
+    discordState,
   });
   return { gatherHealth, calls, audits };
 }
@@ -89,6 +90,20 @@ test('health: checks liveness endpoints and names feature-specific capabilities'
   assert.ok(bed.calls.some(call => call.url === 'http://byparr:8191/openapi.json'));
   assert.ok(!bed.calls.some(call => call.url === 'http://byparr:8191/health'));
   assert.ok(bed.calls.some(call => call.url === 'http://seerr:5055/api/v1/request' && call.options.params.take === 1));
+});
+
+test('health: reports Discord readiness and bounded retry state while HTTP remains healthy', async () => {
+  const lifecycle = {
+    discord: 'retrying', loginAttempts: 3, lastDiscordError: 'gateway unavailable',
+    nextDiscordRetryAt: '2026-09-09T04:30:00.000Z', discordReadyAt: null, discordDisconnectedAt: null,
+  };
+  const health = await checkerBed({ client: { isReady: () => false }, discordState: () => lifecycle }).gatherHealth();
+  assert.strictEqual(health.discord, 'down');
+  assert.strictEqual(health.discordReadiness, 'retrying');
+  assert.strictEqual(health.discordLoginAttempts, 3);
+  assert.strictEqual(health.discordNextRetryAt, lifecycle.nextDiscordRetryAt);
+  assert.strictEqual(health.errors.discord, 'gateway unavailable');
+  assert.strictEqual(health.overall, 'degraded');
 });
 
 test('health: a Plex friends failure does not claim the Plex account is down', async () => {

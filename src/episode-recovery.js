@@ -148,7 +148,6 @@ async function createEpisodeRecoveryWorker(deps = {}) {
 
   ensureSchema(db);
 
-  let running = false;
   async function performSweep({ preview = false, values = {} } = {}) {
     const cfg = { ...liveConfig() };
     const recoveryKeys = {
@@ -315,36 +314,11 @@ async function createEpisodeRecoveryWorker(deps = {}) {
   }
 
   async function sweep() {
-    if (running) return { busy: true };
-    running = true;
-    try {
-      return await performSweep();
-    } finally {
-      running = false;
-    }
+    return performSweep();
   }
 
   function start() {
-    const run = () => sweep().catch(err => log.warn(`Episode recovery sweep failed: ${err.message}`));
-    // A pinned config (tests) keeps the original fixed-interval behavior, including returning null
-    // when disabled. A live config always arms the loop: the worker may be switched on from the
-    // dashboard later, and a timer that only exists when enabled at boot could never notice.
-    if (deps.recoveryConfig) {
-      if (!bootCfg.enabled) return null;
-      setTimeout(run, 30000).unref();
-      const timer = setInterval(run, bootCfg.checkMinutes * 60000);
-      timer.unref();
-      return timer;
-    }
-    const tick = () => {
-      const cfg = liveConfig();
-      if (cfg.enabled) run();
-      setTimeout(tick, (cfg.enabled ? cfg.checkMinutes : 1) * 60000).unref();
-    };
-    setTimeout(tick, 30000).unref();
-    log.info(bootCfg.enabled
-      ? `Episode recovery enabled (${bootCfg.checkMinutes}m check, ${bootCfg.publicGraceHours}h public grace, ${bootCfg.avistazGraceHours}h AvistaZ grace)`
-      : 'Episode recovery is off — enable it from the dashboard or set EPISODE_RECOVERY_ENABLED=true');
+    log.info('Episode recovery scheduling is owned by the automation registry');
     return null;
   }
 
@@ -354,12 +328,15 @@ async function createEpisodeRecoveryWorker(deps = {}) {
 }
 
 async function startEpisodeRecovery(deps) {
-  const worker = await createEpisodeRecoveryWorker(deps);
-  activeWorker = worker;
+  const worker = await initializeEpisodeRecovery(deps);
   return worker.start();
 }
 
 let activeWorker = null;
+async function initializeEpisodeRecovery(deps) {
+  if (!activeWorker) activeWorker = await createEpisodeRecoveryWorker(deps);
+  return activeWorker;
+}
 const runEpisodeRecoverySweep = () => {
   if (!activeWorker) throw new Error('Episode recovery worker is not ready');
   return activeWorker.sweep();
@@ -380,6 +357,7 @@ module.exports = {
   resolveLiveRecoveryConfig,
   ensureSchema,
   createEpisodeRecoveryWorker,
+  initializeEpisodeRecovery,
   runEpisodeRecoverySweep,
   previewEpisodeRecoverySweep,
   startEpisodeRecovery,

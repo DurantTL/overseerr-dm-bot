@@ -31,14 +31,16 @@ reconstructed from external services.
 
 ## Automation loops
 
-The main process schedules request reconciliation, stuck-download detection, escalation,
-season-pack search, transfers, torrent adoption, janitorial cleanup, backups, monthly recap,
-transcode alerts, Premiumize monitoring, staging, and tunnel health. Episode recovery is started by
-`bootstrap.js` as an isolated optional worker.
+The main process owns one declarative automation registry for request reconciliation,
+stuck-download detection, escalation, season-pack search, episode recovery, transfers, torrent
+adoption, janitorial cleanup, backups, monthly recap, transcode alerts, Premiumize monitoring,
+staging, and tunnel health. Scheduler startup, `/status`, dashboard inventory, preview/run-now
+policy, overlap protection, and persisted run telemetry all derive from that registry.
 
 Runtime-editable overrides live in `app_settings`; clearing an override restores the environment
-base. Scheduler startup, `/status`, dashboard settings, and run telemetry still use manually
-synchronized inventories, which issue #186 will replace with one declarative registry.
+base. The dashboard labels each cadence as compose- or override-sourced and distinguishes live
+settings from static values that require a restart. Run records retain trigger, duration, bounded
+result summary/count, error, overlap skips, and the next expected run across restarts.
 
 ## Safety controls
 

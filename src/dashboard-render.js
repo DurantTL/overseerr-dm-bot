@@ -3,6 +3,7 @@
 const { fmtDuration, fmtSpace } = require('./util');
 const { normalizeTierFolders, serializeTierFolders } = require('./tier-node-setup');
 const { HEALTH_KEYS, healthLabel } = require('./health');
+const { telemetrySummary } = require('./node-telemetry');
 
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
@@ -278,13 +279,7 @@ function tierNodeStatus(plan, report, now = Date.now(), staleDays = 14) {
     errors ? `errors: ${errors}` : null,
     plan?.errorAlert?.stoodDown ? `alerts stood down after ${plan.errorAlert.attemptCount} identical error report(s)` : null,
     plan?.lastAgentVersion ? `agent ${plan.lastAgentVersion}` : 'agent version unknown (pre-upgrade)',
-    plan?.lastTelemetry ? [
-      plan.lastTelemetry.temperatureC != null ? `${Number(plan.lastTelemetry.temperatureC).toFixed(1)}°C CPU` : 'temperature unavailable',
-      plan.lastTelemetry.load1 != null ? `load ${Number(plan.lastTelemetry.load1).toFixed(2)}` : null,
-      plan.lastTelemetry.memoryTotalBytes && plan.lastTelemetry.memoryFreeBytes != null
-        ? `RAM ${Math.round((plan.lastTelemetry.memoryTotalBytes - plan.lastTelemetry.memoryFreeBytes) / plan.lastTelemetry.memoryTotalBytes * 100)}% used` : null,
-      plan.lastTelemetry.uptimeSeconds != null ? `uptime ${plan.lastTelemetry.uptimeSeconds < 3600 ? `${Math.round(plan.lastTelemetry.uptimeSeconds / 60)}m` : `${Math.floor(plan.lastTelemetry.uptimeSeconds / 3600)}h`}${plan.lastTelemetry.uptimeSeconds < 3 * 3600 ? ' (recently rebuilt/rebooted)' : ''}` : null,
-    ].filter(Boolean).join(' · ') : 'hardware telemetry unavailable',
+    plan?.lastTelemetry ? telemetrySummary(plan.lastTelemetry, fmtSpace, { now }) : 'hardware telemetry unavailable',
   ].filter(Boolean).join(' · ');
   if (!checkIn) return { state: 'warn', status: 'never reported', details, setup: true };
   if (matches && now - checkIn > 45 * 60 * 1000) return { state: 'down', status: 'stale', details };
@@ -470,8 +465,42 @@ function renderSettingsGroup(group) {
   </div>`;
 }
 
+function renderAutomationRegistry(items) {
+  const rows = (items || []).map(item => {
+    const state = item.state || {};
+    const cadence = item.cadence || {};
+    const status = item.running ? 'running' : !item.enabled ? 'disabled' : state.status || 'not run';
+    const outcome = state.status === 'failed'
+      ? state.error || 'failed'
+      : state.resultSummary || 'No completed run recorded.';
+    const timing = state.finishedAt
+      ? `${fmtAgo(state.finishedAt)} · ${fmtDuration(state.durationMs || 0)} · ${state.trigger || 'unknown'} · ${state.resultCount ?? 0} result(s)`
+      : 'No completed run recorded.';
+    const cadenceMode = cadence.mutable ? ' · live editable' : cadence.restartRequired ? ' · restart required' : '';
+    const cadenceText = cadence.minutes > 0
+      ? `Every ${cadence.minutes} min · ${cadence.source}${cadenceMode}`
+      : `Disabled · ${cadence.source || 'compose'}${cadenceMode}`;
+    const next = state.nextRunAt
+      ? item.enabled ? `Next expected ${fmtAgo(state.nextRunAt)}` : `No run scheduled; eligibility rechecked ${fmtAgo(state.nextRunAt)}`
+      : 'Next run not scheduled.';
+    const manual = item.manual?.enabled
+      ? `${item.previewable ? 'Preview and run-now available.' : 'Run-now available.'}`
+      : `Manual unavailable: ${item.manual?.reason || 'scheduled execution only.'}`;
+    const action = item.manual?.enabled
+      ? `<button class="btn" type="button" data-post="/admin/action/sweep" data-body="${escapeHtml(JSON.stringify({ name: item.id }))}"${item.enabled ? '' : ' disabled'}>Run now</button>`
+      : '';
+    return `<div class="setting">
+      <div class="setting-main"><div class="setting-name">${escapeHtml(item.label)} <span class="tag${item.enabled ? ' on' : ''}">${escapeHtml(status)}</span></div>
+      <div class="setting-help">${escapeHtml(item.enabled ? cadenceText : `Disabled: ${item.disabledReason} · ${cadenceText}`)} · ${escapeHtml(timing)}<br>${escapeHtml(outcome)} · ${escapeHtml(next)} · ${escapeHtml(manual)}</div></div>
+      <div class="setting-ctl">${action}</div>
+    </div>`;
+  }).join('');
+  return `<div class="card" id="automation-registry"><h2>Automation registry<span class="sub">Every scheduled worker, its effective source, persisted outcome, and safe manual policy.</span></h2>${rows || '<p class="muted">Registry is starting.</p>'}</div>`;
+}
+
 module.exports = {
   renderSettingsGroup,
+  renderAutomationRegistry,
   DASHBOARD_CSS,
   escapeHtml,
   renderPage,
