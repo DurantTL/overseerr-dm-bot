@@ -25,12 +25,14 @@ open program contains umbrella issue [#175](https://github.com/DurantTL/overseer
 
 ## P1 — reliability and testability
 
-- [#178](https://github.com/DurantTL/overseerr-dm-bot/issues/178) — extract and integration-test
-  the remaining HTTP surface. **Partial:** the app factory, health/download, tier-agent, and
-  webhook modules landed; authentication/passkeys and dashboard groups remain.
+- ~~#178 — extract and integration-test the remaining HTTP surface.~~ **Closed** (PR #274): every
+  route group (health/download, tier-agent, webhook, auth/passkeys, dashboard reads, dashboard
+  mutations) now lives in a dependency-injected module under `src/routes/`.
 - [#179](https://github.com/DurantTL/overseerr-dm-bot/issues/179) — add versioned,
-  transactional SQLite migrations and upgrade fixtures. **Partial:** transaction + version ledger
-  landed (PR #208); ordered/historical fixtures remain.
+  transactional SQLite migrations and upgrade fixtures. **Mostly landed:** the transaction +
+  version ledger (PR #208), historical upgrade fixtures (PR #268), and now ordered/skippable
+  migration steps plus a pre-migration backup snapshot for existing databases. Remaining: surface
+  the migration version/failure state in startup health output.
 - [#180](https://github.com/DurantTL/overseerr-dm-bot/issues/180) — align the Node runtime contract
   and bring the tier agent into CI. Not started.
 
