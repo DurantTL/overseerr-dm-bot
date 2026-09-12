@@ -211,7 +211,14 @@ function registerDashboardMutationRoutes(app, deps) {
     }
   });
 
-  app.post('/admin/action/priority', dashboardAuth, (req, res) => {
+  app.post('/admin/action/priority', rateLimit({
+    windowMs: 60000,
+    limit: 30,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many priority changes. Wait a moment and try again.' }),
+  }), dashboardAuth, (req, res) => {
     const operation = req.body?.operation;
     const key = String(req.body?.key || '');
     if (!['pin', 'unpin', 'move'].includes(operation) || !/^(tvdb|tmdb):\d+$/.test(key)) {
