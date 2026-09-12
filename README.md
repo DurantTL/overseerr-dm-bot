@@ -370,6 +370,26 @@ Backups use SQLite's online backup API, so committed WAL data is included even w
 running. Stop the bot before restoring. Restore verifies integrity, replaces the database
 atomically, and removes stale `-wal`/`-shm` sidecars from the old database.
 
+Schema changes run as ordered, individually atomic migrations recorded in SQLite
+`PRAGMA user_version`. Already-recorded versions are skipped. Before the legacy
+`tier_node_files` table is rebuilt, startup writes a mode-`0600` snapshot beside the database,
+named like `plex_invites.db.pre-migration-v0-to-v1.bak`. A migration failure starts only a
+`503 /health` diagnostic server (`overall: migration_error`); Discord and background workers do
+not start.
+
+Migration rollback:
+
+1. Stop the bot and save the failed database plus its `-wal`/`-shm` files for diagnosis.
+2. Deploy the last known-good application image.
+3. Restore the named pre-migration snapshot when `backupCreated` is true in `/health`; otherwise
+   restore the latest verified scheduled backup:
+
+   ```bash
+   ./scripts/restore-db.sh /app/data/plex_invites.db.pre-migration-v0-to-v1.bak /app/data/plex_invites.db --force
+   ```
+
+4. Start the old image and verify `/health`, then rehearse the corrected upgrade before retrying it.
+
 Recommended cron (host):
 ```cron
 0 */6 * * * cd /opt/overseerr-dm-bot && ./scripts/backup-db.sh /app/data/plex_invites.db ./backups
@@ -558,4 +578,6 @@ User:
 - `tier_node_files` (agent-reported local inventory — the atime demand signal)
 
 ## Migration Notes
-On startup the bot creates missing tables and adds missing columns with non-destructive migrations. Existing data is preserved.
+On startup the bot applies only pending migration versions. Each version and its ledger update
+commit together; historical fixtures prove the original v3 and pre-multifolder tier schemas
+converge with a fresh database while preserving representative data.

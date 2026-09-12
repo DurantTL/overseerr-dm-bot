@@ -6,6 +6,7 @@ const { redactOperatorText } = require('./operator-error');
 const HEALTH_KEYS = Object.freeze([
   'discord',
   'sqlite',
+  'migration',
   'backup',
   'plex',
   'plexFriends',
@@ -24,6 +25,7 @@ const HEALTH_KEYS = Object.freeze([
 const HEALTH_LABELS = Object.freeze({
   discord: 'discord',
   sqlite: 'sqlite',
+  migration: 'database migration',
   backup: 'backup',
   plex: 'plex.tv account',
   plexFriends: 'plex.tv friends',
@@ -74,7 +76,7 @@ function requireDirectory(fs, directory, mode, label) {
   fs.accessSync(directory, mode);
 }
 
-function createHealthChecker({ config, client, db, fs, axios, audit, getSetting, backupState, getPlexToken, plexApiGet, discordState }) {
+function createHealthChecker({ config, client, db, fs, axios, audit, getSetting, backupState, getPlexToken, plexApiGet, discordState, migrationStatus }) {
   return async function gatherHealth() {
     const checks = { overall: 'ok', timestamp: new Date().toISOString(), errors: {} };
     const lifecycle = discordState?.();
@@ -92,6 +94,13 @@ function createHealthChecker({ config, client, db, fs, axios, audit, getSetting,
       checks.sqlite = 'down';
       checks.errors.sqlite = healthErrorDetail(error);
     }
+    const migration = migrationStatus?.();
+    checks.migration = migration
+      ? (migration.status === 'ok' && migration.version === migration.targetVersion ? 'ok' : 'down')
+      : 'skipped';
+    checks.schemaVersion = migration?.version ?? null;
+    checks.schemaTargetVersion = migration?.targetVersion ?? null;
+    if (checks.migration === 'down') checks.errors.migration = 'Database migration is incomplete.';
 
     const backup = backupState(getSetting('backup_last_success'), config.BACKUP_INTERVAL_HOURS);
     checks.backup = backup.status;
@@ -173,6 +182,7 @@ function createHealthChecker({ config, client, db, fs, axios, audit, getSetting,
     const ignored = new Set([
       'overall', 'timestamp', 'tunnelDomain', 'errors', 'backupLastSuccessfulAt', 'backupAgeMs',
       'discordReadiness', 'discordLoginAttempts', 'discordReadyAt', 'discordDisconnectedAt', 'discordNextRetryAt',
+      'schemaVersion', 'schemaTargetVersion',
     ]);
     const healthy = new Set(['ok', 'configured', 'skipped', 'disabled']);
     checks.overall = Object.entries(checks).some(([key, value]) => !ignored.has(key) && !healthy.has(value)) ? 'degraded' : 'ok';

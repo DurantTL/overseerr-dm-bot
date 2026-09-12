@@ -9,7 +9,7 @@ const path = require('path');
 const { once } = require('events');
 const runtimeSettings = require('../../src/runtime-settings');
 const { renderSettingsGroup } = require('../../src/dashboard-render');
-const { CONFIG, validateConfig, startConfigErrorServer, configWarnings, resolveFileEnv, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings } = require('../../src/config');
+const { CONFIG, validateConfig, startStartupErrorServer, startConfigErrorServer, configWarnings, resolveFileEnv, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings } = require('../../src/config');
 
 const SECRET_CONFIG_KEYS = [
   'DISCORD_BOT_TOKEN', 'OVERSEERR_API_KEY', 'WEBHOOK_SECRET', 'PLEX_TOKEN', 'PLEX_PASSWORD',
@@ -221,6 +221,42 @@ test('config: validation failure stays reachable through health', async () => {
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));
     Object.assign(CONFIG, previous);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('migration failure health exposes bounded version context without internal paths', async () => {
+  const previousPort = CONFIG.PORT;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'migration-error-'));
+  const fatalPath = path.join(dir, 'last-migration-error.txt');
+  let server;
+  try {
+    CONFIG.PORT = 0;
+    const error = new Error('Database migration 2 (bounded-data-repairs) failed; application workers were not started.');
+    server = startStartupErrorServer(error, {
+      fatalPath,
+      overall: 'migration_error',
+      label: 'Database migration',
+      details: {
+        migration: {
+          status: 'failed', version: 1, targetVersion: 2,
+          failedVersion: 2, failedName: 'bounded-data-repairs', backupCreated: true,
+        },
+      },
+    });
+    if (!server.listening) await once(server, 'listening');
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/health`);
+    assert.strictEqual(response.status, 503);
+    const body = await response.json();
+    assert.strictEqual(body.overall, 'migration_error');
+    assert.deepStrictEqual(body.migration, {
+      status: 'failed', version: 1, targetVersion: 2,
+      failedVersion: 2, failedName: 'bounded-data-repairs', backupCreated: true,
+    });
+    assert.strictEqual(JSON.stringify(body).includes(dir), false);
+  } finally {
+    if (server) await new Promise(resolve => server.close(resolve));
+    CONFIG.PORT = previousPort;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

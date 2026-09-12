@@ -51,7 +51,7 @@ function fakeFs({ failIncoming = false } = {}) {
   };
 }
 
-function checkerBed({ config = baseConfig(), fs = fakeFs(), plexApiGet, axiosGet, client, discordState } = {}) {
+function checkerBed({ config = baseConfig(), fs = fakeFs(), plexApiGet, axiosGet, client, discordState, migrationStatus } = {}) {
   const calls = [];
   const audits = [];
   const gatherHealth = createHealthChecker({
@@ -70,6 +70,7 @@ function checkerBed({ config = baseConfig(), fs = fakeFs(), plexApiGet, axiosGet
     getPlexToken: async () => 'plex-token',
     plexApiGet: plexApiGet || (async path => { calls.push({ plexPath: path }); return {}; }),
     discordState,
+    migrationStatus: migrationStatus || (() => ({ status: 'ok', version: 2, targetVersion: 2 })),
   });
   return { gatherHealth, calls, audits };
 }
@@ -79,6 +80,9 @@ test('health: checks liveness endpoints and names feature-specific capabilities'
   const health = await bed.gatherHealth();
 
   assert.strictEqual(health.overall, 'ok');
+  assert.strictEqual(health.migration, 'ok');
+  assert.strictEqual(health.schemaVersion, 2);
+  assert.strictEqual(health.schemaTargetVersion, 2);
   assert.strictEqual(health.plex, 'ok');
   assert.strictEqual(health.plexFriends, 'ok');
   assert.strictEqual(health.seerrRequests, 'ok');
@@ -90,6 +94,17 @@ test('health: checks liveness endpoints and names feature-specific capabilities'
   assert.ok(bed.calls.some(call => call.url === 'http://byparr:8191/openapi.json'));
   assert.ok(!bed.calls.some(call => call.url === 'http://byparr:8191/health'));
   assert.ok(bed.calls.some(call => call.url === 'http://seerr:5055/api/v1/request' && call.options.params.take === 1));
+});
+
+test('health: an incomplete migration degrades health with version context', async () => {
+  const health = await checkerBed({
+    migrationStatus: () => ({ status: 'failed', version: 1, targetVersion: 2 }),
+  }).gatherHealth();
+  assert.strictEqual(health.migration, 'down');
+  assert.strictEqual(health.schemaVersion, 1);
+  assert.strictEqual(health.schemaTargetVersion, 2);
+  assert.strictEqual(health.errors.migration, 'Database migration is incomplete.');
+  assert.strictEqual(health.overall, 'degraded');
 });
 
 test('health: reports Discord readiness and bounded retry state while HTTP remains healthy', async () => {

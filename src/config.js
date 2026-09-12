@@ -551,10 +551,16 @@ function validateConfig() {
   }
 }
 
-function startConfigErrorServer(error, fatalPath = '/app/data/last-fatal.txt') {
+function startStartupErrorServer(error, {
+  fatalPath = '/app/data/last-fatal.txt',
+  overall = 'startup_error',
+  details = {},
+  label = 'Startup',
+} = {}) {
   const message = error instanceof Error ? error.message : String(error);
+  const sentence = /[.!?]$/.test(message) ? message : `${message}.`;
   const { log } = require('./log');
-  log.error(`Startup validation failed: ${message}. Serving config-error health only on port ${CONFIG.PORT}.`);
+  log.error(`${label} failed: ${sentence} Serving error health only on port ${CONFIG.PORT}.`);
   try {
     fs.writeFileSync(fatalPath, `${new Date().toISOString()} ${message}\n`, 'utf8');
   } catch (writeError) {
@@ -564,11 +570,19 @@ function startConfigErrorServer(error, fatalPath = '/app/data/last-fatal.txt') {
     res.setHeader('Content-Type', 'application/json');
     if (req.method === 'GET' && req.url === '/health') {
       res.statusCode = 503;
-      return res.end(JSON.stringify({ overall: 'config_error', error: message }));
+      return res.end(JSON.stringify({ overall, error: message, ...details }));
     }
     res.statusCode = 404;
     return res.end(JSON.stringify({ error: 'Not Found' }));
   }).listen(CONFIG.PORT);
+}
+
+function startConfigErrorServer(error, fatalPath = '/app/data/last-fatal.txt') {
+  return startStartupErrorServer(error, {
+    fatalPath,
+    overall: 'config_error',
+    label: 'Startup validation',
+  });
 }
 
 // Non-fatal sanity checks for risky-but-valid configurations. Logged at startup and posted once
@@ -682,4 +696,4 @@ function configWarnings() {
   return warnings;
 }
 
-module.exports = { parseBool, parseId, resolveFileEnv, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings, CONFIG, REQUIRED_ENV, validateConfig, startConfigErrorServer, configWarnings };
+module.exports = { parseBool, parseId, resolveFileEnv, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings, CONFIG, REQUIRED_ENV, validateConfig, startStartupErrorServer, startConfigErrorServer, configWarnings };

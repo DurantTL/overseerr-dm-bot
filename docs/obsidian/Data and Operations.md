@@ -56,8 +56,8 @@ synchronized inventories, which issue #186 will replace with one declarative reg
 
 - Public parser/authentication order and large pre-auth bodies require the #176 admission-control
   design.
-- Schema evolution remains an unversioned migration path without a historical upgrade-fixture
-  matrix (#179).
+- Schema evolution uses ordered `PRAGMA user_version` steps with per-step transactions, historical
+  upgrade fixtures, and an atomic pre-rebuild backup boundary (#179).
 - The normal HTTP/admin server is coupled to Discord readiness (#188).
 - Dashboard passkeys require an exact public HTTPS origin that is not yet fully provisioned and
   diagnosed by the repository (#190 and #191).
