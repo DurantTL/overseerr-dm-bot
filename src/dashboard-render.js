@@ -3,6 +3,7 @@
 const { fmtDuration, fmtSpace } = require('./util');
 const { normalizeTierFolders, serializeTierFolders } = require('./tier-node-setup');
 const { HEALTH_KEYS, healthLabel } = require('./health');
+const { telemetrySummary } = require('./node-telemetry');
 
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
@@ -278,13 +279,7 @@ function tierNodeStatus(plan, report, now = Date.now(), staleDays = 14) {
     errors ? `errors: ${errors}` : null,
     plan?.errorAlert?.stoodDown ? `alerts stood down after ${plan.errorAlert.attemptCount} identical error report(s)` : null,
     plan?.lastAgentVersion ? `agent ${plan.lastAgentVersion}` : 'agent version unknown (pre-upgrade)',
-    plan?.lastTelemetry ? [
-      plan.lastTelemetry.temperatureC != null ? `${Number(plan.lastTelemetry.temperatureC).toFixed(1)}°C CPU` : 'temperature unavailable',
-      plan.lastTelemetry.load1 != null ? `load ${Number(plan.lastTelemetry.load1).toFixed(2)}` : null,
-      plan.lastTelemetry.memoryTotalBytes && plan.lastTelemetry.memoryFreeBytes != null
-        ? `RAM ${Math.round((plan.lastTelemetry.memoryTotalBytes - plan.lastTelemetry.memoryFreeBytes) / plan.lastTelemetry.memoryTotalBytes * 100)}% used` : null,
-      plan.lastTelemetry.uptimeSeconds != null ? `uptime ${plan.lastTelemetry.uptimeSeconds < 3600 ? `${Math.round(plan.lastTelemetry.uptimeSeconds / 60)}m` : `${Math.floor(plan.lastTelemetry.uptimeSeconds / 3600)}h`}${plan.lastTelemetry.uptimeSeconds < 3 * 3600 ? ' (recently rebuilt/rebooted)' : ''}` : null,
-    ].filter(Boolean).join(' · ') : 'hardware telemetry unavailable',
+    plan?.lastTelemetry ? telemetrySummary(plan.lastTelemetry, fmtSpace, { now }) : 'hardware telemetry unavailable',
   ].filter(Boolean).join(' · ');
   if (!checkIn) return { state: 'warn', status: 'never reported', details, setup: true };
   if (matches && now - checkIn > 45 * 60 * 1000) return { state: 'down', status: 'stale', details };

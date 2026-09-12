@@ -47,11 +47,19 @@ function agentVersion({ fsImpl = fs } = {}) {
 
 function collectSystemTelemetry(ctx, { fsImpl = fs, osImpl = os } = {}) {
   const sensors = [];
+  const safeRead = file => {
+    try {
+      const value = fsImpl.readFileSync(file, 'utf8');
+      return value == null ? '' : String(value).trim();
+    } catch (_e) { return ''; }
+  };
+  const isCpuSensor = value => /(?:cpu|core|package|x86_pkg_temp|coretemp|k10temp|zenpower|soc)/i.test(value);
   const readSensors = (root, entries, prefix) => {
     for (const entry of entries.slice(0, 64)) {
       const dir = path.join(root, entry);
       let files;
       try { files = fsImpl.readdirSync(dir); } catch (_e) { continue; }
+      const deviceName = safeRead(path.join(dir, prefix === 'thermal' ? 'type' : 'name'));
       for (const file of files.filter(name => /^temp\d*_input$|^temp$/.test(name)).slice(0, 16)) {
         try {
           const raw = Number(fsImpl.readFileSync(path.join(dir, file), 'utf8').trim());
@@ -59,15 +67,24 @@ function collectSystemTelemetry(ctx, { fsImpl = fs, osImpl = os } = {}) {
           if (!Number.isFinite(temperatureC) || temperatureC < -20 || temperatureC > 150) continue;
           const labelFile = file.replace(/_input$/, '_label');
           let label = `${prefix}/${entry}/${file}`;
-          if (files.includes(labelFile)) label = fsImpl.readFileSync(path.join(dir, labelFile), 'utf8').trim() || label;
-          sensors.push({ temperatureC, label: String(label).slice(0, 80) });
+          if (files.includes(labelFile)) label = safeRead(path.join(dir, labelFile)) || label;
+          const identity = [deviceName, label].filter(Boolean).join(' ');
+          const sourcePath = `${prefix}/${entry}/${file}`;
+          const source = label === sourcePath
+            ? (deviceName ? `${deviceName} (${sourcePath})` : sourcePath)
+            : `${label} (${deviceName ? `${deviceName}/` : ''}${sourcePath})`;
+          sensors.push({
+            temperatureC,
+            label: String(source).slice(0, 80),
+            kind: isCpuSensor(identity) ? 'cpu' : 'unclassified',
+          });
         } catch (_e) { /* sensor disappeared or is unreadable */ }
       }
     }
   };
   try { readSensors('/sys/class/thermal', fsImpl.readdirSync('/sys/class/thermal').filter(name => name.startsWith('thermal_zone')), 'thermal'); } catch (_e) {}
   try { readSensors('/sys/class/hwmon', fsImpl.readdirSync('/sys/class/hwmon').filter(name => name.startsWith('hwmon')), 'hwmon'); } catch (_e) {}
-  sensors.sort((a, b) => b.temperatureC - a.temperatureC);
+  sensors.sort((a, b) => (a.kind === b.kind ? b.temperatureC - a.temperatureC : a.kind === 'cpu' ? -1 : 1));
 
   let filesystemTotalBytes = null;
   let filesystemFreeBytes = null;
@@ -81,6 +98,7 @@ function collectSystemTelemetry(ctx, { fsImpl = fs, osImpl = os } = {}) {
     collectedAt: Date.now(),
     temperatureC: sensors[0]?.temperatureC ?? null,
     temperatureSource: sensors[0]?.label ?? null,
+    temperatureKind: sensors[0]?.kind ?? null,
     load1: load[0], load5: load[1], load15: load[2],
     cpuCount: osImpl.cpus().length,
     memoryTotalBytes: osImpl.totalmem(),
