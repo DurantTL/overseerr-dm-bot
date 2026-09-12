@@ -524,7 +524,7 @@ function canEscalate({ mediaType, is4k }) {
 }
 
 // Post the Approve/Deny gate embed for a stashed /request to the requests channel.
-async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discordId, email, seerrUserId, tmdbId }) {
+async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discordId, email, seerrUserId, tmdbId, asianHint }) {
   const channel = await safeGetChannel(channelFor('requests'));
   if (!channel) return false;
   const azEligible = canEscalate({ mediaType, is4k });
@@ -532,6 +532,18 @@ async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discord
   try { quota = await fetchUserQuota(seerrUserId); } catch (_e) {}
   const quotaText = quotaLine(quota, mediaType);
   const subscriberCount = tmdbId != null ? countRequestSubscribers(subscriberKeyFor(tmdbId, is4k)) : 0;
+  // Two independent signals for the "does AvistaZ plausibly have this?" call an admin has to
+  // make on the Approve + AvistaZ Fallback button: the requester's own read on it (asianHint —
+  // null means they left it blank/unsure) and the automatic TMDB-based guess. Neither is
+  // authoritative alone — TMDB records are sometimes bare, and a requester doesn't always know
+  // a title's original country either — but together they beat an admin guessing blind.
+  let originLine = null;
+  if (azEligible && tmdbId != null) {
+    const meta = await fetchSeerrMediaOrigin(mediaType, tmdbId).catch(() => null);
+    const auto = meta ? assessAsianOrigin(meta) : { verdict: 'unknown', reasons: [] };
+    const requesterText = asianHint === true ? '🀄 Yes' : asianHint === false ? '🌍 No' : '❔ Left blank';
+    originLine = `Requester says: ${requesterText}\nAutomatic guess: ${describeAvistazFit(auto.verdict, auto.reasons)}`;
+  }
   const embed = brandedEmbed(COLORS.INFO)
     .setTitle(`${mediaTypeEmoji(mediaType, is4k)} New Request`)
     .setDescription(`**${label}**${azEligible ? `\n-# "+ AvistaZ Fallback" pre-authorizes the private tracker if nothing public shows up within ${escalationDelayLabel()} — it then ${preAuthOutcomeLabel(mediaType)}.` : ''}`)
@@ -539,6 +551,7 @@ async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discord
       { name: 'Requested by', value: `<@${discordId}> · \`${email}\``, inline: true },
       { name: 'Type', value: mediaTypeLabel(mediaType, is4k), inline: true },
       { name: 'Status', value: '⏳ Awaiting approval', inline: true },
+      ...(originLine ? [{ name: 'Asian content? (AvistaZ fit)', value: originLine, inline: false }] : []),
       ...(quotaText ? [{ name: 'Requester quota', value: quotaText, inline: false }] : []),
       ...(subscriberCount > 0 ? [{ name: 'Also wanted by', value: `${subscriberCount} other member${subscriberCount === 1 ? '' : 's'}`, inline: false }] : []),
     )
@@ -4209,7 +4222,7 @@ function homeServerFor(discordId) {
 const slashCommands = [
   mediaPanelCommand,
   new SlashCommandBuilder().setName('download').setDescription('Get a secure download link').addStringOption(o => o.setName('title').setDescription('Movie or show title').setRequired(true)).addIntegerOption(o => o.setName('season').setDescription('Season number').setMinValue(0).setMaxValue(99)).addIntegerOption(o => o.setName('episode').setDescription('Episode number').setMinValue(1).setMaxValue(999)).addBooleanOption(o => o.setName('one_time').setDescription('One-time download link')),
-  new SlashCommandBuilder().setName('request').setDescription('Request a movie or show (searches Seerr)').addStringOption(o => o.setName('title').setDescription('Start typing to search — pick from the list').setRequired(true).setAutocomplete(true)).addBooleanOption(o => o.setName('is4k').setDescription('Request the 4K version')),
+  new SlashCommandBuilder().setName('request').setDescription('Request a movie or show (searches Seerr)').addStringOption(o => o.setName('title').setDescription('Start typing to search — pick from the list').setRequired(true).setAutocomplete(true)).addBooleanOption(o => o.setName('is4k').setDescription('Request the 4K version')).addBooleanOption(o => o.setName('asian_content').setDescription('Asian-origin (Korean/Japanese/Chinese/Indian/etc.)? Helps routing — leave blank if unsure')),
   new SlashCommandBuilder().setName('link').setDescription('Link a user to Plex email (invites + sets up Seerr)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('email').setDescription('Plex email — start typing to search linked/Plex users').setRequired(true).setAutocomplete(true)),
   new SlashCommandBuilder().setName('unlink').setDescription('Unlink a user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)),
   new SlashCommandBuilder().setName('users').setDescription('List linked users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -5215,6 +5228,11 @@ async function handleRequestCommand(interaction) {
   await interaction.deferReply({ ephemeral: true });
 
   const is4k = interaction.options.getBoolean('is4k') || false;
+  // Null when the requester left it blank ("unsure") — a real third state, not false. The
+  // automatic TMDB-based guess (assessAsianOrigin) can come back 'unknown' too, and an admin
+  // approving the request doesn't necessarily know either; this is the requester's own read on
+  // it, shown alongside that automatic guess on the approval notice.
+  const asianHint = interaction.options.getBoolean('asian_content');
   const raw = String(interaction.options.getString('title') || '').trim();
   // Autocomplete picks arrive as "movie:<tmdbId>:<title>"; free-typed text falls back to search.
   let mediaType, tmdbId, label;
@@ -5286,7 +5304,7 @@ async function handleRequestCommand(interaction) {
     // and self-enforcing rather than resting entirely on admin memory.
     const quotaBlock = await quotaBlockReason(seerrUserId, interaction.user.id, mediaType);
     if (quotaBlock) return interaction.editReply(quotaBlock);
-    const payload = { discordId: interaction.user.id, email: row.email, seerrUserId, mediaType, tmdbId, is4k, label };
+    const payload = { discordId: interaction.user.id, email: row.email, seerrUserId, mediaType, tmdbId, is4k, label, asianHint };
     const nonce = stashPendingRequest(payload);
     const posted = await postPendingRequestNotice(nonce, payload)
       .catch(err => { log.warn(`Approval notice failed: ${err.message}`); return false; });
@@ -6771,6 +6789,28 @@ async function handleAvistazCommand(interaction) {
   }
 }
 
+// Groups an arr's raw /manualimport preview by top-level folder, shared by the staging report
+// and the partial-match import gate below.
+function summarizeManualImportPreview(preview, target) {
+  const byFolder = new Map();
+  let matchedFiles = 0;
+  for (const f of preview) {
+    const rel = f.relativePath || f.path || '';
+    const folder = rel.includes('/') ? rel.split('/')[0] : '(loose files)';
+    const b = byFolder.get(folder) || { files: 0, matched: 0, reasons: new Map() };
+    b.files++;
+    const isMatched = (target === 'radarr' ? !!f.movie : !!f.series) && !(f.rejections || []).length;
+    if (isMatched) { b.matched++; matchedFiles++; }
+    for (const rej of (f.rejections || [])) b.reasons.set(rej.reason, (b.reasons.get(rej.reason) || 0) + 1);
+    byFolder.set(folder, b);
+  }
+  const folders = [...byFolder.entries()].map(([folder, b]) => ({
+    folder, files: b.files, matched: b.matched,
+    rejections: [...b.reasons.entries()].map(([r, n]) => `${r} ×${n}`).join('; '),
+  }));
+  return { totalFiles: preview.length, matchedFiles, unmatchedFiles: preview.length - matchedFiles, folders };
+}
+
 // Manual import trigger, shared by /rtorrent import (seedbox staging via GRAB_STAGING_PATH/
 // GRAB_IMPORT_PATH) and /debrid import (a Premiumize downloader's DownloadsDirectory via
 // PREMIUMIZE_STAGING_PATH/PREMIUMIZE_IMPORT_PATH) — hand a folder straight to the arr for files
@@ -6801,6 +6841,33 @@ async function runManualImportSub(interaction, { stagingPath, importPath, source
     if (busy) return interaction.editReply('❌ A transfer is mid-copy (`.incoming` isn\'t empty) — scanning the whole folder now could import half-copied files. Scan a specific `folder:`, or wait for the transfers to finish.');
   }
   const fullImportPath = clean ? `${importPath}/${clean}` : importPath;
+  // Move deletes/relocates the source once the arr considers the download "handled" — including
+  // any files that never matched, as long as they share the scanned folder with ones that did.
+  // That's exactly how one season inside a multi-season pack gets swept away unimported the
+  // moment a different season in the same folder imports cleanly. Copy is non-destructive, so
+  // only Move needs the check.
+  if (mode === 'Move') {
+    const gap = await axios.get(`${arr.url}/api/v3/manualimport`, {
+      params: { folder: fullImportPath, filterExistingFiles: false }, headers: { 'X-Api-Key': arr.key }, timeout: 120000,
+    }).then(r => summarizeManualImportPreview(r.data || [], target)).catch(() => null);
+    if (gap && gap.totalFiles > 0 && gap.unmatchedFiles > 0) {
+      const nonce = stashGrabOffer({ kind: 'manual-import-confirm', stagingPath, importPath, sourceLabel, auditAction, target, clean, fullImportPath, localPath });
+      const lines = gap.folders.map(f => `• **${f.folder.slice(0, 80)}** — ${f.matched}/${f.files} matched${f.rejections ? ` (${f.rejections})` : ''}`);
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`manual_import_confirm:${nonce}`).setLabel(`Import Anyway (${gap.matchedFiles}/${gap.totalFiles} matched)`).setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`manual_import_cancel:${nonce}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
+      );
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
+        .setTitle('⚠️ Partial match — importing now loses the rest')
+        .setDescription(`\`${fullImportPath}\` has **${gap.unmatchedFiles} of ${gap.totalFiles}** file(s) that won't import. ${arr.label} clears the whole folder once it considers this download handled — those files disappear with it, not just the ones that failed to match.\n\n${lines.join('\n').slice(0, 3000)}\n\nFix the mismatch first (add the missing series/season, split it into per-season folders) — or use \`mode:copy\` to import without touching the source — or click through if losing the unmatched files is fine.`)], components: [row] });
+    }
+  }
+  return executeManualImport(interaction, { arr, target, fullImportPath, localPath, clean, mode, sourceLabel, auditAction });
+}
+
+// The actual scan trigger, split out so the partial-match confirm button can re-enter it after
+// the warning above without duplicating the axios call and post-scan verification.
+async function executeManualImport(interaction, { arr, target, fullImportPath, localPath, clean, mode, sourceLabel, auditAction }) {
   try {
     const res = await axios.post(`${arr.url}/api/v3/command`, { name: arr.cmd, path: fullImportPath, importMode: mode },
       { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
@@ -6813,10 +6880,13 @@ async function runManualImportSub(interaction, { stagingPath, importPath, source
         { url: arr.url, key: arr.key, label: arr.label }, res.data?.id, fullImportPath, localPath)
         .catch(err => log.warn(`Manual-import verification failed: ${err.message}`));
     }
-    return interaction.editReply(`📦 ${arr.label} is scanning \`${fullImportPath}\` (import mode: **${mode}**, command #${res.data?.id ?? '?'}). ${mode === 'Copy' ? 'The source files stay where they are.' : 'Imported files are moved out — if the import is declined, an alert with next steps lands in the downloads channel.'}`);
+    // embeds/components explicitly cleared: this can be re-entered from the partial-match
+    // confirm button, whose message still carries the warning embed and Import Anyway/Cancel
+    // buttons — a content-only edit would leave those stuck on screen.
+    return interaction.editReply({ content: `📦 ${arr.label} is scanning \`${fullImportPath}\` (import mode: **${mode}**, command #${res.data?.id ?? '?'}). ${mode === 'Copy' ? 'The source files stay where they are.' : 'Imported files are moved out — if the import is declined, an alert with next steps lands in the downloads channel.'}`, embeds: [], components: [] });
   } catch (err) {
     audit('external_api_error', { provider: target, error: err.message, action: auditAction });
-    return interaction.editReply(`❌ ${arr.label} command failed: ${err.message}`);
+    return interaction.editReply({ content: `❌ ${arr.label} command failed: ${err.message}`, embeds: [], components: [] });
   }
 }
 
@@ -6834,20 +6904,10 @@ async function runStagingReportSub(interaction, { importPath, sourceLabel, title
       params: { folder: importPath, filterExistingFiles: false }, headers: { 'X-Api-Key': arr.key }, timeout: 120000,
     }).then(r => r.data || []);
     if (!preview.length) return interaction.editReply(`${sourceLabel} looks empty to ${arr.label} — nothing at \`${importPath}\`.`);
-    const byFolder = new Map();
-    for (const f of preview) {
-      const rel = f.relativePath || f.path || '';
-      const folder = rel.includes('/') ? rel.split('/')[0] : '(loose files)';
-      const b = byFolder.get(folder) || { files: 0, matched: 0, reasons: new Map() };
-      b.files++;
-      if (target === 'radarr' ? f.movie : f.series) b.matched++;
-      for (const rej of (f.rejections || [])) b.reasons.set(rej.reason, (b.reasons.get(rej.reason) || 0) + 1);
-      byFolder.set(folder, b);
-    }
-    const lines = [...byFolder.entries()].map(([folder, b]) => {
-      const rej = [...b.reasons.entries()].map(([r, n]) => `${r} ×${n}`).join('; ');
-      const verdict = !b.reasons.size && b.matched === b.files ? '✅ importable' : rej ? `⚠️ ${rej}` : '⚠️ some files unmatched';
-      return `**${folder.slice(0, 80)}** — ${b.files} file(s), ${b.matched} matched\n${verdict}`;
+    const { folders } = summarizeManualImportPreview(preview, target);
+    const lines = folders.map(f => {
+      const verdict = !f.rejections && f.matched === f.files ? '✅ importable' : f.rejections ? `⚠️ ${f.rejections}` : '⚠️ some files unmatched';
+      return `**${f.folder.slice(0, 80)}** — ${f.files} file(s), ${f.matched} matched\n${verdict}`;
     });
     return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
       .setTitle(title)
@@ -8178,7 +8238,7 @@ async function handleButton(interaction) {
     return interaction.showModal(requestAccessModal(server));
   }
 
-  if (['plex_approve', 'plex_approve_ts', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'trust_undo', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'season_grab', 'adopt_do', 'adopt_bulk', 'adopt_cancel'].includes(action) && !isAdminInteraction(interaction)) {
+  if (['plex_approve', 'plex_approve_ts', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'trust_undo', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'season_grab', 'adopt_do', 'adopt_bulk', 'adopt_cancel', 'manual_import_confirm', 'manual_import_cancel'].includes(action) && !isAdminInteraction(interaction)) {
     return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
   }
 
@@ -8876,6 +8936,25 @@ async function handleButton(interaction) {
     return interaction.update({ embeds: [brandedEmbed(COLORS.INFO)
       .setTitle('🙈 Not Adopting')
       .setDescription(`Dismissed by <@${interaction.user.id}> — nothing was changed in rTorrent. \`/rtorrent ignore\` silences a torrent for good.`)], components: [] });
+  }
+
+  // Follow-up to the partial-match warning in runManualImportSub (/rtorrent import,
+  // /debrid import) — Import Anyway re-enters the same scan, Cancel just drops the offer.
+  if (action === 'manual_import_confirm' || action === 'manual_import_cancel') {
+    const offer = takeGrabOffer(parts[0]);
+    if (!offer) return interaction.update({ content: 'ℹ️ Already handled (or expired).', embeds: [], components: [] });
+    if (action === 'manual_import_cancel') {
+      return interaction.update({ embeds: [brandedEmbed(COLORS.INFO)
+        .setTitle('Import Cancelled')
+        .setDescription(`Dismissed by <@${interaction.user.id}> — \`${offer.fullImportPath}\` was left alone. Fix the mismatch and re-run \`${offer.sourceLabel === 'Premiumize' ? '/debrid import' : '/rtorrent import'}\`, or use \`mode:copy\`.`)], components: [] });
+    }
+    await interaction.deferUpdate();
+    const arr = offer.target === 'sonarr'
+      ? { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, cmd: 'DownloadedEpisodesScan', label: 'Sonarr' }
+      : { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr' };
+    if (!arr.url) return interaction.editReply({ content: `❌ ${arr.label} isn't configured.`, embeds: [], components: [] });
+    audit('manual_import_partial_confirmed', { actorDiscordId: interaction.user.id, path: offer.fullImportPath, target: offer.target });
+    return executeManualImport(interaction, { arr, target: offer.target, fullImportPath: offer.fullImportPath, localPath: offer.localPath, clean: offer.clean, mode: 'Move', sourceLabel: offer.sourceLabel, auditAction: offer.auditAction });
   }
 
   if (['stuck_retry', 'stuck_rm', 'stuck_ignore'].includes(action)) {
