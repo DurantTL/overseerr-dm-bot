@@ -381,3 +381,14 @@ If a deploy goes bad:
    --force` inside the container also works while the bot is stopped).
 3. Verify with the section 4 checks (`/health` JSON, `/admin` → 401) before
    considering the rollback complete.
+
+**Schema migration rollback:** every startup that finds pending migration steps against an
+existing database (i.e. not a brand-new install) writes a consistent pre-migration snapshot
+alongside the live database first, named
+`plex_invites.db.pre-migration-v<version-before-upgrade>-<unix-ms>.bak`. If a new version's
+migration produces a schema you need to back out of, stop the bot and restore that `.bak` file the
+same way as a regular backup (`scripts/restore-db.js <path-to-.bak> /app/data/plex_invites.db
+--force`), then redeploy the older image version from step 1. Migration steps run inside one
+transaction, so a migration that throws never leaves a partially-migrated schema in the live
+database — the pre-migration snapshot is for rolling back a migration that completed successfully
+but produced behavior you want to undo.

@@ -2,6 +2,7 @@
 // download tokens, settings, audit log, pending-request stash).
 const Database = require('better-sqlite3');
 const crypto = require('crypto');
+const fs = require('fs');
 const { CONFIG } = require('./config');
 const { sha256, canonicalizeEmail, isSnowflake } = require('./util');
 const { upsertTrackedRequest, collapseStalePendingRequests, reconcileTrackedRequestStatuses } = require('./request-tracking');
@@ -18,24 +19,25 @@ function ensureColumn(table, col, spec) {
   if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${spec}`);
 }
 
-// Bumped whenever a migration step is added below. Not yet used to skip already-applied work —
-// runMigrationsInner() still re-evaluates every idempotent step on each startup — but recording
-// it in the database header (via PRAGMA user_version, which participates in the same transaction
-// as every other write below) is the ledger a later packet will build a skip-if-current-version
-// fast path on top of, per issue #179.
-const SCHEMA_VERSION = 1;
-
 function schemaVersion() {
   return db.pragma('user_version', { simple: true });
 }
 
-// The whole migration pass — schema creation, column additions, the tier_node_files rebuild, and
-// data repairs below — runs inside one transaction. SQLite rolls back every statement in it if
-// any step throws (a crash, a disk-full ALTER TABLE, an unhandled error), so an interrupted
-// migration always leaves either the old schema (rollback) or the fully-migrated new schema
-// (commit) — never a table set with some steps applied and others missing.
-const runMigrations = db.transaction(function runMigrationsInner() {
-  db.exec(`
+// Ordered, independently attributable migration steps keyed by PRAGMA user_version. Each step's
+// run(db) body must stay idempotent (CREATE TABLE IF NOT EXISTS, ensureColumn, guarded rebuilds),
+// but runMigrations() below now only ever invokes a step once against a given deployment: it
+// skips every step whose version is already recorded, so an already-current database no longer
+// re-walks the whole migration history on every restart (issue #179).
+const MIGRATIONS = [
+  // v1 is every migration step that predates this versioned-step ledger (PR #208) — the schema
+  // creation, column additions, and legacy-data repairs that used to run unconditionally on every
+  // startup. It stays as one step rather than being split further: splitting it retroactively
+  // would require guessing which already-deployed databases saw which slice of it, where today
+  // every database at user_version >= 1 is known to have run all of it together.
+  {
+    version: 1,
+    run(db) {
+      db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       discord_id TEXT PRIMARY KEY,
       email TEXT NOT NULL,
@@ -526,28 +528,79 @@ const runMigrations = db.transaction(function runMigrationsInner() {
     ('tv_season', 90, 1)
   `).run();
 
-  // .env-seeded fallback for the tiering node registry: only fills an EMPTY table, so runtime
-  // edits via /tier-node always win over the seed on later restarts.
-  if (CONFIG.TIER_NODES_SEED) {
-    try {
-      const count = db.prepare('SELECT COUNT(*) AS n FROM tier_nodes').get().n;
-      if (count === 0) {
-        for (const n of JSON.parse(CONFIG.TIER_NODES_SEED)) {
-          if (!n || !n.name) continue;
-          upsertTierNode(n);
-          // Optional multi-folder seed: [{"name":"california","folders":[{"id":"aaaaa-bbbbb","path":"/mnt/media/Media/Movies"}, ...]}]
-          for (const f of Array.isArray(n.folders) ? n.folders : []) {
-            if (f && (f.path || f.folder_root)) addTierNodeFolder(n.name, f.id || f.folder_id || '', f.path || f.folder_root);
-          }
+    },
+  },
+];
+
+// The highest version this build's ledger knows about — what an up-to-date database's
+// PRAGMA user_version should read once runMigrations() has nothing pending.
+const SCHEMA_VERSION = MIGRATIONS.at(-1).version;
+
+// .env-seeded fallback for the tiering node registry: only fills an EMPTY table, so runtime edits
+// via /tier-node always win over the seed on later restarts. This intentionally runs on every
+// call independent of schema version — an operator can add TIER_NODES_SEED long after a database
+// is already fully migrated and still expect it to seed an empty table on the next restart.
+function seedTierNodesFromConfig() {
+  if (!CONFIG.TIER_NODES_SEED) return;
+  try {
+    const count = db.prepare('SELECT COUNT(*) AS n FROM tier_nodes').get().n;
+    if (count === 0) {
+      for (const n of JSON.parse(CONFIG.TIER_NODES_SEED)) {
+        if (!n || !n.name) continue;
+        upsertTierNode(n);
+        // Optional multi-folder seed: [{"name":"california","folders":[{"id":"aaaaa-bbbbb","path":"/mnt/media/Media/Movies"}, ...]}]
+        for (const f of Array.isArray(n.folders) ? n.folders : []) {
+          if (f && (f.path || f.folder_root)) addTierNodeFolder(n.name, f.id || f.folder_id || '', f.path || f.folder_root);
         }
       }
-    } catch (err) {
-      audit('tier_seed_failed', { error: err.message });
     }
+  } catch (err) {
+    audit('tier_seed_failed', { error: err.message });
   }
+}
 
-  db.pragma(`user_version = ${SCHEMA_VERSION}`);
+// A raw file-level copy is a consistent snapshot as long as WAL content is checkpointed into the
+// main file first — safe here because this always runs before the migration transaction opens,
+// with no other writer active yet. Backup failure is audited but never blocks startup: refusing
+// to migrate a database because a backup copy couldn't be written would turn a safety net meant
+// to protect against destructive rebuilds into an outage of its own.
+function backupBeforeMigration(fromVersion) {
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)');
+    const backupPath = `${DB_PATH}.pre-migration-v${fromVersion}-${Date.now()}.bak`;
+    fs.copyFileSync(DB_PATH, backupPath);
+    return backupPath;
+  } catch (err) {
+    audit('migration_backup_failed', { fromVersion, error: err.message });
+    return null;
+  }
+}
+
+const runMigrationsCore = db.transaction(function runMigrationsInner() {
+  const before = schemaVersion();
+  for (const step of MIGRATIONS) {
+    if (step.version <= before) continue;
+    step.run(db);
+    db.pragma(`user_version = ${step.version}`);
+  }
+  seedTierNodesFromConfig();
 });
+
+// The whole pending slice of the migration ledger — schema creation, column additions, the
+// tier_node_files rebuild, and data repairs — runs inside one transaction. SQLite rolls back
+// every statement in it if any step throws (a crash, a disk-full ALTER TABLE, an unhandled
+// error), so an interrupted migration always leaves either the old schema (rollback) or the
+// fully-migrated new schema (commit) — never a table set with some steps applied and others
+// missing. The backup snapshot below runs before that transaction opens, since it exists.
+function runMigrations() {
+  const before = schemaVersion();
+  const hasPendingSteps = MIGRATIONS.some(step => step.version > before);
+  if (hasPendingSteps) {
+    const hasExistingSchema = db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table'").get().n > 0;
+    if (hasExistingSchema) backupBeforeMigration(before);
+  }
+  runMigrationsCore();
+}
 
 function audit(action, details = {}) {
   const meta = { ...details };
@@ -1736,7 +1789,7 @@ function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k) {
   return null;
 }
 
-module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
+module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, MIGRATIONS, SCHEMA_VERSION, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;
 Object.assign(module.exports, {
   recordPackRejections,
