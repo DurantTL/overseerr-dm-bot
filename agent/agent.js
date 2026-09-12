@@ -279,8 +279,11 @@ function resolveFolderPlans(ctx, manifest) {
 
 // §4a step 2: the one check that protects the master. A Receive Only folder never pushes local
 // changes; if someone flipped it to send-receive, pruning here would propagate deletes to every
-// other node. Abort and let the bot alert.
-async function assertReceiveOnly(ctx, syncFolderId) {
+// other node. Abort and let the bot alert. Full masters are the senders (manifest.full / §tier.js
+// receiveOnly: !node.full) — they are expected to be sendonly/sendreceive, so the check is skipped
+// for them rather than demanding they be receiveonly like every edge node.
+async function assertReceiveOnly(ctx, syncFolderId, { receiveOnly = true } = {}) {
+  if (!receiveOnly) return;
   const folder = await syncthingApi(ctx, 'GET', `/rest/config/folders/${encodeURIComponent(syncFolderId)}`);
   if (folder.type !== 'receiveonly') {
     throw new Error(`SAFETY ABORT: Syncthing folder '${syncFolderId}' is type '${folder.type}', expected 'receiveonly' — pruning could propagate deletes to the master. Fix the folder type before this agent will touch anything.`);
@@ -599,7 +602,7 @@ async function runOnce(ctx) {
   if (planChanged) {
     for (const fp of folderPlans) {
       try {
-        await assertReceiveOnly(ctx, fp.syncFolderId);                  // 2. topology guard
+        await assertReceiveOnly(ctx, fp.syncFolderId, { receiveOnly: !manifest.full }); // 2. topology guard
         writeStignore(ctx, fp);                                         // 3. ignore first
         if (!ctx.dryRun) {
           // A freshly-populated/just-registered folder's initial scan can legitimately run far
