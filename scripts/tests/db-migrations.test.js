@@ -7,8 +7,8 @@ const path = require('path');
 
 // src/db.js honors DB_PATH from the environment (defaulting to the production container's data
 // volume, which a test runner won't have write access to). Point it at a scratch file per test so
-// the two scenarios below don't see each other's state; a later #179 packet is expected to build
-// a proper fixture harness on top of this.
+// the scenarios below don't see each other's state. Historical upgrade coverage uses the reusable
+// fixture harness in helpers/db-migration-fixture.js.
 const DB_MODULE = require.resolve('../../src/db');
 
 function freshDb() {
