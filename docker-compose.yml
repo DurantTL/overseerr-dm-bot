@@ -44,6 +44,12 @@ services:
       # set GRAB_STAGING_PATH=/seedbox-staging (GRAB_IMPORT_PATH = the same folder as the
       # arrs see it, e.g. /share/seedbox-staging).
       # - ${SEEDBOX_STAGING_HOST_PATH:-/mnt/raid/media/seedbox-staging}:/seedbox-staging
+      # Premiumize import/staging report (/debrid import, /debrid staging): mount the same
+      # folder a Premiumize downloader (e.g. Premiumizearr) syncs completed transfers into —
+      # the one Radarr/Sonarr's Blackhole download client watches. Same host path on both
+      # sides is the common case (a shared NAS mount every service in the stack sees
+      # identically); set PREMIUMIZE_STAGING_PATH and PREMIUMIZE_IMPORT_PATH to that path too.
+      # - ${PREMIUMIZE_DOWNLOADS_HOST_PATH:-/share/downloads}:/share/downloads
     restart: unless-stopped
     healthcheck:
       # Reads PORT from inside the container, so it follows env_file (which compose-level
