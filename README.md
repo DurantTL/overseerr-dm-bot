@@ -80,12 +80,12 @@ advanced-infrastructure layer lives in `docs/`:
 Discord events + slash commands are handled in the bot process, which also runs an Express server for webhooks, download streaming, health, and dashboard routes. State is stored in SQLite at `/app/data/plex_invites.db`.
 
 ### Code layout
-- `index.js` — composition root: the Discord client, notification routing, slash/button handlers, webhooks, dashboard/express routes, and the periodic sweeps.
+- `index.js` — composition root: the Discord client, notification routing, slash/button handlers, route wiring, and the periodic sweeps.
 - `src/` — dependency-injected services and feature modules. Most service modules do not import
   Discord; Discord-facing modules such as `media-panel.js` own their builders and accept runtime
   integrations explicitly.
 - `src/routes/` — named Express handler factories with explicit dependencies; `index.js` supplies those dependencies and registers middleware and route paths.
-- `scripts/tests/` — the `npm test` suite; service modules are imported directly, index.js-resident functions are exercised via source extraction.
+- `scripts/tests/` — the `npm test` suite; extracted services and route groups are imported directly, while remaining index.js-resident functions retain focused source-extraction regressions.
 
 ## Discord Bot Permissions / Intents
 Required intents:
