@@ -21,6 +21,7 @@ const {
   renderTierNodeSetup,
   renderPasskeyManagement,
   renderSettingsGroup,
+  renderAutomationRegistry,
 } = require('../../src/dashboard-render');
 
 test('dashboard-render: escapeHtml', () => {
@@ -108,6 +109,25 @@ test('dashboard-render: sweep settings expose preview without changing other gro
   const setting = { key: 'STUCK_AFTER_MINUTES', type: 'int', value: 45, min: 5, max: 10080 };
   assert.match(renderSettingsGroup({ id: 'stuck', title: 'Stuck', blurb: '', settings: [setting] }), /data-preview="stuck"/);
   assert.doesNotMatch(renderSettingsGroup({ id: 'capacity', title: 'Capacity', blurb: '', settings: [setting] }), /data-preview=/);
+});
+
+test('dashboard-render: automation registry exposes cadence, telemetry, and manual policy', () => {
+  const html = renderAutomationRegistry([{
+    id: 'stuck', label: 'Stuck downloads', enabled: true,
+    cadence: { minutes: 15, source: 'override', mutable: true },
+    running: false, manual: { enabled: true }, previewable: true,
+    state: { status: 'ok', finishedAt: Date.now() - 1000, durationMs: 250, trigger: 'manual', resultCount: 2, resultSummary: 'alerted=2', nextRunAt: Date.now() + 60000 },
+  }, {
+    id: 'backup', label: 'Database backup', enabled: false, disabledReason: 'cadence is disabled',
+    cadence: { minutes: 0, source: 'compose', restartRequired: true },
+    running: false, manual: { enabled: false, reason: 'scheduled execution only' }, state: null,
+  }]);
+  assert.match(html, /Every 15 min · override · live editable/);
+  assert.match(html, /manual · 2 result\(s\)/);
+  assert.match(html, /data-post="\/admin\/action\/sweep"/);
+  assert.match(html, /Disabled: cadence is disabled · Disabled · compose/);
+  assert.match(html, /restart required/);
+  assert.match(html, /Manual unavailable: scheduled execution only/);
 });
 
 test('dashboard-render: renderTable', () => {

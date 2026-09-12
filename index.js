@@ -54,7 +54,7 @@ const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = requi
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
-const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
+const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
 const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, eraseTorrent, getRtorrentVersion, getRtorrentPaths } = require('./src/rtorrent');
 const { decideRatioRemoval, describeDeletionSafety } = require('./src/ratio-cleanup');
@@ -67,6 +67,7 @@ const { registerHealthAndDownloadRoutes } = require('./src/routes/health-downloa
 const { createDashboardSession, createDashboardAuth, createDashboardGateActor, dashboardActor, registerDashboardAuthRoutes } = require('./src/routes/dashboard-auth');
 const { createApp } = require('./src/app');
 const { createRuntimeLifecycle, createDiscordReadyGuard } = require('./src/runtime-lifecycle');
+const { createAutomationRegistry } = require('./src/automation-registry');
 const { findUnprocessableTorrents, unacknowledgedTorrents, pruneAcknowledged, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate, planStuckTransferActions } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
@@ -74,7 +75,7 @@ const { summarizeSeriesGaps, describeGaps, describeActivity, rankIncomplete } = 
 const { priorityKey, orderByPriority, isPinned, nextRank } = require('./src/priority');
 const { summarizeImportRejections, renderRejectionLines, looksLikeMappingProblem } = require('./src/import-rejections');
 const { normalizeSearchQuery, searchDashboard } = require('./src/search');
-const { runEpisodeRecoverySweep, previewEpisodeRecoverySweep } = require('./src/episode-recovery');
+const { initializeEpisodeRecovery, runEpisodeRecoverySweep, previewEpisodeRecoverySweep } = require('./src/episode-recovery');
 const { createRequestGate } = require('./src/request-gate');
 const { passkeyRp, createPasskeyService } = require('./src/passkeys');
 const { prepareTierNodeInstall } = require('./src/tier-node-setup');
@@ -119,40 +120,43 @@ const passkeyService = createPasskeyService({
   store: { listPasskeys, getPasskey, savePasskey, updatePasskeyUse },
   ...PASSKEY_RP,
 });
-// A sweep whose cadence and on/off state are runtime-tunable. setInterval is wrong for these:
-// its period is fixed when it is created, so a cadence changed from the dashboard would not take
-// effect until the process restarted, and a sweep whose env value was 0 at boot would never exist
-// to be re-enabled at all. This re-reads both on every tick instead. While paused (interval 0, or
-// `enabled` false) it keeps waking once a minute purely to notice being switched back on.
-function scheduleTunableSweep({ label, minutesKey, enabledKey, fn, firstRunDelayMs }) {
-  const paused = () => (enabledKey && !tunable(enabledKey)) || tunable(minutesKey) <= 0;
-  const tick = () => {
-    if (!paused()) Promise.resolve().then(fn).catch(err => log.warn(`${label} failed: ${err.message}`));
-    setTimeout(tick, (paused() ? 1 : tunable(minutesKey)) * 60000).unref();
-  };
-  setTimeout(tick, firstRunDelayMs ?? (paused() ? 60000 : tunable(minutesKey) * 60000)).unref();
-}
+let automationRegistry = null;
 
-const runningSweeps = new Set();
-const automationRuns = new Map();
-function recordAutomationRun(name, state) {
-  automationRuns.set(name, state);
-  setSetting(`automation_run:${name}`, JSON.stringify(state));
-}
-async function runGuardedSweep(name, fn) {
-  if (runningSweeps.has(name)) return { ok: false, busy: true };
-  runningSweeps.add(name);
-  try {
-    recordAutomationRun(name, { status: 'running', startedAt: Date.now(), finishedAt: null, error: null });
-    const result = await fn();
-    recordAutomationRun(name, { status: 'ok', startedAt: automationRuns.get(name).startedAt, finishedAt: Date.now(), error: null });
-    return { ok: true, result };
-  } catch (err) {
-    recordAutomationRun(name, { status: 'failed', startedAt: automationRuns.get(name).startedAt, finishedAt: Date.now(), error: err.message });
-    throw err;
-  } finally {
-    runningSweeps.delete(name);
-  }
+const runtimeCadence = key => {
+  const raw = getSetting(`${runtimeSettings.OVERRIDE_PREFIX}${key}`);
+  const setting = runtimeSettings.settingByKey(key);
+  return {
+    minutes: tunable(key),
+    source: raw != null && runtimeSettings.validate(setting, raw).ok ? 'override' : 'compose',
+    mutable: true,
+    settingKey: key,
+  };
+};
+const staticCadence = (minutes, settingKey) => ({ minutes, source: 'compose', mutable: false, restartRequired: true, settingKey });
+const enabled = (condition, reason) => condition ? { enabled: true } : { enabled: false, reason };
+const safeManual = { enabled: true };
+const scheduledOnly = reason => ({ enabled: false, reason });
+
+function createAutomationDefinitions() {
+  return [
+    { id: 'pending-approvals', label: 'Pending approvals', cadence: () => runtimeCadence('PENDING_APPROVAL_CHECK_MINUTES'), prerequisite: () => enabled(true), run: sweepPendingApprovals, manual: scheduledOnly('Uses notification and expiry timing; scheduled execution only.') },
+    { id: 'request-reconcile', label: 'Request reconciliation', cadence: () => staticCadence(CONFIG.REQUEST_RECONCILE_MINUTES, 'REQUEST_RECONCILE_MINUTES'), prerequisite: () => enabled(true), firstRunDelayMs: 60000, runOnStartup: true, run: sweepRequestStatuses, manual: scheduledOnly('May notify many requesters; scheduled execution only.') },
+    { id: 'stuck', label: 'Stuck downloads', cadence: () => runtimeCadence('STUCK_CHECK_MINUTES'), prerequisite: () => enabled(arrSources().length > 0, 'Radarr or Sonarr is not configured.'), run: sweepStuckDownloads, preview: () => previewAutomation('stuck'), manual: safeManual },
+    { id: 'escalation', label: 'AvistaZ escalation', cadence: () => runtimeCadence('ESCALATION_CHECK_MINUTES'), prerequisite: () => enabled(tunable('ESCALATION_ENABLED') && !!(CONFIG.RADARR_URL || CONFIG.SONARR_URL), tunable('ESCALATION_ENABLED') ? 'Radarr or Sonarr is not configured.' : 'ESCALATION_ENABLED is off.'), run: sweepEscalations, preview: values => previewAutomation('escalation', values), manual: safeManual },
+    { id: 'season-pack', label: 'Season packs', cadence: () => runtimeCadence('SEASON_PACK_CHECK_MINUTES'), prerequisite: () => enabled(tunable('SEASON_PACK_FIRST') && !!CONFIG.SONARR_URL, tunable('SEASON_PACK_FIRST') ? 'Sonarr is not configured.' : 'SEASON_PACK_FIRST is off.'), firstRunDelayMs: 120000, runOnStartup: true, run: sweepSeasonPacks, manualRun: () => sweepSeasonPacks({ rearmAlerts: true }), preview: values => previewAutomation('season-pack', values), manual: safeManual },
+    { id: 'grab', label: 'Grab transfers', cadence: () => staticCadence(CONFIG.GRAB_CHECK_MINUTES, 'GRAB_CHECK_MINUTES'), prerequisite: () => enabled(grabConfigured(), 'AvistaZ/rTorrent grab pipeline is not configured.'), firstRunDelayMs: 1, runOnStartup: true, startupIgnoresCadence: true, startupRun: pumpGrabTransfers, run: sweepGrabJobs, manual: scheduledOnly('Moves files and triggers imports; scheduled execution only.') },
+    { id: 'adoption', label: 'rTorrent adoption', cadence: () => staticCadence(CONFIG.RTORRENT_ADOPT_CHECK_MINUTES, 'RTORRENT_ADOPT_CHECK_MINUTES'), prerequisite: () => enabled(CONFIG.RTORRENT_ADOPT_ENABLED && adoptPipelineReady(), CONFIG.RTORRENT_ADOPT_ENABLED ? 'Adoption pipeline is incomplete.' : 'RTORRENT_ADOPT_ENABLED is off.'), run: sweepAdoptCandidates, manual: scheduledOnly('Creates import jobs; use /rtorrent adopt for reviewed execution.') },
+    { id: 'ratio-cleanup', label: 'rTorrent ratio cleanup', cadence: () => runtimeCadence('RTORRENT_RATIO_CLEANUP_CHECK_MINUTES'), prerequisite: () => enabled(rtorrentConfigured() && tunable('RTORRENT_RATIO_CLEANUP_ENABLED'), tunable('RTORRENT_RATIO_CLEANUP_ENABLED') ? 'rTorrent is not configured.' : 'RTORRENT_RATIO_CLEANUP_ENABLED is off.'), run: sweepRatioCleanup, manual: scheduledOnly('Can remove torrents; scheduled execution only.') },
+    { id: 'janitor', label: 'Janitor', cadence: () => staticCadence(CONFIG.JANITOR_CHECK_MINUTES, 'JANITOR_CHECK_MINUTES'), prerequisite: () => enabled(true), run: janitorSweep, manual: scheduledOnly('Can enforce retention and deletion policy; scheduled execution only.') },
+    { id: 'backup', label: 'Database backup', cadence: () => staticCadence(CONFIG.BACKUP_INTERVAL_HOURS * 60, 'BACKUP_INTERVAL_HOURS'), prerequisite: () => enabled(true), run: sweepBackup, manual: scheduledOnly('Use /backup-rehearse for the safe read-only action.') },
+    { id: 'monthly-recap', label: 'Monthly recap', cadence: () => staticCadence(60, 'MONTHLY_RECAP_ENABLED'), prerequisite: () => enabled(CONFIG.MONTHLY_RECAP_ENABLED, 'MONTHLY_RECAP_ENABLED is off.'), run: sweepMonthlyRecap, manual: scheduledOnly('Posts to Discord; scheduled execution only.') },
+    { id: 'transcode', label: 'Transcode watchdog', cadence: () => staticCadence(CONFIG.PLAYBACK_CHECK_MINUTES, 'PLAYBACK_CHECK_MINUTES'), prerequisite: () => enabled(tautulliConfigured(), 'Tautulli is not configured.'), run: sweepTranscodes, manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
+    { id: 'premiumize', label: 'Premiumize transfers', cadence: () => staticCadence(CONFIG.PREMIUMIZE_CHECK_MINUTES, 'PREMIUMIZE_CHECK_MINUTES'), prerequisite: () => enabled(premiumizeConfigured(), 'Premiumize is not configured.'), run: sweepPremiumizeTransfers, manual: scheduledOnly('Can retry, clear, or reroute transfers; scheduled execution only.') },
+    { id: 'stage-queue', label: 'Stage queue', cadence: () => staticCadence(CONFIG.STAGE_CHECK_MINUTES, 'STAGE_CHECK_MINUTES'), prerequisite: () => enabled(stagingConfigured(), 'Plex Home staging is not configured.'), firstRunDelayMs: 1, runOnStartup: true, startupIgnoresCadence: true, run: pumpStageQueue, manual: scheduledOnly('Copies media over the WAN; scheduled execution only.') },
+    { id: 'stage-reconcile', label: 'Stage reconciliation', cadence: () => staticCadence(CONFIG.STAGE_RECONCILE_MINUTES, 'STAGE_RECONCILE_MINUTES'), prerequisite: () => enabled(stagingConfigured(), 'Plex Home staging is not configured.'), firstRunDelayMs: 1, runOnStartup: true, startupIgnoresCadence: true, run: sweepStagedReconciliation, manual: scheduledOnly('Reconciles durable cache state; scheduled execution only.') },
+    { id: 'tunnel', label: 'Tunnel health', cadence: () => staticCadence(CONFIG.PH_TUNNEL_CHECK_MINUTES, 'PH_TUNNEL_CHECK_MINUTES'), prerequisite: () => enabled(!!CONFIG.PH_TUNNEL_HEALTH_URL, 'PH_TUNNEL_HEALTH_URL is not configured.'), run: sweepTunnelHealth, manual: scheduledOnly('May send availability alerts; scheduled execution only.') },
+    { id: 'episode-recovery', label: 'Episode recovery', cadence: () => runtimeCadence('EPISODE_RECOVERY_CHECK_MINUTES'), prerequisite: () => enabled(tunable('EPISODE_RECOVERY_ENABLED') && !!(CONFIG.SONARR_URL && CONFIG.PROWLARR_URL && CONFIG.RTORRENT_URL), tunable('EPISODE_RECOVERY_ENABLED') ? 'Sonarr, Prowlarr, and rTorrent are required.' : 'EPISODE_RECOVERY_ENABLED is off.'), firstRunDelayMs: 30000, runOnStartup: true, run: runEpisodeRecoverySweep, preview: values => previewEpisodeRecoverySweep(values), manual: safeManual },
+  ];
 }
 
 function channelFor(kind) {
@@ -4167,10 +4171,10 @@ const slashCommands = [
   new SlashCommandBuilder().setName('status').setDescription('Show status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('automation').setDescription('Preview or run an automation sweep').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption(o => o.setName('sweep').setDescription('Automation sweep').setRequired(true).addChoices(
-      { name: 'stuck downloads', value: 'stuck' },
+      { name: 'Stuck downloads', value: 'stuck' },
       { name: 'AvistaZ escalation', value: 'escalation' },
-      { name: 'season packs', value: 'season-pack' },
-      { name: 'episode recovery', value: 'episode-recovery' },
+      { name: 'Season packs', value: 'season-pack' },
+      { name: 'Episode recovery', value: 'episode-recovery' },
     ))
     .addStringOption(o => o.setName('mode').setDescription('Preview makes no changes').setRequired(true).addChoices(
       { name: 'preview', value: 'preview' },
@@ -4413,22 +4417,7 @@ async function startDiscordWorkers() {
   rehydratePendingEmails();
   startExpressServer();
   registerSlashCommands();
-  scheduleTunableSweep({ label: 'Pending-approval sweep', minutesKey: 'PENDING_APPROVAL_CHECK_MINUTES', fn: () => runGuardedSweep('pending-approvals', sweepPendingApprovals) });
-  log.ok(`Pending-approval sweep every ${tunable('PENDING_APPROVAL_CHECK_MINUTES')} min (nudge ${tunable('PENDING_APPROVAL_NUDGE_HOURS')}h, requester update ${tunable('PENDING_APPROVAL_REQUESTER_HOURS')}h, expire ${tunable('PENDING_APPROVAL_EXPIRE_DAYS')}d)`);
-  if (CONFIG.REQUEST_RECONCILE_MINUTES > 0) {
-    // Seerr often starts alongside the bot. Give it one minute to bind its port, then let the
-    // inventory reader retry transient connection failures before recording a failed run.
-    setTimeout(() => runGuardedSweep('request-reconcile', sweepRequestStatuses)
-      .catch(err => log.warn(`Request reconciliation failed: ${err.message}`)), 60000).unref();
-    setInterval(() => runGuardedSweep('request-reconcile', sweepRequestStatuses).catch(err => log.warn(`Request reconciliation failed: ${err.message}`)), CONFIG.REQUEST_RECONCILE_MINUTES * 60000).unref();
-    log.ok(`Seerr request reconciliation starts after 1 min and runs every ${CONFIG.REQUEST_RECONCILE_MINUTES} min`);
-  }
-  // The arr URLs are a static prerequisite (no arrs configured, nothing to watch); the cadence and
-  // thresholds are runtime-tunable, so the timer is armed either way and decides per tick.
-  if (arrSources().length) {
-    scheduleTunableSweep({ label: 'Stuck-download sweep', minutesKey: 'STUCK_CHECK_MINUTES', fn: () => runGuardedSweep('stuck', sweepStuckDownloads) });
-    log.ok(`Stuck-download watchdog every ${tunable('STUCK_CHECK_MINUTES')} min (threshold ${tunable('STUCK_AFTER_MINUTES')} min)`);
-  }
+  await initializeEpisodeRecovery();
   if (CONFIG.RADARR_URL || CONFIG.SONARR_URL) {
     // Non-fatal setup check: escalation fails with tag_missing until the AvistaZ tag exists.
     if (tunable('ESCALATION_ENABLED')) verifyAvistazTags(CONFIG.AVISTAZ_TAG).then(missing => {
@@ -4439,78 +4428,23 @@ async function startDiscordWorkers() {
           .setDescription(missing.map(w => `• ${w}`).join('\n').slice(0, 4000))] });
       }
     }).catch(err => log.warn(`AvistaZ tag check failed: ${err.message}`));
-    scheduleTunableSweep({ label: 'Escalation sweep', minutesKey: 'ESCALATION_CHECK_MINUTES', enabledKey: 'ESCALATION_ENABLED', fn: () => runGuardedSweep('escalation', sweepEscalations) });
-    log.ok(`AvistaZ escalation watchdog every ${tunable('ESCALATION_CHECK_MINUTES')} min (delay ${escalationDelayLabel()}, tag '${CONFIG.AVISTAZ_TAG}')`);
-  }
-  if (CONFIG.SONARR_URL) {
-    // A first pass shortly after boot, then on the interval — Sonarr needs a moment to settle
-    // after a restart, and the sweep is capped per run anyway. sweepSeasonPacks() re-checks the
-    // SEASON_PACK_FIRST toggle itself, so a paused tick costs nothing.
-    scheduleTunableSweep({ label: 'Season-pack sweep', minutesKey: 'SEASON_PACK_CHECK_MINUTES', enabledKey: 'SEASON_PACK_FIRST', fn: () => runGuardedSweep('season-pack', sweepSeasonPacks), firstRunDelayMs: 120000 });
-    log.ok(`Season-pack-first search every ${tunable('SEASON_PACK_CHECK_MINUTES')} min (old = ended or ${tunable('SEASON_PACK_DORMANT_DAYS')}d dormant, max ${tunable('SEASON_PACK_MAX_PER_RUN')}/run)`);
   }
   if (grabConfigured()) {
     // A restart mid-transfer leaves 'transferring' rows behind; put them back in the queue
     // (rclone copy skips files that already made it across).
     const resumed = resetInterruptedGrabTransfers();
     if (resumed) log.info(`Re-queued ${resumed} AvistaZ transfer(s) interrupted by restart`);
-    if (CONFIG.GRAB_CHECK_MINUTES > 0) {
-      setInterval(() => runGuardedSweep('grab', sweepGrabJobs).catch(err => log.warn(`Grab sweep failed: ${err.message}`)), CONFIG.GRAB_CHECK_MINUTES * 60000).unref();
-    }
-    pumpGrabTransfers().catch(err => log.warn(`Grab transfer pump failed: ${err.message}`));
-    log.ok(`AvistaZ direct grab enabled → seedbox rTorrent (sweep every ${CONFIG.GRAB_CHECK_MINUTES} min, mode ${CONFIG.GRAB_MODE}, daily limit ${CONFIG.AVISTAZ_DAILY_GRAB_LIMIT || 'unlimited'})`);
-  }
-  if (CONFIG.RTORRENT_ADOPT_ENABLED && adoptPipelineReady() && CONFIG.RTORRENT_ADOPT_CHECK_MINUTES > 0) {
-    setInterval(() => runGuardedSweep('adoption', sweepAdoptCandidates).catch(err => log.warn(`Adoption sweep failed: ${err.message}`)), CONFIG.RTORRENT_ADOPT_CHECK_MINUTES * 60000).unref();
-    log.ok(`rTorrent adoption discovery running every ${CONFIG.RTORRENT_ADOPT_CHECK_MINUTES} min (labels: ${CONFIG.RTORRENT_ADOPT_LABELS.join(', ') || 'none'}, auto: ${CONFIG.RTORRENT_ADOPT_AUTO ? 'on' : 'off'})`);
-  }
-  if (rtorrentConfigured()) {
-    scheduleTunableSweep({ label: 'rTorrent ratio-cleanup sweep', minutesKey: 'RTORRENT_RATIO_CLEANUP_CHECK_MINUTES', enabledKey: 'RTORRENT_RATIO_CLEANUP_ENABLED', fn: () => runGuardedSweep('ratio-cleanup', sweepRatioCleanup) });
-    log.ok(`rTorrent ratio cleanup ${tunable('RTORRENT_RATIO_CLEANUP_ENABLED') ? `on (every ${tunable('RTORRENT_RATIO_CLEANUP_CHECK_MINUTES')} min, stall ≥${(tunable('RTORRENT_RATIO_MIN_PERMILLE') / 1000).toFixed(2)} for ${tunable('RTORRENT_RATIO_STALL_DAYS')}d, force ≥${(tunable('RTORRENT_RATIO_FORCE_PERMILLE') / 1000).toFixed(2)})` : 'off (RTORRENT_RATIO_CLEANUP_ENABLED)'}`);
-  }
-  if (CONFIG.JANITOR_CHECK_MINUTES > 0) {
-    setInterval(() => runGuardedSweep('janitor', janitorSweep).catch(err => log.warn(`Janitor sweep failed: ${err.message}`)), CONFIG.JANITOR_CHECK_MINUTES * 60000).unref();
-    log.ok(`Janitor running every ${CONFIG.JANITOR_CHECK_MINUTES} min (grace deletes: ${CONFIG.ENABLE_DELETION ? 'on' : 'off'}, retention: ${CONFIG.RETENTION_ENFORCEMENT ? 'on' : 'off'}, dry-run: ${CONFIG.DELETION_DRY_RUN ? 'on' : 'off'})`);
-  }
-  if (CONFIG.BACKUP_INTERVAL_HOURS > 0) {
-    setInterval(() => runGuardedSweep('backup', sweepBackup).catch(err => log.warn(`Backup sweep failed: ${err.message}`)), CONFIG.BACKUP_INTERVAL_HOURS * 3600000).unref();
-    log.ok(`DB backup running every ${CONFIG.BACKUP_INTERVAL_HOURS}h → ${CONFIG.BACKUP_DIR} (keeping last ${CONFIG.BACKUP_KEEP_COUNT})`);
-  }
-  if (CONFIG.MONTHLY_RECAP_ENABLED) {
-    // Checked hourly, like the other "last_run" gated sweeps in janitorSweep, but this one fires
-    // rarely enough to run on its own interval rather than folding into that sweep.
-    setInterval(() => runGuardedSweep('monthly-recap', sweepMonthlyRecap).catch(err => log.warn(`Monthly recap sweep failed: ${err.message}`)), 3600000).unref();
-    log.ok('Monthly community recap enabled — posts to the whats_new channel roughly every 30 days');
-  }
-  if (tautulliConfigured() && CONFIG.PLAYBACK_CHECK_MINUTES > 0) {
-    setInterval(() => runGuardedSweep('transcode', sweepTranscodes).catch(err => log.warn(`Transcode sweep failed: ${err.message}`)), CONFIG.PLAYBACK_CHECK_MINUTES * 60000).unref();
-    log.ok(`Transcode watchdog running every ${CONFIG.PLAYBACK_CHECK_MINUTES} min`);
-  }
-  if (premiumizeConfigured() && CONFIG.PREMIUMIZE_CHECK_MINUTES > 0) {
-    setInterval(() => runGuardedSweep('premiumize', sweepPremiumizeTransfers).catch(err => log.warn(`Premiumize sweep failed: ${err.message}`)), CONFIG.PREMIUMIZE_CHECK_MINUTES * 60000).unref();
-    log.ok(`Premiumize transfer watchdog running every ${CONFIG.PREMIUMIZE_CHECK_MINUTES} min (stuck after ${CONFIG.PREMIUMIZE_STUCK_AFTER_MINUTES} min)`);
   }
   if (stagingConfigured()) {
     // A restart mid-copy leaves 'copying' rows behind; put them back in the queue and let the
     // worker pick them up (rclone skips files that already made it across).
     const resumed = resetInterruptedStageJobs();
     if (resumed) log.info(`Re-queued ${resumed} stage job(s) interrupted by restart`);
-    if (CONFIG.STAGE_CHECK_MINUTES > 0) {
-      setInterval(() => runGuardedSweep('stage-queue', pumpStageQueue).catch(err => log.warn(`Stage queue pump failed: ${err.message}`)), CONFIG.STAGE_CHECK_MINUTES * 60000).unref();
-    }
-    pumpStageQueue().catch(err => log.warn(`Stage queue pump failed: ${err.message}`));
-    // §Phase2: reconcile the staged_items DB against the cache drive once at startup (the DB may have
-    // drifted while the process was down) and then periodically.
-    sweepStagedReconciliation().catch(err => log.warn(`Stage reconciliation failed: ${err.message}`));
-    if (CONFIG.STAGE_RECONCILE_MINUTES > 0) {
-      setInterval(() => runGuardedSweep('stage-reconcile', sweepStagedReconciliation).catch(err => log.warn(`Stage reconciliation failed: ${err.message}`)), CONFIG.STAGE_RECONCILE_MINUTES * 60000).unref();
-    }
-    log.ok(`Plex Home staging enabled → ${CONFIG.STAGE_RCLONE_REMOTE} (queue check every ${CONFIG.STAGE_CHECK_MINUTES} min, min free ${CONFIG.STAGE_MIN_FREE_GB} GB)`);
   }
-  if (CONFIG.PH_TUNNEL_HEALTH_URL && CONFIG.PH_TUNNEL_CHECK_MINUTES > 0) {
-    setInterval(() => runGuardedSweep('tunnel', sweepTunnelHealth).catch(err => log.warn(`Tunnel health sweep failed: ${err.message}`)), CONFIG.PH_TUNNEL_CHECK_MINUTES * 60000).unref();
-    log.ok(`PH tunnel watchdog running every ${CONFIG.PH_TUNNEL_CHECK_MINUTES} min (alert after ${CONFIG.PH_TUNNEL_FAILS_BEFORE_ALERT} failures)`);
-  }
+  automationRegistry = createAutomationRegistry({ definitions: createAutomationDefinitions(), store: settingsStore, logger: log });
+  automationRegistry.start();
+  const active = automationRegistry.list().filter(item => item.enabled).length;
+  log.ok(`Automation registry started: ${active}/${automationRegistry.ids().length} workers enabled`);
 }
 
 client.on('guildMemberAdd', async member => {
@@ -5439,20 +5373,16 @@ async function handleAutomationCommand(interaction) {
   const mode = interaction.options.getString('mode');
   await interaction.deferReply({ ephemeral: true });
   if (mode === 'preview') {
-    const items = await previewAutomation(name);
+    const preview = await automationRegistry.preview(name);
+    if (!preview.ok) return interaction.editReply(preview.busy ? `${name} is already running.` : preview.reason);
+    const items = preview.result;
     const lines = items.length
       ? items.map(item => `- ${item.title}: ${item.stage} — ${item.reason}`)
       : ['No items would be actioned.'];
     return interaction.editReply([`**${name} preview**`, ...lines].join('\n').slice(0, 2000));
   }
-  const sweeps = {
-    stuck: sweepStuckDownloads,
-    escalation: sweepEscalations,
-    'season-pack': () => sweepSeasonPacks({ rearmAlerts: true }),
-    'episode-recovery': runEpisodeRecoverySweep,
-  };
-  const outcome = await runGuardedSweep(name, sweeps[name]);
-  if (!outcome.ok || outcome.result?.busy) return interaction.editReply(`${name} is already running.`);
+  const outcome = await automationRegistry.run(name, { trigger: 'manual' });
+  if (!outcome.ok) return interaction.editReply(outcome.busy ? `${name} is already running.` : outcome.reason || 'Automation is unavailable.');
   const result = outcome.result || {};
   const count = result.searched ?? result.acted ?? result.alerted ?? 0;
   return interaction.editReply(`${name} sweep finished with ${count} action(s).`);
@@ -5486,41 +5416,18 @@ async function handleStatusCommand(interaction) {
   const activeLinks = db.prepare('SELECT COUNT(*) AS c FROM download_tokens WHERE revoked = 0 AND expires_at > ?').get(Date.now()).c;
   const warnings = configWarnings();
 
-  const automationConfig = [
-    ['pending-approvals', tunable('PENDING_APPROVAL_CHECK_MINUTES')],
-    ['request-reconcile', CONFIG.REQUEST_RECONCILE_MINUTES],
-    ['stuck', tunable('STUCK_CHECK_MINUTES')],
-    ['escalation', tunable('ESCALATION_ENABLED') ? tunable('ESCALATION_CHECK_MINUTES') : 0],
-    ['season-pack', tunable('SEASON_PACK_FIRST') ? tunable('SEASON_PACK_CHECK_MINUTES') : 0],
-    ['grab', grabConfigured() ? CONFIG.GRAB_CHECK_MINUTES : 0],
-    ['adoption', CONFIG.RTORRENT_ADOPT_ENABLED ? CONFIG.RTORRENT_ADOPT_CHECK_MINUTES : 0],
-    ['ratio-cleanup', rtorrentConfigured() && tunable('RTORRENT_RATIO_CLEANUP_ENABLED') ? tunable('RTORRENT_RATIO_CLEANUP_CHECK_MINUTES') : 0],
-    ['janitor', CONFIG.JANITOR_CHECK_MINUTES],
-    ['backup', CONFIG.BACKUP_INTERVAL_HOURS > 0 ? CONFIG.BACKUP_INTERVAL_HOURS * 60 : 0],
-    ['monthly-recap', CONFIG.MONTHLY_RECAP_ENABLED ? 60 : 0],
-    ['transcode', tautulliConfigured() ? CONFIG.PLAYBACK_CHECK_MINUTES : 0],
-    ['premiumize', premiumizeConfigured() ? CONFIG.PREMIUMIZE_CHECK_MINUTES : 0],
-    ['stage-queue', stagingConfigured() ? CONFIG.STAGE_CHECK_MINUTES : 0],
-    ['stage-reconcile', stagingConfigured() ? CONFIG.STAGE_RECONCILE_MINUTES : 0],
-    ['tunnel', CONFIG.PH_TUNNEL_HEALTH_URL ? CONFIG.PH_TUNNEL_CHECK_MINUTES : 0],
-  ];
   let automationDegraded = false;
-  const automationLines = automationConfig.map(([name, minutes]) => {
-    if (minutes <= 0) return `⏭️ ${name}: disabled`;
-    let run = automationRuns.get(name);
-    if (!run) {
-      const stored = getSetting(`automation_run:${name}`);
-      if (stored) {
-        try { run = JSON.parse(stored); } catch (err) { run = { status: 'failed', finishedAt: null, error: `invalid stored run state: ${err.message}` }; }
-      }
-    }
-    if (!run) return `❔ ${name}: every ${minutes}m · not run since boot`;
+  const automationLines = (automationRegistry?.list() || []).map(item => {
+    const { id: name, state: run, cadence } = item;
+    const minutes = cadence.minutes;
+    if (!item.enabled) return `⏭️ ${name}: disabled · ${item.disabledReason}`;
+    if (!run) return `❔ ${name}: every ${minutes}m (${cadence.source}) · not run yet`;
     if (run.status === 'running') {
       const runningOverdue = run.startedAt && Date.now() - run.startedAt > Math.max(minutes * 2, minutes + 5) * 60000;
       if (runningOverdue) automationDegraded = true;
       return `${runningOverdue ? '⚠️' : '⏳'} ${name}: ${runningOverdue ? 'running unusually long' : 'running'} since ${discordTimestamp(run.startedAt)}`;
     }
-    const detail = run.status === 'failed' ? ` · ${String(run.error).slice(0, 100)}` : '';
+    const detail = run.status === 'failed' ? ` · ${String(run.error).slice(0, 100)}` : ` · ${run.resultCount ?? 0} result(s) in ${fmtDuration(run.durationMs || 0)}`;
     const overdue = run.finishedAt && Date.now() - run.finishedAt > Math.max(minutes * 2, minutes + 5) * 60000;
     if (run.status === 'failed' || overdue) automationDegraded = true;
     return `${run.status === 'ok' && !overdue ? '✅' : run.status === 'failed' ? '❌' : '⚠️'} ${name}: ${overdue ? 'overdue · last ' : `${run.status} `}${run.finishedAt ? discordTimestamp(run.finishedAt, 'R') : 'unknown'}${detail}`;
@@ -9406,12 +9313,12 @@ function startExpressServer() {
         ],
       }));
       const seasonAlertItems = seasonAlertDashboardItems(listSeasonAlertStates({ stoodDownOnly: true }));
-      const sweepItems = [
-        ['stuck', 'Stuck-download sweep'],
-        ['escalation', 'Escalation sweep'],
-        ['season-pack', 'Season-pack sweep'],
-        ['episode-recovery', 'Episode-recovery sweep'],
-      ].map(([name, title]) => ({ state: 'skip', title, actions: [{ label: 'Run now', url: '/admin/action/sweep', body: { name } }] }));
+      const automationInventory = automationRegistry?.list() || [];
+      const sweepItems = automationInventory.filter(item => item.manual.enabled).map(item => ({
+        state: item.enabled ? 'skip' : 'warn', title: item.label,
+        sub: item.enabled ? 'Registry-approved manual action' : item.disabledReason,
+        actions: [{ label: 'Run now', url: '/admin/action/sweep', body: { name: item.id }, disabled: !item.enabled }],
+      }));
 
       const tierItems = tierNodes.map(n => {
         const plan = getTierPlan(n.name);
@@ -9524,6 +9431,7 @@ function startExpressServer() {
             <h2>Season-search alert stand-downs<span class="sub">Searches still run. Only repeated identical no-release messages are muted.</span></h2>
             ${renderItemList(seasonAlertItems, 'No season-search alerts are stood down.')}
           </div>
+          ${renderAutomationRegistry(automationInventory)}
           ${settingsGroups.map(renderSettingsGroup).join('')}
         </section>
 
@@ -10093,32 +10001,28 @@ function startExpressServer() {
       standardHeaders: 'draft-8',
       legacyHeaders: false,
       handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many previews. Wait a moment and try again.' }),
-    }), dashboardAuth, async (req, res) => {
+    }), dashboardAuth, discordReadyGuard, async (req, res) => {
       try {
-        const items = await previewAutomation(req.body?.name, req.body?.values || {});
-        return res.json({ ok: true, items });
+        const outcome = await automationRegistry.preview(req.body?.name, req.body?.values || {});
+        if (!outcome.ok) return res.status(outcome.busy ? 409 : 400).json({ ok: false, error: outcome.reason || 'Preview unavailable.' });
+        return res.json({ ok: true, items: outcome.result });
       } catch (err) {
         return res.status(400).json({ ok: false, error: dashboardActionError(err) });
       }
     });
 
-    app.post('/admin/action/sweep', dashboardAuth, async (req, res) => {
+    app.post('/admin/action/sweep', dashboardAuth, discordReadyGuard, async (req, res) => {
       const name = req.body?.name;
-      const sweeps = {
-        stuck: sweepStuckDownloads,
-        escalation: sweepEscalations,
-        'season-pack': () => sweepSeasonPacks({ rearmAlerts: true }),
-        'episode-recovery': runEpisodeRecoverySweep,
-      };
-      if (!sweeps[name]) {
+      if (!automationRegistry?.ids().includes(name)) {
         audit('dashboard_sweep', { ...dashboardActor(req), ok: false, name, reason: 'invalid_sweep' });
         return res.status(400).json({ ok: false, error: 'Unknown sweep.' });
       }
       try {
-        const outcome = await runGuardedSweep(name, sweeps[name]);
-        if (!outcome.ok || outcome.result?.busy) {
-          audit('dashboard_sweep', { ...dashboardActor(req), ok: false, name, reason: 'already_running' });
-          return res.status(409).json({ ok: false, error: `${name} sweep is already running.` });
+        const outcome = await automationRegistry.run(name, { trigger: 'manual' });
+        if (!outcome.ok) {
+          const reason = outcome.busy ? 'already_running' : outcome.disabled ? 'disabled' : 'manual_unavailable';
+          audit('dashboard_sweep', { ...dashboardActor(req), ok: false, name, reason });
+          return res.status(outcome.busy ? 409 : 400).json({ ok: false, error: outcome.busy ? `${name} sweep is already running.` : outcome.reason });
         }
         const result = outcome.result || {};
         const count = result.searched ?? result.acted ?? result.alerted ?? 0;
@@ -10672,8 +10576,9 @@ async function shutdown(sig, exitCode = 0) {
     process.exit(exitCode);
   }, CONFIG.SHUTDOWN_DRAIN_SECONDS * 1000).unref();
 
-  // Stop HTTP first, then Discord. The lifecycle also cancels a pending login retry and safely
-  // closes a server whose bind completed while shutdown was already in progress.
+  // Stop scheduler timers before HTTP and Discord. The lifecycle also cancels a pending login
+  // retry and safely closes a server whose bind completed while shutdown was already in progress.
+  automationRegistry?.stop();
   if (runtimeLifecycle) {
     try { await runtimeLifecycle.stop(); } catch (err) { log.warn(`Runtime shutdown error: ${err.message}`); }
   } else {

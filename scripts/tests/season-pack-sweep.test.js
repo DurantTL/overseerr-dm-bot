@@ -513,21 +513,6 @@ test('season-pack-sweep: a stalled season is not auto-tagged without a usable Av
   assert.deepStrictEqual(noIndexer.tagCalls, [], 'no AvistaZ indexer is configured in Prowlarr');
 });
 
-test('sweep guard: concurrent runs are refused and the guard clears after failure', async () => {
-  const automationRuns = new Map();
-  const sandbox = loadSandbox(['runGuardedSweep'], {
-    runningSweeps: new Set(), automationRuns,
-    recordAutomationRun: (name, state) => automationRuns.set(name, state),
-  });
-  const first = sandbox.run(`runGuardedSweep('season-pack', () => new Promise(resolve => { release = resolve; }))`);
-  await Promise.resolve();
-  assert.strictEqual((await sandbox.run(`runGuardedSweep('season-pack', () => Promise.resolve())`)).busy, true);
-  sandbox.release('done');
-  assert.strictEqual((await first).result, 'done');
-  await assert.rejects(sandbox.run(`runGuardedSweep('season-pack', () => Promise.reject(new Error('failed')))`), /failed/);
-  assert.strictEqual((await sandbox.run(`runGuardedSweep('season-pack', () => Promise.resolve('retried'))`)).result, 'retried');
-});
-
 test('season search cooldown: reports the next eligible time and expires on the boundary', () => {
   const sandbox = loadSandbox(['seasonSearchCooldown'], { CONFIG: { SEASON_PACK_COOLDOWN_HOURS: 24 } });
   const last = NOW - 2 * 3600000;
