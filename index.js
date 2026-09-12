@@ -10011,7 +10011,14 @@ function startExpressServer() {
       }
     });
 
-    app.post('/admin/action/sweep', dashboardAuth, discordReadyGuard, async (req, res) => {
+    app.post('/admin/action/sweep', rateLimit({
+      windowMs: 60000,
+      limit: 10,
+      keyGenerator: httpRateLimitKey,
+      standardHeaders: 'draft-8',
+      legacyHeaders: false,
+      handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many run-now requests. Wait a moment and try again.' }),
+    }), dashboardAuth, discordReadyGuard, async (req, res) => {
       const name = req.body?.name;
       if (!automationRegistry?.ids().includes(name)) {
         audit('dashboard_sweep', { ...dashboardActor(req), ok: false, name, reason: 'invalid_sweep' });
