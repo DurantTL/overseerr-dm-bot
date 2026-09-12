@@ -4252,7 +4252,14 @@ const slashCommands = [
     .addStringOption(o => o.setName('details').setDescription('Describe the problem').setRequired(true)),
   new SlashCommandBuilder().setName('watching').setDescription('Show current Plex playback (via Tautulli)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('indexers').setDescription('Prowlarr indexer + Byparr health').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-  new SlashCommandBuilder().setName('debrid').setDescription('Premiumize account + transfer status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('debrid').setDescription('Premiumize account + transfer status, and importing manually-added cloud downloads').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(s => s.setName('status').setDescription('Premiumize account usage + active/failed transfers'))
+    .addSubcommand(s => s.setName('import').setDescription('Trigger a Sonarr/Radarr import scan of the Premiumize downloads folder')
+      .addStringOption(o => o.setName('target').setDescription('Which arr should import').setRequired(true).addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }))
+      .addStringOption(o => o.setName('folder').setDescription('Subfolder of the Premiumize downloads folder (default: the whole folder)'))
+      .addStringOption(o => o.setName('mode').setDescription('move (default, cleans up the folder) or copy (leaves the files in place)').addChoices({ name: 'move', value: 'move' }, { name: 'copy', value: 'copy' })))
+    .addSubcommand(s => s.setName('staging').setDescription('Why-won\'t-it-import report: per-folder match/rejection summary of the Premiumize downloads folder')
+      .addStringOption(o => o.setName('target').setDescription('Which arr to ask (default sonarr)').addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }))),
   new SlashCommandBuilder().setName('avistaz').setDescription('AvistaZ direct grab (Prowlarr search → seedbox rTorrent)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('search').setDescription('Search AvistaZ and pick a release to send to the seedbox')
       .addStringOption(o => o.setName('title').setDescription('Title to search for').setRequired(true))
@@ -6629,6 +6636,27 @@ async function handleIndexersCommand(interaction) {
 // /debrid — Premiumize account usage + active transfers.
 async function handleDebridCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
+  const sub = interaction.options.getSubcommand();
+
+  // Manual import trigger + staging report for the folder a Premiumize downloader (e.g.
+  // Premiumizearr) syncs completed cloud transfers into — for multi-season packs dropped
+  // straight into Premiumize's "My Files" that the arr's own watch-folder scan didn't pick up.
+  // Shares the same helpers as /rtorrent import + /rtorrent staging, just pointed at the
+  // PREMIUMIZE_STAGING_PATH/PREMIUMIZE_IMPORT_PATH pair instead of the GRAB_* one.
+  if (sub === 'import') {
+    return runManualImportSub(interaction, {
+      stagingPath: CONFIG.PREMIUMIZE_STAGING_PATH, importPath: CONFIG.PREMIUMIZE_IMPORT_PATH,
+      sourceLabel: 'Premiumize', auditAction: 'debrid_manual_import',
+    });
+  }
+  if (sub === 'staging') {
+    return runStagingReportSub(interaction, {
+      importPath: CONFIG.PREMIUMIZE_IMPORT_PATH, sourceLabel: 'Premiumize', title: '🩺 Staging Report (Premiumize)',
+      importHint: '/debrid import',
+    });
+  }
+
+  // sub === 'status'
   await interaction.deferReply({ ephemeral: true });
   if (!premiumizeConfigured()) return interaction.editReply('❌ Premiumize isn\'t configured — set `PREMIUMIZE_API_KEY`.');
   try {
@@ -6740,6 +6768,92 @@ async function handleAvistazCommand(interaction) {
   } catch (err) {
     audit('external_api_error', { provider: 'prowlarr', error: err.message, action: 'avistaz_search' });
     return interaction.editReply(`❌ AvistaZ search failed: ${err.message}`);
+  }
+}
+
+// Manual import trigger, shared by /rtorrent import (seedbox staging via GRAB_STAGING_PATH/
+// GRAB_IMPORT_PATH) and /debrid import (a Premiumize downloader's DownloadsDirectory via
+// PREMIUMIZE_STAGING_PATH/PREMIUMIZE_IMPORT_PATH) — hand a folder straight to the arr for files
+// that got there outside the normal pipeline (manual rclone copies, a season pack dropped
+// straight into Premiumize's "My Files" that never auto-imported). mode:copy leaves the source
+// files in place; mode:move (default) is what the automated pipelines themselves use.
+async function runManualImportSub(interaction, { stagingPath, importPath, sourceLabel, auditAction }) {
+  if (!stagingPath || !importPath) return interaction.reply({ content: `❌ ${sourceLabel} isn't configured (needs both a staging and an import path).`, ephemeral: true });
+  const target = interaction.options.getString('target');
+  const arr = target === 'sonarr'
+    ? { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, cmd: 'DownloadedEpisodesScan', label: 'Sonarr' }
+    : { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr' };
+  if (!arr.url) return interaction.reply({ content: `❌ ${arr.label} isn't configured.`, ephemeral: true });
+  // Strip wrapping quotes: Discord passes option strings verbatim, and admins used to
+  // shell quoting will type folder:"Name With Spaces" — the quotes are not part of the name.
+  const clean = String(interaction.options.getString('folder') || '').trim().replace(/^["']+|["']+$/g, '').replace(/^\/+|\/+$/g, '');
+  if (clean && clean.split('/').some(p => !p || p === '.' || p === '..')) return interaction.reply({ content: '❌ Unsafe folder path.', ephemeral: true });
+  if (clean === '.incoming' || clean.startsWith('.incoming/')) return interaction.reply({ content: '❌ `.incoming` holds in-flight copies — never import from there.', ephemeral: true });
+  const mode = interaction.options.getString('mode') === 'copy' ? 'Copy' : 'Move';
+  await interaction.deferReply({ ephemeral: true });
+  // The bot and the arr see the same share at different mount points; existence is
+  // checked through the bot's view before asking the arr to scan its own.
+  const localPath = clean ? path.join(stagingPath, clean) : stagingPath;
+  if (!fs.existsSync(localPath)) return interaction.editReply(`❌ \`${clean || '(folder root)'}\` doesn't exist under \`${stagingPath}\`.`);
+  if (!clean) {
+    const incoming = path.join(stagingPath, '.incoming');
+    const busy = fs.existsSync(incoming) && fs.readdirSync(incoming).length > 0;
+    if (busy) return interaction.editReply('❌ A transfer is mid-copy (`.incoming` isn\'t empty) — scanning the whole folder now could import half-copied files. Scan a specific `folder:`, or wait for the transfers to finish.');
+  }
+  const fullImportPath = clean ? `${importPath}/${clean}` : importPath;
+  try {
+    const res = await axios.post(`${arr.url}/api/v3/command`, { name: arr.cmd, path: fullImportPath, importMode: mode },
+      { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
+    audit(auditAction, { actorDiscordId: interaction.user.id, target, path: fullImportPath, mode });
+    // Same post-scan verification the grab pipeline gets: silent declines surface as the
+    // decline alert (with the Map to a Series… wizard for TV) instead of nothing happening.
+    // Copy mode is excluded — files staying put is expected there, not a decline.
+    if (mode === 'Move') {
+      verifyArrImport({ id: null, title: clean || `${sourceLabel} import`, media_type: target === 'sonarr' ? 'tv' : 'movie' },
+        { url: arr.url, key: arr.key, label: arr.label }, res.data?.id, fullImportPath, localPath)
+        .catch(err => log.warn(`Manual-import verification failed: ${err.message}`));
+    }
+    return interaction.editReply(`📦 ${arr.label} is scanning \`${fullImportPath}\` (import mode: **${mode}**, command #${res.data?.id ?? '?'}). ${mode === 'Copy' ? 'The source files stay where they are.' : 'Imported files are moved out — if the import is declined, an alert with next steps lands in the downloads channel.'}`);
+  } catch (err) {
+    audit('external_api_error', { provider: target, error: err.message, action: auditAction });
+    return interaction.editReply(`❌ ${arr.label} command failed: ${err.message}`);
+  }
+}
+
+// The "why won't it import" report, shared by /rtorrent staging and /debrid staging: the arr's
+// own manual-import preview, aggregated per folder — match counts and rejection reasons at a
+// glance, no API spelunking.
+async function runStagingReportSub(interaction, { importPath, sourceLabel, title, importHint }) {
+  if (!importPath) return interaction.reply({ content: `❌ ${sourceLabel} isn't configured (needs an import path).`, ephemeral: true });
+  const target = interaction.options.getString('target') || 'sonarr';
+  const arr = arrForMediaType(target === 'radarr' ? 'movie' : 'tv');
+  if (!arr.url) return interaction.reply({ content: `❌ ${arr.label} isn't configured.`, ephemeral: true });
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    const preview = await axios.get(`${arr.url}/api/v3/manualimport`, {
+      params: { folder: importPath, filterExistingFiles: false }, headers: { 'X-Api-Key': arr.key }, timeout: 120000,
+    }).then(r => r.data || []);
+    if (!preview.length) return interaction.editReply(`${sourceLabel} looks empty to ${arr.label} — nothing at \`${importPath}\`.`);
+    const byFolder = new Map();
+    for (const f of preview) {
+      const rel = f.relativePath || f.path || '';
+      const folder = rel.includes('/') ? rel.split('/')[0] : '(loose files)';
+      const b = byFolder.get(folder) || { files: 0, matched: 0, reasons: new Map() };
+      b.files++;
+      if (target === 'radarr' ? f.movie : f.series) b.matched++;
+      for (const rej of (f.rejections || [])) b.reasons.set(rej.reason, (b.reasons.get(rej.reason) || 0) + 1);
+      byFolder.set(folder, b);
+    }
+    const lines = [...byFolder.entries()].map(([folder, b]) => {
+      const rej = [...b.reasons.entries()].map(([r, n]) => `${r} ×${n}`).join('; ');
+      const verdict = !b.reasons.size && b.matched === b.files ? '✅ importable' : rej ? `⚠️ ${rej}` : '⚠️ some files unmatched';
+      return `**${folder.slice(0, 80)}** — ${b.files} file(s), ${b.matched} matched\n${verdict}`;
+    });
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle(title)
+      .setDescription(`${lines.join('\n\n')}\n\n✅ folders import with \`${importHint}\`; "Unknown Series" needs the series added/matched in ${arr.label}; "Invalid season or episode" usually means the series type or numbering doesn't fit (try Series Type: Anime for absolute-numbered dramas); already-imported leftovers show as matched with no rejections.`.slice(0, 4000))] });
+  } catch (err) {
+    return interaction.editReply(`❌ ${arr.label} manual-import preview failed: ${err.message}`);
   }
 }
 
@@ -6913,86 +7027,19 @@ async function handleRtorrentCommand(interaction) {
     }
   }
 
-  // Manual import trigger: hand a staging folder straight to the arr — for files that got
-  // there outside the pipeline (manual rclone copies, the pre-adoption era). mode:copy
-  // leaves the staging files in place; mode:move (default) is what the pipeline itself uses.
+  // Manual import trigger + staging report share their implementation with /debrid import and
+  // /debrid staging — see runManualImportSub/runStagingReportSub.
   if (sub === 'import') {
-    if (!CONFIG.GRAB_STAGING_PATH || !CONFIG.GRAB_IMPORT_PATH) return interaction.reply({ content: '❌ Staging isn\'t configured (`GRAB_STAGING_PATH` + `GRAB_IMPORT_PATH`).', ephemeral: true });
-    const target = interaction.options.getString('target');
-    const arr = target === 'sonarr'
-      ? { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, cmd: 'DownloadedEpisodesScan', label: 'Sonarr' }
-      : { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr' };
-    if (!arr.url) return interaction.reply({ content: `❌ ${arr.label} isn't configured.`, ephemeral: true });
-    // Strip wrapping quotes: Discord passes option strings verbatim, and admins used to
-    // shell quoting will type folder:"Name With Spaces" — the quotes are not part of the name.
-    const clean = String(interaction.options.getString('folder') || '').trim().replace(/^["']+|["']+$/g, '').replace(/^\/+|\/+$/g, '');
-    if (clean && clean.split('/').some(p => !p || p === '.' || p === '..')) return interaction.reply({ content: '❌ Unsafe folder path.', ephemeral: true });
-    if (clean === '.incoming' || clean.startsWith('.incoming/')) return interaction.reply({ content: '❌ `.incoming` holds in-flight copies — never import from there.', ephemeral: true });
-    const mode = interaction.options.getString('mode') === 'copy' ? 'Copy' : 'Move';
-    await interaction.deferReply({ ephemeral: true });
-    // The bot and the arr see the same share at different mount points; existence is
-    // checked through the bot's view before asking the arr to scan its own.
-    const localPath = clean ? path.join(CONFIG.GRAB_STAGING_PATH, clean) : CONFIG.GRAB_STAGING_PATH;
-    if (!fs.existsSync(localPath)) return interaction.editReply(`❌ \`${clean || '(staging root)'}\` doesn't exist under \`${CONFIG.GRAB_STAGING_PATH}\`.`);
-    if (!clean) {
-      const incoming = path.join(CONFIG.GRAB_STAGING_PATH, '.incoming');
-      const busy = fs.existsSync(incoming) && fs.readdirSync(incoming).length > 0;
-      if (busy) return interaction.editReply('❌ A transfer is mid-copy (`.incoming` isn\'t empty) — scanning the whole staging folder now could import half-copied files. Scan a specific `folder:`, or wait for the transfers to finish.');
-    }
-    const importPath = clean ? `${CONFIG.GRAB_IMPORT_PATH}/${clean}` : CONFIG.GRAB_IMPORT_PATH;
-    try {
-      const res = await axios.post(`${arr.url}/api/v3/command`, { name: arr.cmd, path: importPath, importMode: mode },
-        { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
-      audit('rtorrent_manual_import', { actorDiscordId: interaction.user.id, target, path: importPath, mode });
-      // Same post-scan verification the grab pipeline gets: silent declines surface as the
-      // decline alert (with the Map to a Series… wizard for TV) instead of nothing happening.
-      // Copy mode is excluded — files staying put is expected there, not a decline.
-      if (mode === 'Move') {
-        verifyArrImport({ id: null, title: clean || 'staging import', media_type: target === 'sonarr' ? 'tv' : 'movie' },
-          { url: arr.url, key: arr.key, label: arr.label }, res.data?.id, importPath, localPath)
-          .catch(err => log.warn(`Manual-import verification failed: ${err.message}`));
-      }
-      return interaction.editReply(`📦 ${arr.label} is scanning \`${importPath}\` (import mode: **${mode}**, command #${res.data?.id ?? '?'}). ${mode === 'Copy' ? 'The staging files stay where they are.' : 'Imported files are moved out of staging — if the import is declined, an alert with next steps lands in the downloads channel.'}`);
-    } catch (err) {
-      audit('external_api_error', { provider: target, error: err.message, action: 'rtorrent_manual_import' });
-      return interaction.editReply(`❌ ${arr.label} command failed: ${err.message}`);
-    }
+    return runManualImportSub(interaction, {
+      stagingPath: CONFIG.GRAB_STAGING_PATH, importPath: CONFIG.GRAB_IMPORT_PATH,
+      sourceLabel: 'seedbox staging', auditAction: 'rtorrent_manual_import',
+    });
   }
-
-  // The "why won't it import" report: the arr's own manual-import preview, aggregated per
-  // staging folder — match counts and rejection reasons at a glance, no API spelunking.
   if (sub === 'staging') {
-    if (!CONFIG.GRAB_IMPORT_PATH) return interaction.reply({ content: '❌ Staging isn\'t configured (`GRAB_IMPORT_PATH`).', ephemeral: true });
-    const target = interaction.options.getString('target') || 'sonarr';
-    const arr = arrForMediaType(target === 'radarr' ? 'movie' : 'tv');
-    if (!arr.url) return interaction.reply({ content: `❌ ${arr.label} isn't configured.`, ephemeral: true });
-    await interaction.deferReply({ ephemeral: true });
-    try {
-      const preview = await axios.get(`${arr.url}/api/v3/manualimport`, {
-        params: { folder: CONFIG.GRAB_IMPORT_PATH, filterExistingFiles: false }, headers: { 'X-Api-Key': arr.key }, timeout: 120000,
-      }).then(r => r.data || []);
-      if (!preview.length) return interaction.editReply(`Staging looks empty to ${arr.label} — nothing at \`${CONFIG.GRAB_IMPORT_PATH}\`.`);
-      const byFolder = new Map();
-      for (const f of preview) {
-        const rel = f.relativePath || f.path || '';
-        const folder = rel.includes('/') ? rel.split('/')[0] : '(loose files)';
-        const b = byFolder.get(folder) || { files: 0, matched: 0, reasons: new Map() };
-        b.files++;
-        if (target === 'radarr' ? f.movie : f.series) b.matched++;
-        for (const rej of (f.rejections || [])) b.reasons.set(rej.reason, (b.reasons.get(rej.reason) || 0) + 1);
-        byFolder.set(folder, b);
-      }
-      const lines = [...byFolder.entries()].map(([folder, b]) => {
-        const rej = [...b.reasons.entries()].map(([r, n]) => `${r} ×${n}`).join('; ');
-        const verdict = !b.reasons.size && b.matched === b.files ? '✅ importable' : rej ? `⚠️ ${rej}` : '⚠️ some files unmatched';
-        return `**${folder.slice(0, 80)}** — ${b.files} file(s), ${b.matched} matched\n${verdict}`;
-      });
-      return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
-        .setTitle(`🩺 Staging Report (${arr.label})`)
-        .setDescription(`${lines.join('\n\n')}\n\n✅ folders import with \`/rtorrent import\`; "Unknown Series" needs the series added/matched in ${arr.label}; "Invalid season or episode" usually means the series type or numbering doesn't fit (try Series Type: Anime for absolute-numbered dramas); already-imported leftovers show as matched with no rejections.`.slice(0, 4000))] });
-    } catch (err) {
-      return interaction.editReply(`❌ ${arr.label} manual-import preview failed: ${err.message}`);
-    }
+    return runStagingReportSub(interaction, {
+      importPath: CONFIG.GRAB_IMPORT_PATH, sourceLabel: 'seedbox staging', title: '🩺 Staging Report',
+      importHint: '/rtorrent import',
+    });
   }
 
   // sub === 'adopted'
@@ -7543,7 +7590,7 @@ async function handleHelpCommand(interaction) {
       '`/seerr-test` — Self-test Seerr Discord linking with a throwaway user',
       '`/watching` — Current Plex playback (via Tautulli)',
       '`/indexers` — Prowlarr indexer + Byparr health',
-      '`/debrid` — Premiumize account + transfer status',
+      '`/debrid` — Premiumize account + transfer status, plus importing manually-added cloud downloads',
       '`/cleanup-suggestions` — Largest/oldest media that could be cleaned up',
     ];
     const infrastructureCommands = [

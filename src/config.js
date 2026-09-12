@@ -153,6 +153,16 @@ const CONFIG = (() => {
   // Caps how many dead transfers get a re-search attempt per sweep — each attempt is a real,
   // possibly-slow Prowlarr search across every configured indexer.
   PREMIUMIZE_REROUTE_MAX_PER_SWEEP: Number.parseInt(process.env.PREMIUMIZE_REROUTE_MAX_PER_SWEEP || '3', 10),
+  // Local path mirroring the folder a Premiumize downloader (e.g. Premiumizearr's
+  // DownloadsDirectory) drops completed cloud transfers into — the same folder Sonarr/Radarr's
+  // Blackhole download client watches. This is where a manually-added multi-season pack (dropped
+  // straight into Premiumize's "My Files") lands once synced, for when the arr's own watch-folder
+  // scan doesn't pick it up. Same STAGING/IMPORT split as GRAB_STAGING_PATH/GRAB_IMPORT_PATH:
+  // PREMIUMIZE_STAGING_PATH is this bot's view of the folder (for existence checks),
+  // PREMIUMIZE_IMPORT_PATH is that same folder as the arrs see it. Optional — `/debrid import`
+  // and `/debrid staging` are disabled until at least PREMIUMIZE_IMPORT_PATH is set.
+  PREMIUMIZE_STAGING_PATH: (process.env.PREMIUMIZE_STAGING_PATH || '').replace(/\/$/, ''),
+  PREMIUMIZE_IMPORT_PATH: (process.env.PREMIUMIZE_IMPORT_PATH || process.env.PREMIUMIZE_STAGING_PATH || '').replace(/\/$/, ''),
   STUCK_CHECK_MINUTES: Number.parseInt(process.env.STUCK_CHECK_MINUTES || '10', 10),
   STUCK_AFTER_MINUTES: Number.parseInt(process.env.STUCK_AFTER_MINUTES || '45', 10),
   STUCK_ALERT_COOLDOWN_HOURS: Number.parseInt(process.env.STUCK_ALERT_COOLDOWN_HOURS || '6', 10),
