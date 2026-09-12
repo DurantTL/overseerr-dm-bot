@@ -26,7 +26,7 @@ function request(port, { method = 'GET', path = '/', token, body } = {}) {
 function setup() {
   const settings = new Map([['tier_manifest:edge', JSON.stringify({ planHash: 'current' })]]);
   const plans = new Map([['edge', { published: { planHash: 'current' }, lastTelemetryLevel: 'unknown' }]]);
-  const calls = { heartbeats: [], reports: [], inventories: [], converged: [], missing: 0, recovered: 0, errorAlerts: [], agentReports: [] };
+  const calls = { heartbeats: [], reports: [], inventories: [], converged: [], missing: 0, recovered: 0, errorAlerts: [], agentReports: [], telemetryTransitions: [] };
   const tokenHashes = new Map([['edge', sha256('valid')], ['edge2', sha256('valid2')]]);
   const app = createApp({ skipJsonPaths: ['/agent/'] });
   registerTierAgentRoutes(app, {
@@ -44,11 +44,11 @@ function setup() {
     replaceTierNodeFiles: (node, files) => calls.inventories.push({ node, files }),
     markTierPlanConverged: (node, value) => calls.converged.push({ node, value }),
     parseAtimeMask: () => null, maskSuspectAtimes: files => files,
-    notifyTelemetryTransition: () => {}, notifyDriveMissing: () => { calls.missing += 1; },
+    notifyTelemetryTransition: value => calls.telemetryTransitions.push(value), notifyDriveMissing: () => { calls.missing += 1; },
     notifyDriveRecovered: () => { calls.recovered += 1; },
     notifyAgentReport: payload => calls.agentReports.push(payload),
   });
-  return { app, settings, calls };
+  return { app, settings, calls, plans };
 }
 
 test('tier-agent HTTP routes require auth and return the published manifest', async () => {
@@ -150,5 +150,27 @@ test('tier-agent HTTP report passes the self-reported agent version through on e
 
     await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { heartbeat: true, planHash: 'current', agentVersion: { not: 'a string' } } });
     assert.strictEqual(calls.heartbeats[3].value.agentVersion, null, 'a non-string version is dropped rather than stored as-is');
+  } finally { await close(server); }
+});
+
+test('tier-agent HTTP report preserves unavailable temperature instead of recording a false recovery', async () => {
+  const { app, calls, plans } = setup();
+  plans.set('edge', { published: { planHash: 'current' }, lastTelemetryLevel: 'warn' });
+  const server = await listen(app, 0);
+  try {
+    const response = await request(server.address().port, {
+      method: 'POST',
+      path: '/agent/report/edge',
+      token: 'valid',
+      body: {
+        heartbeat: true,
+        planHash: 'current',
+        telemetry: { collectedAt: Date.now(), temperatureC: null, temperatureSource: null },
+      },
+    });
+    assert.strictEqual(response.statusCode, 200);
+    assert.strictEqual(calls.heartbeats[0].value.telemetry.temperatureC, null);
+    assert.strictEqual(calls.heartbeats[0].value.telemetryLevel, 'unknown');
+    assert.strictEqual(calls.telemetryTransitions[0].telemetryHealth.level, 'unknown');
   } finally { await close(server); }
 });
