@@ -26,7 +26,7 @@ function request(port, { method = 'GET', path = '/', token, body } = {}) {
 function setup() {
   const settings = new Map([['tier_manifest:edge', JSON.stringify({ planHash: 'current' })]]);
   const plans = new Map([['edge', { published: { planHash: 'current' }, lastTelemetryLevel: 'unknown' }]]);
-  const calls = { heartbeats: [], reports: [], inventories: [], converged: [], missing: 0, recovered: 0, errorAlerts: [], agentReports: [], telemetryTransitions: [] };
+  const calls = { heartbeats: [], reports: [], inventories: [], converged: [], missing: 0, recovered: 0, errorAlerts: [], agentReports: [], telemetryTransitions: [], mergedMountDiagnostics: [] };
   const tokenHashes = new Map([['edge', sha256('valid')], ['edge2', sha256('valid2')]]);
   const app = createApp({ skipJsonPaths: ['/agent/'] });
   registerTierAgentRoutes(app, {
@@ -40,6 +40,10 @@ function setup() {
     recordTierErrorAlertState: (node, value) => {
       calls.errorAlerts.push({ node, value });
       plans.set(node, { ...(plans.get(node) || {}), errorAlert: value });
+    },
+    recordTierMergedMountDiagnostics: (node, value) => {
+      calls.mergedMountDiagnostics.push({ node, value });
+      plans.set(node, { ...(plans.get(node) || {}), mergedMountDiagnostics: value });
     },
     replaceTierNodeFiles: (node, files) => calls.inventories.push({ node, files }),
     markTierPlanConverged: (node, value) => calls.converged.push({ node, value }),
@@ -103,6 +107,29 @@ test('tier-agent HTTP report preserves inventory cap and drive-missing transitio
     assert.strictEqual(response.statusCode, 200);
     assert.strictEqual(calls.recovered, 1);
     assert.strictEqual(calls.inventories[0].files.length, 200000);
+  } finally { await close(server); }
+});
+
+test('tier-agent HTTP report records §181 merged-mount diagnostics on every report shape', async () => {
+  const { app, calls } = setup();
+  const server = await listen(app, 0);
+  const port = server.address().port;
+  const okDiag = { ok: true, checks: [{ name: 'Merged library mount', status: 'ok', detail: 'present' }] };
+  const failDiag = { ok: false, checks: [{ name: 'Remote branch read-only', status: 'fail', detail: 'writable' }] };
+  try {
+    // Attached to a plain heartbeat.
+    await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { heartbeat: true, planHash: 'current', mergedMountDiagnostics: okDiag } });
+    assert.strictEqual(calls.mergedMountDiagnostics.length, 1);
+    assert.deepStrictEqual(calls.mergedMountDiagnostics[0].value, { configured: true, ok: true, checks: okDiag.checks });
+
+    // Attached to a full report, and a failing diagnostic is still recorded (not dropped).
+    await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { planHash: 'current', mergedMountDiagnostics: failDiag } });
+    assert.strictEqual(calls.mergedMountDiagnostics.length, 2);
+    assert.strictEqual(calls.mergedMountDiagnostics[1].value.ok, false);
+
+    // Not sent at all when the agent doesn't have EDGE_MERGED_ROOT configured.
+    await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { planHash: 'current' } });
+    assert.strictEqual(calls.mergedMountDiagnostics.length, 2, 'no report when the agent field is absent');
   } finally { await close(server); }
 });
 

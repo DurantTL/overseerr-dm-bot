@@ -402,6 +402,10 @@ const CONFIG = (() => {
   PH_SERVER_NAMES: parseIdentityList(process.env.PH_SERVER_NAMES),
   CA_EDGE_SERVER_NAMES: parseIdentityList(process.env.CA_EDGE_SERVER_NAMES),
   PRIMARY_SERVER_NAMES: parseIdentityList(process.env.PRIMARY_SERVER_NAMES),
+  // §181 how long a node's last-reported merged-mount diagnostic (agent/agent.js's
+  // checkMergedMount) stays trusted before /doctor treats it as stale rather than healthy —
+  // an agent that stopped reporting must not look like a passing mount check forever.
+  EDGE_MOUNT_DIAG_STALE_HOURS: Number(process.env.EDGE_MOUNT_DIAG_STALE_HOURS || 12),
   // rclone destination root for the cache, e.g. `phbox:/cache` or `phbox:cache`.
   STAGE_RCLONE_REMOTE: (process.env.STAGE_RCLONE_REMOTE || '').replace(/\/$/, ''),
   STAGE_RCLONE_BINARY: process.env.STAGE_RCLONE_BINARY || 'rclone',

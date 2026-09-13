@@ -1356,7 +1356,7 @@ function listRequestsByRequesters(discordIds, sinceDays) {
 //               drive-missing, or a lightweight no-op heartbeat) — it is the liveness signal;
 //               lastAgentReportAt tracks only full (convergence) reports.
 function emptyTierPlan() {
-  return { published: null, converged: null, lastAgentReportAt: null, lastInventoryAt: null, lastHeartbeatAt: null, lastErrors: [], lastTelemetry: null, lastTelemetryLevel: 'unknown', errorAlert: null, lastAgentVersion: null };
+  return { published: null, converged: null, lastAgentReportAt: null, lastInventoryAt: null, lastHeartbeatAt: null, lastErrors: [], lastTelemetry: null, lastTelemetryLevel: 'unknown', errorAlert: null, lastAgentVersion: null, mergedMountDiagnostics: null, lastMergedMountDiagnosticsAt: null };
 }
 
 // Read + normalize. Legacy records are migrated on read: an old "applied" plan was assumed-converged
@@ -1376,6 +1376,8 @@ function normalizeTierPlan(raw) {
       lastTelemetryLevel: raw.lastTelemetryLevel || 'unknown',
       errorAlert: raw.errorAlert || null,
       lastAgentVersion: raw.lastAgentVersion || null,
+      mergedMountDiagnostics: raw.mergedMountDiagnostics || null,
+      lastMergedMountDiagnosticsAt: raw.lastMergedMountDiagnosticsAt ?? null,
     };
   }
   if (!raw.planHash) return null;
@@ -1391,6 +1393,8 @@ function normalizeTierPlan(raw) {
     lastTelemetryLevel: 'unknown',
     errorAlert: null,
     lastAgentVersion: null,
+    mergedMountDiagnostics: null,
+    lastMergedMountDiagnosticsAt: null,
   };
 }
 
@@ -1450,6 +1454,18 @@ function recordTierAgentHeartbeat(node, { errors, telemetry = null, telemetryLev
     rec.lastTelemetryLevel = telemetryLevel;
   }
   if (agentVersion) rec.lastAgentVersion = String(agentVersion).slice(0, 40);
+  writeTierPlan(node, rec);
+  return rec;
+}
+
+// §181 Persist the agent's latest read-only merged-mount diagnostic (checkMergedMount in
+// agent/agent.js) alongside the plan so /doctor and the dashboard can show mount/precedence/
+// reachability health without SSHing into the edge. Only called when the agent actually sent one
+// (EDGE_MERGED_ROOT configured on that node) — omitted entirely otherwise, leaving the field null.
+function recordTierMergedMountDiagnostics(node, diagnostics) {
+  const rec = getTierPlan(node) || emptyTierPlan();
+  rec.mergedMountDiagnostics = diagnostics || null;
+  rec.lastMergedMountDiagnosticsAt = Date.now();
   writeTierPlan(node, rec);
   return rec;
 }
@@ -1789,7 +1805,7 @@ function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k) {
   return null;
 }
 
-module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, MIGRATIONS, SCHEMA_VERSION, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
+module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, MIGRATIONS, SCHEMA_VERSION, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;
 Object.assign(module.exports, {
   recordPackRejections,
