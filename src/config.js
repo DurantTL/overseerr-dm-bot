@@ -438,6 +438,19 @@ const CONFIG = (() => {
   EDGE_PROMOTE_AUDIT_ONLY: parseBool(process.env.EDGE_PROMOTE_AUDIT_ONLY, false),
   EDGE_PROMOTE_COOLDOWN_HOURS: Number.parseInt(process.env.EDGE_PROMOTE_COOLDOWN_HOURS || '12', 10),
   EDGE_PROMOTE_MAX_PER_USER_PER_DAY: Number.parseInt(process.env.EDGE_PROMOTE_MAX_PER_USER_PER_DAY || '6', 10),
+  // §182 California play-triggered promotion (tier_node_policies pin, not a copy job — see
+  // docs/edge-playback-architecture.md §2.2(c)). Gated by EDGE_PROMOTE_ON_PLAY above like PH, but
+  // defaults to its OWN audit-only switch rather than inheriting EDGE_PROMOTE_AUDIT_ONLY: this
+  // code path is new, unlike PH's already-proven one, so a fresh install that already runs PH
+  // promotion live does not silently start pinning California titles live too.
+  CA_PROMOTE_AUDIT_ONLY: parseBool(process.env.CA_PROMOTE_AUDIT_ONLY, true),
+  // How long a play-promoted title (or season, at season granularity) stays pinned before it
+  // becomes evictable again like any other title.
+  TIER_PLAY_PIN_DAYS: Number.parseInt(process.env.TIER_PLAY_PIN_DAYS || '21', 10),
+  // §183 episode | season | series — the on-disk unit ONE play promotes for TV. 'season' is the
+  // recommended default (docs/edge-playback-architecture.md §2.2(c′)); 'episode' isn't wired yet
+  // (falls back to 'season'); 'series' opts back into the old whole-series behavior.
+  TIER_TV_PROMOTE_GRANULARITY: (process.env.TIER_TV_PROMOTE_GRANULARITY || 'season').toLowerCase(),
   // Tunnel watchdog: any HTTP response from this URL (e.g. the PH Plex /identity endpoint via
   // the VPS tunnel) counts as up; connect errors/timeouts count as down.
   PH_TUNNEL_HEALTH_URL: omitPlaceholder(process.env.PH_TUNNEL_HEALTH_URL),

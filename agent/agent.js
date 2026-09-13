@@ -682,8 +682,8 @@ async function runOnce(ctx) {
     if (err.status !== 404) throw err;
     ctx.log('no manifest published yet — waiting for /tier apply');
     try {
-      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, awaitingManifest: true, telemetry, agentVersion: ctx.agentVersion, ...mountDiagFields });
-      return { skipped: true, heartbeat: true, awaitingManifest: true };
+      const res = await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, awaitingManifest: true, telemetry, agentVersion: ctx.agentVersion, ...mountDiagFields });
+      return { skipped: true, heartbeat: true, awaitingManifest: true, kickPending: !!res.kickPending };
     } catch (reportErr) {
       ctx.log(`waiting-for-manifest heartbeat failed: ${reportErr.message}`);
       process.exitCode = 1;
@@ -709,8 +709,8 @@ async function runOnce(ctx) {
     // timer) see a clean exit, or an unreachable bot stays masked behind a stale UI until someone
     // notices. Signal failure with a non-zero exit code, matching the failed-report path.
     try {
-      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, planHash: manifest.planHash, telemetry, agentVersion: ctx.agentVersion, ...mountDiagFields });
-      return { skipped: true, heartbeat: true, planHash: manifest.planHash };
+      const res = await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, planHash: manifest.planHash, telemetry, agentVersion: ctx.agentVersion, ...mountDiagFields });
+      return { skipped: true, heartbeat: true, planHash: manifest.planHash, kickPending: !!res.kickPending };
     } catch (err) {
       ctx.log(`heartbeat report failed: ${err.message}`);
       process.exitCode = 1;
@@ -805,7 +805,8 @@ async function runOnce(ctx) {
   const invHash = inventory ? inventoryHash(inventory) : null;
   const inventoryReportChanged = inventory && invHash !== state.inventoryHash;
   if (inventoryReportChanged) report.inventory = inventory;
-  await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, report);
+  const reportRes = await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, report);
+  report.kickPending = !!reportRes.kickPending;
   if (inventoryReportChanged && !ctx.dryRun) state.inventoryHash = invHash;
   if (recovered && !ctx.dryRun) delete state.driveMissing; // report delivered — clear the recovery flag
   if (!ctx.dryRun) saveState(ctx, state);
@@ -816,11 +817,32 @@ async function runOnce(ctx) {
   return report;
 }
 
+// §182 "kick": the bot has no inbound path to this agent (pull-only by design, see the header
+// comment), so its way of saying "converge now, don't wait for the timer" (a play-promotion pin
+// was just published, docs/edge-playback-architecture.md §2.2(c)) is a `kickPending: true` flag
+// on the report response instead. Re-poll soon rather than waiting out the rest of the systemd
+// timer interval, bounded so a stuck pin (bot down, plan never converging) can't spin forever —
+// the timer remains the real backstop either way. A deployment that never sets
+// EDGE_PROMOTE_ON_PLAY never sees kickPending:true, so this is a no-op for it.
+async function runWithKickRetries(ctx, {
+  maxAttempts = Number(process.env.TIER_KICK_MAX_ATTEMPTS || 6),
+  delayMs = Number(process.env.TIER_KICK_RETRY_MS || 20000),
+  sleep = ms => new Promise(r => setTimeout(r, ms)),
+} = {}) {
+  let result = await runOnce(ctx);
+  for (let attempt = 1; result?.kickPending && attempt < maxAttempts; attempt++) {
+    ctx.log(`kick pending — re-polling in ${Math.round(delayMs / 1000)}s (attempt ${attempt + 1}/${maxAttempts})`);
+    await sleep(delayMs);
+    result = await runOnce(ctx);
+  }
+  return result;
+}
+
 if (require.main === module) {
-  runOnce(buildCtx()).catch(err => {
+  runWithKickRetries(buildCtx()).catch(err => {
     console.error(new Date().toISOString(), 'FATAL:', err.message);
     process.exit(1);
   });
 }
 
-module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, checkMergedMount, readMountOptions, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, collectSystemTelemetry, escapeStignore, loadState, saveState, writeStignore, agentVersion };
+module.exports = { buildCtx, parseFolders, runOnce, runWithKickRetries, checkMountGuard, checkMergedMount, readMountOptions, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, collectSystemTelemetry, escapeStignore, loadState, saveState, writeStignore, agentVersion };

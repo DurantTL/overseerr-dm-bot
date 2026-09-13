@@ -32,7 +32,7 @@ const { requestModal } = require('./src/setup-request-ui');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, recordPackRejections, getPackRejectionSighting, markPackRejectionSuggested, dismissPackRejectionSuggestion, resetPackRejectionSightings, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, setTierNodePolicy, listTierNodePolicies, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, recordPackRejections, getPackRejectionSighting, markPackRejectionSuggested, dismissPackRejectionSuggestion, resetPackRejectionSightings, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeasonEpisodeFallbacks,
@@ -51,7 +51,7 @@ const { rankSeasonReleases, chooseSeasonPack, describeRejections, summarizePackR
 const { classifyEpisodeFallbackEvidence, planEpisodeFallback, orderPendingFallbacks } = require('./src/season-episode-fallback');
 const { assessAsianOrigin, describeAvistazFit, isAsianLanguageName } = require('./src/asian');
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
-const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
+const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone, formatSeasonUnit, resolveTvSeasonUnit, resolveCaLocalStatus, planCaPromotion } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { checkPublicOriginReadiness } = require('./src/public-origin-diagnostics');
@@ -7714,6 +7714,7 @@ async function buildTierPlans() {
   });
   const atimeReports = {};
   const memberRequests = {};
+  const policiesByNode = {}; // §182/§183 manual_exclusion / permanent_pin / temporary_play_pin rows
   const planRecords = {};   // full lifecycle records (published/converged/report meta) for display
   const hysteresis = {};    // { name: { keepMediaIds } } — §1.1 keyed off the last CONVERGED state only
   for (const n of enabled) {
@@ -7726,6 +7727,8 @@ async function buildTierPlans() {
     if (n.access === 'restricted') {
       memberRequests[n.name] = listRequestsByRequesters(listTierNodeMembers(n.name), CONFIG.TIER_REQUEST_GRACE_DAYS);
     }
+    // §182/§183 — every node's active (non-expired, as of now) tier_node_policies rows.
+    policiesByNode[n.name] = listTierNodePolicies(n.name, Date.now());
     const rec = getTierPlan(n.name);
     if (rec) {
       planRecords[n.name] = rec;
@@ -7745,6 +7748,7 @@ async function buildTierPlans() {
     keepListIds: tierKeepListIds(),
     neverDeleteIds: CONFIG.NEVER_DELETE_MEDIA_IDS,
     prevPlans: hysteresis,
+    policiesByNode,
     config: {
       coreTopK: CONFIG.TIER_CORE_TOP_K,
       halfLifeDays: CONFIG.TIER_HALF_LIFE_DAYS,
@@ -7768,6 +7772,19 @@ async function buildTierPlans() {
     warnings.unshift(`🛑 Inventory incomplete — ${failedSources.map(f => f.label).join(', ')} could not be read. Publishing now would blank the \`.stignore\` for every title they serve and trigger a full re-sync, so \`/tier apply\` is blocked until they answer.`);
   }
   return { ...result, warnings, nodes, planRecords, failedSources };
+}
+
+// Write one node's manifest live (§1.1 publish only — convergence advances only once the agent's
+// report endpoint confirms the node actually reached this exact plan). Shared by the manual
+// `/tier apply` command and the automated §182 California play-promotion republish, so both write
+// through the exact same path the agent reads.
+function publishTierManifest(name, m, { actorDiscordId = null, confirmed = false } = {}) {
+  const stignore = renderSyncthingStignore(m);
+  const folders = (m.folders || []).map(f => ({ ...f, stignore: renderFolderStignore(f, m) }));
+  setSetting(`tier_manifest:${name}`, JSON.stringify({ ...m, folders, stignore, rcloneFilesFrom: m.transport === 'rclone' ? renderRclone(m) : undefined }));
+  const rec = setTierPublishedPlan(name, { planHash: m.planHash, keepMediaIds: m.keep.map(e => e.mediaId) });
+  audit('tier_plan_published', { actorDiscordId, node: name, planHash: m.planHash, keepCount: m.stats.keepCount, dropCount: m.stats.dropCount, dropBytes: m.stats.dropBytes, confirmed });
+  return rec;
 }
 
 // Global apply-guardrail caps (§1.5) in bytes; a 0/negative CONFIG value disables that cap (null).
@@ -7922,15 +7939,7 @@ async function handleTierCommand(interaction) {
         audit('tier_apply_blocked', { actorDiscordId: interaction.user.id, node: name, planHash: m.planHash, realRemovalBytes: imp.realRemovalBytes, removedTitles: imp.removedTitles, newDownloadBytes: imp.newDownloadBytes });
         continue;
       }
-      const stignore = renderSyncthingStignore(m);
-      // Render each folder's own .stignore into the served manifest so the agent writes one per
-      // folder root; the aggregate `stignore` stays for single-folder agents.
-      const folders = (m.folders || []).map(f => ({ ...f, stignore: renderFolderStignore(f, m) }));
-      setSetting(`tier_manifest:${name}`, JSON.stringify({ ...m, folders, stignore, rcloneFilesFrom: m.transport === 'rclone' ? renderRclone(m) : undefined }));
-      // §1.1 publish only — the plan is NOT marked converged here. The agent's report endpoint
-      // advances converged once it confirms the node actually reached this exact plan.
-      plans.planRecords[name] = setTierPublishedPlan(name, { planHash: m.planHash, keepMediaIds: m.keep.map(e => e.mediaId) });
-      audit('tier_plan_published', { actorDiscordId: interaction.user.id, node: name, planHash: m.planHash, keepCount: m.stats.keepCount, dropCount: m.stats.dropCount, dropBytes: m.stats.dropBytes, confirmed: !!imp?.requiresConfirm });
+      plans.planRecords[name] = publishTierManifest(name, m, { actorDiscordId: interaction.user.id, confirmed: !!imp?.requiresConfirm });
     }
   }
 
@@ -9276,7 +9285,7 @@ function startExpressServer() {
 
   registerTierAgentRoutes(app, {
     config: CONFIG,
-    getTierAgentTokenHash, sha256, safeEqual, audit, getSetting, setSetting,
+    getTierAgentTokenHash, sha256, safeEqual, audit, getSetting, setSetting, deleteSetting,
     getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, recordTierErrorAlertState, recordTierMergedMountDiagnostics, markTierPlanConverged,
     getTierNode, listTierNodeFiles, replaceTierNodeFiles, parseAtimeMask, maskSuspectAtimes,
     notifyTelemetryTransition: ({ node, telemetry, telemetryHealth, previousTelemetryLevel }) => {
@@ -9730,13 +9739,6 @@ async function handlePlexWebhook(payload) {
     audit('webhook_server_unmatched', { source: 'plex', serverName: Server?.title || null, machineId: Server?.uuid || null, event });
     return;
   }
-  if (origin === 'ca-edge') {
-    // California is in the Main viewing group, but it is a constrained cache/fallback node.
-    // Its storage is managed by the tier agent; playback must never arm full-Main deletion or
-    // accidentally enter the Philippines staging queue.
-    audit('edge_playback_observed', { edge: 'california', source: 'plex', serverName: Server?.title || null, machineId: Server?.uuid || null, event });
-    return;
-  }
   const mediaType = Metadata.type;
   const title = mediaType === 'episode' ? (Metadata.grandparentTitle || Metadata.title) : Metadata.title;
   const videoStream = Metadata.Media?.[0]?.Part?.[0]?.Stream?.find(s => s.streamType === 1);
@@ -9746,6 +9748,22 @@ async function handlePlexWebhook(payload) {
   const guids = Metadata.Guid || [];
   const mediaId = mediaType === 'movie' ? `tmdb:${(guids.find(g => g.id?.startsWith('tmdb://'))?.id || '').replace('tmdb://', '')}` : `tvdb:${(guids.find(g => g.id?.startsWith('tvdb://'))?.id || '').replace('tvdb://', '')}`;
   if (!mediaId || mediaId.endsWith(':')) return;
+  if (origin === 'ca-edge') {
+    // California is in the Main viewing group, but it is a constrained cache/fallback node.
+    // Its storage is managed by the tier agent; playback must never arm full-Main deletion or
+    // accidentally enter the Philippines staging queue. §182: a play-START may promote (pin); a
+    // finished watch is still only observed — the tier planner's own atime/plex demand source
+    // already covers eviction, with no PH-style staged_items LRU to touch here.
+    audit('edge_playback_observed', { edge: 'california', source: 'plex', serverName: Server?.title || null, machineId: Server?.uuid || null, event });
+    if (isPlayStart) {
+      await handleCaPlayStart({
+        mediaId, title, mediaType: mediaType === 'episode' ? 'tv' : 'movie',
+        seasonNumber: mediaType === 'episode' ? Number(Metadata.parentIndex) : undefined,
+        watcherKey: Account?.id != null ? `plex:${Account.id}` : undefined,
+      });
+    }
+    return;
+  }
   // Play-start only promotes, and only on the PH box (primary plays are already local). The Plex
   // webhook carries no email, so attribution falls back to the Plex account id for rate limiting.
   if (isPlayStart) {
@@ -9783,7 +9801,7 @@ async function handlePlexWebhook(payload) {
 }
 
 async function handleTautulliWebhook(body) {
-  const { event, user_email, media_type, title, grandparent_title, tmdb_id, tvdb_id, is_4k, server_name, machine_id } = body;
+  const { event, user_email, media_type, title, grandparent_title, tmdb_id, tvdb_id, is_4k, server_name, machine_id, season_num } = body;
   // Server-aware routing: the payload's server identity decides which flow an event may reach.
   // PH events go to the eviction flow (cache only), primary events to the delete flow, and
   // unidentifiable events are dropped — a delete prompt fired for the wrong server costs a
@@ -9793,15 +9811,24 @@ async function handleTautulliWebhook(body) {
     audit('webhook_server_unmatched', { source: 'tautulli', serverName: server_name || null, machineId: machine_id || null, event });
     return;
   }
-  if (origin === 'ca-edge') {
-    audit('edge_playback_observed', { edge: 'california', source: 'tautulli', serverName: server_name || null, machineId: machine_id || null, event });
-    return;
-  }
   const mediaId = media_type === 'movie' ? `tmdb:${tmdb_id}` : `tvdb:${tvdb_id}`;
   if (!tmdb_id && media_type === 'movie') return;
   if (!tvdb_id && media_type === 'episode') return;
   const mappedType = media_type === 'episode' ? 'tv' : 'movie';
   const eventTitle = media_type === 'episode' ? (grandparent_title || title) : title;
+  if (origin === 'ca-edge') {
+    // See handlePlexWebhook's ca-edge branch: same §182 play-start-only promotion, otherwise
+    // observe-only (the tier planner's own demand source covers eviction).
+    audit('edge_playback_observed', { edge: 'california', source: 'tautulli', serverName: server_name || null, machineId: machine_id || null, event });
+    if (event === 'play') {
+      await handleCaPlayStart({
+        mediaId, title: eventTitle, mediaType: mappedType,
+        seasonNumber: media_type === 'episode' ? Number(season_num) : undefined,
+        watcherEmail: user_email,
+      });
+    }
+    return;
+  }
   // Tautulli "Playback Start" (event 'play') on the PH box → promote a not-yet-cached title so
   // the next play is local (§2.2). The payload carries user_email, so promotion is attributed to
   // the linked watcher for the daily cap. Only PH; primary plays need no promotion.
@@ -9885,6 +9912,96 @@ async function handlePhPlayStart({ mediaId, title, mediaType, watcherEmail, watc
   const stageDiscordId = isSnowflake(attributedId) ? attributedId : CONFIG.ADMIN_USER_ID;
   const { duplicate } = enqueueStageJob({ mediaId, mediaType, title, discordId: stageDiscordId, origin: 'play' });
   audit('edge_promote_enqueued', { mediaId, title, mediaType, attributedId, duplicate });
+}
+
+// §182 California play-triggered promotion — the tier-node analogue of handlePhPlayStart, but the
+// promotion mechanism is a durable PLANNER PIN (tier_node_policies), not a copy job: Syncthing
+// remains the only writer of California's local files (docs/edge-playback-architecture.md
+// §2.2(c)). Unlike PH, "is it already local?" cannot be read off the plan's keep-set alone (a kept
+// title can be mid-pull) — it's decided from the agent's own reported bytes (resolveCaLocalStatus).
+async function handleCaPlayStart({ mediaId, mediaType, title, seasonNumber, watcherKey, watcherEmail }) {
+  const node = getTierNode('california');
+  if (!node || !node.enabled) return;
+  if (!CONFIG.EDGE_PROMOTE_ON_PLAY) return;
+
+  // §183 resolve the promotion unit: season-scoped for TV when configured and resolvable from the
+  // arr's own episode-file listing; whole-title otherwise (movies always; an unresolvable TV
+  // season falls back to whole-series rather than silently doing nothing).
+  let unit = 'series';
+  let subPaths = [];
+  if (mediaType === 'tv' && CONFIG.TIER_TV_PROMOTE_GRANULARITY !== 'series' && Number.isFinite(seasonNumber)) {
+    const tvdbId = Number(String(mediaId).split(':')[1]);
+    const series = Number.isFinite(tvdbId) ? await getSeriesByTvdbId(tvdbId).catch(() => null) : null;
+    if (series?.id && series?.path) {
+      const episodeFiles = await getEpisodeFiles(series.id).catch(() => []);
+      const resolved = resolveTvSeasonUnit({ episodeFiles, seriesPath: remapPath(series.path), seasonNumber });
+      if (resolved.subPaths.length) { unit = formatSeasonUnit(seasonNumber); subPaths = resolved.subPaths; }
+    }
+  }
+
+  // Presence/completion from the last published manifest + the agent's real reported bytes —
+  // never "is it in the keep-set" alone (§2.2(b)). No manifest/entry yet is treated as "not
+  // local": harmless either way, since a title outside the current inventory can't be planned and
+  // the pin below is simply a no-op for planTier until the next inventory refresh finds it.
+  const manifestRaw = getSetting('tier_manifest:california');
+  const manifest = manifestRaw ? JSON.parse(manifestRaw) : null;
+  const entry = manifest && [...(manifest.keep || []), ...(manifest.drop || [])].find(e => e.mediaId === mediaId);
+  const files = listTierNodeFiles('california');
+  let isLocal = false;
+  if (entry) {
+    const checkPaths = subPaths.length ? subPaths.map(sp => `${entry.relPath}/${sp}`) : [entry.relPath];
+    // entry.sizeBytes is the WHOLE series/movie's arr-reported size; a season-scoped pin only has
+    // that total, not a per-season figure, so it's split evenly across the resolved sub-paths as
+    // an approximation (subPaths.length is almost always 1 — see resolveTvSeasonUnit — so this is
+    // exact in the common case and only approximate for the rare multi-directory season).
+    const expectedPerPath = subPaths.length ? entry.sizeBytes / subPaths.length : entry.sizeBytes;
+    isLocal = checkPaths.every(relPath => resolveCaLocalStatus({ relPath, folderId: entry.folderId, expectedBytes: expectedPerPath, files }).complete);
+  }
+
+  const watcher = watcherEmail ? getUserByCanonicalEmail(watcherEmail) : null;
+  const attributedId = [watcher?.discord_id, watcherEmail && `email:${watcherEmail}`, watcherKey, 'edge-anon'].find(Boolean);
+  const DAY_MS = 86400000;
+  const capOk = countRecentPromotions(attributedId, DAY_MS) < CONFIG.EDGE_PROMOTE_MAX_PER_USER_PER_DAY;
+  const pinKey = `${mediaId}:${unit}`;
+  const plan = planCaPromotion({
+    enabled: CONFIG.EDGE_PROMOTE_ON_PLAY,
+    isLocal,
+    lastPromoteAt: Number(getSetting(`promote_last:ca:${pinKey}`) || '0'),
+    now: Date.now(),
+    cooldownMs: CONFIG.EDGE_PROMOTE_COOLDOWN_HOURS * 3600000,
+    rateLimitOk: capOk,
+    auditOnly: CONFIG.CA_PROMOTE_AUDIT_ONLY,
+  });
+  if (plan.action === 'skip') {
+    if (plan.reason === 'rate_limited') audit('edge_promote_rate_limited', { node: 'california', mediaId, title, attributedId });
+    return;
+  }
+  if (plan.action === 'audit') {
+    audit('edge_promote_would_pin', { node: 'california', mediaId, title, mediaType, unit, attributedId });
+    return;
+  }
+
+  // enqueue: record the durable daily token + per-unit cooldown (mirrors PH), then the pin itself.
+  recordPromotion(attributedId, mediaId, DAY_MS);
+  setSetting(`promote_last:ca:${pinKey}`, String(Date.now()));
+  const expiresAt = Date.now() + CONFIG.TIER_PLAY_PIN_DAYS * 86400000;
+  setTierNodePolicy('california', mediaId, unit, 'temporary_play_pin', { expiresAt, source: `play:${attributedId}`, subPaths });
+  audit('edge_promote_pinned', { node: 'california', mediaId, title, mediaType, unit, attributedId, expiresAt });
+
+  // §182 "recompute/publish the affected node plan and trigger agent convergence immediately"
+  // (docs/edge-playback-architecture.md §2.2(c)) — republish ONLY california, never touching any
+  // other node's manifest as a side effect of one play event, then kick so the agent re-polls soon
+  // instead of waiting out its full timer interval.
+  try {
+    const plans = await buildTierPlans();
+    const m = plans.manifests?.california;
+    if (m) {
+      publishTierManifest('california', m, { actorDiscordId: null, confirmed: false });
+      setSetting('tier_kick_pending:california', String(Date.now()));
+    }
+  } catch (err) {
+    audit('edge_promote_republish_failed', { node: 'california', mediaId, error: err.message });
+  }
 }
 
 // A playback event from the PH box. Any event bumps the LRU clock for a cached title; a

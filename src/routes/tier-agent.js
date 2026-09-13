@@ -9,7 +9,7 @@ const { nextRepeatAlert } = require('../repeat-alert');
 
 function registerTierAgentRoutes(app, deps) {
   const {
-    config, getTierAgentTokenHash, sha256, safeEqual, audit, getSetting, setSetting,
+    config, getTierAgentTokenHash, sha256, safeEqual, audit, getSetting, setSetting, deleteSetting,
     getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, recordTierErrorAlertState, recordTierMergedMountDiagnostics, markTierPlanConverged,
     getTierNode, listTierNodeFiles, replaceTierNodeFiles, parseAtimeMask, maskSuspectAtimes,
     notifyTelemetryTransition, notifyDriveMissing, notifyDriveRecovered, notifyAgentReport,
@@ -53,6 +53,15 @@ function registerTierAgentRoutes(app, deps) {
     // interpreted or compared against anything server-side.
     const agentVersion = typeof body.agentVersion === 'string' ? body.agentVersion.slice(0, 40) : null;
 
+    // §182 "kick": the bot has no inbound path to the edge (agent-initiated pull only, by design —
+    // see agent/agent.js's header), so "trigger the agent immediately" (docs/edge-playback-
+    // architecture.md §2.2(c)) means telling it, in THIS response, to re-poll soon instead of
+    // waiting for its normal timer. Set once by a play-promotion publish (index.js); cleared here
+    // the moment the agent reports it actually reached the CURRENT published plan — never on a
+    // timeout, so a pin that fails to converge keeps the agent polling rather than going silent.
+    const kickKey = `tier_kick_pending:${node}`;
+    const kickPending = () => !!getSetting(kickKey);
+
     // §181 recorded before the branch-specific handling below so it lands on every report shape —
     // heartbeat, drive-missing, and a full report — since checkMergedMount runs every agent cycle.
     if (body.mergedMountDiagnostics && typeof body.mergedMountDiagnostics === 'object') {
@@ -68,7 +77,7 @@ function registerTierAgentRoutes(app, deps) {
       recordTierAgentHeartbeat(node, { errors: [], telemetry, telemetryLevel: telemetryHealth.level, agentVersion });
       emitTelemetry();
       audit('tier_agent_heartbeat', { node, planHash: body.planHash || null });
-      return res.json({ ok: true, heartbeat: true });
+      return res.json({ ok: true, heartbeat: true, kickPending: kickPending() });
     }
 
     const errors = Array.isArray(body.errors) ? body.errors.slice(0, 10).map(e => String(e).slice(0, 300)) : [];
@@ -82,7 +91,7 @@ function registerTierAgentRoutes(app, deps) {
       emitTelemetry();
       audit('tier_agent_drive_missing', { node, mountErrors: mountErrors.join('; ').slice(0, 500) || undefined });
       if (previousMountState !== 'missing') notifyDriveMissing({ node, mountErrors });
-      return res.json({ ok: true, acknowledged: 'drive-missing' });
+      return res.json({ ok: true, acknowledged: 'drive-missing', kickPending: kickPending() });
     }
 
     if (getSetting(mountKey) === 'missing') {
@@ -118,13 +127,13 @@ function registerTierAgentRoutes(app, deps) {
     emitTelemetry();
     const publishedHash = getTierPlan(node)?.published?.planHash || null;
     const converged = body.converged === true && errors.length === 0 && !!body.planHash && body.planHash === publishedHash;
-    if (converged) markTierPlanConverged(node, { planHash: body.planHash });
+    if (converged) { markTierPlanConverged(node, { planHash: body.planHash }); deleteSetting(kickKey); }
     audit('tier_agent_report', { node, planHash: body.planHash || null, publishedHash, converged, bytesFreed: body.bytesFreed || 0, droppedCount: (body.dropped || []).length, inventoryCount: Array.isArray(body.inventory) ? body.inventory.length : 0, errors: errors.join('; ').slice(0, 500) || undefined, skipped: skipped.join('; ').slice(0, 500) || undefined, errorAlertAttempt: errorAlert?.attemptCount, errorAlertStoodDown: errorAlert?.stoodDown });
     const shouldNotifyErrors = errors.length > 0 && (!errorAlert || errorAlert.shouldAlert);
     if ((body.bytesFreed || 0) > 0 || shouldNotifyErrors || skipped.length || recoveredFromErrors) {
       notifyAgentReport({ node, body, errors, skipped, publishedHash, converged, telemetry, errorAlert, recoveredFromErrors });
     }
-    return res.json({ ok: true, converged });
+    return res.json({ ok: true, converged, kickPending: kickPending() });
   });
 }
 

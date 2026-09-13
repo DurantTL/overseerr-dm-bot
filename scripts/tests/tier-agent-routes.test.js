@@ -33,7 +33,7 @@ function setup() {
     config: { PORT: 3000, TUNNEL_DOMAIN: '', AGENT_READ_MAX_PER_MINUTE: 2, AGENT_REPORT_MAX_PER_MINUTE: 12, AGENT_REPORT_MAX_CONCURRENT: 2, NODE_TEMP_WARN_C: 80, NODE_TEMP_CRITICAL_C: 90 },
     getTierAgentTokenHash: node => tokenHashes.get(node), sha256, safeEqual,
     reportLimiter: (_req, _res, next) => next(), bodyLimiter: (_req, _res, next) => next(), jsonParser: bodyParser.json({ limit: '25mb' }),
-    audit: () => {}, getSetting: key => settings.get(key), setSetting: (key, value) => settings.set(key, value),
+    audit: () => {}, getSetting: key => settings.get(key), setSetting: (key, value) => settings.set(key, value), deleteSetting: key => settings.delete(key),
     getTierPlan: node => plans.get(node), getTierNode: () => ({ atime_mask: null }), listTierNodeFiles: () => [],
     recordTierAgentHeartbeat: (node, value) => calls.heartbeats.push({ node, value }),
     recordTierAgentReport: (node, value) => calls.reports.push({ node, value }),
@@ -84,12 +84,12 @@ test('tier-agent HTTP report distinguishes heartbeat, stale convergence, and val
   const server = await listen(app, 0);
   try {
     let response = await request(server.address().port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { heartbeat: true, planHash: 'current' } });
-    assert.deepStrictEqual(JSON.parse(response.body), { ok: true, heartbeat: true });
+    assert.deepStrictEqual(JSON.parse(response.body), { ok: true, heartbeat: true, kickPending: false });
     assert.strictEqual(calls.heartbeats.length, 1);
     response = await request(server.address().port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { converged: true, planHash: 'stale' } });
-    assert.deepStrictEqual(JSON.parse(response.body), { ok: true, converged: false });
+    assert.deepStrictEqual(JSON.parse(response.body), { ok: true, converged: false, kickPending: false });
     response = await request(server.address().port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { converged: true, planHash: 'current' } });
-    assert.deepStrictEqual(JSON.parse(response.body), { ok: true, converged: true });
+    assert.deepStrictEqual(JSON.parse(response.body), { ok: true, converged: true, kickPending: false });
     assert.strictEqual(calls.converged.length, 1);
   } finally { await close(server); }
 });
@@ -99,7 +99,7 @@ test('tier-agent HTTP report preserves inventory cap and drive-missing transitio
   const server = await listen(app, 0);
   try {
     let response = await request(server.address().port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { driveMissing: true, mountErrors: ['gone'] } });
-    assert.deepStrictEqual(JSON.parse(response.body), { ok: true, acknowledged: 'drive-missing' });
+    assert.deepStrictEqual(JSON.parse(response.body), { ok: true, acknowledged: 'drive-missing', kickPending: false });
     assert.strictEqual(calls.missing, 1);
     assert.strictEqual(settings.get('tier_mount_state:edge'), 'missing');
     const inventory = Array.from({ length: 200005 }, (_, index) => ({ path: `f${index}` }));
@@ -130,6 +130,33 @@ test('tier-agent HTTP report records §181 merged-mount diagnostics on every rep
     // Not sent at all when the agent doesn't have EDGE_MERGED_ROOT configured.
     await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { planHash: 'current' } });
     assert.strictEqual(calls.mergedMountDiagnostics.length, 2, 'no report when the agent field is absent');
+  } finally { await close(server); }
+});
+
+test('tier-agent HTTP report: kickPending is echoed while set and cleared only once the agent reaches the CURRENT published plan', async () => {
+  const { app, settings } = setup();
+  settings.set('tier_kick_pending:edge', String(Date.now())); // simulates index.js's play-promotion publish
+  const server = await listen(app, 0);
+  const port = server.address().port;
+  try {
+    // A plain heartbeat still sees the pending kick — the agent should re-poll soon rather than
+    // waiting out its normal timer.
+    let response = await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { heartbeat: true, planHash: 'stale' } });
+    assert.strictEqual(JSON.parse(response.body).kickPending, true);
+
+    // Reporting convergence on a STALE hash (not the published one) must NOT clear the flag —
+    // the agent hasn't actually reached the plan the pin needs yet.
+    response = await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { converged: true, planHash: 'stale' } });
+    assert.strictEqual(JSON.parse(response.body).kickPending, true, 'converging on the wrong hash does not clear the kick');
+
+    // Converging on the CURRENT published hash clears it.
+    response = await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { converged: true, planHash: 'current' } });
+    assert.strictEqual(JSON.parse(response.body).kickPending, false, 'reaching the published plan clears the kick');
+    assert.strictEqual(settings.has('tier_kick_pending:edge'), false);
+
+    // And it stays cleared on the next contact.
+    response = await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { heartbeat: true, planHash: 'current' } });
+    assert.strictEqual(JSON.parse(response.body).kickPending, false);
   } finally { await close(server); }
 });
 

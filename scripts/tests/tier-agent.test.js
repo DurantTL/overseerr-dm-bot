@@ -35,7 +35,7 @@ test('tier-agent: a registered node waits cleanly until its first manifest is pu
 
   const result = await runOnce(ctx);
 
-  assert.deepStrictEqual(result, { skipped: true, heartbeat: true, awaitingManifest: true });
+  assert.deepStrictEqual(result, { skipped: true, heartbeat: true, awaitingManifest: true, kickPending: false });
   assert.strictEqual(report.heartbeat, true);
   assert.strictEqual(report.awaitingManifest, true);
   assert.ok(report.telemetry && typeof report.telemetry === 'object');
