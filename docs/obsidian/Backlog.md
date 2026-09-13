@@ -41,7 +41,9 @@ open program contains umbrella issue [#175](https://github.com/DurantTL/overseer
 - [#186](https://github.com/DurantTL/overseerr-dm-bot/issues/186) — unify scheduler inventory,
   run telemetry, and dashboard controls.
 - [#187](https://github.com/DurantTL/overseerr-dm-bot/issues/187) — correct dashboard refresh,
-  keyboard access, and client-side regressions.
+  keyboard access, and client-side regressions. **Mostly landed:** the refresh guard, full ARIA
+  tabs pattern, progress-bar semantics, `:focus-visible`, and the mojibake fix are done. Remaining:
+  a live browser keyboard/visual walkthrough (this repo's test suite has no browser automation).
 - [#188](https://github.com/DurantTL/overseerr-dm-bot/issues/188) — keep HTTP health and admin
   control available while Discord is degraded.
 - ~~#190 — validate and expose the exact public dashboard origin for passkeys.~~ **Closed:**
