@@ -88,6 +88,7 @@ function registerDashboardAuthRoutes(app, {
   renderLogin,
   listPasskeys,
   passkeyService,
+  passkeyOrigin = '',
   safeEqual,
   audit,
   renamePasskey,
@@ -120,7 +121,7 @@ function registerDashboardAuthRoutes(app, {
     legacyHeaders: false,
   }), (req, res) => {
     if (session.verify(session.readCookie(req, 'dm_session'))) return res.redirect('/admin');
-    return res.type('html').send(renderLogin(!!req.query.error, null, { passkeyEnabled: listPasskeys().length > 0 }));
+    return res.type('html').send(renderLogin(!!req.query.error, null, { passkeyEnabled: listPasskeys().length > 0, expectedOrigin: passkeyOrigin }));
   });
 
   app.get('/admin/passkey/authentication-options', rateLimit({
@@ -176,7 +177,7 @@ function registerDashboardAuthRoutes(app, {
     handler: (_req, res) => res.status(429).type('html').send(renderLogin(
       false,
       'Too many attempts. Try again in a few minutes.',
-      { passkeyEnabled: listPasskeys().length > 0 },
+      { passkeyEnabled: listPasskeys().length > 0, expectedOrigin: passkeyOrigin },
     )),
   }), (req, res) => {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';

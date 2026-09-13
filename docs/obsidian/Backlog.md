@@ -44,10 +44,16 @@ open program contains umbrella issue [#175](https://github.com/DurantTL/overseer
   keyboard access, and client-side regressions.
 - [#188](https://github.com/DurantTL/overseerr-dm-bot/issues/188) — keep HTTP health and admin
   control available while Discord is degraded.
-- [#190](https://github.com/DurantTL/overseerr-dm-bot/issues/190) — validate and expose the exact
-  public dashboard origin for passkeys.
+- ~~#190 — validate and expose the exact public dashboard origin for passkeys.~~ **Closed:**
+  added `DASHBOARD_PUBLIC_URL` (defaults to `https://TUNNEL_DOMAIN`), strict validation, and a
+  client-side origin preflight that catches a mismatch before the browser call.
 - [#191](https://github.com/DurantTL/overseerr-dm-bot/issues/191) — provision and verify the
-  external HTTPS path required by the dashboard.
+  external HTTPS path required by the dashboard. **Mostly landed:** `/doctor` (Discord command and
+  `GET /admin/doctor`) now reports **Local process liveness**, **Public HTTPS origin**, **Public
+  TLS certificate**, and **Proxy trust configuration** as distinct checks, and `DEPLOYMENT.md`
+  spells out that port 3000 is plain HTTP and must sit behind the Cloudflare Tunnel/reverse proxy.
+  Remaining: an operator needs to actually run the diagnostic against the live public hostname and
+  confirm it reports healthy — that live verification can't be done from this repository.
 
 ## P1 — edge playback completion
 

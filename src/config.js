@@ -4,6 +4,7 @@
 require('dotenv').config({ quiet: true });
 const fs = require('fs');
 const http = require('http');
+const { passkeyRp } = require('./passkeys');
 
 function parseBool(v, fallback = false) {
   if (v === undefined) return fallback;
@@ -351,6 +352,13 @@ const CONFIG = (() => {
   // container's own `/` and `/config` disks and label the media mount by its real folder.
   DISK_SPACE_PATHS: (process.env.DISK_SPACE_PATHS || '').split(',').map(s => s.trim()).filter(Boolean),
   TUNNEL_DOMAIN: process.env.TUNNEL_DOMAIN,
+  // The exact HTTPS origin the admin dashboard is reached at, and therefore the WebAuthn relying
+  // party. Defaults to https://TUNNEL_DOMAIN so existing single-hostname deployments need no new
+  // configuration; set this only when the dashboard has a separate public hostname from
+  // downloads/webhooks (e.g. a dedicated admin.example.com behind its own Cloudflare Tunnel
+  // public hostname). Strictly validated in validateConfig() via passkeyRp() (#190): https only,
+  // no path/query/fragment/credentials/port, not an IP address.
+  DASHBOARD_PUBLIC_URL: process.env.DASHBOARD_PUBLIC_URL || (process.env.TUNNEL_DOMAIN ? `https://${process.env.TUNNEL_DOMAIN}` : ''),
   RAID_PATH: process.env.RAID_PATH || '/mnt/raid',
   PATH_REMAP_FROM: process.env.PATH_REMAP_FROM || '',
   PATH_REMAP_TO: process.env.PATH_REMAP_TO || process.env.RAID_PATH || '/mnt/raid',
@@ -531,6 +539,10 @@ function validateConfig() {
   // the actionable fix: generate one with `openssl rand -hex 32` and set SESSION_SECRET.
   if (CONFIG.DASHBOARD_ENABLED && !CONFIG.SESSION_SECRET) {
     throw new Error('DASHBOARD_ENABLED=true requires SESSION_SECRET (generate one with `openssl rand -hex 32`); dashboard sessions must never be signed with a key derived from the admin password/token');
+  }
+  if (CONFIG.DASHBOARD_ENABLED) {
+    try { passkeyRp(CONFIG.DASHBOARD_PUBLIC_URL); }
+    catch (err) { throw new Error(`DASHBOARD_PUBLIC_URL is invalid: ${err.message}`, { cause: err }); }
   }
   // TUNNEL_DOMAIN makes /webhook/overseerr, /webhook/plex, and /webhook/tautulli reachable from
   // the public internet regardless of whether deletion is live — an unauthenticated webhook is a

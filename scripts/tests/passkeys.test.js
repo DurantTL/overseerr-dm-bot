@@ -80,10 +80,27 @@ function memoryStore() {
   };
 }
 
-test('passkeys: RP is exactly the tunnel hostname and HTTPS origin', () => {
-  assert.deepStrictEqual(passkeyRp('Admin.Example.com'), { rpID: 'admin.example.com', origin: 'https://admin.example.com' });
-  assert.throws(() => passkeyRp('https://admin.example.com'), /hostname/);
-  assert.throws(() => passkeyRp('localhost'), /hostname/);
+test('passkeys: RP is derived from an exact HTTPS DASHBOARD_PUBLIC_URL origin', () => {
+  assert.deepStrictEqual(passkeyRp('https://admin.example.com'), { rpID: 'admin.example.com', origin: 'https://admin.example.com' });
+  // Hostnames are case-insensitive and a trailing DNS-root dot is not part of the name a browser
+  // compares against — both normalize to the same RP as the canonical form.
+  assert.deepStrictEqual(passkeyRp('https://Admin.Example.com'), { rpID: 'admin.example.com', origin: 'https://admin.example.com' });
+  assert.deepStrictEqual(passkeyRp('https://admin.example.com.'), { rpID: 'admin.example.com', origin: 'https://admin.example.com' });
+});
+
+test('passkeys: RP rejects anything short of an exact bare HTTPS origin', () => {
+  assert.throws(() => passkeyRp(''), /valid absolute URL/);
+  assert.throws(() => passkeyRp('not a url'), /valid absolute URL/);
+  assert.throws(() => passkeyRp('admin.example.com'), /valid absolute URL/, 'a bare hostname with no scheme is not a URL');
+  assert.throws(() => passkeyRp('http://admin.example.com'), /https:\/\//);
+  assert.throws(() => passkeyRp('https://user:pass@admin.example.com'), /credentials/);
+  assert.throws(() => passkeyRp('https://admin.example.com?x=1'), /query string/);
+  assert.throws(() => passkeyRp('https://admin.example.com#top'), /fragment/);
+  assert.throws(() => passkeyRp('https://admin.example.com:8443'), /port/);
+  assert.throws(() => passkeyRp('https://admin.example.com/dashboard'), /path/);
+  assert.throws(() => passkeyRp('https://localhost'), /hostname/);
+  assert.throws(() => passkeyRp('https://127.0.0.1'), /hostname/, 'an IP address must never be accepted as an RP ID');
+  assert.throws(() => passkeyRp('https://[::1]'), /hostname/);
 });
 
 test('passkeys: registration verifies challenge, origin, and RP ID', async () => {

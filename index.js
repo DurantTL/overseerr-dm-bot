@@ -54,6 +54,7 @@ const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = requi
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
+const { checkPublicOriginReadiness } = require('./src/public-origin-diagnostics');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
 const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, eraseTorrent, getRtorrentVersion, getRtorrentPaths } = require('./src/rtorrent');
@@ -118,7 +119,7 @@ const dashboardGateActor = createDashboardGateActor({ sha256 });
 // would ignore every override until the next restart.
 const settingsStore = { get: getSetting, set: setSetting, del: deleteSetting };
 const tunable = key => runtimeSettings.resolveRuntime(key, { config: CONFIG, store: settingsStore });
-const PASSKEY_RP = passkeyRp(CONFIG.TUNNEL_DOMAIN);
+const PASSKEY_RP = passkeyRp(CONFIG.DASHBOARD_PUBLIC_URL);
 const passkeyService = createPasskeyService({
   store: { listPasskeys, getPasskey, savePasskey, updatePasskeyUse },
   ...PASSKEY_RP,
@@ -5642,6 +5643,7 @@ async function handleDoctorCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
   await interaction.deferReply({ ephemeral: true });
   const checks = await runEdgeDiagnostics({ live: true });
+  checks.push(...await checkPublicOriginReadiness());
   const active = listActiveStageJobs();
   const copying = active.filter(j => j.status === 'copying');
   checks.push({
@@ -9336,6 +9338,7 @@ function startExpressServer() {
       renderLogin,
       listPasskeys,
       passkeyService,
+      passkeyOrigin: PASSKEY_RP.origin,
       safeEqual,
       audit,
       renamePasskey,
@@ -9397,6 +9400,7 @@ function startExpressServer() {
       renderTable,
       renderTierNodeSetup,
       runEdgeDiagnostics,
+      checkPublicOriginReadiness,
       runtimeSettings,
       searchDashboard,
       seasonAlertDashboardItems,

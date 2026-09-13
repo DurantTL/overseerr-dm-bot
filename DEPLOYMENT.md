@@ -150,6 +150,16 @@ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/admin
 the dashboard is correctly protected. Also check the container logs in
 Portainer for `Express server listening` and a successful Discord login.
 
+**This only proves the process is alive on the Docker host — it says nothing about whether the
+dashboard is reachable from the internet over HTTPS.** Port 3000 is plain, unencrypted HTTP; it
+must never be published directly to the internet. Terminate TLS at Cloudflare Tunnel (or another
+reverse proxy) in front of it — see `docker-compose --profile tunnel` and `TUNNEL_DOMAIN` /
+`DASHBOARD_PUBLIC_URL` in `.env.example`. To verify the actual public path (HTTPS reachability,
+certificate validity, and whether `TRUST_PROXY` is configured correctly for the proxy in front of
+it), run the `/doctor` Discord command or `GET /admin/doctor` from the dashboard — both report a
+**Public HTTPS origin** and **Public TLS certificate** check distinct from the plain **Local
+process liveness** check above.
+
 ### The startup lines that actually prove it worked
 
 A clean-looking startup is not proof that Discord notifications work — logging

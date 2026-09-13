@@ -54,6 +54,7 @@ function registerDashboardReadRoutes(app, deps) {
     renderTable,
     renderTierNodeSetup,
     runEdgeDiagnostics,
+    checkPublicOriginReadiness = async () => [],
     runtimeSettings,
     searchDashboard,
     seasonAlertDashboardItems,
@@ -265,7 +266,7 @@ function registerDashboardReadRoutes(app, deps) {
       <div class="stats">${stats}</div>
 
       <section class="panel" data-panel="overview">
-        ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID)}
+        ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID, PASSKEY_RP.origin)}
         <div class="card">
           <h2>Integrations</h2>
           <div class="badges">${renderHealthBadges(health)}</div>
@@ -389,7 +390,8 @@ function registerDashboardReadRoutes(app, deps) {
             var buttonStates = buttons.map(function (button) { return { button: button, disabled: button.disabled }; });
             var note = btn.dataset.inline && item ? item.querySelector('.action-result') : null;
             buttons.forEach(function (button) { button.disabled = true; });
-            if (note) { note.textContent = 'Workingâ€¦'; note.className = 'action-result'; }
+            if (note) { note.textContent = 'Working…'; note.className = 'action-result'; }
+            window.__actionsInFlight = (window.__actionsInFlight || 0) + 1;
             try {
               var r = await fetch(btn.dataset.post, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
               var result = await r.json().catch(function () { return {}; });
@@ -408,13 +410,16 @@ function registerDashboardReadRoutes(app, deps) {
               if (note) { note.textContent = message; note.className = 'action-result bad'; }
               else alert(message);
               buttonStates.forEach(function (state) { state.button.disabled = state.disabled; });
+            } finally {
+              window.__actionsInFlight = Math.max(0, (window.__actionsInFlight || 0) - 1);
             }
           });
         });
         (function () {
           var enroll = document.getElementById('passkey-enroll');
           var note = document.getElementById('passkey-note');
-          var passkeyReady = !enroll || (!!window.PasskeyClient && window.PasskeyClient.preparePasskeyAction(enroll, note, window));
+          var expectedOrigin = (document.getElementById('passkeys') || {}).dataset ? document.getElementById('passkeys').dataset.passkeyOrigin : '';
+          var passkeyReady = !enroll || (!!window.PasskeyClient && window.PasskeyClient.preparePasskeyAction(enroll, note, window, '', expectedOrigin));
           if (enroll && !window.PasskeyClient) {
             enroll.disabled = true;
             note.textContent = 'Passkey support could not be checked. Open this HTTPS dashboard in Safari, Chrome, Edge, or another WebAuthn-capable browser.';
@@ -437,7 +442,7 @@ function registerDashboardReadRoutes(app, deps) {
               location.hash = 'overview';
               location.reload();
             } catch (error) {
-              note.textContent = window.PasskeyClient ? window.PasskeyClient.passkeyErrorMessage(error, window) : (error.message || String(error));
+              note.textContent = window.PasskeyClient ? window.PasskeyClient.passkeyErrorMessage(error, window, expectedOrigin) : (error.message || String(error));
               note.className = 'save-note bad';
               enroll.disabled = false;
             }
@@ -709,7 +714,10 @@ function registerDashboardReadRoutes(app, deps) {
     standardHeaders: 'draft-8',
     legacyHeaders: false,
     handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many dashboard requests. Wait a moment and try again.' }),
-  }), dashboardAuth, async (_req, res) => res.json({ checks: await runEdgeDiagnostics({ live: true }), tierNodes: listTierNodes().map(n => ({ name: n.name, enabled: !!n.enabled, full: !!n.full, usableBytes: n.usable_bytes })) }));
+  }), dashboardAuth, async (_req, res) => {
+    const [edgeChecks, originChecks] = await Promise.all([runEdgeDiagnostics({ live: true }), checkPublicOriginReadiness()]);
+    res.json({ checks: [...originChecks, ...edgeChecks], tierNodes: listTierNodes().map(n => ({ name: n.name, enabled: !!n.enabled, full: !!n.full, usableBytes: n.usable_bytes })) });
+  });
   app.get('/admin/action/sync-preview', rateLimit({
     windowMs: 15 * 60000,
     limit: 30,
