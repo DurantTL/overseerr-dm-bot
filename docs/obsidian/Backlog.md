@@ -75,7 +75,11 @@ open program contains umbrella issue [#175](https://github.com/DurantTL/overseer
   doc refresh; only the automated drift-check (this doc vs. live GitHub state) remains open —
   this 2026-08-21 pass is exactly that kind of check, done manually.
 - [#189](https://github.com/DurantTL/overseerr-dm-bot/issues/189) — cache and scope dashboard data
-  with explicit freshness.
+  with explicit freshness. **Partial:** a single-flight + TTL cache now coalesces and bounds the
+  `GET /admin` integration fan-out (health/Tautulli/Arr queues/disk space/edge diagnostics/guild
+  members), with a stale-on-failure fallback and a page-level freshness/staleness note, and
+  dashboard mutations invalidate it. Remaining: per-panel freshness display and loading only the
+  active panel instead of the whole page on every render.
 
 ## 2026-09-09 feature-review follow-ups
 

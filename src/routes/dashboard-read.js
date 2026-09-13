@@ -7,6 +7,7 @@ function registerDashboardReadRoutes(app, deps) {
     arrSources,
     buildSyncPreview,
     canEscalate,
+    dashboardCache = { get: (_key, _ttlMs, loader) => Promise.resolve(loader()).then(value => ({ value, fetchedAt: Date.now(), stale: false, fromCache: false })) },
     dashboardActionError,
     dashboardAuth,
     db,
@@ -76,19 +77,49 @@ function registerDashboardReadRoutes(app, deps) {
     const now = Date.now();
     const pendingApprovals = listPendingRequests();
     const passkeys = listPasskeys();
-    // Live activity: every external read is failure-tolerant so one dead integration never
-    // takes the dashboard down — null means "couldn't reach it", rendered as such.
-    const [health, sessions, queue, disks, edgeChecks, members, pendingQuota] = await Promise.all([
-      gatherHealth(),
-      tautulliConfigured() ? tautulliApi('get_activity').then(d => d?.sessions || []).catch(() => null) : Promise.resolve(null),
-      arrSources().length ? fetchArrQueues().catch(() => null) : Promise.resolve(null),
-      arrSources().length ? fetchDiskSpace().catch(() => null) : Promise.resolve(null),
-      runEdgeDiagnostics({ live: false }).catch(() => []),
-      pendingApprovals.length ? getGuildMembers().catch(() => []) : Promise.resolve([]),
+    // Live activity, cached with a bounded per-source TTL (#189): every GET /admin render used to
+    // hit every integration fresh, so a 60s auto-refresh with any number of open admin tabs
+    // multiplied real upstream traffic by however many viewers happened to be watching. Each
+    // source stays failure-tolerant — a cache miss that fails falls back to null/empty, rendered
+    // as unavailable, exactly like before this cache existed.
+    const notFetched = { value: null, fetchedAt: now, stale: false };
+    const notFetchedEmpty = { value: [], fetchedAt: now, stale: false };
+    const [healthEntry, sessionsEntry, queueEntry, disksEntry, edgeEntry, membersEntry, pendingQuota] = await Promise.all([
+      dashboardCache.get('health', 15000, gatherHealth).catch(() => ({ value: null, fetchedAt: now, stale: true })),
+      tautulliConfigured()
+        ? dashboardCache.get('tautulli-activity', 10000, () => tautulliApi('get_activity').then(d => d?.sessions || [])).catch(() => ({ value: null, fetchedAt: now, stale: true }))
+        : Promise.resolve(notFetched),
+      arrSources().length
+        ? dashboardCache.get('arr-queues', 15000, fetchArrQueues).catch(() => ({ value: null, fetchedAt: now, stale: true }))
+        : Promise.resolve(notFetched),
+      arrSources().length
+        ? dashboardCache.get('disk-space', 60000, fetchDiskSpace).catch(() => ({ value: null, fetchedAt: now, stale: true }))
+        : Promise.resolve(notFetched),
+      dashboardCache.get('edge-diagnostics', 60000, () => runEdgeDiagnostics({ live: false })).catch(() => ({ value: [], fetchedAt: now, stale: true })),
+      pendingApprovals.length
+        ? dashboardCache.get('guild-members', 60000, getGuildMembers).catch(() => ({ value: [], fetchedAt: now, stale: true }))
+        : Promise.resolve(notFetchedEmpty),
       Promise.all(pendingApprovals.map(pending => quotaBlockReason(pending.seerrUserId, pending.discordId, pending.mediaType, { tmdbId: pending.tmdbId, is4k: pending.is4k }, true)
         .then(warning => ({ warning, error: null }))
         .catch(err => ({ warning: null, error: dashboardActionError(err) })))),
     ]);
+    // Unlike the other integrations, health has no page-level "not configured" state to render
+    // instead — the overall banner always shows it. A null value here means gatherHealth() has
+    // never once succeeded (no cached good value to fall back to, e.g. the very first request
+    // after a cold start hits a dead dependency), so give the render something safe to show
+    // rather than crashing on health.overall below.
+    const health = healthEntry.value || { overall: 'unknown', errors: {} };
+    const sessions = sessionsEntry.value;
+    const queue = queueEntry.value;
+    const disks = disksEntry.value;
+    const edgeChecks = edgeEntry.value;
+    const members = membersEntry.value;
+    // The oldest of the sources actually fetched (skipping ones that were never applicable, e.g.
+    // no Arr configured) is the true "how stale could this page be" answer; a source that had to
+    // fall back to its last good value makes the whole render stale regardless of the others' age.
+    const fetchedEntries = [healthEntry, sessionsEntry, queueEntry, disksEntry, edgeEntry, membersEntry].filter(e => e !== notFetched && e !== notFetchedEmpty);
+    const dataAsOf = fetchedEntries.length ? Math.min(...fetchedEntries.map(e => e.fetchedAt)) : now;
+    const dataStale = fetchedEntries.some(e => e.stale);
     const grabJobs = listActiveGrabJobs();
     const stageJobs = listActiveStageJobs();
     const escalations = db.prepare("SELECT * FROM escalations WHERE state IN ('watching','alerted','error') ORDER BY approved_at").all();
@@ -261,7 +292,7 @@ function registerDashboardReadRoutes(app, deps) {
     const body = `
       <div class="overall ${health.overall === 'ok' ? 'ok' : 'warn'}">
         <span>Overall: <strong>${escapeHtml(String(health.overall).toUpperCase())}</strong></span>
-        <span class="updated">updated ${new Date(now).toISOString().slice(11, 19)} UTC · auto-refreshes</span>
+        <span class="updated">rendered ${new Date(now).toISOString().slice(11, 19)} UTC${dataAsOf < now ? ` · data as of ${fmtAgo(dataAsOf)}` : ''}${dataStale ? ' · <strong>stale</strong> (an integration refresh failed; showing the last good value)' : ''} · auto-refreshes</span>
       </div>
       <div class="stats">${stats}</div>
 
