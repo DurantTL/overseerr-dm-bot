@@ -161,6 +161,10 @@ test('dashboard page and search routes render over a real ephemeral HTTP server'
     assert.match(dashboard.headers['content-type'], /^text\/html/);
     assert.match(dashboard.body, /<title>Dashboard<\/title>/);
     assert.match(dashboard.body, /Overall: <strong>OK<\/strong>/);
+    // #187: the inline "Working…" action-feedback text was mojibake (UTF-8 bytes misread as
+    // Latin-1) — assert the correct ellipsis character renders and the corrupted form is gone.
+    assert.match(dashboard.body, /Working…/);
+    assert.doesNotMatch(dashboard.body, /Workingâ€¦/);
 
     const empty = await request(port, '/admin/search', headers);
     assert.strictEqual(empty.statusCode, 200);

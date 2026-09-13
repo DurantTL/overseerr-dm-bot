@@ -390,7 +390,8 @@ function registerDashboardReadRoutes(app, deps) {
             var buttonStates = buttons.map(function (button) { return { button: button, disabled: button.disabled }; });
             var note = btn.dataset.inline && item ? item.querySelector('.action-result') : null;
             buttons.forEach(function (button) { button.disabled = true; });
-            if (note) { note.textContent = 'Workingâ€¦'; note.className = 'action-result'; }
+            if (note) { note.textContent = 'Working…'; note.className = 'action-result'; }
+            window.__actionsInFlight = (window.__actionsInFlight || 0) + 1;
             try {
               var r = await fetch(btn.dataset.post, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
               var result = await r.json().catch(function () { return {}; });
@@ -409,6 +410,8 @@ function registerDashboardReadRoutes(app, deps) {
               if (note) { note.textContent = message; note.className = 'action-result bad'; }
               else alert(message);
               buttonStates.forEach(function (state) { state.button.disabled = state.disabled; });
+            } finally {
+              window.__actionsInFlight = Math.max(0, (window.__actionsInFlight || 0) - 1);
             }
           });
         });

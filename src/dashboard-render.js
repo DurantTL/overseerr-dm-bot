@@ -27,8 +27,10 @@ const DASHBOARD_CSS = `
   .topbar-search input { width:100%; min-width:100px; padding:9px 11px; border-radius:9px; border:1px solid var(--border); background:var(--panel); color:var(--text); font-size:14px; }
   .nav { display:flex; gap:8px; overflow-x:auto; padding:4px 16px 10px; scrollbar-width:none; }
   .nav::-webkit-scrollbar { display:none; }
-  .chip { flex:0 0 auto; padding:7px 14px; border-radius:999px; background:var(--panel2); border:1px solid var(--border); color:var(--text); font-size:13px; text-decoration:none; }
+  .chip { flex:0 0 auto; min-height:44px; display:inline-flex; align-items:center; padding:7px 14px; border-radius:999px; background:var(--panel2); border:1px solid var(--border); color:var(--text); font-size:13px; text-decoration:none; }
   .chip:hover, .chip:active { border-color:var(--accent); }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .chip:focus-visible { outline-offset:0; }
   .container { max-width:1100px; margin:0 auto; padding:16px; }
   .card { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:14px 16px; margin-bottom:14px; scroll-margin-top:110px; }
   .card h2 { margin:0 0 10px; font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
@@ -97,6 +99,10 @@ const DASHBOARD_CSS = `
   .setting-ctl input[type=number] { width:96px; padding:9px 10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:15px; }
   .setting-ctl input[type=text], .setting-foot input[type=text] { min-width:180px; padding:9px 10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:14px; }
   .setting-ctl .unit { font-size:12px; color:var(--muted); min-width:34px; }
+  /* Below the 44x44 CSS px target size guideline by design: this toggle sits inline in a settings
+     row directly beside its own text label (.setting-name) with normal paragraph spacing around
+     it and no other interactive control within 24px, so it qualifies for the WCAG 2.5.8 spacing
+     exception rather than needing to grow into an oversized pill. */
   .switch { position:relative; width:46px; height:26px; flex:0 0 auto; }
   .switch input { opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
   .switch .track { position:absolute; inset:0; border-radius:999px; background:var(--panel2); border:1px solid var(--border); pointer-events:none; transition:background .15s; }
@@ -149,17 +155,49 @@ function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, s
       ? `<button class="chip tab" role="tab" type="button" data-tab="${escapeHtml(id)}" aria-selected="false">${escapeHtml(label)}</button>`
       : `<a class="chip" href="#${escapeHtml(id)}">${escapeHtml(label)}</a>`)).join('')}</nav>`
     : '';
+  // Full ARIA tabs pattern (https://www.w3.org/WAI/ARIA/apg/patterns/tabs/): each tab/panel pair
+  // is wired with matching ids and aria-controls/aria-labelledby, only the selected tab is in the
+  // tab order (roving tabindex), and Left/Right/Home/End move focus AND activate (single-select
+  // automatic-activation tabs, the simple case the pattern explicitly allows for a plain tab bar
+  // like this one — no async panel content to wait on).
   const tabScript = tabs ? `<script>
     (function () {
       var tabButtons = [].slice.call(document.querySelectorAll('.chip.tab'));
       var panels = [].slice.call(document.querySelectorAll('.panel'));
-      function show(id) {
+      tabButtons.forEach(function (b) {
+        b.id = 'tab-' + b.dataset.tab;
+        b.setAttribute('aria-controls', 'panel-' + b.dataset.tab);
+      });
+      panels.forEach(function (p) {
+        p.id = 'panel-' + p.dataset.panel;
+        p.setAttribute('role', 'tabpanel');
+        p.setAttribute('aria-labelledby', 'tab-' + p.dataset.panel);
+        p.tabIndex = 0;
+      });
+      function show(id, focusTab) {
         if (!panels.some(function (p) { return p.dataset.panel === id; })) id = panels[0] && panels[0].dataset.panel;
         panels.forEach(function (p) { p.hidden = p.dataset.panel !== id; });
-        tabButtons.forEach(function (b) { b.setAttribute('aria-selected', String(b.dataset.tab === id)); });
+        tabButtons.forEach(function (b) {
+          var selected = b.dataset.tab === id;
+          b.setAttribute('aria-selected', String(selected));
+          b.tabIndex = selected ? 0 : -1;
+          if (selected && focusTab) b.focus();
+        });
         if (id) history.replaceState(null, '', '#' + id);
       }
-      tabButtons.forEach(function (b) { b.addEventListener('click', function () { show(b.dataset.tab); window.scrollTo(0, 0); }); });
+      tabButtons.forEach(function (b, index) {
+        b.addEventListener('click', function () { show(b.dataset.tab); window.scrollTo(0, 0); });
+        b.addEventListener('keydown', function (event) {
+          var targetIndex = null;
+          if (event.key === 'ArrowRight') targetIndex = (index + 1) % tabButtons.length;
+          else if (event.key === 'ArrowLeft') targetIndex = (index - 1 + tabButtons.length) % tabButtons.length;
+          else if (event.key === 'Home') targetIndex = 0;
+          else if (event.key === 'End') targetIndex = tabButtons.length - 1;
+          if (targetIndex === null) return;
+          event.preventDefault();
+          show(tabButtons[targetIndex].dataset.tab, true);
+        });
+      });
       show((location.hash || '').slice(1));
     })();
   </script>` : '';
@@ -168,12 +206,17 @@ function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, s
   const refreshScript = autoRefresh ? `<script>
     (function () {
       var t;
+      // Only an actual text/number/select field mid-edit counts — a focused BUTTON (the state
+      // left behind by clicking a tab or any other button) is not editing anything and must not
+      // block refresh forever. window.__dirtySettings tracks unsaved form changes explicitly;
+      // window.__actionsInFlight (incremented/decremented around the shared action-button fetch)
+      // covers a request still in flight when the timer fires.
       function editing() {
         var el = document.activeElement;
-        return !!el && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(el.tagName);
+        return !!el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName);
       }
-      // Never reload mid-edit — a refresh while someone is typing a threshold would discard it.
-      function arm() { t = setTimeout(function () { if (editing() || window.__dirtySettings) arm(); else location.reload(); }, 60000); }
+      function blocked() { return editing() || window.__dirtySettings || window.__actionsInFlight > 0; }
+      function arm() { t = setTimeout(function () { if (blocked()) arm(); else location.reload(); }, 60000); }
       document.addEventListener('visibilitychange', function () { if (document.hidden) clearTimeout(t); else arm(); });
       if (!document.hidden) arm();
     })();
@@ -214,9 +257,10 @@ function fmtAgo(ts) {
   return d >= 0 ? `${fmtDuration(d)} ago` : `in ${fmtDuration(-d)}`;
 }
 
-function renderBar(pct) {
+function renderBar(pct, label = '') {
   const p = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
-  return `<div class="bar"><div class="bar-fill${p >= 95 ? ' hot' : ''}" style="width:${p}%"></div></div>`;
+  const ariaLabel = label ? ` aria-label="${escapeHtml(label)} progress"` : '';
+  return `<div class="bar" role="progressbar" aria-valuenow="${p}" aria-valuemin="0" aria-valuemax="100"${ariaLabel}><div class="bar-fill${p >= 95 ? ' hot' : ''}" style="width:${p}%"></div></div>`;
 }
 
 // Touch-friendly activity rows: state dot, title + sub, optional right-side metric and
@@ -229,7 +273,7 @@ function renderItemList(items, emptyText = 'Nothing right now.') {
       <div class="item-main">
         <div class="item-title">${escapeHtml(i.title || '')}</div>
         ${i.sub ? `<div class="item-sub">${escapeHtml(i.sub)}</div>` : ''}
-        ${typeof i.pct === 'number' ? renderBar(i.pct) : ''}
+        ${typeof i.pct === 'number' ? renderBar(i.pct, i.title || '') : ''}
         ${i.actions?.length ? `<div class="item-actions">${i.actions.map(action => `<button class="btn${action.danger ? ' danger' : ''}" type="button"${action.setupNode ? ` data-setup-node="${escapeHtml(action.setupNode)}"` : ` data-post="${escapeHtml(action.url)}" data-body="${escapeHtml(JSON.stringify(action.body || {}))}"`}${action.confirm ? ` data-confirm="${escapeHtml(action.confirm)}"` : ''}${action.inline ? ' data-inline="true"' : ''}${action.disabled ? ' disabled' : ''}${action.title ? ` title="${escapeHtml(action.title)}"` : ''}>${escapeHtml(action.label)}</button>`).join('')}</div>${i.actions.some(action => action.inline) ? '<span class="action-result" aria-live="polite"></span>' : ''}` : ''}
       </div>
       ${i.right ? `<div class="item-right">${escapeHtml(i.right)}</div>` : ''}
