@@ -251,3 +251,24 @@ test('settings and revocation mutations preserve their response bodies', async (
     await close(server);
   }
 });
+
+test('#189: a successful mutation invalidates the dashboard cache; a failed one and a preview do not', async () => {
+  let invalidated = 0;
+  const { app } = fixture({ dashboardCache: { invalidate: () => { invalidated += 1; } } });
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const headers = { 'x-admin-token': 'secret' };
+
+    await post(port, '/admin/action/revoke-all', {}, headers);
+    assert.strictEqual(invalidated, 1, 'a successful mutation invalidates the cache');
+
+    await post(port, '/admin/action/tier-node', { name: 'bad name' }, headers); // 400
+    assert.strictEqual(invalidated, 1, 'a failed mutation leaves the cache alone');
+
+    await post(port, '/admin/action/sweep-preview', { name: 'stuck' }, headers);
+    assert.strictEqual(invalidated, 1, 'a preview changes nothing, so it must not invalidate the cache');
+  } finally {
+    await close(server);
+  }
+});

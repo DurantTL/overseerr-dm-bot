@@ -41,7 +41,9 @@ open program contains umbrella issue [#175](https://github.com/DurantTL/overseer
 - [#186](https://github.com/DurantTL/overseerr-dm-bot/issues/186) — unify scheduler inventory,
   run telemetry, and dashboard controls.
 - [#187](https://github.com/DurantTL/overseerr-dm-bot/issues/187) — correct dashboard refresh,
-  keyboard access, and client-side regressions.
+  keyboard access, and client-side regressions. **Mostly landed:** the refresh guard, full ARIA
+  tabs pattern, progress-bar semantics, `:focus-visible`, and the mojibake fix are done. Remaining:
+  a live browser keyboard/visual walkthrough (this repo's test suite has no browser automation).
 - [#188](https://github.com/DurantTL/overseerr-dm-bot/issues/188) — keep HTTP health and admin
   control available while Discord is degraded.
 - ~~#190 — validate and expose the exact public dashboard origin for passkeys.~~ **Closed:**
@@ -73,7 +75,11 @@ open program contains umbrella issue [#175](https://github.com/DurantTL/overseer
   doc refresh; only the automated drift-check (this doc vs. live GitHub state) remains open —
   this 2026-08-21 pass is exactly that kind of check, done manually.
 - [#189](https://github.com/DurantTL/overseerr-dm-bot/issues/189) — cache and scope dashboard data
-  with explicit freshness.
+  with explicit freshness. **Partial:** a single-flight + TTL cache now coalesces and bounds the
+  `GET /admin` integration fan-out (health/Tautulli/Arr queues/disk space/edge diagnostics/guild
+  members), with a stale-on-failure fallback and a page-level freshness/staleness note, and
+  dashboard mutations invalidate it. Remaining: per-panel freshness display and loading only the
+  active panel instead of the whole page on every render.
 
 ## 2026-09-09 feature-review follow-ups
 

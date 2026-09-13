@@ -1,5 +1,7 @@
 'use strict';
 
+const express = require('express');
+
 // Every dashboard mutation (POST) route, extracted from startExpressServer() in index.js as part
 // of #178. index.js still owns wiring: it builds the deps object below from its existing local
 // functions/module requires and calls registerDashboardMutationRoutes(app, deps) once. Route
@@ -9,6 +11,7 @@ function registerDashboardMutationRoutes(app, deps) {
   const {
     CONFIG,
     audit,
+    dashboardCache = { invalidate() {} },
     dashboardActionError,
     dashboardActor,
     dashboardAuth,
@@ -57,7 +60,18 @@ function registerDashboardMutationRoutes(app, deps) {
     getAutomationRegistry = () => null,
   } = deps;
 
-  app.post('/admin/action/gate', rateLimit({
+  const router = express.Router();
+  // A successful mutation can change what several dashboard panels would show (approving a
+  // request changes quota, pending counts, and Arr queues alike), so invalidate the whole
+  // integration cache rather than tracking exactly which keys each route could affect — the next
+  // /admin render just pays for one fresh fetch, same as every render did before that cache
+  // existed. Preview-only routes (sweep-preview) never reach this: they change nothing.
+  router.use((req, res, next) => {
+    res.on('finish', () => { if (res.statusCode < 400) dashboardCache.invalidate(); });
+    next();
+  });
+
+  router.post('/admin/action/gate', rateLimit({
     windowMs: 15 * 60000,
     limit: 30,
     keyGenerator: httpRateLimitKey,
@@ -82,7 +96,7 @@ function registerDashboardMutationRoutes(app, deps) {
       return res.status(500).json({ ok: false, error: dashboardActionError(err), retryable: false });
     }
   });
-  app.post('/admin/action/tier-node', dashboardAuth, (req, res) => {
+  router.post('/admin/action/tier-node', dashboardAuth, (req, res) => {
     const name = String(req.body?.name || '').trim().toLowerCase();
     const usableGb = Number(req.body?.usableGb);
     const access = req.body?.access;
@@ -96,7 +110,7 @@ function registerDashboardMutationRoutes(app, deps) {
     audit('dashboard_tier_node_upserted', { ...dashboardActor(req), ok: true, node: name, created });
     return res.json({ ok: true, node: { name: node.name }, message: created ? 'Node registered.' : 'Node updated.' });
   });
-  app.post('/admin/action/tier-token', dashboardAuth, (req, res) => {
+  router.post('/admin/action/tier-token', dashboardAuth, (req, res) => {
     const node = String(req.body?.node || '').trim().toLowerCase();
     const legacyFolderRoot = String(req.body?.folderRoot || '').trim();
     const legacyFolderId = String(req.body?.syncthingFolderId || '').trim();
@@ -120,7 +134,7 @@ function registerDashboardMutationRoutes(app, deps) {
     res.setHeader('Cache-Control', 'no-store');
     return res.json({ ok: true, command });
   });
-  app.post('/admin/action/search', dashboardAuth, async (req, res) => {
+  router.post('/admin/action/search', dashboardAuth, async (req, res) => {
     const kind = req.body?.kind;
     const seriesId = Number(req.body?.seriesId);
     const seasonNumber = Number(req.body?.seasonNumber);
@@ -211,7 +225,7 @@ function registerDashboardMutationRoutes(app, deps) {
     }
   });
 
-  app.post('/admin/action/priority', rateLimit({
+  router.post('/admin/action/priority', rateLimit({
     windowMs: 60000,
     limit: 30,
     keyGenerator: httpRateLimitKey,
@@ -273,7 +287,7 @@ function registerDashboardMutationRoutes(app, deps) {
     }
   });
 
-  app.post('/admin/action/sweep', rateLimit({
+  router.post('/admin/action/sweep', rateLimit({
     windowMs: 60000,
     limit: 10,
     keyGenerator: httpRateLimitKey,
@@ -305,7 +319,7 @@ function registerDashboardMutationRoutes(app, deps) {
     }
   });
 
-  app.post('/admin/action/escalate', dashboardAuth, async (req, res) => {
+  router.post('/admin/action/escalate', dashboardAuth, async (req, res) => {
     const id = Number(req.body?.id);
     const row = getEscalationById(id);
     if (req.body?.confirmed !== true) {
@@ -337,7 +351,7 @@ function registerDashboardMutationRoutes(app, deps) {
   // Runtime overrides for the automation sweeps. Every write is validated against the setting's
   // declared bounds (src/runtime-settings.js) and audited — an override that quietly changes what
   // the bot does needs the same paper trail as any other admin action.
-  app.post('/admin/settings', dashboardAuth, (req, res) => {
+  router.post('/admin/settings', dashboardAuth, (req, res) => {
     const values = (req.body && req.body.values) || {};
     const errors = [];
     const applied = [];
@@ -350,15 +364,17 @@ function registerDashboardMutationRoutes(app, deps) {
     res.status(errors.length ? 400 : 200).json({ ok: !errors.length, applied, errors });
   });
 
-  app.post('/admin/settings/reset', dashboardAuth, (req, res) => {
+  router.post('/admin/settings/reset', dashboardAuth, (req, res) => {
     const keys = Array.isArray(req.body && req.body.keys) ? req.body.keys : [];
     const cleared = keys.filter(key => runtimeSettings.clearOverride(key, { store: settingsStore }).ok);
     if (cleared.length) audit('runtime_settings_reset', { cleared });
     res.json({ ok: true, cleared });
   });
 
-  app.post('/admin/action/revoke-all', dashboardAuth, (_req, res) => { revokeAllDownloadLinks(); res.json({ ok: true }); });
-  app.post('/admin/action/revoke-user/:discordId', dashboardAuth, (req, res) => { revokeAllDownloadLinks(req.params.discordId); res.json({ ok: true, discordId: req.params.discordId }); });
+  router.post('/admin/action/revoke-all', dashboardAuth, (_req, res) => { revokeAllDownloadLinks(); res.json({ ok: true }); });
+  router.post('/admin/action/revoke-user/:discordId', dashboardAuth, (req, res) => { revokeAllDownloadLinks(req.params.discordId); res.json({ ok: true, discordId: req.params.discordId }); });
+
+  app.use(router);
 }
 
 module.exports = { registerDashboardMutationRoutes };

@@ -67,6 +67,7 @@ const { registerTierAgentRoutes } = require('./src/routes/tier-agent');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
 const { registerDashboardReadRoutes } = require('./src/routes/dashboard-read');
 const { registerDashboardMutationRoutes } = require('./src/routes/dashboard-mutations');
+const { createTtlCache } = require('./src/dashboard-cache');
 const { createDashboardSession, createDashboardAuth, createDashboardGateActor, dashboardActor, registerDashboardAuthRoutes } = require('./src/routes/dashboard-auth');
 const { createApp } = require('./src/app');
 const { createRuntimeLifecycle, createDiscordReadyGuard } = require('./src/runtime-lifecycle');
@@ -125,6 +126,7 @@ const passkeyService = createPasskeyService({
   ...PASSKEY_RP,
 });
 let automationRegistry = null;
+const dashboardCache = createTtlCache();
 
 const runtimeCadence = key => {
   const raw = getSetting(`${runtimeSettings.OVERRIDE_PREFIX}${key}`);
@@ -9351,6 +9353,7 @@ function startExpressServer() {
       CONFIG,
       PASSKEY_RP,
       arrSources,
+      dashboardCache,
       buildSyncPreview,
       canEscalate,
       dashboardActionError,
@@ -9414,6 +9417,7 @@ function startExpressServer() {
     registerDashboardMutationRoutes(app, {
       CONFIG,
       audit,
+      dashboardCache,
       dashboardActionError,
       dashboardActor,
       dashboardAuth,

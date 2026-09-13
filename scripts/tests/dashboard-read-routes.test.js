@@ -9,6 +9,7 @@ const { createApp, listen, close } = require('../../src/app');
 const { escapeHtml, sqliteUtcMs, fmtAgo } = require('../../src/dashboard-render');
 const { normalizeSearchQuery } = require('../../src/search');
 const { registerDashboardReadRoutes } = require('../../src/routes/dashboard-read');
+const { createTtlCache } = require('../../src/dashboard-cache');
 
 function request(port, requestPath, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -32,6 +33,7 @@ function fixture(overrides = {}) {
   const deps = {
     CONFIG: { SONARR_URL: '', RADARR_URL: '', RADARR_4K_URL: '', TIER_PLAN_STALE_DAYS: 7 },
     PASSKEY_RP: { rpID: 'example.test' },
+    dashboardCache: createTtlCache(),
     arrSources: () => [],
     buildSyncPreview: async () => { calls.preview += 1; return { actions: [] }; },
     canEscalate: () => false,
@@ -178,6 +180,101 @@ test('dashboard page and search routes render over a real ephemeral HTTP server'
     assert.strictEqual(search.statusCode, 200);
     assert.match(search.body, /<title>Search: matrix<\/title>/);
     assert.match(search.body, /Requests/);
+  } finally {
+    await close(server);
+  }
+});
+
+test('#189: repeated /admin renders within the TTL do not refetch every integration', async () => {
+  const { app, calls } = fixture();
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const headers = { 'x-admin-token': 'secret' };
+
+    await request(port, '/admin', headers);
+    await request(port, '/admin', headers);
+    await request(port, '/admin', headers);
+    assert.strictEqual(calls.health, 1, 'three renders inside the TTL window should hit gatherHealth once');
+    assert.strictEqual(calls.doctor.length, 1, 'the edge-diagnostics snapshot is shared across renders too');
+  } finally {
+    await close(server);
+  }
+});
+
+test('#189: concurrent /admin renders coalesce into a single upstream call', async () => {
+  const { app, calls } = fixture();
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const headers = { 'x-admin-token': 'secret' };
+    // Several "open tabs" refreshing at once must not each trigger their own fan-out.
+    await Promise.all([
+      request(port, '/admin', headers),
+      request(port, '/admin', headers),
+      request(port, '/admin', headers),
+      request(port, '/admin', headers),
+    ]);
+    assert.strictEqual(calls.health, 1);
+  } finally {
+    await close(server);
+  }
+});
+
+test('#189: an expired TTL triggers exactly one refresh, and a failed refresh serves the last good value as stale', async () => {
+  let clock = 1000;
+  const cache = createTtlCache(() => clock);
+  const { app, calls } = fixture({ dashboardCache: cache });
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const headers = { 'x-admin-token': 'secret' };
+    await request(port, '/admin', headers);
+    assert.strictEqual(calls.health, 1);
+
+    clock += 16000; // past the 15s health TTL
+    const stale = await request(port, '/admin', headers);
+    assert.strictEqual(calls.health, 2, 'TTL elapsed: refetched once');
+    assert.doesNotMatch(stale.body, /<strong>stale<\/strong>/, 'a successful refresh is not flagged stale');
+  } finally {
+    await close(server);
+  }
+});
+
+test('#189: the very first health check ever failing renders "unknown" instead of crashing', async () => {
+  const { app } = fixture({
+    gatherHealth: async () => { throw new Error('down before anything ever succeeded'); },
+  });
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const rendered = await request(port, '/admin', { 'x-admin-token': 'secret' });
+    assert.strictEqual(rendered.statusCode, 200);
+    assert.match(rendered.body, /Overall: <strong>UNKNOWN<\/strong>/);
+  } finally {
+    await close(server);
+  }
+});
+
+test('#189: a page render reports staleness when a refresh fails after the TTL expires', async () => {
+  let clock = 1000;
+  const cache = createTtlCache(() => clock);
+  let fail = false;
+  const { app } = fixture({
+    dashboardCache: cache,
+    gatherHealth: async () => { if (fail) throw new Error('down'); return { overall: 'ok', errors: {} }; },
+  });
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const headers = { 'x-admin-token': 'secret' };
+    await request(port, '/admin', headers); // seeds a good cached value
+    fail = true;
+    clock += 16000; // past the 15s health TTL, so the next render actually attempts a refresh
+    const rendered = await request(port, '/admin', headers);
+    assert.strictEqual(rendered.statusCode, 200, 'one failed integration never takes the whole dashboard down');
+    assert.match(rendered.body, /Overall: <strong>OK<\/strong>/, 'the last good health value keeps rendering');
+    assert.match(rendered.body, /<strong>stale<\/strong>/, 'the render says it is showing a stale value');
   } finally {
     await close(server);
   }
