@@ -54,6 +54,7 @@ function registerDashboardReadRoutes(app, deps) {
     renderTable,
     renderTierNodeSetup,
     runEdgeDiagnostics,
+    checkPublicOriginReadiness = async () => [],
     runtimeSettings,
     searchDashboard,
     seasonAlertDashboardItems,
@@ -710,7 +711,10 @@ function registerDashboardReadRoutes(app, deps) {
     standardHeaders: 'draft-8',
     legacyHeaders: false,
     handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many dashboard requests. Wait a moment and try again.' }),
-  }), dashboardAuth, async (_req, res) => res.json({ checks: await runEdgeDiagnostics({ live: true }), tierNodes: listTierNodes().map(n => ({ name: n.name, enabled: !!n.enabled, full: !!n.full, usableBytes: n.usable_bytes })) }));
+  }), dashboardAuth, async (_req, res) => {
+    const [edgeChecks, originChecks] = await Promise.all([runEdgeDiagnostics({ live: true }), checkPublicOriginReadiness()]);
+    res.json({ checks: [...originChecks, ...edgeChecks], tierNodes: listTierNodes().map(n => ({ name: n.name, enabled: !!n.enabled, full: !!n.full, usableBytes: n.usable_bytes })) });
+  });
   app.get('/admin/action/sync-preview', rateLimit({
     windowMs: 15 * 60000,
     limit: 30,

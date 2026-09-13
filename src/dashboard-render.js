@@ -339,13 +339,23 @@ function renderLogin(isError, message, { passkeyEnabled = false, expectedOrigin 
     <h1><span class="brand">Durant</span> Media Server</h1>
     <p>Admin dashboard login</p>
     ${banner}
+    <div class="error" id="insecure-context-warning" role="alert" hidden>This page is not loaded over a secure connection (HTTPS). Do not enter your password here — it would be sent unencrypted. Open the dashboard at its HTTPS URL instead.</div>
     ${passkeyEnabled ? '<button class="btn primary passkey" type="button" id="passkey-login" aria-describedby="passkey-support">Sign in with a passkey</button><div class="error" id="passkey-support" role="status" hidden></div><div class="login-divider">password fallback</div>' : ''}
     <form method="post" action="/admin/login">
       <label for="password">Password</label>
       <input type="password" id="password" name="password"${passkeyEnabled ? '' : ' autofocus'} autocomplete="current-password webauthn" required>
       <button class="btn primary" type="submit">Log in</button>
     </form>
-  </div></div>${passkeyEnabled ? `<script src="/admin/passkey-client.js"></script><script src="/admin/webauthn-browser.js"></script><script>
+  </div></div><script>
+    // isSecureContext is false for plain http:// (localhost is exempted by browsers and is not a
+    // real risk). A password typed into this page over a genuinely insecure origin would be sent
+    // in the clear — refuse to make that easy to miss the way a merely-disabled passkey button is.
+    if (!window.isSecureContext) {
+      var warning = document.getElementById('insecure-context-warning');
+      warning.hidden = false;
+      document.querySelector('form[action="/admin/login"] button[type="submit"]').disabled = true;
+    }
+  </script>${passkeyEnabled ? `<script src="/admin/passkey-client.js"></script><script src="/admin/webauthn-browser.js"></script><script>
     var passkeyButton = document.getElementById('passkey-login');
     var supportNote = document.getElementById('passkey-support');
     var expectedOrigin = document.querySelector('.login-wrap').dataset.expectedOrigin || '';

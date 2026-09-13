@@ -72,6 +72,15 @@ test('dashboard-render: renderLogin', () => {
   assert.match(passkey, /startAuthentication/);
   assert.match(passkey, /password fallback/);
   assert.match(passkey, /<form method="post" action="\/admin\/login">/, 'password login remains available');
+
+  const withOrigin = renderLogin(false, null, { expectedOrigin: 'https://admin.example.test' });
+  assert.match(withOrigin, /data-expected-origin="https:\/\/admin\.example\.test"/);
+
+  // #191: a password typed into the dashboard over a genuinely insecure origin is sent in the
+  // clear. The check is client-side (window.isSecureContext) since the server can't tell an
+  // insecure connection apart from a trusted proxy terminating TLS in front of it.
+  assert.match(renderLogin(false, null), /insecure-context-warning/);
+  assert.match(renderLogin(false, null), /window\.isSecureContext/);
 });
 
 test('dashboard-render: passkey management escapes credential metadata', () => {
