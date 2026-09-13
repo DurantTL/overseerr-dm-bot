@@ -118,7 +118,7 @@ const dashboardGateActor = createDashboardGateActor({ sha256 });
 // would ignore every override until the next restart.
 const settingsStore = { get: getSetting, set: setSetting, del: deleteSetting };
 const tunable = key => runtimeSettings.resolveRuntime(key, { config: CONFIG, store: settingsStore });
-const PASSKEY_RP = passkeyRp(CONFIG.TUNNEL_DOMAIN);
+const PASSKEY_RP = passkeyRp(CONFIG.DASHBOARD_PUBLIC_URL);
 const passkeyService = createPasskeyService({
   store: { listPasskeys, getPasskey, savePasskey, updatePasskeyUse },
   ...PASSKEY_RP,
@@ -9336,6 +9336,7 @@ function startExpressServer() {
       renderLogin,
       listPasskeys,
       passkeyService,
+      passkeyOrigin: PASSKEY_RP.origin,
       safeEqual,
       audit,
       renamePasskey,

@@ -44,8 +44,9 @@ open program contains umbrella issue [#175](https://github.com/DurantTL/overseer
   keyboard access, and client-side regressions.
 - [#188](https://github.com/DurantTL/overseerr-dm-bot/issues/188) — keep HTTP health and admin
   control available while Discord is degraded.
-- [#190](https://github.com/DurantTL/overseerr-dm-bot/issues/190) — validate and expose the exact
-  public dashboard origin for passkeys.
+- ~~#190 — validate and expose the exact public dashboard origin for passkeys.~~ **Closed:**
+  added `DASHBOARD_PUBLIC_URL` (defaults to `https://TUNNEL_DOMAIN`), strict validation, and a
+  client-side origin preflight that catches a mismatch before the browser call.
 - [#191](https://github.com/DurantTL/overseerr-dm-bot/issues/191) — provision and verify the
   external HTTPS path required by the dashboard.
 

@@ -265,7 +265,7 @@ function registerDashboardReadRoutes(app, deps) {
       <div class="stats">${stats}</div>
 
       <section class="panel" data-panel="overview">
-        ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID)}
+        ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID, PASSKEY_RP.origin)}
         <div class="card">
           <h2>Integrations</h2>
           <div class="badges">${renderHealthBadges(health)}</div>
@@ -414,7 +414,8 @@ function registerDashboardReadRoutes(app, deps) {
         (function () {
           var enroll = document.getElementById('passkey-enroll');
           var note = document.getElementById('passkey-note');
-          var passkeyReady = !enroll || (!!window.PasskeyClient && window.PasskeyClient.preparePasskeyAction(enroll, note, window));
+          var expectedOrigin = (document.getElementById('passkeys') || {}).dataset ? document.getElementById('passkeys').dataset.passkeyOrigin : '';
+          var passkeyReady = !enroll || (!!window.PasskeyClient && window.PasskeyClient.preparePasskeyAction(enroll, note, window, '', expectedOrigin));
           if (enroll && !window.PasskeyClient) {
             enroll.disabled = true;
             note.textContent = 'Passkey support could not be checked. Open this HTTPS dashboard in Safari, Chrome, Edge, or another WebAuthn-capable browser.';
@@ -437,7 +438,7 @@ function registerDashboardReadRoutes(app, deps) {
               location.hash = 'overview';
               location.reload();
             } catch (error) {
-              note.textContent = window.PasskeyClient ? window.PasskeyClient.passkeyErrorMessage(error, window) : (error.message || String(error));
+              note.textContent = window.PasskeyClient ? window.PasskeyClient.passkeyErrorMessage(error, window, expectedOrigin) : (error.message || String(error));
               note.className = 'save-note bad';
               enroll.disabled = false;
             }

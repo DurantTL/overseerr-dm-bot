@@ -112,6 +112,7 @@ test('config: validateConfig requires SESSION_SECRET whenever DASHBOARD_ENABLED 
     TUNNEL_DOMAIN: 'files.example.com', RAID_PATH: '/mnt/raid',
     WEBHOOK_SECRET: 's3cret', TAUTULLI_WEBHOOK_SECRET: 'tautulli-secret',
     DASHBOARD_ENABLED: true, DASHBOARD_ADMIN_PASSWORD: 'p4ssword', DASHBOARD_ADMIN_TOKEN: '',
+    DASHBOARD_PUBLIC_URL: 'https://files.example.com',
     SESSION_SECRET: '',
     ENABLE_DELETION: false, DELETION_DRY_RUN: true,
     PH_SERVER_NAMES: [], CA_EDGE_SERVER_NAMES: [], PRIMARY_SERVER_NAMES: [],
@@ -125,6 +126,36 @@ test('config: validateConfig requires SESSION_SECRET whenever DASHBOARD_ENABLED 
   CONFIG.DASHBOARD_ENABLED = false;
   CONFIG.SESSION_SECRET = '';
   assert.doesNotThrow(() => validateConfig(), 'dashboard disabled: SESSION_SECRET is not required');
+});
+
+test('config: validateConfig rejects an invalid DASHBOARD_PUBLIC_URL only while the dashboard is enabled', () => {
+  Object.assign(CONFIG, {
+    DISCORD_BOT_TOKEN: 't', DISCORD_CLIENT_ID: 'c', DISCORD_GUILD_ID: 'g',
+    ADMIN_CHANNEL_ID: 'a', ADMIN_USER_ID: 'u',
+    OVERSEERR_URL: 'http://seerr:5055', OVERSEERR_API_KEY: 'k',
+    PLEX_TOKEN: 'p', PLEX_USERNAME: '', PLEX_PASSWORD: '',
+    TUNNEL_DOMAIN: 'files.example.com', RAID_PATH: '/mnt/raid',
+    WEBHOOK_SECRET: 's3cret', TAUTULLI_WEBHOOK_SECRET: 'tautulli-secret',
+    DASHBOARD_ENABLED: true, DASHBOARD_ADMIN_PASSWORD: 'p4ssword', DASHBOARD_ADMIN_TOKEN: '',
+    SESSION_SECRET: 'a-random-secret',
+    ENABLE_DELETION: false, DELETION_DRY_RUN: true,
+    PH_SERVER_NAMES: [], CA_EDGE_SERVER_NAMES: [], PRIMARY_SERVER_NAMES: [],
+  });
+
+  // Defaulting to https://TUNNEL_DOMAIN (what config.js does when DASHBOARD_PUBLIC_URL is unset)
+  // is valid on its own.
+  CONFIG.DASHBOARD_PUBLIC_URL = 'https://files.example.com';
+  assert.doesNotThrow(() => validateConfig(), 'the default derived from TUNNEL_DOMAIN passes');
+
+  CONFIG.DASHBOARD_PUBLIC_URL = 'http://files.example.com';
+  assert.throws(() => validateConfig(), /DASHBOARD_PUBLIC_URL is invalid.*https:\/\//s, 'a non-HTTPS override is fatal while the dashboard is enabled');
+
+  CONFIG.DASHBOARD_PUBLIC_URL = 'https://admin.files.example.com';
+  assert.doesNotThrow(() => validateConfig(), 'a distinct valid HTTPS hostname is accepted');
+
+  CONFIG.DASHBOARD_ENABLED = false;
+  CONFIG.DASHBOARD_PUBLIC_URL = 'not a url';
+  assert.doesNotThrow(() => validateConfig(), 'an invalid DASHBOARD_PUBLIC_URL is not checked while the dashboard is disabled');
 });
 
 test('config: configWarnings flags a short SESSION_SECRET', () => {

@@ -332,10 +332,10 @@ function renderTierNodeSetup(nodes) {
   </div>`;
 }
 
-function renderLogin(isError, message, { passkeyEnabled = false } = {}) {
+function renderLogin(isError, message, { passkeyEnabled = false, expectedOrigin = '' } = {}) {
   const banner = message ? `<div class="error" id="login-error">${escapeHtml(message)}</div>`
     : (isError ? '<div class="error" id="login-error">Incorrect password. Please try again.</div>' : '');
-  const body = `<div class="login-wrap"><div class="login-card">
+  const body = `<div class="login-wrap" data-expected-origin="${escapeHtml(expectedOrigin)}"><div class="login-card">
     <h1><span class="brand">Durant</span> Media Server</h1>
     <p>Admin dashboard login</p>
     ${banner}
@@ -348,7 +348,8 @@ function renderLogin(isError, message, { passkeyEnabled = false } = {}) {
   </div></div>${passkeyEnabled ? `<script src="/admin/passkey-client.js"></script><script src="/admin/webauthn-browser.js"></script><script>
     var passkeyButton = document.getElementById('passkey-login');
     var supportNote = document.getElementById('passkey-support');
-    var passkeyReady = !!window.PasskeyClient && window.PasskeyClient.preparePasskeyAction(passkeyButton, supportNote, window, ' Password login still works below.');
+    var expectedOrigin = document.querySelector('.login-wrap').dataset.expectedOrigin || '';
+    var passkeyReady = !!window.PasskeyClient && window.PasskeyClient.preparePasskeyAction(passkeyButton, supportNote, window, ' Password login still works below.', expectedOrigin);
     if (!window.PasskeyClient) {
       passkeyButton.disabled = true;
       supportNote.hidden = false;
@@ -369,7 +370,7 @@ function renderLogin(isError, message, { passkeyEnabled = false } = {}) {
         location.assign('/admin');
       } catch (error) {
         if (!banner) { banner = document.createElement('div'); banner.id = 'login-error'; banner.className = 'error'; document.querySelector('.login-card p').after(banner); }
-        banner.textContent = window.PasskeyClient ? window.PasskeyClient.passkeyErrorMessage(error, window) : (error.message || String(error));
+        banner.textContent = window.PasskeyClient ? window.PasskeyClient.passkeyErrorMessage(error, window, expectedOrigin) : (error.message || String(error));
         button.disabled = false;
       }
     });
@@ -380,13 +381,13 @@ function renderLogin(isError, message, { passkeyEnabled = false } = {}) {
   <body>${body}</body></html>`;
 }
 
-function renderPasskeyManagement(passkeys, rpID) {
+function renderPasskeyManagement(passkeys, rpID, expectedOrigin = '') {
   const rows = passkeys.length ? passkeys.map(passkey => `<div class="setting" data-passkey="${escapeHtml(passkey.credential_id)}">
     <div class="setting-main"><div class="setting-name">${escapeHtml(passkey.label)}</div><div class="setting-help">Created ${escapeHtml(new Date(passkey.created_at).toISOString())}${passkey.last_used_at ? ` · last used ${escapeHtml(new Date(passkey.last_used_at).toISOString())}` : ' · never used'}</div></div>
     <div class="setting-ctl"><input type="text" value="${escapeHtml(passkey.label)}" maxlength="64" aria-label="Passkey label"><button class="btn" type="button" data-passkey-rename>Rename</button><button class="btn danger" type="button" data-passkey-revoke>Revoke</button></div>
   </div>`).join('') : '<p class="muted">No passkeys enrolled.</p>';
-  return `<div class="card" id="passkeys">
-    <h2>Passkeys<span class="sub">Platform passkeys for ${escapeHtml(rpID)}. The tunnel hostname is the relying-party ID and cannot be changed without enrolling again.</span></h2>
+  return `<div class="card" id="passkeys" data-passkey-origin="${escapeHtml(expectedOrigin)}">
+    <h2>Passkeys<span class="sub">Platform passkeys for ${escapeHtml(rpID)}, at ${escapeHtml(expectedOrigin || `https://${rpID}`)}. This exact origin is the relying party and cannot be changed without enrolling again — set DASHBOARD_PUBLIC_URL to move it.</span></h2>
     ${rows}
     <div class="setting-foot"><input type="text" id="passkey-label" maxlength="64" placeholder="Device label, e.g. Caleb's iPhone" aria-label="New passkey label"><button class="btn primary" type="button" id="passkey-enroll" aria-describedby="passkey-note">Enroll passkey</button><span class="save-note" id="passkey-note" role="status" aria-live="polite"></span></div>
   </div>`;
