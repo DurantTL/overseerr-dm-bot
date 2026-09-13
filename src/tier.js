@@ -295,6 +295,54 @@ function toRelPath(absPath, sourceRoot) {
   return p.replace(/^\/+/, '');
 }
 
+// §182/§183 promotion-unit strings for tier_node_policies.unit: 'series' (whole title — the only
+// unit movies ever use), 'season:<n>', or 'episode:<s>x<e>'. Kept as a plain string (not JSON) so
+// it stays a normal DB primary-key column; parse it instead of pattern-matching ad hoc everywhere
+// a caller needs to know "is this a whole-title policy or a TV sub-unit".
+function parsePromotionUnit(unit) {
+  const s = String(unit || 'series');
+  let m = /^season:(\d+)$/.exec(s);
+  if (m) return { kind: 'season', season: Number(m[1]) };
+  m = /^episode:(\d+)x(\d+)$/.exec(s);
+  if (m) return { kind: 'episode', season: Number(m[1]), episode: Number(m[2]) };
+  return { kind: 'series' };
+}
+const formatSeasonUnit = season => `season:${season}`;
+const formatEpisodeUnit = (season, episode) => `episode:${season}x${episode}`;
+
+// §183 Resolve one TV season's promotion unit from the arr's own episode-file listing (Sonarr
+// `GET /api/v3/episodefile?seriesId=`) rather than guessing a "Season NN" folder-naming
+// convention, which Sonarr allows operators to customize per instance. Returns the season's
+// total bytes and every distinct sub-directory (relative to the series' own folder) that holds
+// one of its episode files — almost always exactly one ("Season 01"), but a season split across
+// more than one directory (a special filed outside the season folder, a naming inconsistency)
+// yields every one of them, so the caller can carve out all of them rather than silently missing
+// one. A season with no matching, in-tree episode files at all returns an empty subPaths array —
+// callers must treat that as "nothing resolved yet", never as "promote nothing".
+function resolveTvSeasonUnit({ episodeFiles = [], seriesPath, seasonNumber }) {
+  const root = String(seriesPath || '').replace(/\/+$/, '');
+  const subPaths = new Set();
+  let sizeBytes = 0;
+  for (const f of episodeFiles) {
+    if (Number(f.seasonNumber) !== Number(seasonNumber) || !f.path) continue;
+    const filePath = String(f.path).replace(/\/+$/, '');
+    const dir = filePath.slice(0, filePath.lastIndexOf('/'));
+    const rel = root && (dir === root || dir.startsWith(`${root}/`)) ? dir.slice(root.length).replace(/^\/+/, '') : null;
+    if (rel) subPaths.add(rel);
+    sizeBytes += Number(f.size) || 0;
+  }
+  return { subPaths: [...subPaths], sizeBytes };
+}
+
+// §183 raw Sonarr episode-file listing for one series — the source resolveTvSeasonUnit resolves
+// against. Direct axios (not arr.js) to keep tier.js's existing db/Discord-free contract.
+async function fetchSonarrEpisodeFiles({ url, key, seriesId }) {
+  const rows = await axios.get(`${String(url).replace(/\/$/, '')}/api/v3/episodefile`, {
+    headers: { 'X-Api-Key': key }, params: { seriesId }, timeout: 30000,
+  }).then(r => r.data || []);
+  return rows.map(f => ({ seasonNumber: f.seasonNumber, path: f.path, size: f.size }));
+}
+
 // R2.1: a node's Syncthing folders as { folderId, folderRoot }. Reads node.folders when the
 // caller (planTier / index.js) supplies the one-to-many list; otherwise synthesizes a single
 // folder from the legacy folder_root/folder_id columns so single-folder nodes are unchanged.
@@ -452,7 +500,19 @@ function computeNodeValues({ node, inventory, history = [], files = [], now, cfg
 //              universal core and/or member pins) — never evictable
 //   values   — Map mediaId → { value, lastActivity }
 //   prevKeepIds — mediaIds kept by the last applied plan (null = first run: floor + admits)
-function planNode({ node, inventory, values, floorIds, coreIds = new Set(), prevKeepIds = null, now = Date.now(), config = {}, folders = null }) {
+// excludeIds — §182 manual_exclusion policy rows: an operator's "never keep this on this node",
+//              overridden by floor (safety) or an active pin (seasonPins/floorIds), never the
+//              reverse — see the overlay-pin-aware BLOCKER in docs/edge-playback-architecture.md
+//              §2.2(c).
+// seasonPins  — §183 season/episode-level temporary_play_pin rows for THIS node: mediaId → Set of
+//              sub-relPaths (e.g. "Season 01") to keep even when the whole series/mediaId is
+//              dropped. Deliberately NOT added to floorIds — floor would force the WHOLE series
+//              into the keep set, which is exactly the unbounded-promotion bug #183 exists to
+//              prevent. Only realized in the rendered .stignore (see stignoreBody) as a carve-out
+//              inside an otherwise-dropped series folder; the keep/drop/byte accounting below still
+//              operates at whole-title granularity (a known, documented limitation — see
+//              docs/edge-playback-architecture.md's §183 follow-up note).
+function planNode({ node, inventory, values, floorIds, coreIds = new Set(), prevKeepIds = null, now = Date.now(), config = {}, folders = null, excludeIds = new Set(), seasonPins = new Map() }) {
   const cfg = { ...TIER_DEFAULTS, ...config };
   const flds = folders || nodeFolders(node);
   const warmDays = node.warm_days ?? (node.sticky ? cfg.warmDays * cfg.stickyWarmFactor : cfg.warmDays);
@@ -555,20 +615,45 @@ function planNode({ node, inventory, values, floorIds, coreIds = new Set(), prev
     }
   }
 
-  const keep = entries.filter(e => keepSet.has(e) && !evicted.has(e));
-  const drop = entries.filter(e => !keepSet.has(e) || evicted.has(e));
+  let keep = entries.filter(e => keepSet.has(e) && !evicted.has(e));
+  let drop = entries.filter(e => !keepSet.has(e) || evicted.has(e));
   const forceKept = keep.filter(e => floor.has(e.mediaId) && floorIds.has(e.mediaId) && e.noFullCopy).map(e => e.mediaId);
-  return finishManifest({ node, keep, drop, admits, evict: [...evicted], forceKept, budget, libraryBytes, now, folders: flds });
+
+  // §182 manual_exclusion, applied AFTER the score-based plan: never overrides floor (safety) or
+  // an active pin (floor already covers whole-title pins; seasonPins covers TV sub-unit pins) —
+  // "active pins override legacy ignores" (#182 acceptance criteria) reads the same whether the
+  // exclusion predates or postdates the pin, since this is recomputed fresh every planTier run.
+  if (excludeIds.size) {
+    const excluded = keep.filter(e => excludeIds.has(e.mediaId) && !floor.has(e.mediaId) && !seasonPins.has(e.mediaId));
+    if (excluded.length) {
+      const excludedSet = new Set(excluded);
+      keep = keep.filter(e => !excludedSet.has(e));
+      drop = [...drop, ...excluded];
+    }
+  }
+
+  // §183 season-level carve-out: a dropped TV title with an active season/episode pin still gets
+  // those specific sub-paths un-ignored — see stignoreBody. A KEPT title needs no carve-out (its
+  // whole folder is already un-ignored).
+  const partialKeeps = [];
+  if (seasonPins.size) {
+    for (const e of drop) {
+      const subPaths = seasonPins.get(e.mediaId);
+      if (subPaths && subPaths.size) partialKeeps.push({ mediaId: e.mediaId, folderId: e.folderId, relPath: e.relPath, subPaths: [...subPaths] });
+    }
+  }
+
+  return finishManifest({ node, keep, drop, admits, evict: [...evicted], forceKept, partialKeeps, budget, libraryBytes, now, folders: flds });
 }
 
 // Group a node's keep/drop entries by folder (R2.1). Every declared folder appears (even with an
 // empty drop, so the agent writes an empty .stignore rather than leaving a stale one), plus any
 // folder that only shows up in the entries. drop paths within a folder are folder-relative.
-function groupByFolder(folders, keep, drop) {
+function groupByFolder(folders, keep, drop, partialKeeps = []) {
   const byId = new Map();
   const bucket = fid => {
     const key = fid || '';
-    if (!byId.has(key)) byId.set(key, { folder_id: key, folder_root: '', keep: [], drop: [] });
+    if (!byId.has(key)) byId.set(key, { folder_id: key, folder_root: '', keep: [], drop: [], partialKeeps: [] });
     return byId.get(key);
   };
   for (const f of folders || []) {
@@ -577,10 +662,11 @@ function groupByFolder(folders, keep, drop) {
   }
   for (const e of keep) bucket(e.folderId).keep.push(e);
   for (const e of drop) bucket(e.folderId).drop.push(e);
+  for (const p of partialKeeps) bucket(p.folderId).partialKeeps.push(p);
   return [...byId.values()];
 }
 
-function finishManifest({ node, keep, drop, admits, evict, forceKept, budget, libraryBytes, now, folders = null }) {
+function finishManifest({ node, keep, drop, admits, evict, forceKept, partialKeeps = [], budget, libraryBytes, now, folders = null }) {
   const strip = e => ({ mediaId: e.mediaId, title: e.title, folderId: e.folderId || '', relPath: e.relPath, sizeBytes: e.sizeBytes });
   const keepStripped = keep.map(strip).sort((a, b) => a.relPath.localeCompare(b.relPath));
   const dropStripped = drop.map(strip).sort((a, b) => a.relPath.localeCompare(b.relPath));
@@ -598,7 +684,10 @@ function finishManifest({ node, keep, drop, admits, evict, forceKept, budget, li
     // rclone, and the single-folder agent. `folders` splits the same sets per Syncthing folder.
     keep: keepStripped,
     drop: dropStripped,
-    folders: groupByFolder(folders || nodeFolders(node), keepStripped, dropStripped),
+    // §183 season/episode-level play-pin carve-outs (empty for movies and untouched deployments)
+    // — see planNode's seasonPins param and stignoreBody's negation-pattern rendering.
+    partialKeeps,
+    folders: groupByFolder(folders || nodeFolders(node), keepStripped, dropStripped, partialKeeps),
     admits: admits.map(e => e.mediaId),
     evict: evict.map(e => e.mediaId),
     forceKept,
@@ -623,6 +712,10 @@ function computePlanHash(manifest) {
     node: manifest.node,
     keep: manifest.keep.map(folderKey).sort(),
     drop: manifest.drop.map(folderKey).sort(),
+    // A season-pin carve-out changes what the agent actually pulls without changing keep/drop
+    // membership, so it must change the hash too or the agent would treat a newly-pinned season
+    // as a no-op and never write the updated .stignore.
+    partialKeeps: (manifest.partialKeeps || []).map(p => `${folderKey(p)}\u0000${[...p.subPaths].sort().join(',')}`).sort(),
   });
   return crypto.createHash('sha256').update(basis).digest('hex').slice(0, 16);
 }
@@ -631,7 +724,14 @@ function computePlanHash(manifest) {
 // enabled node. Disabled nodes are skipped entirely — no manifest, no pins, and their
 // histories never feed the universal core (historiesByNode should only contain enabled
 // nodes, but this filters again to be safe).
-function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, memberRequests = {}, keepListIds = [], neverDeleteIds = [], prevPlans = {}, now = Date.now(), config = {} }) {
+// policiesByNode — §182/§183 tier_node_policies rows per node ({ mediaId, unit, policy,
+// expiresAt }, already filtered to non-expired by the DB layer's listTierNodePolicies(node, now) —
+// planTier does not re-check expiry itself, so callers MUST pass `now`-consistent, already-live
+// rows). A 'series' (or movie) unit permanent_pin/temporary_play_pin becomes an ordinary floor
+// id — the same mechanism restricted-node request pins already use. A season/episode unit instead
+// becomes a seasonPins entry passed to planNode, which realizes it as a .stignore carve-out
+// instead of pulling the whole series into the keep set (see planNode's seasonPins comment).
+function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, memberRequests = {}, keepListIds = [], neverDeleteIds = [], prevPlans = {}, policiesByNode = {}, now = Date.now(), config = {} }) {
   const cfg = { ...TIER_DEFAULTS, ...config };
   const enabled = nodes.filter(n => n.enabled);
   const warnings = [];
@@ -722,6 +822,24 @@ function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, m
       // Open nodes: the universal core is Tier 0 floor.
       for (const id of coreIds) floorIds.add(id);
     }
+
+    // §182/§183 — a whole-title (series/movie) pin is an ordinary floor id; a season/episode pin
+    // is realized as a targeted carve-out instead (see the planNode/stignoreBody comments above).
+    const excludeIds = new Set();
+    const seasonPins = new Map();
+    for (const p of policiesByNode[node.name] || []) {
+      if (p.policy === 'manual_exclusion') { excludeIds.add(p.mediaId); continue; }
+      // permanent_pin / temporary_play_pin
+      if (parsePromotionUnit(p.unit).kind === 'series') { floorIds.add(p.mediaId); continue; }
+      // Season/episode unit: subPaths were resolved once at pin-creation time (against the arr's
+      // episode-file listing — see resolveTvSeasonUnit) and travel WITH the policy row, so
+      // planTier never needs its own arr lookup. No resolved path yet → nothing to carve out.
+      const subPaths = Array.isArray(p.subPaths) ? p.subPaths : [];
+      if (!subPaths.length) continue;
+      if (!seasonPins.has(p.mediaId)) seasonPins.set(p.mediaId, new Set());
+      for (const sp of subPaths) seasonPins.get(p.mediaId).add(sp);
+    }
+
     manifests[node.name] = planNode({
       node,
       inventory: resolvedInventory,
@@ -732,6 +850,8 @@ function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, m
       now,
       config: cfg,
       folders,
+      excludeIds,
+      seasonPins,
     });
     // Health warnings — both are silent degradations without them:
     //   - keep-set over budget: floor + warm/fresh don't fit, so the node will hold more than
@@ -800,14 +920,30 @@ function escapeStignore(relPath) {
 // One folder's .stignore body from a list of drop entries (folder-relative). Deliberately no
 // (?d) — deletion is the agent's explicit, logged, ignore-first prune (§4a), never Syncthing
 // cleanup. The plan hash header lets humans and the agent correlate file ↔ plan.
-function stignoreBody(drop, headerLines) {
+//
+// §183 partialKeeps (optional): a dropped TV title with an active season/episode play-pin gets a
+// carve-out instead of a plain ignore — Syncthing ignore patterns are matched top-to-bottom,
+// first match wins, so the `!`-negated exception line(s) for the pinned sub-path(s) MUST precede
+// the broader drop line or the negation would never be reached. This is the only way to keep a
+// SINGLE season/episode of an otherwise-dropped series without teaching the planner's keep/drop
+// bookkeeping a sub-series unit (see planNode's seasonPins comment).
+function stignoreBody(drop, headerLines, partialKeeps = []) {
   const lines = [
     `// Managed by overseerr-dm-bot regional tiering — DO NOT EDIT BY HAND.`,
     ...headerLines,
     `// Drops are pruned by the sync agent AFTER these ignores load; deliberately no`,
     `// delete-on-ignore prefix — Syncthing cleanup must never do the deleting.`,
   ];
-  for (const e of drop) lines.push(`/${escapeStignore(e.relPath)}`);
+  const partialByPath = new Map(partialKeeps.map(p => [p.relPath, p]));
+  for (const e of drop) {
+    const partial = partialByPath.get(e.relPath);
+    if (partial && partial.subPaths.length) {
+      for (const sub of partial.subPaths) lines.push(`!/${escapeStignore(e.relPath)}/${escapeStignore(sub)}/**`);
+      lines.push(`/${escapeStignore(e.relPath)}/**`);
+    } else {
+      lines.push(`/${escapeStignore(e.relPath)}`);
+    }
+  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -818,18 +954,18 @@ function renderSyncthingStignore(manifest) {
     `// node: ${manifest.node}`,
     `// plan: ${manifest.planHash}`,
     `// generated: ${manifest.generatedAt}`,
-  ]);
+  ], manifest.partialKeeps || []);
 }
 
 // One folder's .stignore (R2.1). `folder` is a manifest.folders entry ({ folder_id, folder_root,
-// drop }). Written into that folder's own root by the agent.
+// drop, partialKeeps }). Written into that folder's own root by the agent.
 function renderFolderStignore(folder, manifest) {
   return stignoreBody(folder.drop || [], [
     `// node: ${manifest.node}`,
     `// folder: ${folder.folder_id || '(default)'}${folder.folder_root ? ` @ ${folder.folder_root}` : ''}`,
     `// plan: ${manifest.planHash}`,
     `// generated: ${manifest.generatedAt}`,
-  ]);
+  ], folder.partialKeeps || []);
 }
 
 // rclone renderer: an --include-from style files-from list of what the node SHOULD hold.
@@ -933,6 +1069,36 @@ function tierApplyConfirmCode(node, planHash) {
   return crypto.createHash('sha256').update(`${String(node).toLowerCase()}:${planHash}`).digest('hex').slice(0, 4).toUpperCase();
 }
 
+// §182(b) "is this unit (whole title, or one season) already fully local on this node?" — from
+// the agent's real reported bytes, NEVER from the tier plan's keep-set alone: a kept title can
+// still be mid-pull, errored, or only partially synced (docs/edge-playback-architecture.md
+// §2.2(b)). Reuses physicalTitleBytes's existing folder-walk against a synthetic single-entry
+// inventory for the exact relPath being asked about (the whole series, or `series/season` for a
+// season-scoped pin) — the same completeFrac tolerance computeTierActionPreview already uses for
+// arr-vs-disk size drift.
+function resolveCaLocalStatus({ relPath, folderId = '', expectedBytes = 0, files = [], completeFrac = 0.98 }) {
+  const bytesPresent = physicalTitleBytes({ inventory: [{ mediaId: '_unit', folderId, relPath }], files });
+  const bytes = bytesPresent.get('_unit') || 0;
+  const present = bytes > 0;
+  const complete = expectedBytes > 0 ? bytes >= expectedBytes * completeFrac : present;
+  return { present, complete, bytes };
+}
+
+// §182 California play-triggered promotion decision — the tier-node analogue of
+// staging.js's planPlayPromotion (PH). Same action vocabulary (skip/audit/enqueue) so callers
+// share one shape, but "enqueue" here means "record a tier_node_policies pin and republish/kick
+// the plan", never a direct file copy (see docs/edge-playback-architecture.md §2.2(c)) — Syncthing
+// remains the only writer of California's local files.
+function planCaPromotion({ enabled, isLocal, hasFullCopy = true, lastPromoteAt = 0, now = Date.now(), cooldownMs = 0, rateLimitOk = true, auditOnly = false }) {
+  if (!enabled) return { action: 'skip', reason: 'disabled' };
+  if (!hasFullCopy) return { action: 'skip', reason: 'no_full_copy' }; // never promote what the master can't serve
+  if (isLocal) return { action: 'skip', reason: 'already_local' };
+  if (lastPromoteAt && cooldownMs > 0 && (now - lastPromoteAt) < cooldownMs) return { action: 'skip', reason: 'cooldown' };
+  if (!rateLimitOk) return { action: 'skip', reason: 'rate_limited' };
+  if (auditOnly) return { action: 'audit', reason: 'audit_only' };
+  return { action: 'enqueue', reason: 'promote' };
+}
+
 module.exports = {
   TIER_DEFAULTS,
   recencyDecay,
@@ -948,6 +1114,11 @@ module.exports = {
   inAtimeMask,
   maskSuspectAtimes,
   toRelPath,
+  parsePromotionUnit,
+  formatSeasonUnit,
+  formatEpisodeUnit,
+  resolveTvSeasonUnit,
+  fetchSonarrEpisodeFiles,
   nodeFolders,
   resolveTitleFolder,
   computeAtimeValues,
@@ -964,4 +1135,8 @@ module.exports = {
   renderSyncthingStignore,
   renderFolderStignore,
   renderRclone,
+  stignoreBody,
+  escapeStignore,
+  resolveCaLocalStatus,
+  planCaPromotion,
 };

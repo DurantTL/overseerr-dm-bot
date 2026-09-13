@@ -530,6 +530,42 @@ const MIGRATIONS = [
 
     },
   },
+  // v2 (#182/#183): a DB-backed replacement for the out-of-band persistent ignore overlay
+  // (`/etc/tier-agent/extra-ignores/<folderId>.txt`) — see the BLOCKER in
+  // docs/edge-playback-architecture.md §2.2(c). `unit` makes a policy row season/episode-aware
+  // from day one ('series' for a whole-title policy, 'season:<n>' or 'episode:<s>x<e>' for a TV
+  // sub-unit — see resolveTvSeasonUnit in src/tier.js), rather than everything being an
+  // implicit whole-series pin that would need migrating again once #183's granularity lands.
+  //   - manual_exclusion   — operator "never keep this on this node" (replaces legacy-ignores)
+  //   - permanent_pin      — operator "always keep this on this node" (replaces promotion-overrides)
+  //   - temporary_play_pin — a play-triggered promotion (expires_at required; §182)
+  // planner_drop / safety_force_keep are NOT rows here — they're computed fresh by planTier every
+  // run from the live inventory, never persisted state that could go stale.
+  {
+    version: 2,
+    run(db) {
+      db.exec(`
+    CREATE TABLE IF NOT EXISTS tier_node_policies (
+      node TEXT NOT NULL,
+      media_id TEXT NOT NULL,
+      unit TEXT NOT NULL DEFAULT 'series',
+      policy TEXT NOT NULL CHECK (policy IN ('manual_exclusion', 'permanent_pin', 'temporary_play_pin')),
+      expires_at INTEGER,
+      -- JSON array of on-disk sub-directories (relative to the title's own folder) this unit
+      -- resolves to, e.g. ["Season 01"] — resolved once at pin-creation time from the arr's own
+      -- episode-file listing (src/tier.js's resolveTvSeasonUnit), NOT re-derived from the unit
+      -- column on every plan run. NULL/empty for a 'series' unit, where the whole folder is it.
+      sub_paths TEXT,
+      source TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (node, media_id, unit, policy)
+    );
+    CREATE INDEX IF NOT EXISTS idx_tier_node_policies_node ON tier_node_policies(node);
+    CREATE INDEX IF NOT EXISTS idx_tier_node_policies_expires ON tier_node_policies(expires_at);
+      `);
+    },
+  },
 ];
 
 // The highest version this build's ledger knows about — what an up-to-date database's
@@ -1329,6 +1365,49 @@ const replaceTierNodeFiles = db.transaction((node, files) => {
 
 const listTierNodeFiles = node => db.prepare('SELECT folder_id AS folderId, rel_path AS relPath, size_bytes AS sizeBytes, atime FROM tier_node_files WHERE node = ?').all(String(node).toLowerCase());
 
+// §182/§183 tier_node_policies — see the v2 migration comment above for why this replaces the
+// out-of-band ignore overlay and is unit-aware from day one.
+//
+// setTierNodePolicy is upsert-by-primary-key: re-recording the SAME (node, mediaId, unit, policy)
+// (e.g. a repeat play within the pin window) just extends expires_at/updated_at rather than
+// erroring or duplicating. `source` is opaque (e.g. `play:<discordId>`) for admin/audit surfaces.
+function setTierNodePolicy(node, mediaId, unit, policy, { expiresAt = null, source = null, subPaths = null } = {}) {
+  const now = Date.now();
+  const subPathsJson = subPaths && subPaths.length ? JSON.stringify(subPaths) : null;
+  db.prepare(`INSERT INTO tier_node_policies (node, media_id, unit, policy, expires_at, sub_paths, source, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(node, media_id, unit, policy) DO UPDATE SET
+      expires_at = excluded.expires_at, sub_paths = excluded.sub_paths, source = excluded.source, updated_at = excluded.updated_at`)
+    .run(String(node).toLowerCase(), mediaId, unit, policy, expiresAt, subPathsJson, source, now, now);
+}
+
+function removeTierNodePolicy(node, mediaId, unit, policy) {
+  return db.prepare('DELETE FROM tier_node_policies WHERE node = ? AND media_id = ? AND unit = ? AND policy = ?')
+    .run(String(node).toLowerCase(), mediaId, unit, policy).changes > 0;
+}
+
+// Every non-expired policy for a node — planTier's caller passes this straight in, and expiry is
+// evaluated by the CALLER's `now` (not `Date.now()` again here) so a planTier(..., {now}) run in a
+// test, or a slightly-delayed apply, judges expiry against the same clock it plans everything
+// else against. Pass `now` explicitly; omit only for live/administrative reads (dashboard, /tier
+// policy list) where "as of right now" is exactly what's wanted.
+function listTierNodePolicies(node, now = Date.now()) {
+  const rows = db.prepare(`SELECT media_id AS mediaId, unit, policy, expires_at AS expiresAt, sub_paths AS subPathsJson, source, created_at AS createdAt, updated_at AS updatedAt
+    FROM tier_node_policies WHERE node = ? AND (expires_at IS NULL OR expires_at > ?)
+    ORDER BY media_id, unit, policy`).all(String(node).toLowerCase(), now);
+  return rows.map(({ subPathsJson, ...r }) => {
+    let subPaths = [];
+    if (subPathsJson) { try { subPaths = JSON.parse(subPathsJson); } catch (_e) { /* treat unparsable as none */ } }
+    return { ...r, subPaths };
+  });
+}
+
+// Housekeeping only — expired rows are already excluded by listTierNodePolicies's WHERE clause,
+// so nothing depends on this running promptly; it just keeps the table from growing forever.
+function pruneExpiredTierNodePolicies(now = Date.now()) {
+  return db.prepare('DELETE FROM tier_node_policies WHERE expires_at IS NOT NULL AND expires_at <= ?').run(now).changes;
+}
+
 // Member cold-start signal: recent requests made by any of the given users (restricted-node
 // pinning, §tier). Empty member set → empty result, never a broken IN () clause.
 function listRequestsByRequesters(discordIds, sinceDays) {
@@ -1805,7 +1884,7 @@ function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k) {
   return null;
 }
 
-module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, MIGRATIONS, SCHEMA_VERSION, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
+module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, MIGRATIONS, SCHEMA_VERSION, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, setTierNodePolicy, removeTierNodePolicy, listTierNodePolicies, pruneExpiredTierNodePolicies, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;
 Object.assign(module.exports, {
   recordPackRejections,
