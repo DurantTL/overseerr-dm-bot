@@ -10,7 +10,7 @@ const { nextRepeatAlert } = require('../repeat-alert');
 function registerTierAgentRoutes(app, deps) {
   const {
     config, getTierAgentTokenHash, sha256, safeEqual, audit, getSetting, setSetting,
-    getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, recordTierErrorAlertState, markTierPlanConverged,
+    getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, recordTierErrorAlertState, recordTierMergedMountDiagnostics, markTierPlanConverged,
     getTierNode, listTierNodeFiles, replaceTierNodeFiles, parseAtimeMask, maskSuspectAtimes,
     notifyTelemetryTransition, notifyDriveMissing, notifyDriveRecovered, notifyAgentReport,
     fileSystem = fs, projectRoot = path.join(__dirname, '..', '..'),
@@ -52,6 +52,17 @@ function registerTierAgentRoutes(app, deps) {
     // install. Not a trust boundary: capped and stored as an opaque display string, never
     // interpreted or compared against anything server-side.
     const agentVersion = typeof body.agentVersion === 'string' ? body.agentVersion.slice(0, 40) : null;
+
+    // §181 recorded before the branch-specific handling below so it lands on every report shape —
+    // heartbeat, drive-missing, and a full report — since checkMergedMount runs every agent cycle.
+    if (body.mergedMountDiagnostics && typeof body.mergedMountDiagnostics === 'object') {
+      const checks = Array.isArray(body.mergedMountDiagnostics.checks) ? body.mergedMountDiagnostics.checks.slice(0, 20) : [];
+      const diagnostics = { configured: true, ok: !!body.mergedMountDiagnostics.ok, checks };
+      recordTierMergedMountDiagnostics(node, diagnostics);
+      if (!diagnostics.ok) {
+        audit('tier_agent_merged_mount_unhealthy', { node, failing: checks.filter(c => c.status === 'fail').map(c => c.name).join('; ') || undefined });
+      }
+    }
 
     if (body.heartbeat && !body.driveMissing) {
       recordTierAgentHeartbeat(node, { errors: [], telemetry, telemetryLevel: telemetryHealth.level, agentVersion });

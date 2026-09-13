@@ -322,4 +322,31 @@ California tiering:                 implemented
 California play promotion:          not implemented (#182)
 California merged fallback mount:   runbook ready; stand-up unverified/pending (#181)
 Season-level TV planning:           not implemented (#183)
+Merged-mount diagnostic (#181):     implemented — see below
 ```
+
+### Automated verification (#181)
+
+Steps 2.1/2.2/3.1's manual `touch`/`check_branch` proofs now also run continuously once an edge is
+configured, instead of being a one-time hand check:
+
+- Set `EDGE_MERGED_ROOT` (the mergerfs mount Plex points at, e.g. `/mnt/plex-library`) and
+  `EDGE_REMOTE_ROOT` (the read-only remote branch, e.g. `/mnt/master-ro`) in the tier agent's
+  environment. `EDGE_LOCAL_ROOT` defaults to the node's existing local folder root
+  (`TIER_FOLDER_ROOT`/first `TIER_FOLDERS` entry) — set it explicitly only if the local branch
+  lives somewhere else.
+- Set `EDGE_MOUNT_SAMPLE_RELPATHS` (comma-separated, relative paths) to one or more titles you
+  know are cached locally, to get an ongoing local-first precedence check — the same device-number
+  technique as `check_branch()` above, run every agent cycle instead of by hand.
+- Every agent report (heartbeat or full) then carries a `mergedMountDiagnostics` result — mount
+  presence, remote-branch read-only (parsed from `/proc/mounts`, never proven by writing), remote
+  reachability (a dead/stale mount fails the same as an unmounted one), and local-first precedence
+  for the configured sample paths. Nothing here ever creates, writes, or deletes anything.
+- `/doctor` (and `GET /admin/doctor`) surfaces the latest report per enabled node as
+  `Merged mount (<node>) — <check>`; a report older than `EDGE_MOUNT_DIAG_STALE_HOURS` (default 12)
+  shows as a single stale warning instead of stale-but-green sub-checks.
+- A node that hasn't set `EDGE_MERGED_ROOT` yet contributes no checks at all — this is silent, not
+  a failure, since #181's stand-up on that node simply hasn't started.
+
+This diagnostic proves the mount is wired correctly; it does not replace the manual playback and
+outage tests in §2.4/2.5/3.3 above, which still require an operator with hands on the edge box.
