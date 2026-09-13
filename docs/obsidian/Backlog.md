@@ -69,7 +69,12 @@ open program contains umbrella issue [#175](https://github.com/DurantTL/overseer
 ## P2 — delivery and project hygiene
 
 - [#184](https://github.com/DurantTL/overseerr-dm-bot/issues/184) — add image security gates,
-  SBOM/provenance, and versioned releases. Not started.
+  SBOM/provenance, and versioned releases. **Landed:** Trivy scans the bot and tier-agent images
+  in the PR gate and the bot image again before publish (fails on a fixable CRITICAL/HIGH
+  finding); published images carry SBOM/provenance attestations; GitHub Actions are pinned to
+  immutable commit SHAs with Dependabot keeping them current; pushing a `vX.Y.Z` tag publishes
+  that version alongside `latest`/`sha-*` and creates a GitHub Release. See "Versioned releases
+  and image security" in `DEPLOYMENT.md`.
 - [#185](https://github.com/DurantTL/overseerr-dm-bot/issues/185) — refresh documentation and
   establish the human-approved public-repository policy. **Nearly done:** PR #194 already did the
   doc refresh; only the automated drift-check (this doc vs. live GitHub state) remains open —
