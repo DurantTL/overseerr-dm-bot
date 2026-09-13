@@ -60,11 +60,26 @@ open program contains umbrella issue [#175](https://github.com/DurantTL/overseer
 ## P1 — edge playback completion
 
 - [#181](https://github.com/DurantTL/overseerr-dm-bot/issues/181) — verify the PH and California
-  merged remote-fallback rollout.
+  merged remote-fallback rollout. **Diagnostic landed** (PR #279): a read-only mount/precedence/
+  reachability/dead-mount check runs every tier-agent cycle and surfaces per-node on `/doctor`.
+  Remaining: the physical mount stand-up and pilot evidence on the actual PH/California hardware,
+  which needs an operator with hands on the boxes — outside what a repository change can verify.
 - [#182](https://github.com/DurantTL/overseerr-dm-bot/issues/182) — implement California
-  play-triggered promotion.
+  play-triggered promotion. **Landed, off by default:** a DB-backed `tier_node_policies` pin
+  (`manual_exclusion`/`permanent_pin`/`temporary_play_pin`) replaces the out-of-band ignore
+  overlay concept, `handleCaPlayStart` records the pin and republishes/kicks the plan, and
+  presence/completion is judged from real agent-reported bytes, never the keep-set alone. Gated by
+  `EDGE_PROMOTE_ON_PLAY` (existing, off) and a new `CA_PROMOTE_AUDIT_ONLY` (on by default,
+  independent of PH's flag). Remaining: an admin command to manage `manual_exclusion`/
+  `permanent_pin` rows (currently DB-only), and the live rollout itself once #181's mount exists.
 - [#183](https://github.com/DurantTL/overseerr-dm-bot/issues/183) — add season-level TV cache
-  planning and promotion granularity.
+  planning and promotion granularity. **Partially landed:** the pin/policy schema is
+  season/episode-aware from the start (`series` | `season:<n>` | `episode:<s>x<e>`), and a
+  season-scoped play-pin is realized as a `.stignore` carve-out so one episode can no longer pull
+  a whole series. The planner's own demand-scoring, eviction, and byte-budget accounting are
+  still whole-title — a deliberately bounded slice, not a full sub-series rewrite of the demand
+  model. Remaining: per-season byte accounting, `episode`-granularity wiring, and a migration
+  path for legacy whole-series manifests once (if) the planner itself goes season-level.
 
 ## P2 — delivery and project hygiene
 
@@ -102,9 +117,11 @@ open program contains umbrella issue [#175](https://github.com/DurantTL/overseer
 ## Dependency order
 
 Continue #178 before deeper dashboard route work, and complete #188 before moving scheduler
-ownership into #186's automation registry. For edge playback,
-verify fallback under #181 before California promotion under #182; season-level planning under
-#183 should precede unrestricted TV promotion. Coordinate #190 with #191 so strict WebAuthn
+ownership into #186's automation registry. For edge playback, #182 and #183 landed as one
+coordinated change (the pin schema was built season-aware from the start, so California
+promotion never had a whole-series-pull phase to migrate away from) rather than strictly in
+sequence — both still ship dark pending #181's physical fallback verification, which remains the
+prerequisite for enabling any of it live. Coordinate #190 with #191 so strict WebAuthn
 verification consumes a verified HTTPS origin.
 
 The earlier #116–#170 roadmap is complete history. It must not be used as the current delivery

@@ -6,9 +6,10 @@
 PH play-triggered promotion:        implemented, off by default
 PH merged fallback mount:           runbook + automated diagnostic ready; stand-up itself unverified/pending (#181)
 California tiering:                 implemented
-California play promotion:          not implemented (#182)
+California play promotion:          implemented, off by default (#182) — real mount stand-up still pending (#181)
 California merged fallback mount:   runbook + automated diagnostic ready; stand-up itself unverified/pending (#181)
-Season-level TV planning:           not implemented (#183)
+Season-level TV planning:           play-pin/ignore layer implemented (#183); planner scoring/eviction/byte
+                                     accounting is still whole-title — see the §183 note under 2.2(c′)
 ```
 
 #181's read-only mount/precedence/reachability diagnostic (mount presence, remote read-only,
@@ -17,6 +18,32 @@ local-first precedence, dead-mount detection) is implemented — see
 runs continuously via the tier agent once `EDGE_MERGED_ROOT`/`EDGE_REMOTE_ROOT` are configured.
 What remains for #181 is the physical stand-up and pilot evidence on the PH and California boxes
 themselves, which needs an operator with hands on the hardware.
+
+**#182/#183 bot-side status:** the tier_node_policies table (`manual_exclusion` /
+`permanent_pin` / `temporary_play_pin`, unit-aware: `series` | `season:<n>` | `episode:<s>x<e>`),
+`handleCaPlayStart`, the republish-and-kick path, and the season-scoped `.stignore` carve-out are
+implemented and tested (`src/tier.js`, `src/db.js`, `index.js`, `agent/agent.js`). What's
+deliberately **not** done:
+
+* The planner's own demand-scoring, eviction, and byte-budget accounting still operate at
+  whole-title granularity — a season-level pin carves out just that season's files on disk via a
+  `.stignore` exception, but the series as a WHOLE is still one keep/drop/budget unit for
+  everything else. This is the pragmatic slice that fixes the actual problem #183 was filed for
+  (one play pulling hundreds of GB) without a full rewrite of the demand model; per-season byte
+  accounting remains a real, tracked follow-up (`docs/obsidian/Backlog.md`), not a hidden gap.
+* Only `temporary_play_pin` rows are created automatically (by a play event). There is **no admin
+  command yet** to create/list/remove `manual_exclusion` or `permanent_pin` rows — an operator
+  wanting the DB-backed equivalent of the legacy overlay still needs direct DB access
+  (`setTierNodePolicy`/`listTierNodePolicies`/`removeTierNodePolicy` in `src/db.js`). The legacy
+  text-file overlay (`/etc/tier-agent/extra-ignores/<folderId>.txt`) is host-level infrastructure
+  outside this repo and is **not** automatically migrated or retired — an operator who has one
+  today should plan to move its titles into `manual_exclusion`/`permanent_pin` rows by hand (or
+  via a future admin command) and stop appending the overlay file, since the two mechanisms would
+  otherwise fight (the overlay still runs out-of-band and is not aware of pins).
+
+Because it's implemented behind `EDGE_PROMOTE_ON_PLAY` (default off) and `CA_PROMOTE_AUDIT_ONLY`
+(default **on**), it ships dark: real stand-up on the PH/California boxes (#181's own remaining
+scope) is a prerequisite before an operator would ever flip it live.
 
 The merged-library *mount* work (mergerfs, Plex test library) is infra outside this repo — the
 step-by-step stand-up, with verification and rollback at each step, is now written up as a runbook:
@@ -136,10 +163,14 @@ Syncthing. Syncthing keeps managing the local branch exactly as now (Receive-Onl
 prunes). mergerfs must be configured so the remote branch is **never a create target** — new local
 files (promotions) only ever land in the local branch, which is what Syncthing owns.
 
-### 2.2 Bot layer — PH implemented; California remains #182
+### 2.2 Bot layer — PH and California both implemented, off by default
 
-The shared ingestion and PH path are implemented. The California-specific planner pin, pin-aware
-ignore generation, and immediate agent convergence described below are not.
+The shared ingestion, the PH path, and the California-specific planner pin, pin-aware ignore
+generation, and immediate agent convergence described below are all implemented
+(`handleCaPlayStart` in `index.js`, `tier_node_policies` in `src/db.js`, the `seasonPins`/
+`excludeIds` support in `src/tier.js`, and the kick-retry loop in `agent/agent.js`). Both remain
+gated behind `EDGE_PROMOTE_ON_PLAY` (default off), and California additionally defaults to
+audit-only (`CA_PROMOTE_AUDIT_ONLY=true`) independently of PH's flag.
 
 #### (a) Ingest a play-*start* event — ✅ DONE
 
@@ -156,7 +187,7 @@ before deletion/staging; the remaining promotion work is resolving that origin t
 A future general `EDGE_SERVER_NAMES=identity:node` map can replace the dedicated California key
 if more tier Plex nodes are added.
 
-#### (b) Decide "is this title already local on that node?" — PH done, California pending
+#### (b) Decide "is this title already local on that node?" — both implemented
 
 Promotion should fire **only** when the play is being served by the remote fallback (i.e. the file
 is not local yet). Crucially, three states must be distinguished — conflating them is a bug:
@@ -304,7 +335,7 @@ California (#182).
 | TV granularity | needs season-level inventory/ignores (planner is whole-title today) | narrow `resolveStageSource` to season subfolder |
 | Rate limit | watcher-attributed durable cap required by #182 | durable `edge_promote_log` watcher cap implemented |
 | Eviction / budget | existing `planNode` LRU + node budget | existing `planCacheSpace` + `STAGE_CACHE_MAX_GB` |
-| Already-built? | tiering ✅ / fallback rollout ✗ / play-promote ✗ | staging ✅ / fallback rollout ✗ / play-promote ✅ (off by default) |
+| Already-built? | tiering ✅ / fallback rollout ✗ (#181) / play-promote ✅ (off by default, #182) | staging ✅ / fallback rollout ✗ (#181) / play-promote ✅ (off by default) |
 
 The upshot: **the two boxes converge to one behaviour** and reuse the code each already has for
 steps 5–6. Only the front half (fallback mount + play event → promotion) is new. But note the
@@ -318,12 +349,14 @@ substantive pieces of work, not the PH path.
 ## 4. Suggested config additions
 
 ```dotenv
-# Edge play-triggered promotion (new)
+# Edge play-triggered promotion (implemented, off by default)
 EDGE_PROMOTE_ON_PLAY=false            # master switch; off = today's behaviour
 EDGE_PROMOTE_COOLDOWN_HOURS=12        # per (node,title) debounce, mirrors evict_prompt cooldown
-TIER_PLAY_PIN_DAYS=21                 # how long a play-promoted title is pinned on a tier node
-TIER_TV_PROMOTE_GRANULARITY=season    # episode | season | series — cap the TV promotion size
 EDGE_PROMOTE_MAX_PER_USER_PER_DAY=6   # own cap for origin:'play' (command-layer cap doesn't apply)
+CA_PROMOTE_AUDIT_ONLY=true            # California-specific; independent of EDGE_PROMOTE_AUDIT_ONLY (PH)
+TIER_PLAY_PIN_DAYS=21                 # how long a play-promoted title/season is pinned on a tier node
+TIER_TV_PROMOTE_GRANULARITY=season    # episode | season | series — cap the TV promotion size ('episode' not wired yet)
+EDGE_MOUNT_DIAG_STALE_HOURS=12        # §181 /doctor: how long a merged-mount report stays trusted
 
 # Identity routing exists today; California remains in the Main viewing group.
 PH_SERVER_NAMES=philippines-plex
@@ -332,10 +365,12 @@ PRIMARY_SERVER_NAMES=full-main-1,full-main-2,full-main-3
 # A future identity:node map is still needed if more tier Plex origins are added.
 ```
 
-The tier node also needs, on the node side: the persistent ignore overlay split into
-`legacy-ignores`/`promotion-overrides` (so pins can be subtracted), and a way for the bot to **kick
-the agent on demand** (a pull-now endpoint or a `systemctl start tier-agent.service` over the
-tunnel) instead of waiting for `tier-agent.timer`.
+Implemented since this table was written: `tier_node_policies` replaces the persistent ignore
+overlay concept for anything the bot itself manages (pins subtract cleanly — see the §2.2(c)
+BLOCKER note above), and the agent's kick-retry loop (`runWithKickRetries`) gives "converge soon"
+without a new inbound listener on the edge (`agent/README.md`'s "Merged-mount diagnostic" and
+kick sections). Still needed on the node side: retiring or migrating any EXISTING host-level
+`/etc/tier-agent/extra-ignores/<folderId>.txt` overlay, since that mechanism is unaware of pins.
 
 No secrets here; all of the sensitive values (tokens, rclone remotes) already exist and stay in
 `.env` (git-ignored).
@@ -347,17 +382,26 @@ No secrets here; all of the sensitive values (tokens, rclone remotes) already ex
 1. **Infra first, no bot changes:** stand up the RO remote mount + mergerfs on one box (PH is the
    simpler pilot since it has no Syncthing to reconcile). Verify Plex shows the full library and a
    missing title plays via fallback. This alone restores "everything is visible and playable."
-2. **Ingest play-start events** (`media.play`/`media.resume`, Tautulli `play`) behind
-   `EDGE_PROMOTE_ON_PLAY`, audit-only (log "would promote X on node Y") — no copies yet.
-3. **Wire PH promotion** (`enqueueStageJob(origin:'play')`) with the cooldown guard, the
-   watcher-attributed daily cap, and the path-layout fix so mergerfs prefers the local copy.
-4. **Make the California overlay pin-aware first** (split `legacy-ignores`/`promotion-overrides`,
-   subtract active pins) — nothing below works on an overlaid title until this lands.
-5. **Wire California promotion:** play-pin → recompute/publish plan → **kick the agent now** →
-   Syncthing scan; decide "local" from inventory presence **+ Syncthing completion**, not the
-   keep-set; add the CA Plex identity to the node; pick a TV granularity.
+   **Still open (#181)** — the automated mount diagnostic (`agent/agent.js`'s `checkMergedMount`,
+   surfaced on `/doctor`) is built; the physical stand-up itself needs an operator on the hardware.
+2. ~~Ingest play-start events behind `EDGE_PROMOTE_ON_PLAY`, audit-only~~ — **done** for both PH
+   and California (`handlePlexWebhook`/`handleTautulliWebhook`'s `ca-edge`/`ph` branches).
+3. ~~Wire PH promotion~~ — **done**, already shipped before this pass.
+4. ~~Make the California overlay pin-aware~~ — **done differently than planned**: rather than
+   splitting the existing text-file overlay into `legacy-ignores`/`promotion-overrides`, pins now
+   live in the DB (`tier_node_policies`) and are realized directly in `planNode`/`stignoreBody`.
+   An operator with an existing text-file overlay still needs to migrate it by hand (see the
+   §2.2 status note above) — that overlay is not read or modified by this repo's code.
+5. ~~Wire California promotion~~ — **done**: `handleCaPlayStart` records the pin, republishes only
+   California's manifest, and sets a kick-pending flag; the agent's `runWithKickRetries` re-polls
+   soon instead of waiting for its timer. Presence/completion is decided from real reported bytes
+   (`resolveCaLocalStatus`), not the keep-set. TV granularity defaults to `season`
+   (`TIER_TV_PROMOTE_GRANULARITY`), realized as a `.stignore` carve-out (§183 note above) rather
+   than full per-season planner accounting.
 6. **Tune** bwlimits, cooldowns, and TV granularity; confirm eviction returns titles to "visible via
-   fallback" rather than "gone."
+   fallback" rather than "gone." **Still open** — needs live traffic on a stood-up mount (#181) to
+   observe, plus an admin command for `manual_exclusion`/`permanent_pin` if operators want the
+   full DB-backed replacement for the legacy overlay.
 
 ---
 

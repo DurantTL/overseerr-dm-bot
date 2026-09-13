@@ -279,22 +279,31 @@ Repeat §2.3–§2.6 on California:
 
 ### 3.4 California play-promotion — the bot pieces this runbook depends on
 
-Unlike PH, real California promotion is **not** just a flag flip — it needs the bot-side work in
-`edge-playback-architecture.md` §2.2 that is **not yet built**:
+Unlike PH, real California promotion was never just a flag flip — it needed the bot-side work in
+`edge-playback-architecture.md` §2.2, which is now **implemented** (behind `EDGE_PROMOTE_ON_PLAY`,
+default off, and `CA_PROMOTE_AUDIT_ONLY`, default **on**):
 
-- a play-promotion **pin** that feeds the planner as an extra floor (`TIER_PLAY_PIN_DAYS`),
-- **pin-aware ignore generation** (replace the out-of-band overlay with first-class DB policies —
-  `manual_exclusion` / `permanent_pin` / `temporary_play_pin` / `planner_drop` / `safety_force_keep`
-  — so a promotion pin actually un-ignores the title; today's overlay can keep a title ignored even
-  after the planner moves it into the keep set),
-- an authenticated **"run now"** path so a pin converges immediately instead of on the next ~6 h
-  timer.
+- a play-promotion **pin** (`tier_node_policies`, `temporary_play_pin`) that feeds the planner as
+  an extra floor for a whole-title pin, or a `.stignore` carve-out for a season/episode-scoped one
+  (`TIER_PLAY_PIN_DAYS`, `TIER_TV_PROMOTE_GRANULARITY`),
+- **pin-aware ignore generation** via first-class DB policies (`manual_exclusion` /
+  `permanent_pin` / `temporary_play_pin` — `planner_drop` / `safety_force_keep` are computed fresh
+  every plan run, never stored) — a promotion pin now genuinely un-ignores the title/season instead
+  of a legacy overlay silently keeping it ignored,
+- a kick-retry path (`agent/agent.js`'s `runWithKickRetries`, driven by a `kickPending` flag on the
+  report response) so a pin converges within a couple of minutes instead of on the next ~6 h timer
+  — without opening any new inbound listener on the edge box.
 
-Until those land, California runs **merged-view read-only**: the full library is visible and every
-title is playable (locally if cached, via the fallback if not), tier evictions are safe, but
-promotion stays manual (`/tier pin` recompute + apply). Stand up the mount now; enable automatic
-promotion when §3.4's bot work is done. **Do not** point Syncthing or the tier agent at the merged
-path to work around the missing pieces.
+Two things this bot-side work does **not** cover, both requiring an operator on the actual
+hardware: the merged-view mount itself (§3.1–3.3 above, tracked as #181) and migrating any
+existing `/etc/tier-agent/extra-ignores/<folderId>.txt` overlay into `manual_exclusion` /
+`permanent_pin` rows — there's no admin command for that yet, so it's a manual DB edit
+(`setTierNodePolicy` in `src/db.js`) until one exists. Until the mount is stood up, California
+still runs **merged-view read-only** as described in §3.1–3.3: the full library is visible and
+every title is playable (locally if cached, via the fallback if not), tier evictions are safe, and
+now automatic promotion is ready to enable the moment an operator has verified the mount and
+flipped `EDGE_PROMOTE_ON_PLAY`/`CA_PROMOTE_AUDIT_ONLY`. **Do not** point Syncthing or the tier
+agent at the merged path regardless.
 
 ---
 
@@ -319,9 +328,10 @@ branch before unmounting.
 PH play-triggered promotion:        implemented, off by default
 PH merged fallback mount:           runbook ready; stand-up unverified/pending (#181)
 California tiering:                 implemented
-California play promotion:          not implemented (#182)
+California play promotion:          implemented, off by default (#182)
 California merged fallback mount:   runbook ready; stand-up unverified/pending (#181)
-Season-level TV planning:           not implemented (#183)
+Season-level TV planning:           play-pin/ignore carve-out implemented (#183); planner
+                                     scoring/eviction/byte accounting still whole-title
 Merged-mount diagnostic (#181):     implemented — see below
 ```
 
