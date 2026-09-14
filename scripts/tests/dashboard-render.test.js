@@ -45,11 +45,21 @@ test('dashboard-render: renderBar', () => {
   assert.match(renderBar(150), /width:100%/);
   assert.match(renderBar(-10), /width:0%/);
   assert.match(renderBar(97), /bar-fill hot/);
+  // #187: progress bars need progressbar semantics and a numeric value, not just a colored div.
+  const labeled = renderBar(42, 'Some <Title>');
+  assert.match(labeled, /role="progressbar"/);
+  assert.match(labeled, /aria-valuenow="42"/);
+  assert.match(labeled, /aria-valuemin="0"/);
+  assert.match(labeled, /aria-valuemax="100"/);
+  assert.match(labeled, /aria-label="Some &lt;Title&gt; progress"/);
+  assert.doesNotMatch(renderBar(10), /aria-label=/, 'no label given: no empty aria-label attribute');
 });
 
 test('dashboard-render: renderItemList', () => {
   assert.strictEqual(renderItemList([]).includes('Nothing right now.'), true);
   assert.match(renderItemList([{ title: 'x<y', state: 'ok', pct: 50 }]), /item-title">x&lt;y</);
+  // #187: the item's title carries through as the progress bar's accessible label.
+  assert.match(renderItemList([{ title: 'Downloading Movie', state: 'ok', pct: 50 }]), /aria-label="Downloading Movie progress"/);
   const actions = renderItemList([{ title: 'Title', state: 'warn', actions: [{ label: 'Search <now>', url: '/admin/action/search', body: { title: 'x"y' }, confirm: 'Use allowance?' }] }]);
   assert.match(actions, /data-post="\/admin\/action\/search"/);
   assert.match(actions, /Search &lt;now&gt;/);
@@ -72,6 +82,15 @@ test('dashboard-render: renderLogin', () => {
   assert.match(passkey, /startAuthentication/);
   assert.match(passkey, /password fallback/);
   assert.match(passkey, /<form method="post" action="\/admin\/login">/, 'password login remains available');
+
+  const withOrigin = renderLogin(false, null, { expectedOrigin: 'https://admin.example.test' });
+  assert.match(withOrigin, /data-expected-origin="https:\/\/admin\.example\.test"/);
+
+  // #191: a password typed into the dashboard over a genuinely insecure origin is sent in the
+  // clear. The check is client-side (window.isSecureContext) since the server can't tell an
+  // insecure connection apart from a trusted proxy terminating TLS in front of it.
+  assert.match(renderLogin(false, null), /insecure-context-warning/);
+  assert.match(renderLogin(false, null), /window\.isSecureContext/);
 });
 
 test('dashboard-render: passkey management escapes credential metadata', () => {
@@ -146,6 +165,34 @@ test('dashboard-render: renderPage', () => {
   const searchable = renderPage('Home', '<p>body</p>', { showSearch: true, searchQuery: '<matrix>' });
   assert.match(searchable, /action="\/admin\/search"/);
   assert.match(searchable, /value="&lt;matrix&gt;"/);
+});
+
+test('dashboard-render: renderPage tabs implement the full ARIA tabs pattern', () => {
+  const page = renderPage('Home', '<p>body</p>', { nav: [['a', 'A'], ['b', 'B']], tabs: true });
+  // Each tab is wired to its panel and back (#187): aria-controls/aria-labelledby, ids assigned
+  // from the shared data-tab/data-panel value, and role=tabpanel on the panel side.
+  assert.match(page, /b\.id = 'tab-' \+ b\.dataset\.tab/);
+  assert.match(page, /aria-controls', 'panel-' \+ b\.dataset\.tab/);
+  assert.match(page, /aria-labelledby', 'tab-' \+ p\.dataset\.panel/);
+  assert.match(page, /setAttribute\('role', 'tabpanel'\)/);
+  // Roving tabindex: only the selected tab stays in the Tab order.
+  assert.match(page, /b\.tabIndex = selected \? 0 : -1/);
+  // Arrow/Home/End move focus and activate — the exact behavior #187 found missing.
+  assert.match(page, /ArrowRight/);
+  assert.match(page, /ArrowLeft/);
+  assert.match(page, /event\.key === 'Home'/);
+  assert.match(page, /event\.key === 'End'/);
+  assert.match(page, /show\(tabButtons\[targetIndex\]\.dataset\.tab, true\)/);
+});
+
+test('dashboard-render: auto-refresh pauses only for real edits/dirty state/in-flight actions, not any focused button', () => {
+  const page = renderPage('Home', '<p>body</p>', { autoRefresh: true });
+  // #187: a focused tab or action BUTTON must not block refresh forever — only an actual
+  // text/select/textarea field being edited does.
+  assert.match(page, /\/\^\(INPUT\|SELECT\|TEXTAREA\)\$\//);
+  assert.doesNotMatch(page, /INPUT\|SELECT\|TEXTAREA\|BUTTON/);
+  assert.match(page, /window\.__dirtySettings/);
+  assert.match(page, /window\.__actionsInFlight/);
 });
 
 test('dashboard-render: tier install command is complete and shell quoted', () => {

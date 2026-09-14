@@ -10,14 +10,30 @@ const { sha256 } = require('./util');
 
 const CHALLENGE_TTL_MS = 5 * 60000;
 
-function passkeyRp(tunnelDomain) {
-  const value = String(tunnelDomain || '').trim().toLowerCase();
-  if (!URL.canParse(`https://${value}`)) throw new Error('TUNNEL_DOMAIN must be a hostname before passkeys can be used');
-  const parsed = new URL(`https://${value}`);
-  if (!value.includes('.') || parsed.hostname !== value || parsed.port || parsed.pathname !== '/') {
-    throw new Error('TUNNEL_DOMAIN must be a hostname before passkeys can be used');
+// Derives the WebAuthn relying-party ID and expected origin from the exact HTTPS URL the
+// dashboard is reached at (DASHBOARD_PUBLIC_URL, defaulting to https://TUNNEL_DOMAIN — see
+// src/config.js). Deliberately strict: only an exact HTTPS origin with no path, query, fragment,
+// credentials, or explicit port is accepted, since the relying-party ID and expected origin are
+// the whole trust boundary WebAuthn verification relies on (#190). Never derive either from a
+// request's Host or forwarded-proto headers — those are attacker-controlled.
+function passkeyRp(publicUrl) {
+  const raw = String(publicUrl || '').trim();
+  let parsed;
+  try { parsed = new URL(raw); } catch { throw new Error('DASHBOARD_PUBLIC_URL must be a valid absolute URL, e.g. https://admin.example.com'); }
+  if (parsed.protocol !== 'https:') throw new Error('DASHBOARD_PUBLIC_URL must use the https:// scheme');
+  if (parsed.username || parsed.password) throw new Error('DASHBOARD_PUBLIC_URL must not include credentials');
+  if (parsed.search) throw new Error('DASHBOARD_PUBLIC_URL must not include a query string');
+  if (parsed.hash) throw new Error('DASHBOARD_PUBLIC_URL must not include a fragment');
+  if (parsed.port) throw new Error('DASHBOARD_PUBLIC_URL must not include a port');
+  if (parsed.pathname !== '/' && parsed.pathname !== '') throw new Error('DASHBOARD_PUBLIC_URL must not include a path');
+  // Hostnames are case-insensitive and a trailing dot denotes the DNS root but is not part of the
+  // name a browser/WebAuthn implementation compares against — normalize both away so
+  // "Example.com" and "example.com." are treated identically to "example.com".
+  const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '');
+  if (!hostname.includes('.') || /^[0-9.]+$/.test(hostname) || hostname.includes(':')) {
+    throw new Error('DASHBOARD_PUBLIC_URL must be a real hostname, not an IP address or single label');
   }
-  return { rpID: value, origin: `https://${value}` };
+  return { rpID: hostname, origin: `https://${hostname}` };
 }
 
 function createPasskeyService({ store, rpID, origin, now = Date.now }) {

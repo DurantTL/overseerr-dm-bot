@@ -4,6 +4,7 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const axios = require('axios');
 const { CONFIG } = require('./config');
+const { listTierNodes, getTierPlan } = require('./db');
 
 function run(command, args, timeoutMs = 15000) {
   return new Promise(resolve => {
@@ -77,6 +78,26 @@ async function runEdgeDiagnostics({ live = true } = {}) {
   } else {
     const remoteName = (CONFIG.STAGE_RCLONE_REMOTE.match(/^([^:]+):/) || [])[1];
     checks.push(check('Philippines transfer destination', remoteName ? 'ok' : 'warn', remoteName ? `rclone remote '${remoteName}' configured` : 'destination is not an rclone remote'));
+  }
+
+  // §181 Merged-library mount health (mount presence, local-first precedence, remote read-only,
+  // remote reachability) — reported by the tier agent's own checkMergedMount (agent/agent.js) on
+  // every cycle for nodes with EDGE_MERGED_ROOT configured, and surfaced here from the last stored
+  // report rather than a live call: this diagnostic lives on the bot, but the mount itself is on
+  // the edge box, which the bot cannot reach directly. A node that has never configured the merged
+  // view (mergedMountDiagnostics still null) contributes no checks — silent, not a failure —
+  // because #181's stand-up on that node simply hasn't started yet.
+  const staleAfterMs = Math.max(1, CONFIG.EDGE_MOUNT_DIAG_STALE_HOURS ?? 12) * 3600000;
+  for (const node of listTierNodes().filter(n => n.enabled)) {
+    const plan = getTierPlan(node.name);
+    const diag = plan?.mergedMountDiagnostics;
+    if (!diag || !diag.configured) continue;
+    const age = plan.lastMergedMountDiagnosticsAt ? Date.now() - plan.lastMergedMountDiagnosticsAt : Infinity;
+    if (age > staleAfterMs) {
+      checks.push(check(`Merged mount (${node.name})`, 'warn', `last reported ${Math.round(age / 3600000)}h ago — the agent may be stopped or the mount check may be out of date`));
+      continue;
+    }
+    for (const c of diag.checks || []) checks.push(check(`Merged mount (${node.name}) — ${c.name}`, c.status, c.detail));
   }
 
   if (!live) return checks;

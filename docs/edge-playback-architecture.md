@@ -4,10 +4,10 @@
 
 ```
 PH play-triggered promotion:        implemented, off by default
-PH merged fallback mount:           runbook ready; stand-up unverified/pending (#181)
+PH merged fallback mount:           runbook + automated diagnostic ready; stand-up itself unverified/pending (#181)
 California tiering:                 implemented
 California play promotion:          implemented, audit-only by default (#182) — see below
-California merged fallback mount:   runbook ready; stand-up unverified/pending (#181)
+California merged fallback mount:   runbook + automated diagnostic ready; stand-up itself unverified/pending (#181)
 Season-level TV planning:           not implemented (#183)
 ```
 
@@ -31,6 +31,13 @@ plus the §182 cases in `scripts/tests/tier.test.js`). Two things are **not** in
 default (double-gated — see `.env.example`), so none of this changes production behaviour on its
 own. Enabling it for real is a human decision that should follow #181's physical hardware
 verification, per the build order in §5.
+
+#181's read-only mount/precedence/reachability diagnostic (mount presence, remote read-only,
+local-first precedence, dead-mount detection) is implemented — see
+[`mergerfs-plex-operational.md`](mergerfs-plex-operational.md#automated-verification-181) — and
+runs continuously via the tier agent once `EDGE_MERGED_ROOT`/`EDGE_REMOTE_ROOT` are configured.
+What remains for #181 is the physical stand-up and pilot evidence on the PH and California boxes
+themselves, which needs an operator with hands on the hardware.
 
 The merged-library *mount* work (mergerfs, Plex test library) is infra outside this repo — the
 step-by-step stand-up, with verification and rollback at each step, is now written up as a runbook:
