@@ -4,6 +4,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const http = require('node:http');
+const vm = require('node:vm');
 const { rateLimit } = require('express-rate-limit');
 const { createApp, listen, close } = require('../../src/app');
 const { escapeHtml, sqliteUtcMs, fmtAgo } = require('../../src/dashboard-render');
@@ -167,6 +168,12 @@ test('dashboard page and search routes render over a real ephemeral HTTP server'
     // Latin-1) — assert the correct ellipsis character renders and the corrupted form is gone.
     assert.match(dashboard.body, /Working…/);
     assert.doesNotMatch(dashboard.body, /Workingâ€¦/);
+    const inlineScripts = dashboard.body.split('<script>').slice(1)
+      .map(block => block.split('</script>', 1)[0])
+      .filter(Boolean);
+    for (const script of inlineScripts) {
+      assert.doesNotThrow(() => new vm.Script(script, { filename: 'dashboard-inline.js' }));
+    }
 
     const empty = await request(port, '/admin/search', headers);
     assert.strictEqual(empty.statusCode, 200);

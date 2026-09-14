@@ -589,7 +589,7 @@ function registerDashboardReadRoutes(app, deps) {
               return;
             }
             var mountGuardWarning = (!values.mountRoot && !values.mountMarker)
-              ? 'Mount guard: NOT configured for this node — an external drive that fails to remount will go undetected.\n\n'
+              ? 'Mount guard: NOT configured for this node — an external drive that fails to remount will go undetected.\\n\\n'
               : '';
             if (!confirm(mountGuardWarning + 'Save this complete folder list and rotate the node token? The existing agent will stop working until this new command is installed.')) return;
             values.confirmed = true;
