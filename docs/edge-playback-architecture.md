@@ -6,10 +6,31 @@
 PH play-triggered promotion:        implemented, off by default
 PH merged fallback mount:           runbook + automated diagnostic ready; stand-up itself unverified/pending (#181)
 California tiering:                 implemented
-California play promotion:          not implemented (#182)
+California play promotion:          implemented, audit-only by default (#182) — see below
 California merged fallback mount:   runbook + automated diagnostic ready; stand-up itself unverified/pending (#181)
 Season-level TV planning:           not implemented (#183)
 ```
+
+**#182 status (this PR):** the identity→node routing, the present+Syncthing-completion locality
+decision, the durable expiring play-promotion pin (with a per-viewer bounded-active-pin cap and a
+per-title cooldown), the pin-aware legacy-ignore overlay merge (agent-side, opt-in), and the
+immediate plan-publish step are all implemented and unit-tested (`scripts/tests/edge-promotion.
+test.js`, `scripts/tests/tier-play-pins.test.js`, `scripts/tests/tier-agent-legacy-ignore.test.js`,
+plus the §182 cases in `scripts/tests/tier.test.js`). Two things are **not** in this PR:
+* **A real Syncthing per-folder completion signal.** No agent endpoint reports `GET /rest/db/
+  completion?folder=...` yet, so `decideCaLocality` runs on presence-byte-fraction alone
+  (`completionPct: null`) — the field is ready for a real percentage the moment that agent
+  capability lands, but until then this is a conservative proxy, not the exact check §2.2b
+  describes.
+* **An agent pull-now/kick transport.** The bot republishes the node's plan immediately on a real
+  promotion, but nothing pushes the agent to run right away — it still picks the new plan up on its
+  own next scheduled poll. `TIER_AGENT_KICK_ENABLED` is a reserved, currently-inert flag for when
+  that transport exists.
+
+`CA_PLAY_PROMOTE_ENABLED` and `CA_PLAY_PROMOTE_AUDIT_ONLY` are both off/on respectively by
+default (double-gated — see `.env.example`), so none of this changes production behaviour on its
+own. Enabling it for real is a human decision that should follow #181's physical hardware
+verification, per the build order in §5.
 
 #181's read-only mount/precedence/reachability diagnostic (mount presence, remote read-only,
 local-first precedence, dead-mount detection) is implemented — see

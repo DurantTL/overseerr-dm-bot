@@ -375,6 +375,23 @@ const MIGRATIONS = [
     );
     CREATE INDEX IF NOT EXISTS idx_edge_promote_attr ON edge_promote_log(attributed_id, promoted_at);
 
+    -- §182 durable, expiring play-promotion pins for tier (Syncthing) nodes. UNIQUE(node, media_id)
+    -- is the storage-layer half of "at most one bounded promotion per node/title" — re-promoting an
+    -- already-pinned title upserts (refreshes viewer/expiry) instead of creating a second row.
+    -- expires_at is a plain epoch-ms column (not TTL-deleted) so an expired-but-not-yet-pruned row
+    -- is still readable for audit/debugging; every reader filters on expires_at > now itself.
+    CREATE TABLE IF NOT EXISTS tier_play_pins (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      node TEXT NOT NULL,
+      media_id TEXT NOT NULL,
+      viewer_id TEXT,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      UNIQUE(node, media_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_tier_play_pins_node ON tier_play_pins(node, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_tier_play_pins_viewer ON tier_play_pins(node, viewer_id, expires_at);
+
     CREATE TABLE IF NOT EXISTS tier_nodes (
       name TEXT PRIMARY KEY,
       usable_bytes INTEGER NOT NULL DEFAULT 0,
@@ -1396,6 +1413,41 @@ function recordPromotion(attributedId, mediaId, windowMs = 86400000) {
   db.prepare('DELETE FROM edge_promote_log WHERE promoted_at < ?').run(Date.now() - Math.max(windowMs, 86400000));
 }
 
+// §182 durable, expiring per-node play-promotion pins (California tier promotion). Upsert on
+// (node, media_id): re-promoting an already-pinned title refreshes viewer/expiry rather than
+// creating a duplicate row — the storage-layer half of "at most one bounded promotion per
+// node/title" (src/edge-promotion.js's computePlayPin/planCaPlayPromotion own the decision math).
+function recordTierPlayPin(node, mediaId, viewerId, expiresAt, now = Date.now()) {
+  db.prepare(`INSERT INTO tier_play_pins (node, media_id, viewer_id, created_at, expires_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(node, media_id) DO UPDATE SET viewer_id = excluded.viewer_id, expires_at = excluded.expires_at`)
+    .run(String(node), String(mediaId), viewerId != null ? String(viewerId) : null, now, expiresAt);
+}
+
+const getTierPlayPin = (node, mediaId) => db.prepare(
+  'SELECT node, media_id AS mediaId, viewer_id AS viewerId, created_at AS createdAt, expires_at AS expiresAt FROM tier_play_pins WHERE node = ? AND media_id = ?',
+).get(String(node), String(mediaId)) || null;
+
+// Only pins still active `now` — callers feeding the planner floor or the manifest's
+// pinnedRelPaths must always filter this way so an expired pin restores normal policy on its own.
+function listActiveTierPlayPins(node, now = Date.now()) {
+  return db.prepare(
+    'SELECT media_id AS mediaId, viewer_id AS viewerId, created_at AS createdAt, expires_at AS expiresAt FROM tier_play_pins WHERE node = ? AND expires_at > ? ORDER BY expires_at ASC',
+  ).all(String(node), now);
+}
+
+// Bounded per-viewer cap: how many pins this viewer currently holds ACTIVE on this node (distinct
+// from the daily edge_promote_log counter — a CA pin occupies persistent local storage for days,
+// so the cap that matters is concurrent outstanding promotions, not just a rolling 24h count).
+function countActiveTierPlayPinsForViewer(node, viewerId, now = Date.now()) {
+  return db.prepare('SELECT COUNT(*) AS n FROM tier_play_pins WHERE node = ? AND viewer_id = ? AND expires_at > ?')
+    .get(String(node), String(viewerId), now).n;
+}
+
+function pruneExpiredTierPlayPins(now = Date.now()) {
+  return db.prepare('DELETE FROM tier_play_pins WHERE expires_at <= ?').run(now).changes;
+}
+
 // ---- Regional tiering ("edge cache") ----
 // tier_nodes is the DB-backed node registry (§ /tier-node); tier_node_members the closed access
 // set of restricted nodes; tier_agent_tokens the per-node bearer secrets for the sync agent's
@@ -1969,7 +2021,7 @@ function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k) {
   return null;
 }
 
-module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, MIGRATIONS, SCHEMA_VERSION, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, createSupportCase, getSupportCaseById, getSupportCaseByReference, listSupportCases, listSupportCasesForRequester, listSupportCasesNeedingNotifyRetry, recordSupportCaseNotifyResult, recordSupportCaseMemberNotifyResult, assignSupportCase, acknowledgeSupportCase, resolveSupportCase, reopenSupportCase, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
+module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, MIGRATIONS, SCHEMA_VERSION, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, createSupportCase, getSupportCaseById, getSupportCaseByReference, listSupportCases, listSupportCasesForRequester, listSupportCasesNeedingNotifyRetry, recordSupportCaseNotifyResult, recordSupportCaseMemberNotifyResult, assignSupportCase, acknowledgeSupportCase, resolveSupportCase, reopenSupportCase, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, recordTierPlayPin, getTierPlayPin, listActiveTierPlayPins, countActiveTierPlayPinsForViewer, pruneExpiredTierPlayPins, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;
 Object.assign(module.exports, {
   recordPackRejections,
