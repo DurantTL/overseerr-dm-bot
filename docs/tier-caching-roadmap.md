@@ -220,6 +220,32 @@ optionally the previous season briefly, whole series only when small or pinned.
 Interim guard until then: cap automatic TV-series admission (e.g. 100 GB); larger
 series require admin confirmation.
 
+**#183 foundation landed — AUDIT-ONLY / not wired into the live planner yet:**
+`src/tv-granularity.js` adds canonical `episode|season|series` ids (`tvdb:<id>`,
+`tvdb:<id>:sN`, `tvdb:<id>:sNeM`), `buildTvUnitInventory()` to expand a whole-series
+inventory item into season/episode-granularity items from Sonarr episode-file
+data (never dropping a title when that data is unavailable — it falls back to the
+whole-series unit and warns), `resolvePlayedUnit()` to map a played episode to the
+configured promotion unit (degrading toward `series` when finer data is missing),
+`checkPromotionCap()` for the oversized-promotion confirmation gate, and
+`computeMigrationPreview()` — a pure, read-only report of what converting a legacy
+whole-series manifest to season/episode granularity would look like (touches
+nothing: no file/DB write, no replan). `TIER_TV_GRANULARITY` (default `series`)
+and `TIER_TV_GRANULARITY_PROMOTION_CAP_GB` exist in `src/config.js` for these to
+read once wired up. The planner itself (`planNode`/`planTier`) needed **no**
+changes — it's already generic over inventory item shape, proven by
+`scripts/tests/tv-granularity.test.js` feeding season-granularity items straight
+through it.
+
+Still not done (needs its own follow-up work, some of it Sol-review territory per
+the issue's own routing guidance): wiring `fetchTierInventory`'s TV branch to
+actually fetch Sonarr episode files and call `buildTvUnitInventory()`; wiring
+`resolvePlayedUnit()` into play-triggered promotion (`src/staging.js`) and PH/CA
+pin/staging paths; season/episode-aware `.stignore`/rclone path boundaries in the
+agent; a dashboard surface for the migration preview; and, only after a human
+reviews a real preview's output, any live conversion of existing whole-series
+plan state. See the #183 PR for the exact scope split.
+
 ---
 
 ## Operational improvements (do alongside any phase)
