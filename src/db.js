@@ -462,6 +462,11 @@ const runMigrations = db.transaction(function runMigrationsInner() {
   // the signal the auto-tag-for-AvistaZ feature uses to spot a season stuck on dead public
   // releases. Reset to 0 the moment a search makes real progress.
   ensureColumn('season_searches', 'stall_count', 'INTEGER DEFAULT 0');
+  // #255: which TV seasons a request actually covers — 'all', a JSON array of season numbers,
+  // or NULL (movies, and pre-#255 rows whose selection predates this column). Distinct from
+  // season_searches (#183's series/season search-cadence key): this column records REQUEST
+  // scope, not search or cache/promotion state, so it can't collide with that identity.
+  ensureColumn('requests', 'seasons', 'TEXT');
 
   // R2.1 multi-folder: older installs have tier_node_files keyed on (node, rel_path) with no
   // folder_id. Rebuild it under the new (node, folder_id, rel_path) key so the same relPath can
@@ -635,12 +640,16 @@ const markOverseerrCreated = (discordId, overseerrId) => db.prepare('UPDATE user
 
 const removeUser = discordId => db.prepare('DELETE FROM users WHERE discord_id = ?').run(discordId);
 
-function upsertRequest(overseerrRequestId, mediaId, mediaType, is4k, title, discordId, status) {
+// `seasons` (#255) is optional and non-destructive: pass a storage key (see
+// src/season-select.js#seasonsToStorageKey) from a caller that knows the selection (the /request
+// and mobile-wizard flows); omit it (undefined) from callers that don't (e.g. the Seerr webhook,
+// which only carries show-level fields) and the row's existing seasons value is left untouched.
+function upsertRequest(overseerrRequestId, mediaId, mediaType, is4k, title, discordId, status, seasons) {
   // Later webhook events (approved/available) often arrive without requestedBy fields.
   // INSERT OR REPLACE used to wipe the original requester (breaking keep/delete attribution),
   // and '' request ids from those events all collided on the UNIQUE column. COALESCE keeps
   // the first known requester; missing request ids fall back to updating the media row.
-  return upsertTrackedRequest(db, overseerrRequestId, mediaId, mediaType, is4k, title, discordId, status);
+  return upsertTrackedRequest(db, overseerrRequestId, mediaId, mediaType, is4k, title, discordId, status, seasons);
 }
 
 function reconcileRequestStatuses(remoteRequests) {
@@ -1724,14 +1733,25 @@ function listPendingRequests() {
 // Finds the nonce for a still-gated request matching this requester + media, so /request-cancel
 // can drop it the same way a Deny button would. Table is small (only currently-pending gate
 // requests live here), so a scan is fine.
-function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k) {
+//
+// #255: an optional 5th `seasonsKey` argument (a src/season-select.js storage key, e.g. the
+// tracked requests row's own `seasons` column) disambiguates when the SAME requester has more
+// than one gated request for the same show+edition under different season selections — omit it
+// (the historical 4-arg call) to match on requester+media+edition only, exactly as before.
+function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k, seasonsKey) {
   const rows = db.prepare("SELECT key, value FROM app_settings WHERE key LIKE 'pending_request:%'").all();
+  const wantSeasons = seasonsKey === undefined ? undefined : (seasonsKey == null ? 'all' : seasonsKey);
   for (const row of rows) {
     let payload;
     try { payload = JSON.parse(row.value); } catch (_e) { continue; }
-    if (payload.discordId === discordId && payload.mediaType === mediaType && payload.tmdbId === tmdbId && Boolean(payload.is4k) === Boolean(is4k)) {
-      return row.key.slice('pending_request:'.length);
+    if (payload.discordId !== discordId || payload.mediaType !== mediaType || payload.tmdbId !== tmdbId || Boolean(payload.is4k) !== Boolean(is4k)) continue;
+    if (wantSeasons !== undefined) {
+      const payloadSeasons = (payload.seasons == null || payload.seasons === 'all')
+        ? 'all'
+        : JSON.stringify([...payload.seasons].map(Number).sort((a, b) => a - b));
+      if (payloadSeasons !== wantSeasons) continue;
     }
+    return row.key.slice('pending_request:'.length);
   }
   return null;
 }

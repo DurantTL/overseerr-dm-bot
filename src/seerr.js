@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { CONFIG } = require('./config');
 const { audit, markOverseerrCreated } = require('./db');
 const { canonicalizeEmail } = require('./util');
+const { SEERR_STATUS, isCoveredStatus } = require('./season-select');
 
 // Push a Discord ID into a Seerr user's notification settings. Previously this only happened for
 // users the bot created, so Plex-imported Seerr users that got "repaired" into the DB never
@@ -164,6 +165,27 @@ async function checkExistingSeerrMedia(mediaType, tmdbId, is4k) {
   return allAvailable ? 'already fully available on Plex' : 'already requested — every season is on Plex or already on its way';
 }
 
+// Per-season detail for a TV show, used to narrow an explicit season selection (#255) against
+// what Seerr actually knows about the show: which seasons even exist/aired (`eligible`, same
+// "requestable" filter checkExistingSeerrMedia uses) and which of those are already
+// pending/downloading/available for this edition (`covered`). Fails open with empty arrays on
+// any error — callers then trust the caller's own selection rather than block a legitimate
+// request on a Seerr hiccup, matching checkExistingSeerrMedia's fail-open convention.
+async function fetchSeerrTvSeasonInfo(tmdbId, is4k) {
+  try {
+    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/tv/${tmdbId}`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY }, timeout: 8000 });
+    const data = res.data || {};
+    const info = data.mediaInfo;
+    const eligible = (data.seasons || []).filter(s => s.seasonNumber > 0 && (s.episodeCount == null || s.episodeCount > 0)).map(s => s.seasonNumber);
+    const statusMap = new Map((info?.seasons || []).map(s => [s.seasonNumber, is4k ? s.status4k : s.status]));
+    const covered = eligible.filter(n => isCoveredStatus(statusMap.get(n) || SEERR_STATUS.UNKNOWN));
+    const available = eligible.filter(n => statusMap.get(n) === SEERR_STATUS.AVAILABLE);
+    return { eligible, covered, available };
+  } catch (_e) {
+    return { eligible: [], covered: [], available: [] };
+  }
+}
+
 // Overseerr's internal Media.id (distinct from tmdbId) — required by the issue-report endpoint.
 async function fetchSeerrMediaId(mediaType, tmdbId) {
   try {
@@ -221,9 +243,13 @@ async function fetchSeerrMediaOrigin(mediaType, tmdbId) {
 // Place a Seerr request AS a specific Seerr user. The admin API key has MANAGE_USERS, which is
 // what lets the body's userId override the requesting identity — this is how requests made from
 // Discord get attributed to the real person instead of the server owner.
-async function createSeerrRequestAs(seerrUserId, mediaType, tmdbId, is4k) {
+// `seasons` (#255): null/undefined/'all' → every available season (unchanged default
+// behavior); an array of season numbers → only those seasons. Ignored for movies.
+async function createSeerrRequestAs(seerrUserId, mediaType, tmdbId, is4k, seasons) {
   const body = { mediaType, mediaId: tmdbId, is4k: !!is4k, userId: seerrUserId };
-  if (mediaType === 'tv') body.seasons = 'all';
+  if (mediaType === 'tv') {
+    body.seasons = (seasons == null || seasons === 'all') ? 'all' : seasons;
+  }
   const res = await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/request`, body, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY }, timeout: 15000 });
   // A proxy or fork can hand axios the JSON body as a raw string — normalize before inspecting.
   let data = res.data;
@@ -341,4 +367,4 @@ async function fetchSeerrRequests() {
   return requests;
 }
 
-module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers, fetchSeerrRequests };
+module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvSeasonInfo, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers, fetchSeerrRequests };

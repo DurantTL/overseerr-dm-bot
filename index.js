@@ -40,8 +40,9 @@ const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeaso
   clearSeasonEpisodeFallback } = require('./src/db');
 const { recordDeadReleaseGroupSighting, getReleaseGroupSighting, markReleaseGroupSuggested, markReleaseGroupBlocklisted, dismissReleaseGroupSuggestion } = require('./src/db');
 const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess, fetchPlexFriends } = require('./src/plex');
-const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
+const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvSeasonInfo, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
+const { ALL_SEASONS, parseSeasonSelection, formatSeasonsLabel, splitCoveredSeasons, seasonsToStorageKey, seasonsFromStorageKey } = require('./src/season-select');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases,
   getArrTagId, addTagToSeries, listSonarrCustomFormats, createSonarrCustomFormat, scoreSonarrCustomFormatInAllProfiles,
   listSonarrQualityDefinitions, setSonarrQualityDefinitionMinSize } = require('./src/arr');
@@ -269,8 +270,26 @@ function notifyAdmin(msg) {
 // request for the same title are tracked (and quota'd) separately by Seerr, so they need
 // separate subscriber lists too; a shared key would let one edition's availability wrongly
 // notify and clear subscribers still waiting on the other.
-function subscriberKeyFor(tmdbId, is4k) {
-  return `tmdb:${tmdbId}${is4k ? ':4k' : ''}`;
+//
+// #255: an optional third `seasons` argument (a storage key from src/season-select.js, or the
+// raw selection — either works since seasonsToStorageKey('tv', x) is idempotent on a key) adds a
+// season suffix so "also wanted by" / subscribe-on-duplicate never conflates two members who
+// asked for different seasons of the same show. Callers that don't have a season selection to
+// hand (webhook-driven clears, legacy call sites) omit it and get the original show-wide key,
+// which still matches subscribers who signed up before this column existed.
+function subscriberKeyFor(tmdbId, is4k, seasons) {
+  const seasonSuffix = seasons === undefined ? '' : `:s${seasonsToStorageKey('tv', seasons)}`;
+  return `tmdb:${tmdbId}${is4k ? ':4k' : ''}${seasonSuffix}`;
+}
+
+// The Seerr webhook only ever gives us show-level fields (no season list), but the tracked
+// request row for this mediaId already carries the season selection it was submitted with —
+// look it up so the webhook's clear/fan-out calls use the same season-scoped subscriber key
+// /request registered subscribers under, instead of falling back to the unscoped show-wide key.
+function tvSeasonsForMediaId(mediaId, mediaType) {
+  if (mediaType !== 'tv') return undefined;
+  const found = db.prepare('SELECT seasons FROM requests WHERE media_id = ? ORDER BY id DESC LIMIT 1').get(mediaId);
+  return found ? seasonsFromStorageKey(found.seasons) : undefined;
 }
 
 // Seerr's own quota only counts requests that have actually reached it — this bot's approval
@@ -524,14 +543,17 @@ function canEscalate({ mediaType, is4k }) {
 }
 
 // Post the Approve/Deny gate embed for a stashed /request to the requests channel.
-async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discordId, email, seerrUserId, tmdbId }) {
+async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discordId, email, seerrUserId, tmdbId, seasons }) {
   const channel = await safeGetChannel(channelFor('requests'));
   if (!channel) return false;
   const azEligible = canEscalate({ mediaType, is4k });
   let quota = null;
   try { quota = await fetchUserQuota(seerrUserId); } catch (_e) {}
   const quotaText = quotaLine(quota, mediaType);
-  const subscriberCount = tmdbId != null ? countRequestSubscribers(subscriberKeyFor(tmdbId, is4k)) : 0;
+  // `label` already carries the exact season selection for TV (baked in by handleRequestCommand
+  // before stashing), so the embed title/description show it automatically — this only needs the
+  // season-scoped key so "Also wanted by" counts subscribers to THIS season selection.
+  const subscriberCount = tmdbId != null ? countRequestSubscribers(subscriberKeyFor(tmdbId, is4k, seasons)) : 0;
   const embed = brandedEmbed(COLORS.INFO)
     .setTitle(`${mediaTypeEmoji(mediaType, is4k)} New Request`)
     .setDescription(`**${label}**${azEligible ? `\n-# "+ AvistaZ Fallback" pre-authorizes the private tracker if nothing public shows up within ${escalationDelayLabel()} — it then ${preAuthOutcomeLabel(mediaType)}.` : ''}`)
@@ -4209,7 +4231,7 @@ function homeServerFor(discordId) {
 const slashCommands = [
   mediaPanelCommand,
   new SlashCommandBuilder().setName('download').setDescription('Get a secure download link').addStringOption(o => o.setName('title').setDescription('Movie or show title').setRequired(true)).addIntegerOption(o => o.setName('season').setDescription('Season number').setMinValue(0).setMaxValue(99)).addIntegerOption(o => o.setName('episode').setDescription('Episode number').setMinValue(1).setMaxValue(999)).addBooleanOption(o => o.setName('one_time').setDescription('One-time download link')),
-  new SlashCommandBuilder().setName('request').setDescription('Request a movie or show (searches Seerr)').addStringOption(o => o.setName('title').setDescription('Start typing to search — pick from the list').setRequired(true).setAutocomplete(true)).addBooleanOption(o => o.setName('is4k').setDescription('Request the 4K version')),
+  new SlashCommandBuilder().setName('request').setDescription('Request a movie or show (searches Seerr)').addStringOption(o => o.setName('title').setDescription('Start typing to search — pick from the list').setRequired(true).setAutocomplete(true)).addBooleanOption(o => o.setName('is4k').setDescription('Request the 4K version')).addStringOption(o => o.setName('seasons').setDescription('TV only: "all" (default), a season number, or a list like 1,3,5')),
   new SlashCommandBuilder().setName('link').setDescription('Link a user to Plex email (invites + sets up Seerr)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('email').setDescription('Plex email — start typing to search linked/Plex users').setRequired(true).setAutocomplete(true)),
   new SlashCommandBuilder().setName('unlink').setDescription('Unlink a user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)),
   new SlashCommandBuilder().setName('users').setDescription('List linked users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -5225,17 +5247,40 @@ async function handleRequestCommand(interaction) {
     label = (hit.mediaType === 'movie' ? hit.title : hit.name) || raw;
   }
 
+  // #255: explicit season selection, TV only — movies are completely untouched by this. Default
+  // (omitted or "all") preserves the historical "every season" behavior; a member can otherwise
+  // name specific seasons ("1,3,5", "1-3"). Resolved BEFORE the duplicate checks below so a
+  // different season selection for the same show is never mistaken for a repeat of someone
+  // else's request.
+  // Left undefined for movies — subscriberKeyFor and the pending-request payload both treat
+  // "no seasons argument at all" as "not applicable", not "all seasons", so a movie's key/payload
+  // shape is byte-for-byte identical to before this feature existed.
+  let seasons;
+  if (mediaType === 'tv') {
+    const seasonsRaw = interaction.options.getString('seasons');
+    const parsedSeasons = parseSeasonSelection(seasonsRaw);
+    if (!parsedSeasons.ok) {
+      return interaction.editReply(`❌ ${parsedSeasons.error} Use \`all\`, a season number, or a list like \`1,3,5\`.`);
+    }
+    seasons = parsedSeasons.seasons;
+  }
+  const seasonsKeyForRequest = seasonsToStorageKey(mediaType, seasons);
+
   // Fail fast on duplicates instead of making an admin approve something Seerr will only reject
   // (or, for TV with no seasons left, silently drop — see createSeerrRequestAs). First the bot's
   // own gate, since Seerr can't know about requests still awaiting approval here; then Seerr
-  // itself (requested there directly, already downloading, or already on Plex).
-  const pendingDupe = db.prepare("SELECT * FROM requests WHERE media_id = ? AND is_4k = ? AND status = 'pending' LIMIT 1").get(`tmdb:${tmdbId}`, is4k ? 1 : 0);
+  // itself (requested there directly, already downloading, or already on Plex). The seasons
+  // match keeps a request for a different season selection from being treated as the same
+  // outstanding request (#255) — movies always carry a NULL seasons key, so this is a no-op for
+  // them (`IS NULL` still matches every movie row exactly as it always has).
+  const pendingDupe = db.prepare("SELECT * FROM requests WHERE media_id = ? AND is_4k = ? AND status = 'pending' AND seasons IS ? LIMIT 1")
+    .get(`tmdb:${tmdbId}`, is4k ? 1 : 0, seasonsKeyForRequest);
   if (pendingDupe) {
     if (pendingDupe.requested_by_discord_id === interaction.user.id) {
       return interaction.editReply(`⏳ **${label}**${is4k ? ' (4K)' : ''} was already requested by you and is waiting for admin approval — no need to request it again.`);
     }
-    const added = addRequestSubscriber(subscriberKeyFor(tmdbId, is4k), interaction.user.id);
-    audit('request_subscribed', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, stage: 'gate' });
+    const added = addRequestSubscriber(subscriberKeyFor(tmdbId, is4k, seasons), interaction.user.id);
+    audit('request_subscribed', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seasons: seasonsKeyForRequest, stage: 'gate' });
     return interaction.editReply(added
       ? `⏳ **${label}**${is4k ? ' (4K)' : ''} was already requested by someone else and is waiting for admin approval — already on the way. I'll DM you too when it lands.`
       : `⏳ **${label}**${is4k ? ' (4K)' : ''} is already waiting for admin approval — you're already tracked for it.`);
@@ -5247,13 +5292,39 @@ async function handleRequestCommand(interaction) {
       return interaction.editReply(`ℹ️ **${label}**${is4k ? ' (4K)' : ''} is ${existing} — no need to request it again. 🍿`);
     }
     // Already in Seerr's pipeline (requested/downloading) under someone else — subscribe instead
-    // of dead-ending; the MEDIA_AVAILABLE webhook fans the DM out to every subscriber.
-    const added = addRequestSubscriber(subscriberKeyFor(tmdbId, is4k), interaction.user.id);
-    audit('request_subscribed', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, stage: 'seerr' });
+    // of dead-ending; the MEDIA_AVAILABLE webhook fans the DM out to every subscriber. This check
+    // is show-wide (matches checkExistingSeerrMedia), so it only fires when EVERY requestable
+    // season is already covered — a genuinely open season for a partial pick falls through to
+    // the season-narrowing step below instead.
+    const added = addRequestSubscriber(subscriberKeyFor(tmdbId, is4k, seasons), interaction.user.id);
+    audit('request_subscribed', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seasons: seasonsKeyForRequest, stage: 'seerr' });
     return interaction.editReply(added
       ? `ℹ️ **${label}**${is4k ? ' (4K)' : ''} is ${existing} — already on the way. I'll DM you when it lands.`
       : `ℹ️ **${label}**${is4k ? ' (4K)' : ''} is ${existing} — you're already tracked for it.`);
   }
+
+  // #255: narrow an explicit season selection against what Seerr already has for this show —
+  // skip seasons that are already requested/available (telling the member which, instead of
+  // silently dropping them) and reject season numbers the show doesn't have. Fails open (keeps
+  // the requested selection as-is) if the lookup itself fails, same as checkExistingSeerrMedia.
+  let seasonNote = '';
+  if (mediaType === 'tv' && seasons !== ALL_SEASONS) {
+    const seasonInfo = await fetchSeerrTvSeasonInfo(tmdbId, is4k);
+    const split = splitCoveredSeasons({ requested: seasons, eligible: seasonInfo.eligible, covered: seasonInfo.covered });
+    if (split.invalid.length) {
+      return interaction.editReply(`❌ **${label}** doesn't have season${split.invalid.length === 1 ? '' : 's'} ${split.invalid.join(', ')}.`);
+    }
+    if (!split.toSubmit.length) {
+      return interaction.editReply(`ℹ️ **${label}** — ${formatSeasonsLabel(split.alreadyCovered)} already requested or available. Nothing new to request.`);
+    }
+    if (split.alreadyCovered.length) seasonNote = ` (skipping already-covered ${formatSeasonsLabel(split.alreadyCovered)})`;
+    seasons = split.toSubmit;
+  }
+  if (mediaType === 'tv') label = `${label} — ${formatSeasonsLabel(seasons)}${seasonNote}`;
+  // Recomputed after narrowing — this is what actually gets stashed/submitted, which can differ
+  // from seasonsKeyForRequest (the member's original ask) once already-covered seasons are
+  // dropped.
+  const finalSeasonsKey = seasonsToStorageKey(mediaType, seasons);
 
   let seerrUserId = null;
   try { seerrUserId = await resolveSeerrUserId(row); } catch (_e) {}
@@ -5279,7 +5350,7 @@ async function handleRequestCommand(interaction) {
     // and self-enforcing rather than resting entirely on admin memory.
     const quotaBlock = await quotaBlockReason(seerrUserId, interaction.user.id, mediaType);
     if (quotaBlock) return interaction.editReply(quotaBlock);
-    const payload = { discordId: interaction.user.id, email: row.email, seerrUserId, mediaType, tmdbId, is4k, label };
+    const payload = { discordId: interaction.user.id, email: row.email, seerrUserId, mediaType, tmdbId, is4k, label, seasons };
     const nonce = stashPendingRequest(payload);
     const posted = await postPendingRequestNotice(nonce, payload)
       .catch(err => { log.warn(`Approval notice failed: ${err.message}`); return false; });
@@ -5288,11 +5359,11 @@ async function handleRequestCommand(interaction) {
       return interaction.editReply('❌ Couldn\'t post the approval request to the admins — try again in a bit.');
     }
     if (posted === 'handled') return interaction.editReply('This request was already handled by an admin.');
-    upsertRequest(null, `tmdb:${tmdbId}`, mediaType, is4k, label, interaction.user.id, 'pending');
-    audit('media_request_gated', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, nonce });
+    upsertRequest(null, `tmdb:${tmdbId}`, mediaType, is4k, label, interaction.user.id, 'pending', finalSeasonsKey);
+    audit('media_request_gated', { actorDiscordId: interaction.user.id, title: label, mediaType, tmdbId, is4k, seasons: finalSeasonsKey, nonce });
     return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
       .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Request Submitted`)
-      .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nWaiting for admin approval — you'll get a DM either way.`)] });
+      .setDescription(`**${label}**${is4k ? ' (4K)' : ''}\nWaiting for admin approval — you'll get a DM either way.`)] });
   }
 
   // Quota still applies to an auto-approved request — trust skips the *admin*, not the fairness
@@ -5303,7 +5374,7 @@ async function handleRequestCommand(interaction) {
   }
 
   try {
-    const data = await createSeerrRequestAs(seerrUserId, mediaType, tmdbId, is4k);
+    const data = await createSeerrRequestAs(seerrUserId, mediaType, tmdbId, is4k, seasons);
     // Same media-key convention as the webhook handler, so the rows merge cleanly.
     const mediaKey = mediaType === 'tv' && data?.media?.tvdbId ? `tvdb:${data.media.tvdbId}` : `tmdb:${tmdbId}`;
     if (data?.id != null) markApprovalNoticePosted(data.id); // suppress the duplicate webhook embed
@@ -5314,7 +5385,7 @@ async function handleRequestCommand(interaction) {
       audit('external_api_error', { provider: 'overseerr', error: `request #${data.id} failed post-create verification: ${verified.reason}`, action: 'create_request_verify', actorDiscordId: interaction.user.id, tmdbId, mediaType });
       return interaction.editReply(`⚠️ Seerr accepted **${label}** (request #${data.id}) but ${verified.reason}.\nNothing will download until that's fixed — check the Seerr container logs from the last minute for the underlying error, then try again.`);
     }
-    upsertRequest(data?.id, mediaKey, mediaType, is4k, label, interaction.user.id, 'approved');
+    upsertRequest(data?.id, mediaKey, mediaType, is4k, label, interaction.user.id, 'approved', finalSeasonsKey);
     // Self-requests (admin or auto-approved) skip the gate, so there's no "+ AvistaZ Fallback"
     // button to click. They used to be pre-authorized — and tagged — unconditionally, which meant
     // every request an admin made reached the private tracker whether or not that was wanted.
@@ -5359,7 +5430,7 @@ async function handleRequestCommand(interaction) {
     await interaction.editReply({
       embeds: [brandedEmbed(COLORS.SUCCESS)
         .setTitle(`${mediaTypeEmoji(mediaType, is4k)} Request Sent`)
-        .setDescription(`**${label}**${is4k ? ' (4K)' : ''}${mediaType === 'tv' ? ' — all seasons' : ''}\nRequested as \`${row.email}\` — ${autoApprove ? 'auto-approved (you\'re a trusted requester) and grabbing it now! 🚀' : 'approved and grabbing it now! 🚀'}\nYou'll get a DM when it's on Plex.${azLine}`)],
+        .setDescription(`**${label}**${is4k ? ' (4K)' : ''}\nRequested as \`${row.email}\` — ${autoApprove ? 'auto-approved (you\'re a trusted requester) and grabbing it now! 🚀' : 'approved and grabbing it now! 🚀'}\nYou'll get a DM when it's on Plex.${azLine}`)],
       components: azOptIn ? [new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`az_optin:${azWatch.id}`).setLabel('Pre-authorize AvistaZ').setStyle(ButtonStyle.Secondary))] : [],
     });
@@ -6460,13 +6531,17 @@ async function handleRequestCancelCommand(interaction) {
   // are keyed by the real tmdbId, which is NOT the same as row.media_id once a TV request is
   // approved (that becomes tvdb:<id>) — resolveTmdbId() finds the tmdb:-keyed sibling row for
   // that case instead of misreading the tvdb id as a tmdbId.
+  // #255: the season selection (row.seasons, already a storage key) scopes both the heir lookup
+  // and the pending-nonce lookup to the SAME season selection — a member cancelling their season
+  // 2 request must hand off to (or just cancel) their own season-2 ask, not season 5's.
   const tmdbId = resolveTmdbId(row);
-  const subscriberKey = tmdbId != null ? subscriberKeyFor(tmdbId, !!row.is_4k) : null;
+  const rowSeasons = row.media_type === 'tv' ? seasonsFromStorageKey(row.seasons) : undefined;
+  const subscriberKey = tmdbId != null ? subscriberKeyFor(tmdbId, !!row.is_4k, rowSeasons) : null;
   const [heirId] = subscriberKey ? listRequestSubscribers(subscriberKey) : [];
   const heirUser = heirId ? getUserByDiscordId(heirId) : null;
 
   if (row.status === 'pending') {
-    const nonce = findPendingRequestNonce(interaction.user.id, row.media_type, tmdbId, !!row.is_4k);
+    const nonce = findPendingRequestNonce(interaction.user.id, row.media_type, tmdbId, !!row.is_4k, row.media_type === 'tv' ? row.seasons : undefined);
     const pending = nonce ? takePendingRequest(nonce) : null;
     if (pending && heirUser) {
       let heirSeerrUserId = null;
@@ -9756,7 +9831,7 @@ async function handleOverseerrWebhook(body) {
     if (poster) embed.setThumbnail(poster);
     await dmUser(requesterDiscordId, { embeds: [embed] });
   }
-  if (notification_type === 'MEDIA_DECLINED' && media.tmdbId != null) clearRequestSubscribers(subscriberKeyFor(media.tmdbId, is4k));
+  if (notification_type === 'MEDIA_DECLINED' && media.tmdbId != null) clearRequestSubscribers(subscriberKeyFor(media.tmdbId, is4k, tvSeasonsForMediaId(mediaId, media.media_type)));
 
   if (notification_type === 'MEDIA_FAILED') {
     const embed = brandedEmbed(COLORS.DANGER)
@@ -9792,7 +9867,7 @@ async function handleOverseerrWebhook(body) {
   // flight (#75) — always keyed tmdb:<id> regardless of media type, since that's the identifier
   // subscribers were recorded under. Runs even without a primary requesterDiscordId.
   if (notification_type === 'MEDIA_AVAILABLE' && media.tmdbId != null) {
-    const subscriberKey = subscriberKeyFor(media.tmdbId, is4k);
+    const subscriberKey = subscriberKeyFor(media.tmdbId, is4k, tvSeasonsForMediaId(mediaId, media.media_type));
     const subscribers = listRequestSubscribers(subscriberKey).filter(id => id !== requesterDiscordId);
     if (subscribers.length) {
       const embed = brandedEmbed(COLORS.SUCCESS)
