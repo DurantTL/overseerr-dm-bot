@@ -32,7 +32,7 @@ const { requestModal } = require('./src/setup-request-ui');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, recordPackRejections, getPackRejectionSighting, markPackRejectionSuggested, dismissPackRejectionSuggestion, resetPackRejectionSightings, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, countRecentPromotions, recordPromotion, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, recordPackRejections, getPackRejectionSighting, markPackRejectionSuggested, dismissPackRejectionSuggestion, resetPackRejectionSightings, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeasonEpisodeFallbacks,
@@ -55,6 +55,7 @@ const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = requi
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
+const { checkPublicOriginReadiness } = require('./src/public-origin-diagnostics');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
 const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, eraseTorrent, getRtorrentVersion, getRtorrentPaths } = require('./src/rtorrent');
@@ -66,6 +67,8 @@ const { createWebhookHandlers, requireWebhookSecret } = require('./src/routes/we
 const { registerTierAgentRoutes } = require('./src/routes/tier-agent');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
 const { registerDashboardReadRoutes } = require('./src/routes/dashboard-read');
+const { registerDashboardMutationRoutes } = require('./src/routes/dashboard-mutations');
+const { createTtlCache } = require('./src/dashboard-cache');
 const { createDashboardSession, createDashboardAuth, createDashboardGateActor, dashboardActor, registerDashboardAuthRoutes } = require('./src/routes/dashboard-auth');
 const { createApp } = require('./src/app');
 const { createRuntimeLifecycle, createDiscordReadyGuard } = require('./src/runtime-lifecycle');
@@ -118,12 +121,13 @@ const dashboardGateActor = createDashboardGateActor({ sha256 });
 // would ignore every override until the next restart.
 const settingsStore = { get: getSetting, set: setSetting, del: deleteSetting };
 const tunable = key => runtimeSettings.resolveRuntime(key, { config: CONFIG, store: settingsStore });
-const PASSKEY_RP = passkeyRp(CONFIG.TUNNEL_DOMAIN);
+const PASSKEY_RP = passkeyRp(CONFIG.DASHBOARD_PUBLIC_URL);
 const passkeyService = createPasskeyService({
   store: { listPasskeys, getPasskey, savePasskey, updatePasskeyUse },
   ...PASSKEY_RP,
 });
 let automationRegistry = null;
+const dashboardCache = createTtlCache();
 
 const runtimeCadence = key => {
   const raw = getSetting(`${runtimeSettings.OVERRIDE_PREFIX}${key}`);
@@ -543,7 +547,7 @@ function canEscalate({ mediaType, is4k }) {
 }
 
 // Post the Approve/Deny gate embed for a stashed /request to the requests channel.
-async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discordId, email, seerrUserId, tmdbId, seasons }) {
+async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discordId, email, seerrUserId, tmdbId, seasons, asianHint }) {
   const channel = await safeGetChannel(channelFor('requests'));
   if (!channel) return false;
   const azEligible = canEscalate({ mediaType, is4k });
@@ -554,6 +558,18 @@ async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discord
   // before stashing), so the embed title/description show it automatically — this only needs the
   // season-scoped key so "Also wanted by" counts subscribers to THIS season selection.
   const subscriberCount = tmdbId != null ? countRequestSubscribers(subscriberKeyFor(tmdbId, is4k, seasons)) : 0;
+  // Two independent signals for the "does AvistaZ plausibly have this?" call an admin has to
+  // make on the Approve + AvistaZ Fallback button: the requester's own read on it (asianHint —
+  // null means they left it blank/unsure) and the automatic TMDB-based guess. Neither is
+  // authoritative alone — TMDB records are sometimes bare, and a requester doesn't always know
+  // a title's original country either — but together they beat an admin guessing blind.
+  let originLine = null;
+  if (azEligible && tmdbId != null) {
+    const meta = await fetchSeerrMediaOrigin(mediaType, tmdbId).catch(() => null);
+    const auto = meta ? assessAsianOrigin(meta) : { verdict: 'unknown', reasons: [] };
+    const requesterText = asianHint === true ? '🀄 Yes' : asianHint === false ? '🌍 No' : '❔ Left blank';
+    originLine = `Requester says: ${requesterText}\nAutomatic guess: ${describeAvistazFit(auto.verdict, auto.reasons)}`;
+  }
   const embed = brandedEmbed(COLORS.INFO)
     .setTitle(`${mediaTypeEmoji(mediaType, is4k)} New Request`)
     .setDescription(`**${label}**${azEligible ? `\n-# "+ AvistaZ Fallback" pre-authorizes the private tracker if nothing public shows up within ${escalationDelayLabel()} — it then ${preAuthOutcomeLabel(mediaType)}.` : ''}`)
@@ -561,6 +577,7 @@ async function postPendingRequestNotice(nonce, { label, mediaType, is4k, discord
       { name: 'Requested by', value: `<@${discordId}> · \`${email}\``, inline: true },
       { name: 'Type', value: mediaTypeLabel(mediaType, is4k), inline: true },
       { name: 'Status', value: '⏳ Awaiting approval', inline: true },
+      ...(originLine ? [{ name: 'Asian content? (AvistaZ fit)', value: originLine, inline: false }] : []),
       ...(quotaText ? [{ name: 'Requester quota', value: quotaText, inline: false }] : []),
       ...(subscriberCount > 0 ? [{ name: 'Also wanted by', value: `${subscriberCount} other member${subscriberCount === 1 ? '' : 's'}`, inline: false }] : []),
     )
@@ -4231,7 +4248,7 @@ function homeServerFor(discordId) {
 const slashCommands = [
   mediaPanelCommand,
   new SlashCommandBuilder().setName('download').setDescription('Get a secure download link').addStringOption(o => o.setName('title').setDescription('Movie or show title').setRequired(true)).addIntegerOption(o => o.setName('season').setDescription('Season number').setMinValue(0).setMaxValue(99)).addIntegerOption(o => o.setName('episode').setDescription('Episode number').setMinValue(1).setMaxValue(999)).addBooleanOption(o => o.setName('one_time').setDescription('One-time download link')),
-  new SlashCommandBuilder().setName('request').setDescription('Request a movie or show (searches Seerr)').addStringOption(o => o.setName('title').setDescription('Start typing to search — pick from the list').setRequired(true).setAutocomplete(true)).addBooleanOption(o => o.setName('is4k').setDescription('Request the 4K version')).addStringOption(o => o.setName('seasons').setDescription('TV only: "all" (default), a season number, or a list like 1,3,5')),
+  new SlashCommandBuilder().setName('request').setDescription('Request a movie or show (searches Seerr)').addStringOption(o => o.setName('title').setDescription('Start typing to search — pick from the list').setRequired(true).setAutocomplete(true)).addBooleanOption(o => o.setName('is4k').setDescription('Request the 4K version')).addStringOption(o => o.setName('seasons').setDescription('TV only: "all" (default), a season number, or a list like 1,3,5')).addBooleanOption(o => o.setName('asian_content').setDescription('Asian-origin (Korean/Japanese/Chinese/Indian/etc.)? Helps routing — leave blank if unsure')),
   new SlashCommandBuilder().setName('link').setDescription('Link a user to Plex email (invites + sets up Seerr)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)).addStringOption(o => o.setName('email').setDescription('Plex email — start typing to search linked/Plex users').setRequired(true).setAutocomplete(true)),
   new SlashCommandBuilder().setName('unlink').setDescription('Unlink a user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('User').setRequired(true)),
   new SlashCommandBuilder().setName('users').setDescription('List linked users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -4274,7 +4291,14 @@ const slashCommands = [
     .addStringOption(o => o.setName('details').setDescription('Describe the problem').setRequired(true)),
   new SlashCommandBuilder().setName('watching').setDescription('Show current Plex playback (via Tautulli)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('indexers').setDescription('Prowlarr indexer + Byparr health').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-  new SlashCommandBuilder().setName('debrid').setDescription('Premiumize account + transfer status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('debrid').setDescription('Premiumize account + transfer status, and importing manually-added cloud downloads').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(s => s.setName('status').setDescription('Premiumize account usage + active/failed transfers'))
+    .addSubcommand(s => s.setName('import').setDescription('Trigger a Sonarr/Radarr import scan of the Premiumize downloads folder')
+      .addStringOption(o => o.setName('target').setDescription('Which arr should import').setRequired(true).addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }))
+      .addStringOption(o => o.setName('folder').setDescription('Subfolder of the Premiumize downloads folder (default: the whole folder)'))
+      .addStringOption(o => o.setName('mode').setDescription('move (default, cleans up the folder) or copy (leaves the files in place)').addChoices({ name: 'move', value: 'move' }, { name: 'copy', value: 'copy' })))
+    .addSubcommand(s => s.setName('staging').setDescription('Why-won\'t-it-import report: per-folder match/rejection summary of the Premiumize downloads folder')
+      .addStringOption(o => o.setName('target').setDescription('Which arr to ask (default sonarr)').addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }))),
   new SlashCommandBuilder().setName('avistaz').setDescription('AvistaZ direct grab (Prowlarr search → seedbox rTorrent)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('search').setDescription('Search AvistaZ and pick a release to send to the seedbox')
       .addStringOption(o => o.setName('title').setDescription('Title to search for').setRequired(true))
@@ -5230,6 +5254,11 @@ async function handleRequestCommand(interaction) {
   await interaction.deferReply({ ephemeral: true });
 
   const is4k = interaction.options.getBoolean('is4k') || false;
+  // Null when the requester left it blank ("unsure") — a real third state, not false. The
+  // automatic TMDB-based guess (assessAsianOrigin) can come back 'unknown' too, and an admin
+  // approving the request doesn't necessarily know either; this is the requester's own read on
+  // it, shown alongside that automatic guess on the approval notice.
+  const asianHint = interaction.options.getBoolean('asian_content');
   const raw = String(interaction.options.getString('title') || '').trim();
   // Autocomplete picks arrive as "movie:<tmdbId>:<title>"; free-typed text falls back to search.
   let mediaType, tmdbId, label;
@@ -5350,7 +5379,7 @@ async function handleRequestCommand(interaction) {
     // and self-enforcing rather than resting entirely on admin memory.
     const quotaBlock = await quotaBlockReason(seerrUserId, interaction.user.id, mediaType);
     if (quotaBlock) return interaction.editReply(quotaBlock);
-    const payload = { discordId: interaction.user.id, email: row.email, seerrUserId, mediaType, tmdbId, is4k, label, seasons };
+    const payload = { discordId: interaction.user.id, email: row.email, seerrUserId, mediaType, tmdbId, is4k, label, seasons, asianHint };
     const nonce = stashPendingRequest(payload);
     const posted = await postPendingRequestNotice(nonce, payload)
       .catch(err => { log.warn(`Approval notice failed: ${err.message}`); return false; });
@@ -5687,6 +5716,7 @@ async function handleDoctorCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
   await interaction.deferReply({ ephemeral: true });
   const checks = await runEdgeDiagnostics({ live: true });
+  checks.push(...await checkPublicOriginReadiness());
   const active = listActiveStageJobs();
   const copying = active.filter(j => j.status === 'copying');
   checks.push({
@@ -6704,6 +6734,27 @@ async function handleIndexersCommand(interaction) {
 // /debrid — Premiumize account usage + active transfers.
 async function handleDebridCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
+  const sub = interaction.options.getSubcommand();
+
+  // Manual import trigger + staging report for the folder a Premiumize downloader (e.g.
+  // Premiumizearr) syncs completed cloud transfers into — for multi-season packs dropped
+  // straight into Premiumize's "My Files" that the arr's own watch-folder scan didn't pick up.
+  // Shares the same helpers as /rtorrent import + /rtorrent staging, just pointed at the
+  // PREMIUMIZE_STAGING_PATH/PREMIUMIZE_IMPORT_PATH pair instead of the GRAB_* one.
+  if (sub === 'import') {
+    return runManualImportSub(interaction, {
+      stagingPath: CONFIG.PREMIUMIZE_STAGING_PATH, importPath: CONFIG.PREMIUMIZE_IMPORT_PATH,
+      sourceLabel: 'Premiumize', auditAction: 'debrid_manual_import',
+    });
+  }
+  if (sub === 'staging') {
+    return runStagingReportSub(interaction, {
+      importPath: CONFIG.PREMIUMIZE_IMPORT_PATH, sourceLabel: 'Premiumize', title: '🩺 Staging Report (Premiumize)',
+      importHint: '/debrid import',
+    });
+  }
+
+  // sub === 'status'
   await interaction.deferReply({ ephemeral: true });
   if (!premiumizeConfigured()) return interaction.editReply('❌ Premiumize isn\'t configured — set `PREMIUMIZE_API_KEY`.');
   try {
@@ -6815,6 +6866,134 @@ async function handleAvistazCommand(interaction) {
   } catch (err) {
     audit('external_api_error', { provider: 'prowlarr', error: err.message, action: 'avistaz_search' });
     return interaction.editReply(`❌ AvistaZ search failed: ${err.message}`);
+  }
+}
+
+// Groups an arr's raw /manualimport preview by top-level folder, shared by the staging report
+// and the partial-match import gate below.
+function summarizeManualImportPreview(preview, target) {
+  const byFolder = new Map();
+  let matchedFiles = 0;
+  for (const f of preview) {
+    const rel = f.relativePath || f.path || '';
+    const folder = rel.includes('/') ? rel.split('/')[0] : '(loose files)';
+    const b = byFolder.get(folder) || { files: 0, matched: 0, reasons: new Map() };
+    b.files++;
+    const isMatched = (target === 'radarr' ? !!f.movie : !!f.series) && !(f.rejections || []).length;
+    if (isMatched) { b.matched++; matchedFiles++; }
+    for (const rej of (f.rejections || [])) b.reasons.set(rej.reason, (b.reasons.get(rej.reason) || 0) + 1);
+    byFolder.set(folder, b);
+  }
+  const folders = [...byFolder.entries()].map(([folder, b]) => ({
+    folder, files: b.files, matched: b.matched,
+    rejections: [...b.reasons.entries()].map(([r, n]) => `${r} ×${n}`).join('; '),
+  }));
+  return { totalFiles: preview.length, matchedFiles, unmatchedFiles: preview.length - matchedFiles, folders };
+}
+
+// Manual import trigger, shared by /rtorrent import (seedbox staging via GRAB_STAGING_PATH/
+// GRAB_IMPORT_PATH) and /debrid import (a Premiumize downloader's DownloadsDirectory via
+// PREMIUMIZE_STAGING_PATH/PREMIUMIZE_IMPORT_PATH) — hand a folder straight to the arr for files
+// that got there outside the normal pipeline (manual rclone copies, a season pack dropped
+// straight into Premiumize's "My Files" that never auto-imported). mode:copy leaves the source
+// files in place; mode:move (default) is what the automated pipelines themselves use.
+async function runManualImportSub(interaction, { stagingPath, importPath, sourceLabel, auditAction }) {
+  if (!stagingPath || !importPath) return interaction.reply({ content: `❌ ${sourceLabel} isn't configured (needs both a staging and an import path).`, ephemeral: true });
+  const target = interaction.options.getString('target');
+  const arr = target === 'sonarr'
+    ? { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, cmd: 'DownloadedEpisodesScan', label: 'Sonarr' }
+    : { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr' };
+  if (!arr.url) return interaction.reply({ content: `❌ ${arr.label} isn't configured.`, ephemeral: true });
+  // Strip wrapping quotes: Discord passes option strings verbatim, and admins used to
+  // shell quoting will type folder:"Name With Spaces" — the quotes are not part of the name.
+  const clean = String(interaction.options.getString('folder') || '').trim().replace(/^["']+|["']+$/g, '').replace(/^\/+|\/+$/g, '');
+  if (clean && clean.split('/').some(p => !p || p === '.' || p === '..')) return interaction.reply({ content: '❌ Unsafe folder path.', ephemeral: true });
+  if (clean === '.incoming' || clean.startsWith('.incoming/')) return interaction.reply({ content: '❌ `.incoming` holds in-flight copies — never import from there.', ephemeral: true });
+  const mode = interaction.options.getString('mode') === 'copy' ? 'Copy' : 'Move';
+  await interaction.deferReply({ ephemeral: true });
+  // The bot and the arr see the same share at different mount points; existence is
+  // checked through the bot's view before asking the arr to scan its own.
+  const localPath = clean ? path.join(stagingPath, clean) : stagingPath;
+  if (!fs.existsSync(localPath)) return interaction.editReply(`❌ \`${clean || '(folder root)'}\` doesn't exist under \`${stagingPath}\`.`);
+  if (!clean) {
+    const incoming = path.join(stagingPath, '.incoming');
+    const busy = fs.existsSync(incoming) && fs.readdirSync(incoming).length > 0;
+    if (busy) return interaction.editReply('❌ A transfer is mid-copy (`.incoming` isn\'t empty) — scanning the whole folder now could import half-copied files. Scan a specific `folder:`, or wait for the transfers to finish.');
+  }
+  const fullImportPath = clean ? `${importPath}/${clean}` : importPath;
+  // Move deletes/relocates the source once the arr considers the download "handled" — including
+  // any files that never matched, as long as they share the scanned folder with ones that did.
+  // That's exactly how one season inside a multi-season pack gets swept away unimported the
+  // moment a different season in the same folder imports cleanly. Copy is non-destructive, so
+  // only Move needs the check.
+  if (mode === 'Move') {
+    const gap = await axios.get(`${arr.url}/api/v3/manualimport`, {
+      params: { folder: fullImportPath, filterExistingFiles: false }, headers: { 'X-Api-Key': arr.key }, timeout: 120000,
+    }).then(r => summarizeManualImportPreview(r.data || [], target)).catch(() => null);
+    if (gap && gap.totalFiles > 0 && gap.unmatchedFiles > 0) {
+      const nonce = stashGrabOffer({ kind: 'manual-import-confirm', stagingPath, importPath, sourceLabel, auditAction, target, clean, fullImportPath, localPath });
+      const lines = gap.folders.map(f => `• **${f.folder.slice(0, 80)}** — ${f.matched}/${f.files} matched${f.rejections ? ` (${f.rejections})` : ''}`);
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`manual_import_confirm:${nonce}`).setLabel(`Import Anyway (${gap.matchedFiles}/${gap.totalFiles} matched)`).setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`manual_import_cancel:${nonce}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
+      );
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
+        .setTitle('⚠️ Partial match — importing now loses the rest')
+        .setDescription(`\`${fullImportPath}\` has **${gap.unmatchedFiles} of ${gap.totalFiles}** file(s) that won't import. ${arr.label} clears the whole folder once it considers this download handled — those files disappear with it, not just the ones that failed to match.\n\n${lines.join('\n').slice(0, 3000)}\n\nFix the mismatch first (add the missing series/season, split it into per-season folders) — or use \`mode:copy\` to import without touching the source — or click through if losing the unmatched files is fine.`)], components: [row] });
+    }
+  }
+  return executeManualImport(interaction, { arr, target, fullImportPath, localPath, clean, mode, sourceLabel, auditAction });
+}
+
+// The actual scan trigger, split out so the partial-match confirm button can re-enter it after
+// the warning above without duplicating the axios call and post-scan verification.
+async function executeManualImport(interaction, { arr, target, fullImportPath, localPath, clean, mode, sourceLabel, auditAction }) {
+  try {
+    const res = await axios.post(`${arr.url}/api/v3/command`, { name: arr.cmd, path: fullImportPath, importMode: mode },
+      { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
+    audit(auditAction, { actorDiscordId: interaction.user.id, target, path: fullImportPath, mode });
+    // Same post-scan verification the grab pipeline gets: silent declines surface as the
+    // decline alert (with the Map to a Series… wizard for TV) instead of nothing happening.
+    // Copy mode is excluded — files staying put is expected there, not a decline.
+    if (mode === 'Move') {
+      verifyArrImport({ id: null, title: clean || `${sourceLabel} import`, media_type: target === 'sonarr' ? 'tv' : 'movie' },
+        { url: arr.url, key: arr.key, label: arr.label }, res.data?.id, fullImportPath, localPath)
+        .catch(err => log.warn(`Manual-import verification failed: ${err.message}`));
+    }
+    // embeds/components explicitly cleared: this can be re-entered from the partial-match
+    // confirm button, whose message still carries the warning embed and Import Anyway/Cancel
+    // buttons — a content-only edit would leave those stuck on screen.
+    return interaction.editReply({ content: `📦 ${arr.label} is scanning \`${fullImportPath}\` (import mode: **${mode}**, command #${res.data?.id ?? '?'}). ${mode === 'Copy' ? 'The source files stay where they are.' : 'Imported files are moved out — if the import is declined, an alert with next steps lands in the downloads channel.'}`, embeds: [], components: [] });
+  } catch (err) {
+    audit('external_api_error', { provider: target, error: err.message, action: auditAction });
+    return interaction.editReply({ content: `❌ ${arr.label} command failed: ${err.message}`, embeds: [], components: [] });
+  }
+}
+
+// The "why won't it import" report, shared by /rtorrent staging and /debrid staging: the arr's
+// own manual-import preview, aggregated per folder — match counts and rejection reasons at a
+// glance, no API spelunking.
+async function runStagingReportSub(interaction, { importPath, sourceLabel, title, importHint }) {
+  if (!importPath) return interaction.reply({ content: `❌ ${sourceLabel} isn't configured (needs an import path).`, ephemeral: true });
+  const target = interaction.options.getString('target') || 'sonarr';
+  const arr = arrForMediaType(target === 'radarr' ? 'movie' : 'tv');
+  if (!arr.url) return interaction.reply({ content: `❌ ${arr.label} isn't configured.`, ephemeral: true });
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    const preview = await axios.get(`${arr.url}/api/v3/manualimport`, {
+      params: { folder: importPath, filterExistingFiles: false }, headers: { 'X-Api-Key': arr.key }, timeout: 120000,
+    }).then(r => r.data || []);
+    if (!preview.length) return interaction.editReply(`${sourceLabel} looks empty to ${arr.label} — nothing at \`${importPath}\`.`);
+    const { folders } = summarizeManualImportPreview(preview, target);
+    const lines = folders.map(f => {
+      const verdict = !f.rejections && f.matched === f.files ? '✅ importable' : f.rejections ? `⚠️ ${f.rejections}` : '⚠️ some files unmatched';
+      return `**${f.folder.slice(0, 80)}** — ${f.files} file(s), ${f.matched} matched\n${verdict}`;
+    });
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle(title)
+      .setDescription(`${lines.join('\n\n')}\n\n✅ folders import with \`${importHint}\`; "Unknown Series" needs the series added/matched in ${arr.label}; "Invalid season or episode" usually means the series type or numbering doesn't fit (try Series Type: Anime for absolute-numbered dramas); already-imported leftovers show as matched with no rejections.`.slice(0, 4000))] });
+  } catch (err) {
+    return interaction.editReply(`❌ ${arr.label} manual-import preview failed: ${err.message}`);
   }
 }
 
@@ -6988,86 +7167,19 @@ async function handleRtorrentCommand(interaction) {
     }
   }
 
-  // Manual import trigger: hand a staging folder straight to the arr — for files that got
-  // there outside the pipeline (manual rclone copies, the pre-adoption era). mode:copy
-  // leaves the staging files in place; mode:move (default) is what the pipeline itself uses.
+  // Manual import trigger + staging report share their implementation with /debrid import and
+  // /debrid staging — see runManualImportSub/runStagingReportSub.
   if (sub === 'import') {
-    if (!CONFIG.GRAB_STAGING_PATH || !CONFIG.GRAB_IMPORT_PATH) return interaction.reply({ content: '❌ Staging isn\'t configured (`GRAB_STAGING_PATH` + `GRAB_IMPORT_PATH`).', ephemeral: true });
-    const target = interaction.options.getString('target');
-    const arr = target === 'sonarr'
-      ? { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, cmd: 'DownloadedEpisodesScan', label: 'Sonarr' }
-      : { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr' };
-    if (!arr.url) return interaction.reply({ content: `❌ ${arr.label} isn't configured.`, ephemeral: true });
-    // Strip wrapping quotes: Discord passes option strings verbatim, and admins used to
-    // shell quoting will type folder:"Name With Spaces" — the quotes are not part of the name.
-    const clean = String(interaction.options.getString('folder') || '').trim().replace(/^["']+|["']+$/g, '').replace(/^\/+|\/+$/g, '');
-    if (clean && clean.split('/').some(p => !p || p === '.' || p === '..')) return interaction.reply({ content: '❌ Unsafe folder path.', ephemeral: true });
-    if (clean === '.incoming' || clean.startsWith('.incoming/')) return interaction.reply({ content: '❌ `.incoming` holds in-flight copies — never import from there.', ephemeral: true });
-    const mode = interaction.options.getString('mode') === 'copy' ? 'Copy' : 'Move';
-    await interaction.deferReply({ ephemeral: true });
-    // The bot and the arr see the same share at different mount points; existence is
-    // checked through the bot's view before asking the arr to scan its own.
-    const localPath = clean ? path.join(CONFIG.GRAB_STAGING_PATH, clean) : CONFIG.GRAB_STAGING_PATH;
-    if (!fs.existsSync(localPath)) return interaction.editReply(`❌ \`${clean || '(staging root)'}\` doesn't exist under \`${CONFIG.GRAB_STAGING_PATH}\`.`);
-    if (!clean) {
-      const incoming = path.join(CONFIG.GRAB_STAGING_PATH, '.incoming');
-      const busy = fs.existsSync(incoming) && fs.readdirSync(incoming).length > 0;
-      if (busy) return interaction.editReply('❌ A transfer is mid-copy (`.incoming` isn\'t empty) — scanning the whole staging folder now could import half-copied files. Scan a specific `folder:`, or wait for the transfers to finish.');
-    }
-    const importPath = clean ? `${CONFIG.GRAB_IMPORT_PATH}/${clean}` : CONFIG.GRAB_IMPORT_PATH;
-    try {
-      const res = await axios.post(`${arr.url}/api/v3/command`, { name: arr.cmd, path: importPath, importMode: mode },
-        { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
-      audit('rtorrent_manual_import', { actorDiscordId: interaction.user.id, target, path: importPath, mode });
-      // Same post-scan verification the grab pipeline gets: silent declines surface as the
-      // decline alert (with the Map to a Series… wizard for TV) instead of nothing happening.
-      // Copy mode is excluded — files staying put is expected there, not a decline.
-      if (mode === 'Move') {
-        verifyArrImport({ id: null, title: clean || 'staging import', media_type: target === 'sonarr' ? 'tv' : 'movie' },
-          { url: arr.url, key: arr.key, label: arr.label }, res.data?.id, importPath, localPath)
-          .catch(err => log.warn(`Manual-import verification failed: ${err.message}`));
-      }
-      return interaction.editReply(`📦 ${arr.label} is scanning \`${importPath}\` (import mode: **${mode}**, command #${res.data?.id ?? '?'}). ${mode === 'Copy' ? 'The staging files stay where they are.' : 'Imported files are moved out of staging — if the import is declined, an alert with next steps lands in the downloads channel.'}`);
-    } catch (err) {
-      audit('external_api_error', { provider: target, error: err.message, action: 'rtorrent_manual_import' });
-      return interaction.editReply(`❌ ${arr.label} command failed: ${err.message}`);
-    }
+    return runManualImportSub(interaction, {
+      stagingPath: CONFIG.GRAB_STAGING_PATH, importPath: CONFIG.GRAB_IMPORT_PATH,
+      sourceLabel: 'seedbox staging', auditAction: 'rtorrent_manual_import',
+    });
   }
-
-  // The "why won't it import" report: the arr's own manual-import preview, aggregated per
-  // staging folder — match counts and rejection reasons at a glance, no API spelunking.
   if (sub === 'staging') {
-    if (!CONFIG.GRAB_IMPORT_PATH) return interaction.reply({ content: '❌ Staging isn\'t configured (`GRAB_IMPORT_PATH`).', ephemeral: true });
-    const target = interaction.options.getString('target') || 'sonarr';
-    const arr = arrForMediaType(target === 'radarr' ? 'movie' : 'tv');
-    if (!arr.url) return interaction.reply({ content: `❌ ${arr.label} isn't configured.`, ephemeral: true });
-    await interaction.deferReply({ ephemeral: true });
-    try {
-      const preview = await axios.get(`${arr.url}/api/v3/manualimport`, {
-        params: { folder: CONFIG.GRAB_IMPORT_PATH, filterExistingFiles: false }, headers: { 'X-Api-Key': arr.key }, timeout: 120000,
-      }).then(r => r.data || []);
-      if (!preview.length) return interaction.editReply(`Staging looks empty to ${arr.label} — nothing at \`${CONFIG.GRAB_IMPORT_PATH}\`.`);
-      const byFolder = new Map();
-      for (const f of preview) {
-        const rel = f.relativePath || f.path || '';
-        const folder = rel.includes('/') ? rel.split('/')[0] : '(loose files)';
-        const b = byFolder.get(folder) || { files: 0, matched: 0, reasons: new Map() };
-        b.files++;
-        if (target === 'radarr' ? f.movie : f.series) b.matched++;
-        for (const rej of (f.rejections || [])) b.reasons.set(rej.reason, (b.reasons.get(rej.reason) || 0) + 1);
-        byFolder.set(folder, b);
-      }
-      const lines = [...byFolder.entries()].map(([folder, b]) => {
-        const rej = [...b.reasons.entries()].map(([r, n]) => `${r} ×${n}`).join('; ');
-        const verdict = !b.reasons.size && b.matched === b.files ? '✅ importable' : rej ? `⚠️ ${rej}` : '⚠️ some files unmatched';
-        return `**${folder.slice(0, 80)}** — ${b.files} file(s), ${b.matched} matched\n${verdict}`;
-      });
-      return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
-        .setTitle(`🩺 Staging Report (${arr.label})`)
-        .setDescription(`${lines.join('\n\n')}\n\n✅ folders import with \`/rtorrent import\`; "Unknown Series" needs the series added/matched in ${arr.label}; "Invalid season or episode" usually means the series type or numbering doesn't fit (try Series Type: Anime for absolute-numbered dramas); already-imported leftovers show as matched with no rejections.`.slice(0, 4000))] });
-    } catch (err) {
-      return interaction.editReply(`❌ ${arr.label} manual-import preview failed: ${err.message}`);
-    }
+    return runStagingReportSub(interaction, {
+      importPath: CONFIG.GRAB_IMPORT_PATH, sourceLabel: 'seedbox staging', title: '🩺 Staging Report',
+      importHint: '/rtorrent import',
+    });
   }
 
   // sub === 'adopted'
@@ -7618,7 +7730,7 @@ async function handleHelpCommand(interaction) {
       '`/seerr-test` — Self-test Seerr Discord linking with a throwaway user',
       '`/watching` — Current Plex playback (via Tautulli)',
       '`/indexers` — Prowlarr indexer + Byparr health',
-      '`/debrid` — Premiumize account + transfer status',
+      '`/debrid` — Premiumize account + transfer status, plus importing manually-added cloud downloads',
       '`/cleanup-suggestions` — Largest/oldest media that could be cleaned up',
     ];
     const infrastructureCommands = [
@@ -8206,7 +8318,7 @@ async function handleButton(interaction) {
     return interaction.showModal(requestAccessModal(server));
   }
 
-  if (['plex_approve', 'plex_approve_ts', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'trust_undo', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'season_grab', 'adopt_do', 'adopt_bulk', 'adopt_cancel'].includes(action) && !isAdminInteraction(interaction)) {
+  if (['plex_approve', 'plex_approve_ts', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'trust_undo', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'season_grab', 'adopt_do', 'adopt_bulk', 'adopt_cancel', 'manual_import_confirm', 'manual_import_cancel'].includes(action) && !isAdminInteraction(interaction)) {
     return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
   }
 
@@ -8906,6 +9018,25 @@ async function handleButton(interaction) {
       .setDescription(`Dismissed by <@${interaction.user.id}> — nothing was changed in rTorrent. \`/rtorrent ignore\` silences a torrent for good.`)], components: [] });
   }
 
+  // Follow-up to the partial-match warning in runManualImportSub (/rtorrent import,
+  // /debrid import) — Import Anyway re-enters the same scan, Cancel just drops the offer.
+  if (action === 'manual_import_confirm' || action === 'manual_import_cancel') {
+    const offer = takeGrabOffer(parts[0]);
+    if (!offer) return interaction.update({ content: 'ℹ️ Already handled (or expired).', embeds: [], components: [] });
+    if (action === 'manual_import_cancel') {
+      return interaction.update({ embeds: [brandedEmbed(COLORS.INFO)
+        .setTitle('Import Cancelled')
+        .setDescription(`Dismissed by <@${interaction.user.id}> — \`${offer.fullImportPath}\` was left alone. Fix the mismatch and re-run \`${offer.sourceLabel === 'Premiumize' ? '/debrid import' : '/rtorrent import'}\`, or use \`mode:copy\`.`)], components: [] });
+    }
+    await interaction.deferUpdate();
+    const arr = offer.target === 'sonarr'
+      ? { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, cmd: 'DownloadedEpisodesScan', label: 'Sonarr' }
+      : { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr' };
+    if (!arr.url) return interaction.editReply({ content: `❌ ${arr.label} isn't configured.`, embeds: [], components: [] });
+    audit('manual_import_partial_confirmed', { actorDiscordId: interaction.user.id, path: offer.fullImportPath, target: offer.target });
+    return executeManualImport(interaction, { arr, target: offer.target, fullImportPath: offer.fullImportPath, localPath: offer.localPath, clean: offer.clean, mode: 'Move', sourceLabel: offer.sourceLabel, auditAction: offer.auditAction });
+  }
+
   if (['stuck_retry', 'stuck_rm', 'stuck_ignore'].includes(action)) {
     if (!isAdminInteraction(interaction)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
     // groupKey may contain colons (`label:s:<seriesId>:<season>` for a consolidated season,
@@ -9221,7 +9352,7 @@ function startExpressServer() {
   registerTierAgentRoutes(app, {
     config: CONFIG,
     getTierAgentTokenHash, sha256, safeEqual, audit, getSetting, setSetting,
-    getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, recordTierErrorAlertState, markTierPlanConverged,
+    getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, recordTierErrorAlertState, recordTierMergedMountDiagnostics, markTierPlanConverged,
     getTierNode, listTierNodeFiles, replaceTierNodeFiles, parseAtimeMask, maskSuspectAtimes,
     notifyTelemetryTransition: ({ node, telemetry, telemetryHealth, previousTelemetryLevel }) => {
       if (!telemetry || telemetryHealth.level === previousTelemetryLevel) return;
@@ -9284,6 +9415,7 @@ function startExpressServer() {
       renderLogin,
       listPasskeys,
       passkeyService,
+      passkeyOrigin: PASSKEY_RP.origin,
       safeEqual,
       audit,
       renamePasskey,
@@ -9296,6 +9428,7 @@ function startExpressServer() {
       CONFIG,
       PASSKEY_RP,
       arrSources,
+      dashboardCache,
       buildSyncPreview,
       canEscalate,
       dashboardActionError,
@@ -9345,6 +9478,7 @@ function startExpressServer() {
       renderTable,
       renderTierNodeSetup,
       runEdgeDiagnostics,
+      checkPublicOriginReadiness,
       runtimeSettings,
       searchDashboard,
       seasonAlertDashboardItems,
@@ -9355,300 +9489,57 @@ function startExpressServer() {
       tierNodeStatus,
       tunable,
     });
-    app.post('/admin/action/gate', rateLimit({
-      windowMs: 15 * 60000,
-      limit: 30,
-      keyGenerator: httpRateLimitKey,
-      standardHeaders: 'draft-8',
-      legacyHeaders: false,
-      handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many dashboard actions. Wait a moment and try again.' }),
-    }), dashboardAuth, discordReadyGuard, async (req, res) => {
-      const operation = req.body?.operation;
-      const nonce = String(req.body?.nonce || '');
-      if (!['approve', 'approve_az', 'deny'].includes(operation) || !/^[0-9a-f]{8}$/.test(nonce)) {
-        return res.status(400).json({ ok: false, error: 'Invalid pending-request action.', retryable: false });
-      }
-      try {
-        const actor = dashboardGateActor(req);
-        const result = operation === 'deny'
-          ? await denyGatedRequest({ nonce, actor })
-          : await approveGatedRequest({ nonce, actor, azPreAuth: operation === 'approve_az' });
-        const response = dashboardGateResponse(result, operation);
-        const status = response.ok ? 200 : (result.restashed ? 502 : 409);
-        return res.status(status).json(response);
-      } catch (err) {
-        return res.status(500).json({ ok: false, error: dashboardActionError(err), retryable: false });
-      }
+    registerDashboardMutationRoutes(app, {
+      CONFIG,
+      audit,
+      dashboardCache,
+      dashboardActionError,
+      dashboardActor,
+      dashboardAuth,
+      dashboardGateActor,
+      dashboardGateResponse,
+      db,
+      discordReadyGuard,
+      approveGatedRequest,
+      denyGatedRequest,
+      clearMediaPriority,
+      clearSeasonAlertState,
+      findAvistazIndexer,
+      getArrTagId,
+      getEscalationById,
+      getSeasonEpisodeFallback,
+      getSeasonSearchTimes,
+      getSeriesEpisodes,
+      getTierNode,
+      grabConfigured,
+      grabDailyAllowance,
+      httpRateLimitKey,
+      listMediaPriority,
+      listSonarrSeries,
+      monitorSeasonSearch,
+      nextRank,
+      pad,
+      prepareTierNodeInstall,
+      rateLimit,
+      recordSeasonSearch,
+      replaceTierNodeFolders,
+      revokeAllDownloadLinks,
+      runEscalation,
+      runSeasonDirectGrab,
+      runtimeSettings,
+      seasonSearchCooldown,
+      setMediaPriority,
+      setTierAgentToken,
+      settingsStore,
+      sonarrSeriesAliases,
+      tierInstallCommand,
+      triggerEpisodeSearch,
+      triggerSeasonSearch,
+      tunable,
+      upsertTierNode,
+      usesDirectGrabEscalation,
+      getAutomationRegistry: () => automationRegistry,
     });
-    app.post('/admin/action/tier-node', dashboardAuth, (req, res) => {
-      const name = String(req.body?.name || '').trim().toLowerCase();
-      const usableGb = Number(req.body?.usableGb);
-      const access = req.body?.access;
-      const demandSource = req.body?.demandSource;
-      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name) || !Number.isInteger(usableGb) || usableGb < 1
-        || !['open', 'restricted'].includes(access) || !['tautulli', 'plex', 'atime'].includes(demandSource)) {
-        audit('dashboard_tier_node_upserted', { ...dashboardActor(req), ok: false, node: name || null, reason: 'invalid_request' });
-        return res.status(400).json({ ok: false, error: 'Enter a valid node name, capacity, access, and demand source.' });
-      }
-      const { created, node } = upsertTierNode({ name, usable_bytes: usableGb * 1024 ** 3, access, demand_source: demandSource, full: req.body?.full === true });
-      audit('dashboard_tier_node_upserted', { ...dashboardActor(req), ok: true, node: name, created });
-      return res.json({ ok: true, node: { name: node.name }, message: created ? 'Node registered.' : 'Node updated.' });
-    });
-    app.post('/admin/action/tier-token', dashboardAuth, (req, res) => {
-      const node = String(req.body?.node || '').trim().toLowerCase();
-      const legacyFolderRoot = String(req.body?.folderRoot || '').trim();
-      const legacyFolderId = String(req.body?.syncthingFolderId || '').trim();
-      if (req.body?.confirmed !== true) return res.status(400).json({ ok: false, error: 'Token rotation confirmation is required.' });
-      if (!getTierNode(node)) return res.status(404).json({ ok: false, error: 'Node not found.' });
-      let setup;
-      try {
-        setup = prepareTierNodeInstall({
-          ...req.body,
-          folders: req.body?.folders || [{ id: legacyFolderId, path: legacyFolderRoot }],
-        });
-      }
-      catch (err) { return res.status(400).json({ ok: false, error: err.message }); }
-      const { folders, syncthingApiKey, mountRoot, mountMarker } = setup;
-      upsertTierNode({ name: node, folder_root: folders[0].path });
-      replaceTierNodeFolders(node, folders);
-      const token = setTierAgentToken(node);
-      const botUrl = CONFIG.TUNNEL_DOMAIN ? `https://${CONFIG.TUNNEL_DOMAIN}` : `http://127.0.0.1:${CONFIG.PORT}`;
-      const command = tierInstallCommand({ botUrl, node, token, folders, syncthingApiKey, mountRoot, mountMarker });
-      audit('dashboard_tier_agent_token_rotated', { ...dashboardActor(req), node, folderCount: folders.length });
-      res.setHeader('Cache-Control', 'no-store');
-      return res.json({ ok: true, command });
-    });
-    app.post('/admin/action/search', dashboardAuth, async (req, res) => {
-      const kind = req.body?.kind;
-      const seriesId = Number(req.body?.seriesId);
-      const seasonNumber = Number(req.body?.seasonNumber);
-      const episodeId = Number(req.body?.episodeId);
-      if (kind === 'rearm-alert') {
-        if (!Number.isInteger(seriesId) || seriesId < 1 || !Number.isInteger(seasonNumber) || seasonNumber < 0) {
-          audit('dashboard_season_alert_rearmed', { ...dashboardActor(req), ok: false, reason: 'invalid_request' });
-          return res.status(400).json({ ok: false, error: 'Valid series and season numbers are required.' });
-        }
-        const changed = clearSeasonAlertState(seriesId, seasonNumber);
-        audit('dashboard_season_alert_rearmed', { ...dashboardActor(req), ok: true, seriesId, seasonNumber, changed });
-        return res.json({ ok: true, message: changed ? 'Season-search alerts re-armed.' : 'Season-search alerts were already armed.' });
-      }
-      if (!['season', 'episode'].includes(kind) || !Number.isInteger(seriesId)) {
-        audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'invalid_request' });
-        return res.status(400).json({ ok: false, error: 'Invalid search request.' });
-      }
-      try {
-        const series = (await listSonarrSeries()).find(row => Number(row.id) === seriesId);
-        if (!series) throw new Error(`Sonarr series ${seriesId} was not found`);
-        const episodes = await getSeriesEpisodes(seriesId);
-        if (kind === 'season') {
-          const missing = episodes.filter(ep => Number(ep.seasonNumber) === seasonNumber && ep.monitored && !ep.hasFile
-            && Date.parse(ep.airDateUtc || ep.airDate || '') <= Date.now());
-          if (!Number.isInteger(seasonNumber) || !missing.length) throw new Error(`Sonarr season ${seasonNumber} has no aired missing episodes`);
-          const fallback = getSeasonEpisodeFallback(seriesId, seasonNumber);
-          if (fallback) {
-            const error = `A bounded episode fallback already owns this season (${fallback.state})`;
-            audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'episode_fallback_active', seriesId, seasonNumber, fallbackState: fallback.state });
-            return res.status(409).json({ ok: false, error });
-          }
-          // An admin explicitly clicking "Search Now" is a deliberate one-off override, not the
-          // automated sweep — force:true skips the cooldown (including any stall backoff) rather
-          // than making them wait out a multi-day backoff they just decided isn't warranted.
-          // Without force, the plain cooldown still applies so an accidental double-click isn't
-          // silently overridden.
-          const force = !!req.body?.force;
-          const { cooling, nextEligible } = force ? { cooling: false } : seasonSearchCooldown(getSeasonSearchTimes(seriesId)[seasonNumber]);
-          if (cooling) {
-            const error = `Season search is cooling down until ${new Date(nextEligible).toISOString()}`;
-            audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'cooldown', seriesId, seasonNumber, nextEligible });
-            return res.status(409).json({ ok: false, error, nextEligible, canOverride: true });
-          }
-          // Mirror the automated season-pack sweep's avistaz-vs-sonarr decision. This button used
-          // to always call Sonarr's plain SeasonSearch, silently ignoring the AvistaZ tag — an
-          // override on a tagged show now actually searches AvistaZ instead of quietly falling
-          // back to the public-indexer route it exists to avoid.
-          const tagSource = { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, label: 'sonarr' };
-          const tagId = await getArrTagId(tagSource, CONFIG.AVISTAZ_TAG).catch(() => null);
-          const tagged = tagId != null && (series.tags || []).includes(tagId);
-          const directEnabled = tunable('SEASON_PACK_AVISTAZ_DIRECT') && grabConfigured();
-          const indexer = tagged && directEnabled ? await findAvistazIndexer().catch(() => null) : null;
-          if (tagged && directEnabled && !indexer) {
-            audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'indexer_missing', seriesId, seasonNumber, title: series.title });
-            return res.status(409).json({ ok: false, error: `${series.title} is tagged for AvistaZ, but the AvistaZ indexer could not be found in Prowlarr — check AVISTAZ_INDEXER_NAME and the indexer's name there.` });
-          }
-          if (tagged && directEnabled && indexer) {
-            const allowance = grabDailyAllowance();
-            const result = await runSeasonDirectGrab({ series, season: { season: seasonNumber, missing: missing.length }, indexer, allowance });
-            clearSeasonAlertState(seriesId, seasonNumber);
-            recordSeasonSearch({ seriesId, seasonNumber, seriesTitle: series.title, missing: missing.length });
-            audit('dashboard_search', { ...dashboardActor(req), ok: result.status !== 'error', kind, seriesId, seasonNumber, title: series.title, route: 'avistaz', status: result.status, override: force });
-            const statusText = result.status === 'grabbed' ? result.detail
-              : result.status === 'offered' ? result.detail
-                : result.status === 'no_results' ? 'AvistaZ search completed but found no results.'
-                  : result.status === 'allowance' ? 'the daily AvistaZ grab allowance is exhausted for today.'
-                    : `AvistaZ search failed: ${result.error || 'unknown error'}`;
-            return res.json({ ok: result.status !== 'error', message: `${series.title} S${pad(seasonNumber)} — ${statusText}` });
-          }
-          const searchedAt = Date.now();
-          const command = await triggerSeasonSearch(seriesId, seasonNumber);
-          clearSeasonAlertState(seriesId, seasonNumber);
-          const stallCount = recordSeasonSearch({ seriesId, seasonNumber, seriesTitle: series.title, missing: missing.length });
-          monitorSeasonSearch({ seriesId, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber, missingAtSearch: missing.length, commandId: command?.id, searchedAt, stallCount });
-          audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, seasonNumber, title: series.title, route: 'sonarr', commandId: command?.id || null, override: force });
-          return res.json({ ok: true, message: `Sonarr accepted the S${pad(seasonNumber)} season search for ${series.title}.${force ? ' (cooldown overridden)' : ''}` });
-        }
-        const episode = episodes.find(ep => Number(ep.id) === episodeId && ep.monitored && !ep.hasFile
-          && Date.parse(ep.airDateUtc || ep.airDate || '') <= Date.now());
-        if (!Number.isInteger(episodeId) || !episode) throw new Error(`Sonarr episode ${episodeId} is not an aired missing episode in this series`);
-        await triggerEpisodeSearch([episodeId]);
-        audit('dashboard_search', { ...dashboardActor(req), ok: true, kind, seriesId, episodeId, title: series.title, seasonNumber: episode.seasonNumber, episodeNumber: episode.episodeNumber });
-        return res.json({ ok: true, message: `Sonarr accepted the S${pad(episode.seasonNumber)}E${pad(episode.episodeNumber)} search for ${series.title}.` });
-      } catch (err) {
-        const error = dashboardActionError(err);
-        audit('dashboard_search', { ...dashboardActor(req), ok: false, kind, seriesId, seasonNumber: Number.isInteger(seasonNumber) ? seasonNumber : null, episodeId: Number.isInteger(episodeId) ? episodeId : null, error });
-        return res.status(err?.response ? 502 : 400).json({ ok: false, error });
-      }
-    });
-
-    app.post('/admin/action/priority', dashboardAuth, (req, res) => {
-      const operation = req.body?.operation;
-      const key = String(req.body?.key || '');
-      if (!['pin', 'unpin', 'move'].includes(operation) || !/^(tvdb|tmdb):\d+$/.test(key)) {
-        audit('dashboard_priority', { ...dashboardActor(req), ok: false, operation, key, reason: 'invalid_request' });
-        return res.status(400).json({ ok: false, error: 'Invalid priority request.' });
-      }
-      const rows = listMediaPriority();
-      if (operation === 'pin') {
-        const mediaType = req.body?.mediaType;
-        const title = String(req.body?.title || '').trim();
-        if (!['tv', 'movie'].includes(mediaType) || !title) {
-          audit('dashboard_priority', { ...dashboardActor(req), ok: false, operation, key, reason: 'missing_media' });
-          return res.status(400).json({ ok: false, error: 'Media type and title are required.' });
-        }
-        setMediaPriority({ key, mediaType, title, rank: nextRank(rows), pinnedBy: 'dashboard' });
-      } else if (operation === 'unpin') {
-        clearMediaPriority(key);
-      } else {
-        const index = rows.findIndex(row => row.key === key);
-        const direction = Number(req.body?.direction);
-        if (index < 0 || ![-1, 1].includes(direction)) {
-          audit('dashboard_priority', { ...dashboardActor(req), ok: false, operation, key, reason: 'invalid_move' });
-          return res.status(400).json({ ok: false, error: 'Pinned title or direction is invalid.' });
-        }
-        const target = Math.max(0, Math.min(rows.length - 1, index + direction));
-        const [moved] = rows.splice(index, 1);
-        rows.splice(target, 0, moved);
-        const update = db.prepare('UPDATE media_priority SET rank = ? WHERE key = ?');
-        db.transaction(() => rows.forEach((row, rank) => update.run(rank + 1, row.key)))();
-      }
-      audit('dashboard_priority', { ...dashboardActor(req), ok: true, operation, key });
-      return res.json({ ok: true, message: operation === 'pin' ? 'Title pinned.' : operation === 'unpin' ? 'Title unpinned.' : 'Pinned order updated.' });
-    });
-
-    // A preview is authenticated but expensive: it reads the whole Sonarr series list and then
-    // walks episodes series by series. Held-down Enter on the Preview button, or a stuck bit of
-    // dashboard JS, would hammer Sonarr harder than the sweep it is previewing ever does.
-    app.post('/admin/action/sweep-preview', rateLimit({
-      windowMs: 60000,
-      limit: 20,
-      keyGenerator: httpRateLimitKey,
-      standardHeaders: 'draft-8',
-      legacyHeaders: false,
-      handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many previews. Wait a moment and try again.' }),
-    }), dashboardAuth, discordReadyGuard, async (req, res) => {
-      try {
-        const outcome = await automationRegistry.preview(req.body?.name, req.body?.values || {});
-        if (!outcome.ok) return res.status(outcome.busy ? 409 : 400).json({ ok: false, error: outcome.reason || 'Preview unavailable.' });
-        return res.json({ ok: true, items: outcome.result });
-      } catch (err) {
-        return res.status(400).json({ ok: false, error: dashboardActionError(err) });
-      }
-    });
-
-    app.post('/admin/action/sweep', rateLimit({
-      windowMs: 60000,
-      limit: 10,
-      keyGenerator: httpRateLimitKey,
-      standardHeaders: 'draft-8',
-      legacyHeaders: false,
-      handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many run-now requests. Wait a moment and try again.' }),
-    }), dashboardAuth, discordReadyGuard, async (req, res) => {
-      const name = req.body?.name;
-      if (!automationRegistry?.ids().includes(name)) {
-        audit('dashboard_sweep', { ...dashboardActor(req), ok: false, name, reason: 'invalid_sweep' });
-        return res.status(400).json({ ok: false, error: 'Unknown sweep.' });
-      }
-      try {
-        const outcome = await automationRegistry.run(name, { trigger: 'manual' });
-        if (!outcome.ok) {
-          const reason = outcome.busy ? 'already_running' : outcome.disabled ? 'disabled' : 'manual_unavailable';
-          audit('dashboard_sweep', { ...dashboardActor(req), ok: false, name, reason });
-          return res.status(outcome.busy ? 409 : 400).json({ ok: false, error: outcome.busy ? `${name} sweep is already running.` : outcome.reason });
-        }
-        const result = outcome.result || {};
-        const count = result.searched ?? result.acted ?? result.alerted ?? 0;
-        audit('dashboard_sweep', { ...dashboardActor(req), ok: true, name, count, result });
-        return res.json({ ok: true, message: `${name} sweep finished with ${count} action(s).`, result });
-      } catch (err) {
-        const error = dashboardActionError(err);
-        audit('dashboard_sweep', { ...dashboardActor(req), ok: false, name, error });
-        return res.status(502).json({ ok: false, error });
-      }
-    });
-
-    app.post('/admin/action/escalate', dashboardAuth, async (req, res) => {
-      const id = Number(req.body?.id);
-      const row = getEscalationById(id);
-      if (req.body?.confirmed !== true) {
-        audit('dashboard_escalation', { ...dashboardActor(req), ok: false, id, reason: 'confirmation_required' });
-        return res.status(400).json({ ok: false, error: 'Confirmation is required.' });
-      }
-      if (!row || !['watching', 'alerted', 'error'].includes(row.state)) {
-        audit('dashboard_escalation', { ...dashboardActor(req), ok: false, id, reason: 'already_handled' });
-        return res.status(409).json({ ok: false, error: 'This escalation was already handled.' });
-      }
-      const directGrab = usesDirectGrabEscalation(row) && grabConfigured();
-      const before = grabDailyAllowance();
-      if (directGrab && before.exhausted) {
-        audit('dashboard_escalation', { ...dashboardActor(req), ok: false, id, reason: 'allowance_exhausted', remaining: before.remaining });
-        return res.status(409).json({ ok: false, error: 'The daily AvistaZ allowance is exhausted.', remaining: before.remaining });
-      }
-      try {
-        const result = await runEscalation(row);
-        const after = grabDailyAllowance();
-        audit('dashboard_escalation', { ...dashboardActor(req), ok: result.ok, id, mediaId: row.media_id, title: row.title, remainingBefore: before.remaining, remainingAfter: after.remaining, reason: result.reason || result.why || null });
-        if (!result.ok) return res.status(result.deferred ? 409 : 502).json({ ok: false, error: result.why || result.reason, remaining: after.remaining });
-        return res.json({ ok: true, message: result.detail, remaining: after.remaining });
-      } catch (err) {
-        const error = dashboardActionError(err);
-        audit('dashboard_escalation', { ...dashboardActor(req), ok: false, id, mediaId: row.media_id, title: row.title, error });
-        return res.status(502).json({ ok: false, error });
-      }
-    });
-    // Runtime overrides for the automation sweeps. Every write is validated against the setting's
-    // declared bounds (src/runtime-settings.js) and audited — an override that quietly changes what
-    // the bot does needs the same paper trail as any other admin action.
-    app.post('/admin/settings', dashboardAuth, (req, res) => {
-      const values = (req.body && req.body.values) || {};
-      const errors = [];
-      const applied = [];
-      for (const [key, raw] of Object.entries(values)) {
-        const result = runtimeSettings.setOverride(key, raw, { store: settingsStore });
-        if (result.ok) applied.push({ key, value: result.value });
-        else errors.push(result.error);
-      }
-      if (applied.length) audit('runtime_settings_changed', { applied });
-      res.status(errors.length ? 400 : 200).json({ ok: !errors.length, applied, errors });
-    });
-
-    app.post('/admin/settings/reset', dashboardAuth, (req, res) => {
-      const keys = Array.isArray(req.body && req.body.keys) ? req.body.keys : [];
-      const cleared = keys.filter(key => runtimeSettings.clearOverride(key, { store: settingsStore }).ok);
-      if (cleared.length) audit('runtime_settings_reset', { cleared });
-      res.json({ ok: true, cleared });
-    });
-
-    app.post('/admin/action/revoke-all', dashboardAuth, (_req, res) => { revokeAllDownloadLinks(); res.json({ ok: true }); });
-    app.post('/admin/action/revoke-user/:discordId', dashboardAuth, (req, res) => { revokeAllDownloadLinks(req.params.discordId); res.json({ ok: true, discordId: req.params.discordId }); });
   }
 
   app.get('/', (_req, res) => res.send('Durant Media Server Bot is running.'));

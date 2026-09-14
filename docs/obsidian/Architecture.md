@@ -17,11 +17,11 @@ diagnostic health server without opening the Discord client or normal workers. A
 loads `index.js`, then starts the isolated episode-recovery worker.
 
 `index.js` remains the composition root for the Discord client, interaction handlers, Express
-application, dashboard mutations, and most scheduled sweeps. Health/download, tier-agent,
-webhook, dashboard authentication/passkey, and dashboard-read handlers now live in
-dependency-injected modules under `src/routes/`. Issue
-[#178](https://github.com/DurantTL/overseerr-dm-bot/issues/178) owns the next route-extraction and
-HTTP-integration boundary.
+application, and most scheduled sweeps. Health/download, tier-agent, webhook, dashboard
+authentication/passkey, dashboard-read, and dashboard-mutation handlers now live in
+dependency-injected modules under `src/routes/`. This closes the route-group extraction scope of
+issue [#178](https://github.com/DurantTL/overseerr-dm-bot/issues/178); `index.js` route
+registration is wiring, not business logic.
 
 ## Major components
 
@@ -29,7 +29,7 @@ HTTP-integration boundary.
 | --- | --- | --- |
 | Discord surface | Slash commands, buttons, modals, DMs, onboarding, approvals | [index.js](../../index.js) |
 | HTTP composition | Middleware and explicit route dependency wiring | [index.js](../../index.js) |
-| Extracted HTTP handlers | Dependency-injected health/download, tier-agent, webhook, dashboard auth, and dashboard-read behavior | [src/routes](../../src/routes) |
+| Extracted HTTP handlers | Dependency-injected health/download, tier-agent, webhook, dashboard auth, dashboard-read, and dashboard-mutation behavior | [src/routes](../../src/routes) |
 | Configuration and bootstrap | Environment parsing, validation, warnings, diagnostic startup | [src/config.js](../../src/config.js), [bootstrap.js](../../bootstrap.js) |
 | Durable state | SQLite schema, migrations, row-level functions, audit | [src/db.js](../../src/db.js) |
 | Request systems | Seerr API and local request reconciliation | [src/seerr.js](../../src/seerr.js), [src/request-tracking.js](../../src/request-tracking.js) |

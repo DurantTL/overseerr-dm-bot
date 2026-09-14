@@ -159,8 +159,22 @@ function buildCtx(env = process.env) {
   if (mount.root && !mount.uuid && !mount.marker) {
     throw new Error('TIER_MOUNT_ROOT requires TIER_EXPECTED_UUID or TIER_MOUNT_MARKER — a bare mount-point check is unreliable inside containers/bind mounts. Set at least one drive proof.');
   }
+  // §181 Merged-library (mergerfs) diagnostic — opt-in via EDGE_MERGED_ROOT. Verifies the
+  // read-only-remote-fallback design (docs/edge-playback-architecture.md §2.1) is actually wired
+  // up: local branch first, remote branch mounted read-only, and (once at least one sample path is
+  // configured) a locally-cached title really resolves to the local branch. See checkMergedMount.
+  const mergedMount = {
+    mergedRoot: (env.EDGE_MERGED_ROOT || '').replace(/\/+$/, ''),
+    localRoot: (env.EDGE_LOCAL_ROOT || folders[0].root || '').replace(/\/+$/, ''),
+    remoteRoot: (env.EDGE_REMOTE_ROOT || '').replace(/\/+$/, ''),
+    sampleRelPaths: (env.EDGE_MOUNT_SAMPLE_RELPATHS || '').split(',').map(s => s.trim()).filter(Boolean),
+  };
+  if (mergedMount.mergedRoot && !mergedMount.remoteRoot) {
+    throw new Error('EDGE_MERGED_ROOT requires EDGE_REMOTE_ROOT (the read-only remote-fallback mount point) to be set.');
+  }
   return {
     mount,
+    mergedMount,
     botUrl: need('TIER_BOT_URL').replace(/\/$/, ''),
     node: need('TIER_NODE'),
     token: need('TIER_AGENT_TOKEN'),
@@ -279,8 +293,11 @@ function resolveFolderPlans(ctx, manifest) {
 
 // §4a step 2: the one check that protects the master. A Receive Only folder never pushes local
 // changes; if someone flipped it to send-receive, pruning here would propagate deletes to every
-// other node. Abort and let the bot alert.
-async function assertReceiveOnly(ctx, syncFolderId) {
+// other node. Abort and let the bot alert. Full masters are the senders (manifest.full / §tier.js
+// receiveOnly: !node.full) — they are expected to be sendonly/sendreceive, so the check is skipped
+// for them rather than demanding they be receiveonly like every edge node.
+async function assertReceiveOnly(ctx, syncFolderId, { receiveOnly = true } = {}) {
+  if (!receiveOnly) return;
   const folder = await syncthingApi(ctx, 'GET', `/rest/config/folders/${encodeURIComponent(syncFolderId)}`);
   if (folder.type !== 'receiveonly') {
     throw new Error(`SAFETY ABORT: Syncthing folder '${syncFolderId}' is type '${folder.type}', expected 'receiveonly' — pruning could propagate deletes to the master. Fix the folder type before this agent will touch anything.`);
@@ -517,9 +534,117 @@ function checkMountGuard(ctx) {
   return { checked: true, ok: reasons.length === 0, reasons };
 }
 
+// §181 Read-only mount options for whatever is mounted at (or above) targetPath, parsed from
+// /proc/mounts — the fourth whitespace-separated field, e.g. "ro,relatime". Picks the LONGEST
+// matching mount point (the same "most specific wins" rule df/findmnt use) so a nested mount
+// under a mounted parent resolves to its own options, not the parent's. Returns null when
+// /proc/mounts can't be read (non-Linux, no permission) — callers must treat that as "unknown",
+// never as a failed read-only check.
+function readMountOptions(targetPath, { fsImpl = fs, procMountsPath = '/proc/mounts' } = {}) {
+  let raw;
+  try { raw = fsImpl.readFileSync(procMountsPath, 'utf8'); } catch (_e) { return null; }
+  const resolved = path.resolve(targetPath);
+  let best = null;
+  for (const line of raw.split('\n')) {
+    const parts = line.split(' ');
+    if (parts.length < 4) continue;
+    const mountPoint = parts[1];
+    if (mountPoint === resolved || mountPoint === '/' || resolved.startsWith(`${mountPoint}/`)) {
+      if (!best || mountPoint.length > best.mountPoint.length) best = { mountPoint, options: parts[3] };
+    }
+  }
+  return best ? best.options : null;
+}
+
+function mountCheck(name, status, detail) { return { name, status, detail }; }
+
+function statOrNull(fsImpl, p) {
+  try { return { ok: true, stat: fsImpl.statSync(p) }; } catch (err) { return { ok: false, error: err }; }
+}
+
+// §181 Verify the merged-library view (docs/edge-playback-architecture.md §2.1, the
+// mergerfs-plex-operational.md runbook) is wired the way the design requires — WITHOUT ever
+// creating, writing, or deleting anything (every check below is a stat or a read of an existing
+// mount, matching the runbook's "prove read-only before continuing" rule):
+//   - the merged mount and both branches are present and reachable (a dead/stale remote mount —
+//     ESTALE/ETIMEDOUT/ENOTCONN — fails the same as ENOENT: either way an uncached title can't
+//     fall back to the master);
+//   - the remote branch's mount options include `ro` (parsed from /proc/mounts, never proven by
+//     attempting a write — this diagnostic must stay read-only itself);
+//   - local-first precedence: for every configured sample path that IS present on the local
+//     branch, the merged view must resolve it to the SAME filesystem device as the local branch,
+//     not the remote one — the device-number technique from the tier agent's own checkMountGuard
+//     above and the runbook's manual check_branch(), because mergerfs is a FUSE filesystem and
+//     `readlink -f` cannot see through it to say which branch actually served a file.
+// Opt-in via EDGE_MERGED_ROOT (buildCtx); {configured:false} when it isn't set, so nodes that
+// haven't stood up the merged view yet (all of them, pre-#181) are unaffected.
+function checkMergedMount(ctx, { fsImpl = fs } = {}) {
+  const m = ctx.mergedMount || {};
+  if (!m.mergedRoot) return { configured: false, ok: true, checks: [] };
+  const checks = [];
+
+  const merged = statOrNull(fsImpl, m.mergedRoot);
+  if (!merged.ok) {
+    checks.push(mountCheck('Merged library mount', 'fail', `${m.mergedRoot} is not reachable: ${merged.error.code || merged.error.message}`));
+    return { configured: true, ok: false, checks };
+  }
+  checks.push(mountCheck('Merged library mount', 'ok', `${m.mergedRoot} is present`));
+
+  const local = statOrNull(fsImpl, m.localRoot);
+  checks.push(mountCheck('Local branch', local.ok ? 'ok' : 'fail',
+    local.ok ? `${m.localRoot} is present` : `${m.localRoot} is not reachable: ${local.error.code || local.error.message}`));
+
+  const remote = statOrNull(fsImpl, m.remoteRoot);
+  checks.push(mountCheck('Remote fallback branch', remote.ok ? 'ok' : 'fail',
+    remote.ok ? `${m.remoteRoot} is present` : `${m.remoteRoot} is not reachable (${remote.error.code || remote.error.message}) — an uncached title cannot fall back to the master`));
+
+  if (remote.ok) {
+    const opts = readMountOptions(m.remoteRoot, { fsImpl });
+    if (!opts) {
+      checks.push(mountCheck('Remote branch read-only', 'warn', 'could not read mount options for the remote branch from /proc/mounts — unable to confirm it is read-only'));
+    } else {
+      const ro = /(^|,)ro(,|$)/.test(opts);
+      checks.push(mountCheck('Remote branch read-only', ro ? 'ok' : 'fail',
+        ro ? `mount options: ${opts}` : `mount options do not include 'ro' (${opts}) — the edge could write to the master`));
+    }
+  }
+
+  if (local.ok) {
+    if (!m.sampleRelPaths.length) {
+      checks.push(mountCheck('Local-first precedence', 'warn', 'EDGE_MOUNT_SAMPLE_RELPATHS is empty — configure a known-cached title path to verify local-first precedence'));
+    } else {
+      let precedenceOk = true;
+      let checkedAny = false;
+      const examples = [];
+      for (const rel of m.sampleRelPaths) {
+        const localFile = statOrNull(fsImpl, path.join(m.localRoot, rel));
+        if (!localFile.ok) continue; // not (yet) cached locally — nothing to prove for this sample
+        checkedAny = true;
+        const mergedFile = statOrNull(fsImpl, path.join(m.mergedRoot, rel));
+        if (!mergedFile.ok || mergedFile.stat.dev !== localFile.stat.dev) {
+          precedenceOk = false;
+          examples.push(`${rel}: ${mergedFile.ok ? 'served from a different device than the local branch' : 'missing through the merged view'}`);
+        }
+      }
+      if (!checkedAny) {
+        checks.push(mountCheck('Local-first precedence', 'warn', 'none of the configured sample paths are present on the local branch yet'));
+      } else {
+        checks.push(mountCheck('Local-first precedence', precedenceOk ? 'ok' : 'fail',
+          precedenceOk ? `${m.sampleRelPaths.length} sample path(s) resolved to the local branch` : examples.join('; ')));
+      }
+    }
+  }
+
+  return { configured: true, ok: checks.every(c => c.status !== 'fail'), checks };
+}
+
 async function runOnce(ctx) {
   const state = loadState(ctx);
   const telemetry = collectSystemTelemetry(ctx);
+  // §181 read-only, opt-in (checks.configured is false when EDGE_MERGED_ROOT isn't set) — cheap
+  // enough to run every cycle and attach to every report path below so /doctor never has to SSH in.
+  const mountDiag = checkMergedMount(ctx);
+  const mountDiagFields = mountDiag.configured ? { mergedMountDiagnostics: mountDiag } : {};
   // The drive guard runs first, before any network call, .stignore write, prune, or inventory
   // walk. On failure the report carries driveMissing and NO inventory field — an absent inventory
   // preserves the bot's last-known node contents, whereas the empty inventory a blind walk of the
@@ -539,6 +664,7 @@ async function runOnce(ctx) {
         errors: guard.reasons,
         telemetry,
         agentVersion: ctx.agentVersion,
+        ...mountDiagFields,
       });
     } catch (err) { ctx.log(`could not report drive-missing to the bot: ${err.message}`); }
     if (!ctx.dryRun && !state.driveMissing) { state.driveMissing = true; saveState(ctx, state); }
@@ -556,7 +682,7 @@ async function runOnce(ctx) {
     if (err.status !== 404) throw err;
     ctx.log('no manifest published yet — waiting for /tier apply');
     try {
-      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, awaitingManifest: true, telemetry, agentVersion: ctx.agentVersion });
+      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, awaitingManifest: true, telemetry, agentVersion: ctx.agentVersion, ...mountDiagFields });
       return { skipped: true, heartbeat: true, awaitingManifest: true };
     } catch (reportErr) {
       ctx.log(`waiting-for-manifest heartbeat failed: ${reportErr.message}`);
@@ -583,7 +709,7 @@ async function runOnce(ctx) {
     // timer) see a clean exit, or an unreachable bot stays masked behind a stale UI until someone
     // notices. Signal failure with a non-zero exit code, matching the failed-report path.
     try {
-      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, planHash: manifest.planHash, telemetry, agentVersion: ctx.agentVersion });
+      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, { heartbeat: true, planHash: manifest.planHash, telemetry, agentVersion: ctx.agentVersion, ...mountDiagFields });
       return { skipped: true, heartbeat: true, planHash: manifest.planHash };
     } catch (err) {
       ctx.log(`heartbeat report failed: ${err.message}`);
@@ -599,7 +725,7 @@ async function runOnce(ctx) {
   if (planChanged) {
     for (const fp of folderPlans) {
       try {
-        await assertReceiveOnly(ctx, fp.syncFolderId);                  // 2. topology guard
+        await assertReceiveOnly(ctx, fp.syncFolderId, { receiveOnly: !manifest.full }); // 2. topology guard
         writeStignore(ctx, fp);                                         // 3. ignore first
         if (!ctx.dryRun) {
           // A freshly-populated/just-registered folder's initial scan can legitimately run far
@@ -657,6 +783,7 @@ async function runOnce(ctx) {
     skipped: pruneResult.skipped,
     telemetry,
     agentVersion: ctx.agentVersion,
+    ...mountDiagFields,
   };
   // Reconcile the snapshot against what actually got pruned THIS run instead of reporting the
   // pre-prune walk as-is: the bot's converged report and its file inventory used to arrive out
@@ -696,4 +823,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, collectSystemTelemetry, escapeStignore, loadState, saveState, writeStignore, agentVersion };
+module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, checkMergedMount, readMountOptions, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, collectSystemTelemetry, escapeStignore, loadState, saveState, writeStignore, agentVersion };

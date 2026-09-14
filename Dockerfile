@@ -8,8 +8,11 @@ FROM node:24-slim
 
 # rclone drives the Plex Home staging copies/evictions (see README "Plex Home staging").
 # ca-certificates lets it talk TLS to remotes like SFTP-over-VPS or cloud backends.
+# The upgrade picks up Debian security point-releases (e.g. libpcre2-8-0) between node:24-slim
+# base image refreshes, without waiting on a new upstream base image tag.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends rclone ca-certificates \
+  && apt-get upgrade -y \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -35,6 +38,13 @@ RUN npm ci --omit=dev --ignore-scripts
 # resolving — a better-sqlite3 upgrade that drops prebuilds would otherwise sail through the
 # --ignore-scripts install above and only surface when the bot opens its database.
 RUN node -e "new (require('better-sqlite3'))(':memory:').prepare('select 1').get()"
+
+# npm/npx/corepack are unused at runtime (CMD invokes node directly) and node:24-slim's bundled
+# npm vendors its own copies of packages like tar/brace-expansion/ip-address, which is where
+# Trivy's CRITICAL/HIGH findings against this image have come from historically — removing them
+# drops that vendored tree instead of chasing npm's internal dependency versions.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx \
+  /usr/local/lib/node_modules/corepack /usr/local/bin/corepack
 
 COPY index.js ./
 COPY bootstrap.js ./
