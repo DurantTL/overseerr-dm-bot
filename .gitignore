@@ -16,3 +16,6 @@ backups
 
 # Logs
 npm-debug.log*
+
+# Local Claude Code tooling state (agent worktrees, etc.)
+.claude/
