@@ -514,6 +514,18 @@ const CONFIG = (() => {
   // agent's atime report as automatic per-title/whole-node fallback. Use "atime" only when the
   // node's PMS is unreachable from the bot.
   TIER_NODES_SEED: process.env.TIER_NODES_SEED || '',
+  // #183 season-level TV granularity — AUDIT-ONLY / PREVIEW at this stage. Nothing in the live
+  // planner (src/tier.js), staging (src/staging.js), or agent ignore-rule path reads these yet;
+  // they exist so `src/tv-granularity.js` (a pure, unwired library) and its migration-preview
+  // tooling have one documented place to source their knobs from ahead of real integration. Do
+  // not treat setting this to `season`/`episode` today as enabling anything in production — see
+  // docs/tier-caching-roadmap.md Phase 4 and the #183 PR description for what remains.
+  // 'series' (default) reproduces today's whole-series behavior exactly.
+  TIER_TV_GRANULARITY: String(process.env.TIER_TV_GRANULARITY || 'series').trim().toLowerCase(),
+  // Above this per-unit size, a season/episode promotion requires an explicit operator
+  // confirmation (mirrors the `/tier apply` confirm-code pattern in TIER_APPLY_MAX_*). 0 disables
+  // the cap. Unused until granularity-aware promotion is wired to a live command.
+  TIER_TV_GRANULARITY_PROMOTION_CAP_GB: Number.parseInt(process.env.TIER_TV_GRANULARITY_PROMOTION_CAP_GB || '60', 10),
   // Bounds how often an authenticated node can post a full report (each carries up to a 25 MB
   // JSON body and up to 200k inventory rows). The systemd timer runs the agent every 15 minutes,
   // so this only needs headroom for manual re-runs/retries, not the steady-state cadence.
@@ -649,6 +661,11 @@ function configWarnings() {
   }
   if (CONFIG.PORT !== 3000) {
     warnings.push(`\`PORT=${CONFIG.PORT}\` does not match the repository Compose mapping \`3000:3000\` — update both sides of \`ports\` or restore \`PORT=3000\`.`);
+  }
+  if (CONFIG.TIER_TV_GRANULARITY && !['series', 'season', 'episode'].includes(CONFIG.TIER_TV_GRANULARITY)) {
+    warnings.push(`\`TIER_TV_GRANULARITY=${CONFIG.TIER_TV_GRANULARITY}\` is not \`series\`, \`season\`, or \`episode\` — treating it as \`series\` (unchanged whole-series behavior; season/episode granularity is not yet wired into the live planner regardless of this value — see #183).`);
+  } else if (CONFIG.TIER_TV_GRANULARITY && CONFIG.TIER_TV_GRANULARITY !== 'series') {
+    warnings.push(`\`TIER_TV_GRANULARITY=${CONFIG.TIER_TV_GRANULARITY}\` is set, but nothing in the live tiering planner, staging, or agent ignore-rule path reads it yet (#183 is a preview-only library so far) — this setting currently has no effect.`);
   }
   if (!['debug', 'info', 'warn', 'error'].includes(CONFIG.LOG_LEVEL)) {
     warnings.push(`\`LOG_LEVEL=${CONFIG.LOG_LEVEL}\` is not a valid level (use \`debug\`, \`info\`, \`warn\`, or \`error\`) — treating it as \`info\`.`);

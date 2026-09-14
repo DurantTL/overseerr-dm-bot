@@ -17,6 +17,10 @@ function feature(overrides = {}) {
     requestModal: () => ({ kind: 'request-modal' }),
     log: { warn: () => {}, error: () => {} },
     forwardSlashCommand: async interaction => calls.forwarded.push(interaction.commandName),
+    supportCases: {
+      createCase: () => ({ case: { id: 1, reference_id: 'CASE-TEST', notify_status: 'pending' }, duplicate: false }),
+      recordNotifyResult: () => {},
+    },
     ...overrides,
   });
   return { instance, calls };
@@ -63,6 +67,46 @@ test('request button uses injected account lookup and modal factory', async () =
   }));
   assert.equal(handled, true);
   assert.deepEqual(shown, { kind: 'request-modal' });
+});
+
+test('my cases button forwards through the injected slash handler', async () => {
+  const { instance, calls } = feature();
+  const handled = await instance.handleInteraction(button('media:mycases'));
+  assert.equal(handled, true);
+  assert.deepEqual(calls.forwarded, ['mycases']);
+});
+
+test('remove/report/support modal submits create a durable case via injected supportCases', async () => {
+  const created = [];
+  const { instance } = feature({
+    supportCases: {
+      createCase: args => {
+        created.push(args);
+        return { case: { id: 7, reference_id: 'CASE-ABC123', notify_status: 'pending' }, duplicate: false };
+      },
+      recordNotifyResult: () => {},
+    },
+  });
+  let replied = null;
+  const modal = {
+    customId: 'media:report_modal',
+    user: { id: 'member' },
+    channelId: 'chan',
+    isChatInputCommand: () => false,
+    isButton: () => false,
+    isModalSubmit: () => true,
+    fields: { getTextInputValue: key => (key === 'title' ? 'Some Show' : 'It buffers constantly') },
+    client: { channels: { fetch: async () => null } },
+    deferReply: async () => {},
+    editReply: async content => { replied = content; },
+  };
+  const handled = await instance.handleInteraction(modal);
+  assert.equal(handled, true);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].category, 'report');
+  assert.equal(created[0].mediaTitle, 'Some Show');
+  assert.equal(created[0].details, 'It buffers constantly');
+  assert.match(replied, /CASE-ABC123/);
 });
 
 test('media panel no longer intercepts Discord prototypes', () => {
