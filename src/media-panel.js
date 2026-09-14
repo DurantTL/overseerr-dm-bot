@@ -16,6 +16,8 @@ const {
   TextInputStyle,
 } = require('discord.js');
 
+const { submitSupportCase } = require('./support-cases');
+
 const PANEL_KEY_PREFIX = 'discord_media_panel:';
 
 const mediaPanelCommand = new SlashCommandBuilder()
@@ -50,6 +52,7 @@ function panelPayload() {
     new ButtonBuilder().setCustomId('media:remove').setLabel('Remove / Cancel').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId('media:report').setLabel('Report a Problem').setEmoji('⚠️').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('media:support').setLabel('Support').setEmoji('🛟').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('media:mycases').setLabel('My Cases').setEmoji('🗂️').setStyle(ButtonStyle.Secondary),
   );
   return { embeds: [embed], components: [row1, row2] };
 }
@@ -154,48 +157,17 @@ function supportModal(kind) {
   return modal;
 }
 
-async function notifyAdmins(interaction, kind, { config, audit, log }) {
-  await interaction.deferReply({ ephemeral: true });
-  const title = ['remove', 'report'].includes(kind) ? String(interaction.fields.getTextInputValue('title') || '').trim() : '';
-  const details = String(interaction.fields.getTextInputValue('details') || '').trim();
-  const labels = {
-    remove: ['🗑️ Removal / Cancellation Requested', 0xef4444],
-    report: ['⚠️ Playback Problem Reported', 0xf59e0b],
-    support: ['🛟 Media Support Requested', 0x3b82f6],
-  };
-  const [heading, color] = labels[kind] || labels.support;
-
-  let sent = false;
-  try {
-    const channel = config.ADMIN_CHANNEL_ID ? await interaction.client.channels.fetch(config.ADMIN_CHANNEL_ID) : null;
-    if (channel?.isTextBased?.()) {
-      const embed = brandedEmbed(color)
-        .setTitle(heading)
-        .setDescription(`From <@${interaction.user.id}>`)
-        .addFields(
-          ...(title ? [{ name: 'Media', value: title.slice(0, 1024), inline: false }] : []),
-          { name: 'Details', value: details.slice(0, 1024), inline: false },
-          { name: 'Source', value: `<#${interaction.channelId}>`, inline: false },
-        );
-      await channel.send({ embeds: [embed] });
-      sent = true;
-    }
-  } catch (err) {
-    log.warn(`Media panel ${kind} notification failed: ${err.message}`);
-  }
-
-  audit(`media_panel_${kind}_requested`, {
-    actorDiscordId: interaction.user.id,
-    title: title || null,
-    notified: sent,
+// Reports/support requests/removal requests are persisted as durable support cases (issue #256)
+// instead of a one-off admin-channel message: src/support-cases.js owns creation, admin-channel
+// delivery (retry-safe), and the member-facing reference ID reply.
+async function notifyAdmins(interaction, kind, { config, audit, log, supportCases }) {
+  return submitSupportCase(interaction, kind, {
+    config,
+    audit,
+    log,
+    createCase: supportCases.createCase,
+    recordNotifyResult: supportCases.recordNotifyResult,
   });
-
-  if (!sent) return interaction.editReply('⚠️ I could not reach the media admin channel. Please contact an admin directly.');
-  if (kind === 'remove') {
-    return interaction.editReply('✅ Your removal/cancellation request was sent to the media admins. Nothing was deleted automatically.');
-  }
-  if (kind === 'report') return interaction.editReply('✅ Your playback problem was sent to the media admins.');
-  return interaction.editReply('✅ Your support request was sent to the media admins.');
 }
 
 function owns(interaction) {
@@ -205,8 +177,8 @@ function owns(interaction) {
   return false;
 }
 
-function createMediaPanelFeature({ config, getUserByDiscordId, getSetting, setSetting, audit, requestModal, log, forwardSlashCommand }) {
-  if (!config || !getUserByDiscordId || !getSetting || !setSetting || !audit || !requestModal || !log || !forwardSlashCommand) {
+function createMediaPanelFeature({ config, getUserByDiscordId, getSetting, setSetting, audit, requestModal, log, forwardSlashCommand, supportCases }) {
+  if (!config || !getUserByDiscordId || !getSetting || !setSetting || !audit || !requestModal || !log || !forwardSlashCommand || !supportCases?.createCase || !supportCases?.recordNotifyResult) {
     throw new TypeError('Media panel dependencies are required');
   }
 
@@ -236,6 +208,10 @@ function createMediaPanelFeature({ config, getUserByDiscordId, getSetting, setSe
         await forwardSlashCommand(simpleCommandProxy(interaction, 'queue'));
         return true;
       }
+      if (id === 'media:mycases') {
+        await forwardSlashCommand(simpleCommandProxy(interaction, 'mycases'));
+        return true;
+      }
       if (id === 'media:remove') {
         await interaction.showModal(supportModal('remove'));
         return true;
@@ -253,7 +229,7 @@ function createMediaPanelFeature({ config, getUserByDiscordId, getSetting, setSe
     if (interaction.isModalSubmit?.()) {
       const match = String(interaction.customId || '').match(/^media:(remove|report|support)_modal$/);
       if (match) {
-        await notifyAdmins(interaction, match[1], { config, audit, log });
+        await notifyAdmins(interaction, match[1], { config, audit, log, supportCases });
         return true;
       }
     }

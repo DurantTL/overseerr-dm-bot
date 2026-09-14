@@ -72,7 +72,10 @@ advanced-infrastructure layer lives in `docs/`:
   "Bot Online" deploy ping (`GIT_SHA` is baked into the image by CI).
 - Test suite (`npm test`) runs the shipped code against mock Seerr servers; CI runs it on every
   PR and gates the image build.
-- User self-service commands (`/request`, `/request-status`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`).
+- User self-service commands (`/request`, `/request-status`, `/me`, `/myrequests`, `/downloads`, `/keep`, `/help`, `/mycases`).
+- Media Center Report/Support/Remove flows create durable, trackable support cases (`/cases` for
+  admins to assign/acknowledge/resolve/reopen with an audit trail; `/mycases` for members to check
+  their own status) instead of a one-off admin-channel message — see `src/support-cases.js`.
 - Health endpoints (`/health` and authenticated `/admin/health`) plus `/doctor` and
   `npm run doctor:edge` for read-only Main → edge transfer checks.
 
@@ -521,10 +524,10 @@ command set.
 
 ## Slash Command List
 Admin (hidden from non-admin roles by default; grant per-role via Server Settings → Integrations if e.g. PH users should `/pin`):
-- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/automation`, `/backup-rehearse`, `/doctor`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/pending`, `/whorequested`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`, `/avistaz`, `/rtorrent`, `/season`, `/staged`, `/pin`, `/unpin`, `/stage-bulk`, `/assign-server`, `/tier`, `/tier-node`, `/tier-member`
+- `/invite`, `/invite-post`, `/link`, `/unlink`, `/users`, `/status`, `/automation`, `/backup-rehearse`, `/doctor`, `/seerr-test`, `/sync`, `/sync-fix`, `/reinvite`, `/requests`, `/pending`, `/whorequested`, `/cleanup`, `/cleanup-suggestions`, `/audit`, `/revoke-downloads`, `/watching`, `/indexers`, `/debrid`, `/avistaz`, `/rtorrent`, `/season`, `/staged`, `/pin`, `/unpin`, `/stage-bulk`, `/assign-server`, `/tier`, `/tier-node`, `/tier-member`, `/cases`
 
 User:
-- `/request`, `/request-status`, `/request-cancel`, `/download`, `/queue`, `/report`, `/notifications`, `/me`, `/stats`, `/myrequests`, `/downloads`, `/keep`, `/help`, `/stage`
+- `/request`, `/request-status`, `/request-cancel`, `/download`, `/queue`, `/report`, `/notifications`, `/me`, `/stats`, `/myrequests`, `/downloads`, `/keep`, `/help`, `/stage`, `/mycases`
 
 ## Database Tables
 - `users`
@@ -544,6 +547,7 @@ User:
 - `alert_cooldowns` (shared per-scope cooldown timestamps for the various watchdog alerts)
 - `media_retention_rules`
 - `escalations` (AvistaZ fallback watch list)
+- `support_cases` (durable Media Center Report/Support/Remove case lifecycle: open → acknowledged → resolved, reopenable, with reference IDs, ownership, and delivery-retry bookkeeping — see `src/support-cases.js`)
 - `grab_jobs` (AvistaZ direct-grab pipeline: sent → downloading → complete → transferring → scanning → (importing) → verified, or needs_mapping/import_rejected/failed; adopted torrents enter at downloading/complete with origin `adopt`/`adopt-auto`; `target_arr_id`/`tvdb_id`/`match_type` pin the resolved Sonarr/Radarr identity)
 - `release_group_sightings` (tracks release groups whose grabs keep dying, for auto-blocklist suggestions)
 - `season_searches` (season-pack sweep cooldown/stall history per series+season)

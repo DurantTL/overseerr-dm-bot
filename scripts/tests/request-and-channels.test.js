@@ -10,6 +10,7 @@ const express = require('express');
 const Database = require('better-sqlite3');
 const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { mediaPanelCommand } = require('../../src/media-panel');
+const { casesCommand, myCasesCommand } = require('../../src/support-cases');
 const { loadSandbox } = require('./extract');
 const { findUnprocessableTorrents, unacknowledgedTorrents, pruneAcknowledged, resolveAbsoluteDownloadDir } = require('../../src/adopt');
 const runtimeSettings = require('../../src/runtime-settings');
@@ -221,8 +222,8 @@ test('request: configWarnings names incomplete API pairs and Compose port drift'
 test('discord: every registered command dispatches and bounded options stay bounded', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', '..', 'index.js'), 'utf8');
   const block = source.match(/const slashCommands = \[([\s\S]*?)\]\.map\(v => v\.toJSON\(\)\);/)[1];
-  const commands = Function('SlashCommandBuilder', 'PermissionFlagsBits', 'mediaPanelCommand', `return [${block}].map(v => v.toJSON());`)(SlashCommandBuilder, PermissionFlagsBits, mediaPanelCommand);
-  assert.strictEqual(commands.length, 49);
+  const commands = Function('SlashCommandBuilder', 'PermissionFlagsBits', 'mediaPanelCommand', 'casesCommand', 'myCasesCommand', `return [${block}].map(v => v.toJSON());`)(SlashCommandBuilder, PermissionFlagsBits, mediaPanelCommand, casesCommand, myCasesCommand);
+  assert.strictEqual(commands.length, 51);
   assert.strictEqual(new Set(commands.map(command => command.name)).size, commands.length);
   for (const command of commands) assert.match(source, new RegExp(`if \\(n === '${command.name}'\\) return handle`), `${command.name} dispatches`);
 

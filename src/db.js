@@ -203,6 +203,40 @@ const runMigrations = db.transaction(function runMigrationsInner() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    -- Support-case lifecycle for the Media Center's Report/Support/Remove flows (issue #256).
+    -- reference_id is the durable, human-shareable handle members and admins use once the
+    -- originating Discord message has scrolled out of channel history. discord_channel_id /
+    -- discord_message_id link back to the admin notification for that case (nullable: delivery
+    -- can fail, and the case must still exist and be actionable via /cases). notify_status /
+    -- notify_attempts bound how many times admin-channel delivery is retried; member_notify_status
+    -- records whether the resolution DM to the requester succeeded, independent of case status —
+    -- a case is "resolved" once an admin says so even if the DM never lands.
+    CREATE TABLE IF NOT EXISTS support_cases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      reference_id TEXT NOT NULL UNIQUE,
+      requester_discord_id TEXT NOT NULL,
+      category TEXT NOT NULL,
+      media_title TEXT,
+      media_id TEXT,
+      media_type TEXT,
+      server TEXT,
+      details TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      owner_discord_id TEXT,
+      resolution_note TEXT,
+      discord_channel_id TEXT,
+      discord_message_id TEXT,
+      notify_status TEXT NOT NULL DEFAULT 'pending',
+      notify_attempts INTEGER NOT NULL DEFAULT 0,
+      member_notify_status TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      acknowledged_at DATETIME,
+      resolved_at DATETIME
+    );
+    CREATE INDEX IF NOT EXISTS idx_support_cases_requester ON support_cases(requester_discord_id);
+    CREATE INDEX IF NOT EXISTS idx_support_cases_status ON support_cases(status);
+
     CREATE TABLE IF NOT EXISTS stage_jobs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       media_id TEXT NOT NULL,
@@ -755,6 +789,136 @@ function resolveEscalationForMediaKey(mediaKey) {
   } else {
     db.prepare("UPDATE escalations SET state = 'resolved', updated_at = CURRENT_TIMESTAMP WHERE tvdb_id = ? AND state IN ('watching','alerted')").run(id);
   }
+}
+
+// ---- Support cases (Media Center Report/Support/Remove flows, issue #256) ----
+// A durable, admin-actionable record for every playback report / support request / removal
+// request a member submits through the Media Center, so it survives even if the admin-channel
+// notification is lost, edited away, or never delivered. Status machine: open -> acknowledged ->
+// resolved, with reopen sending a resolved case back to open. Every transition is recorded via
+// audit() (the same audit_log table every other admin action lands in) so who-did-what-when
+// survives independently of the case row itself.
+function generateCaseReferenceId() {
+  // Short, human-shareable, and (with millisecond time + 2 random bytes) practically unique
+  // without a second round-trip to check — collisions are still guarded by the UNIQUE constraint
+  // below, which would surface as an insert failure a caller can retry.
+  return `CASE-${Date.now().toString(36)}${crypto.randomBytes(2).toString('hex')}`.toUpperCase();
+}
+
+// Bounded duplicate suppression: a double-click/resubmit of the same report within a short window
+// returns the existing case instead of minting a new one, so retried modal submits (a flaky client,
+// an accidental double-tap) don't fork a member's report into two untracked cases.
+const CASE_DEDUPE_WINDOW_MINUTES = 2;
+const CASE_NOTIFY_MAX_ATTEMPTS = 3;
+
+function createSupportCase({ requesterDiscordId, category, mediaTitle, mediaId, mediaType, server, details }) {
+  if (!requesterDiscordId || !category || !details) throw new TypeError('requesterDiscordId, category, and details are required');
+  const recent = db.prepare(`SELECT * FROM support_cases
+      WHERE requester_discord_id = ? AND category = ? AND details = ? AND COALESCE(media_title, '') = ?
+        AND created_at >= datetime('now', '-${CASE_DEDUPE_WINDOW_MINUTES} minutes')
+      ORDER BY id DESC LIMIT 1`)
+    .get(requesterDiscordId, category, details, mediaTitle || '');
+  if (recent) {
+    audit('support_case_duplicate_suppressed', { actorDiscordId: requesterDiscordId, referenceId: recent.reference_id });
+    return { case: recent, duplicate: true };
+  }
+
+  const referenceId = generateCaseReferenceId();
+  const info = db.prepare(`INSERT INTO support_cases
+      (reference_id, requester_discord_id, category, media_title, media_id, media_type, server, details)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(referenceId, requesterDiscordId, category, mediaTitle || null, mediaId || null, mediaType || null, server || null, details);
+  const row = db.prepare('SELECT * FROM support_cases WHERE id = ?').get(info.lastInsertRowid);
+  audit('support_case_created', { actorDiscordId: requesterDiscordId, referenceId, category, mediaTitle: mediaTitle || null });
+  return { case: row, duplicate: false };
+}
+
+function getSupportCaseById(id) {
+  return db.prepare('SELECT * FROM support_cases WHERE id = ?').get(id);
+}
+
+function getSupportCaseByReference(referenceId) {
+  return db.prepare('SELECT * FROM support_cases WHERE reference_id = ?').get(String(referenceId || '').trim().toUpperCase());
+}
+
+function listSupportCases({ status, ownerDiscordId, limit = 20 } = {}) {
+  const clauses = [];
+  const args = [];
+  if (status) { clauses.push('status = ?'); args.push(status); }
+  if (ownerDiscordId) { clauses.push('owner_discord_id = ?'); args.push(ownerDiscordId); }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  args.push(limit);
+  return db.prepare(`SELECT * FROM support_cases ${where} ORDER BY id DESC LIMIT ?`).all(...args);
+}
+
+// Requester-scoped read: the only listing a non-admin caller should ever be handed, so a member
+// can see their own case status without exposing anyone else's report.
+function listSupportCasesForRequester(requesterDiscordId, { limit = 10 } = {}) {
+  return db.prepare('SELECT * FROM support_cases WHERE requester_discord_id = ? ORDER BY id DESC LIMIT ?').all(requesterDiscordId, limit);
+}
+
+// Cases whose admin-channel notification never went out (Discord/channel misconfig, transient
+// fetch failure) and haven't yet exhausted their retry budget — surfaced so an admin listing can
+// retry delivery instead of the case silently rotting unnotified.
+function listSupportCasesNeedingNotifyRetry(limit = 5) {
+  return db.prepare("SELECT * FROM support_cases WHERE notify_status = 'failed' ORDER BY id LIMIT ?").all(limit);
+}
+
+function recordSupportCaseNotifyResult(id, { channelId = null, messageId = null, ok }) {
+  if (ok) {
+    db.prepare(`UPDATE support_cases SET discord_channel_id = ?, discord_message_id = ?, notify_status = 'sent',
+        notify_attempts = notify_attempts + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .run(channelId, messageId, id);
+    return;
+  }
+  db.prepare(`UPDATE support_cases SET
+      notify_status = CASE WHEN notify_attempts + 1 >= ${CASE_NOTIFY_MAX_ATTEMPTS} THEN 'failed_permanent' ELSE 'failed' END,
+      notify_attempts = notify_attempts + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+    .run(id);
+}
+
+function recordSupportCaseMemberNotifyResult(id, ok) {
+  db.prepare('UPDATE support_cases SET member_notify_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(ok ? 'sent' : 'failed', id);
+}
+
+// Assign never itself changes status — acknowledging/resolving/reopening are the only status
+// transitions — so an admin can claim a case without prematurely signaling progress to the member.
+function assignSupportCase(id, ownerDiscordId, actorDiscordId) {
+  const row = getSupportCaseById(id);
+  if (!row) return null;
+  db.prepare('UPDATE support_cases SET owner_discord_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(ownerDiscordId, id);
+  audit('support_case_assigned', { actorDiscordId, targetDiscordId: ownerDiscordId, referenceId: row.reference_id });
+  return getSupportCaseById(id);
+}
+
+function acknowledgeSupportCase(id, actorDiscordId) {
+  const row = getSupportCaseById(id);
+  if (!row || row.status === 'resolved') return row || null;
+  db.prepare(`UPDATE support_cases SET status = 'acknowledged', owner_discord_id = COALESCE(owner_discord_id, ?),
+      acknowledged_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(actorDiscordId, id);
+  audit('support_case_acknowledged', { actorDiscordId, referenceId: row.reference_id });
+  return getSupportCaseById(id);
+}
+
+// Resolving is a status change only — it records a note for the requester and, separately,
+// attempts to notify them; it never touches media, Overseerr, or the *arrs, so a removal/report
+// case being resolved can never itself delete anything or cancel a different member's request.
+function resolveSupportCase(id, actorDiscordId, note) {
+  const row = getSupportCaseById(id);
+  if (!row) return null;
+  db.prepare(`UPDATE support_cases SET status = 'resolved', owner_discord_id = COALESCE(owner_discord_id, ?),
+      resolution_note = ?, resolved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
+      member_notify_status = 'pending' WHERE id = ?`).run(actorDiscordId, note || null, id);
+  audit('support_case_resolved', { actorDiscordId, referenceId: row.reference_id });
+  return getSupportCaseById(id);
+}
+
+function reopenSupportCase(id, actorDiscordId, reason) {
+  const row = getSupportCaseById(id);
+  if (!row || row.status !== 'resolved') return row || null;
+  db.prepare("UPDATE support_cases SET status = 'open', resolved_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
+  audit('support_case_reopened', { actorDiscordId, referenceId: row.reference_id, reason: reason || null });
+  return getSupportCaseById(id);
 }
 
 // ---- AvistaZ direct-grab jobs ----
@@ -1736,7 +1900,7 @@ function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k) {
   return null;
 }
 
-module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
+module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, createSupportCase, getSupportCaseById, getSupportCaseByReference, listSupportCases, listSupportCasesForRequester, listSupportCasesNeedingNotifyRetry, recordSupportCaseNotifyResult, recordSupportCaseMemberNotifyResult, assignSupportCase, acknowledgeSupportCase, resolveSupportCase, reopenSupportCase, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;
 Object.assign(module.exports, {
   recordPackRejections,
