@@ -4,6 +4,7 @@
 require('dotenv').config({ quiet: true });
 const fs = require('fs');
 const http = require('http');
+const { passkeyRp } = require('./passkeys');
 
 function parseBool(v, fallback = false) {
   if (v === undefined) return fallback;
@@ -153,6 +154,16 @@ const CONFIG = (() => {
   // Caps how many dead transfers get a re-search attempt per sweep — each attempt is a real,
   // possibly-slow Prowlarr search across every configured indexer.
   PREMIUMIZE_REROUTE_MAX_PER_SWEEP: Number.parseInt(process.env.PREMIUMIZE_REROUTE_MAX_PER_SWEEP || '3', 10),
+  // Local path mirroring the folder a Premiumize downloader (e.g. Premiumizearr's
+  // DownloadsDirectory) drops completed cloud transfers into — the same folder Sonarr/Radarr's
+  // Blackhole download client watches. This is where a manually-added multi-season pack (dropped
+  // straight into Premiumize's "My Files") lands once synced, for when the arr's own watch-folder
+  // scan doesn't pick it up. Same STAGING/IMPORT split as GRAB_STAGING_PATH/GRAB_IMPORT_PATH:
+  // PREMIUMIZE_STAGING_PATH is this bot's view of the folder (for existence checks),
+  // PREMIUMIZE_IMPORT_PATH is that same folder as the arrs see it. Optional — `/debrid import`
+  // and `/debrid staging` are disabled until at least PREMIUMIZE_IMPORT_PATH is set.
+  PREMIUMIZE_STAGING_PATH: (process.env.PREMIUMIZE_STAGING_PATH || '').replace(/\/$/, ''),
+  PREMIUMIZE_IMPORT_PATH: (process.env.PREMIUMIZE_IMPORT_PATH || process.env.PREMIUMIZE_STAGING_PATH || '').replace(/\/$/, ''),
   STUCK_CHECK_MINUTES: Number.parseInt(process.env.STUCK_CHECK_MINUTES || '10', 10),
   STUCK_AFTER_MINUTES: Number.parseInt(process.env.STUCK_AFTER_MINUTES || '45', 10),
   STUCK_ALERT_COOLDOWN_HOURS: Number.parseInt(process.env.STUCK_ALERT_COOLDOWN_HOURS || '6', 10),
@@ -341,6 +352,13 @@ const CONFIG = (() => {
   // container's own `/` and `/config` disks and label the media mount by its real folder.
   DISK_SPACE_PATHS: (process.env.DISK_SPACE_PATHS || '').split(',').map(s => s.trim()).filter(Boolean),
   TUNNEL_DOMAIN: process.env.TUNNEL_DOMAIN,
+  // The exact HTTPS origin the admin dashboard is reached at, and therefore the WebAuthn relying
+  // party. Defaults to https://TUNNEL_DOMAIN so existing single-hostname deployments need no new
+  // configuration; set this only when the dashboard has a separate public hostname from
+  // downloads/webhooks (e.g. a dedicated admin.example.com behind its own Cloudflare Tunnel
+  // public hostname). Strictly validated in validateConfig() via passkeyRp() (#190): https only,
+  // no path/query/fragment/credentials/port, not an IP address.
+  DASHBOARD_PUBLIC_URL: process.env.DASHBOARD_PUBLIC_URL || (process.env.TUNNEL_DOMAIN ? `https://${process.env.TUNNEL_DOMAIN}` : ''),
   RAID_PATH: process.env.RAID_PATH || '/mnt/raid',
   PATH_REMAP_FROM: process.env.PATH_REMAP_FROM || '',
   PATH_REMAP_TO: process.env.PATH_REMAP_TO || process.env.RAID_PATH || '/mnt/raid',
@@ -384,6 +402,10 @@ const CONFIG = (() => {
   PH_SERVER_NAMES: parseIdentityList(process.env.PH_SERVER_NAMES),
   CA_EDGE_SERVER_NAMES: parseIdentityList(process.env.CA_EDGE_SERVER_NAMES),
   PRIMARY_SERVER_NAMES: parseIdentityList(process.env.PRIMARY_SERVER_NAMES),
+  // §181 how long a node's last-reported merged-mount diagnostic (agent/agent.js's
+  // checkMergedMount) stays trusted before /doctor treats it as stale rather than healthy —
+  // an agent that stopped reporting must not look like a passing mount check forever.
+  EDGE_MOUNT_DIAG_STALE_HOURS: Number(process.env.EDGE_MOUNT_DIAG_STALE_HOURS || 12),
   // rclone destination root for the cache, e.g. `phbox:/cache` or `phbox:cache`.
   STAGE_RCLONE_REMOTE: (process.env.STAGE_RCLONE_REMOTE || '').replace(/\/$/, ''),
   STAGE_RCLONE_BINARY: process.env.STAGE_RCLONE_BINARY || 'rclone',
@@ -521,6 +543,10 @@ function validateConfig() {
   // the actionable fix: generate one with `openssl rand -hex 32` and set SESSION_SECRET.
   if (CONFIG.DASHBOARD_ENABLED && !CONFIG.SESSION_SECRET) {
     throw new Error('DASHBOARD_ENABLED=true requires SESSION_SECRET (generate one with `openssl rand -hex 32`); dashboard sessions must never be signed with a key derived from the admin password/token');
+  }
+  if (CONFIG.DASHBOARD_ENABLED) {
+    try { passkeyRp(CONFIG.DASHBOARD_PUBLIC_URL); }
+    catch (err) { throw new Error(`DASHBOARD_PUBLIC_URL is invalid: ${err.message}`, { cause: err }); }
   }
   // TUNNEL_DOMAIN makes /webhook/overseerr, /webhook/plex, and /webhook/tautulli reachable from
   // the public internet regardless of whether deletion is live — an unauthenticated webhook is a

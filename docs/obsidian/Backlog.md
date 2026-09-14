@@ -25,12 +25,14 @@ open program contains umbrella issue [#175](https://github.com/DurantTL/overseer
 
 ## P1 — reliability and testability
 
-- [#178](https://github.com/DurantTL/overseerr-dm-bot/issues/178) — extract and integration-test
-  the remaining HTTP surface. **Partial:** the app factory, health/download, tier-agent, and
-  webhook modules landed; authentication/passkeys and dashboard groups remain.
+- ~~#178 — extract and integration-test the remaining HTTP surface.~~ **Closed** (PR #274): every
+  route group (health/download, tier-agent, webhook, auth/passkeys, dashboard reads, dashboard
+  mutations) now lives in a dependency-injected module under `src/routes/`.
 - [#179](https://github.com/DurantTL/overseerr-dm-bot/issues/179) — add versioned,
-  transactional SQLite migrations and upgrade fixtures. **Partial:** transaction + version ledger
-  landed (PR #208); ordered/historical fixtures remain.
+  transactional SQLite migrations and upgrade fixtures. **Mostly landed:** the transaction +
+  version ledger (PR #208), historical upgrade fixtures (PR #268), and now ordered/skippable
+  migration steps plus a pre-migration backup snapshot for existing databases. Remaining: surface
+  the migration version/failure state in startup health output.
 - [#180](https://github.com/DurantTL/overseerr-dm-bot/issues/180) — align the Node runtime contract
   and bring the tier agent into CI. Not started.
 
@@ -39,13 +41,21 @@ open program contains umbrella issue [#175](https://github.com/DurantTL/overseer
 - [#186](https://github.com/DurantTL/overseerr-dm-bot/issues/186) — unify scheduler inventory,
   run telemetry, and dashboard controls.
 - [#187](https://github.com/DurantTL/overseerr-dm-bot/issues/187) — correct dashboard refresh,
-  keyboard access, and client-side regressions.
+  keyboard access, and client-side regressions. **Mostly landed:** the refresh guard, full ARIA
+  tabs pattern, progress-bar semantics, `:focus-visible`, and the mojibake fix are done. Remaining:
+  a live browser keyboard/visual walkthrough (this repo's test suite has no browser automation).
 - [#188](https://github.com/DurantTL/overseerr-dm-bot/issues/188) — keep HTTP health and admin
   control available while Discord is degraded.
-- [#190](https://github.com/DurantTL/overseerr-dm-bot/issues/190) — validate and expose the exact
-  public dashboard origin for passkeys.
+- ~~#190 — validate and expose the exact public dashboard origin for passkeys.~~ **Closed:**
+  added `DASHBOARD_PUBLIC_URL` (defaults to `https://TUNNEL_DOMAIN`), strict validation, and a
+  client-side origin preflight that catches a mismatch before the browser call.
 - [#191](https://github.com/DurantTL/overseerr-dm-bot/issues/191) — provision and verify the
-  external HTTPS path required by the dashboard.
+  external HTTPS path required by the dashboard. **Mostly landed:** `/doctor` (Discord command and
+  `GET /admin/doctor`) now reports **Local process liveness**, **Public HTTPS origin**, **Public
+  TLS certificate**, and **Proxy trust configuration** as distinct checks, and `DEPLOYMENT.md`
+  spells out that port 3000 is plain HTTP and must sit behind the Cloudflare Tunnel/reverse proxy.
+  Remaining: an operator needs to actually run the diagnostic against the live public hostname and
+  confirm it reports healthy — that live verification can't be done from this repository.
 
 ## P1 — edge playback completion
 
@@ -59,13 +69,22 @@ open program contains umbrella issue [#175](https://github.com/DurantTL/overseer
 ## P2 — delivery and project hygiene
 
 - [#184](https://github.com/DurantTL/overseerr-dm-bot/issues/184) — add image security gates,
-  SBOM/provenance, and versioned releases. Not started.
+  SBOM/provenance, and versioned releases. **Landed:** Trivy scans the bot and tier-agent images
+  in the PR gate and the bot image again before publish (fails on a fixable CRITICAL/HIGH
+  finding); published images carry SBOM/provenance attestations; GitHub Actions are pinned to
+  immutable commit SHAs with Dependabot keeping them current; pushing a `vX.Y.Z` tag publishes
+  that version alongside `latest`/`sha-*` and creates a GitHub Release. See "Versioned releases
+  and image security" in `DEPLOYMENT.md`.
 - [#185](https://github.com/DurantTL/overseerr-dm-bot/issues/185) — refresh documentation and
   establish the human-approved public-repository policy. **Nearly done:** PR #194 already did the
   doc refresh; only the automated drift-check (this doc vs. live GitHub state) remains open —
   this 2026-08-21 pass is exactly that kind of check, done manually.
 - [#189](https://github.com/DurantTL/overseerr-dm-bot/issues/189) — cache and scope dashboard data
-  with explicit freshness.
+  with explicit freshness. **Partial:** a single-flight + TTL cache now coalesces and bounds the
+  `GET /admin` integration fan-out (health/Tautulli/Arr queues/disk space/edge diagnostics/guild
+  members), with a stale-on-failure fallback and a page-level freshness/staleness note, and
+  dashboard mutations invalidate it. Remaining: per-panel freshness display and loading only the
+  active panel instead of the whole page on every render.
 
 ## 2026-09-09 feature-review follow-ups
 
