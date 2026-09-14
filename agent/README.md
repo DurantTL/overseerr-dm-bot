@@ -87,6 +87,10 @@ rewritten and reloaded. Rotating the token with `/tier-node token` again just me
 | `TIER_MOUNT_ROOT` | | External media-drive mount point, e.g. `/mnt/media`. **Setting this enables the mount guard** (below) and **requires `TIER_EXPECTED_UUID` and/or `TIER_MOUNT_MARKER`**. All folder roots must live under it. |
 | `TIER_EXPECTED_UUID` | | Filesystem UUID the drive at `TIER_MOUNT_ROOT` must have (`blkid`/`lsblk -o NAME,UUID`). Requires `TIER_MOUNT_ROOT`. Linux/host deploys. |
 | `TIER_MOUNT_MARKER` | | Sentinel file that lives on the drive, relative to the mount root (e.g. `.tier-media-ok` — create once with `touch /mnt/media/.tier-media-ok`). Its absence means the real drive isn't there. Requires `TIER_MOUNT_ROOT`. **The right proof for Docker / bind-mount deploys.** |
+| `EDGE_MERGED_ROOT` | | (#181) The mergerfs merged-library mount Plex points at, e.g. `/mnt/plex-library`. Setting this enables the read-only merged-mount diagnostic (below) and **requires `EDGE_REMOTE_ROOT`**. |
+| `EDGE_REMOTE_ROOT` | | (#181) The read-only remote-fallback branch of the merged mount, e.g. `/mnt/master-ro`. Requires `EDGE_MERGED_ROOT`. |
+| `EDGE_LOCAL_ROOT` | | (#181) The merged mount's local (RW) branch, if it differs from this node's own folder root — most nodes leave this unset and it defaults to `TIER_FOLDER_ROOT` / the first `TIER_FOLDERS` entry. |
+| `EDGE_MOUNT_SAMPLE_RELPATHS` | | (#181) Comma-separated paths (relative to both branches) of one or more titles known to be cached locally, used to verify local-first precedence every cycle. Optional but recommended — without it the diagnostic can't prove precedence, only presence/read-only. |
 | `TIER_DRY_RUN` | | `1` = log what would happen, write and delete nothing |
 
 ## Mount guard (external media drive)
@@ -130,6 +134,25 @@ TIER_FOLDERS='aaaaa-bbbbb:/mnt/media/Media/Family Films;ccccc-ddddd:/mnt/media/M
 
 The node is still one budget pool with one eviction plan; the manifest just splits `drop`
 per folder and the agent converges each folder root independently.
+
+## Merged-mount diagnostic (#181)
+
+Once this node has stood up the merged-library view from
+[`docs/mergerfs-plex-operational.md`](../docs/mergerfs-plex-operational.md) (mergerfs local branch
++ read-only remote fallback), set `EDGE_MERGED_ROOT`/`EDGE_REMOTE_ROOT` (and ideally
+`EDGE_MOUNT_SAMPLE_RELPATHS`) so the agent verifies it every cycle instead of only at hand-check
+time:
+
+```sh
+EDGE_MERGED_ROOT=/mnt/plex-library
+EDGE_REMOTE_ROOT=/mnt/master-ro
+EDGE_MOUNT_SAMPLE_RELPATHS=Movies/Some Cached Movie (2020)/movie.mkv
+```
+
+Every report then carries a `mergedMountDiagnostics` result (mount presence, remote read-only,
+remote reachability, local-first precedence) — read-only checks, never a write or delete — which
+`/doctor` on the bot surfaces per node. Leave both unset until the merged mount actually exists;
+an unconfigured node contributes no checks (not a failure).
 
 ## systemd
 
