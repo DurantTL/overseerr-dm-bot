@@ -8,18 +8,15 @@ const path = require('path');
 const dbPath = path.join(os.tmpdir(), `durant-request-ui-${process.pid}.db`);
 process.env.DB_PATH = dbPath;
 
-const express = require('express');
-const { CONFIG } = require('../../src/config');
-
 const {
+  createSetupRequestUiFeature,
   requestResultOptions,
   encodePickedResult,
   requestInteractionProxy,
   stashSelection,
   takeSelection,
   seasonSelectOptions,
-  pickRequest,
-  pickSeasons,
+  owns,
 } = require('../../src/setup-request-ui');
 
 after(() => {
@@ -61,6 +58,11 @@ test('request_confirm customId parses nonce and quality in the same order the bu
   assert.equal(parsedNonce, nonce);
   assert.equal(quality, '4k');
   assert.equal(takeSelection(parsedNonce, '123'), 'movie:99:Movie');
+});
+
+test('a stashed season selection round-trips as { raw, seasonsRaw }, distinct from the bare-string shape', () => {
+  const nonce = stashSelection('123', 'tv:1396:Breaking Bad', '2,5');
+  assert.deepEqual(takeSelection(nonce, '123'), { raw: 'tv:1396:Breaking Bad', seasonsRaw: '2,5' });
 });
 
 test('request proxy masquerades as /request while preserving the real interaction', () => {
@@ -107,79 +109,290 @@ test('seasonSelectOptions always offers All Seasons plus up to 24 season numbers
   assert.equal(many[24].value, 'season:24');
 });
 
-function mockSeerrForWizard() {
-  const app = express();
-  const state = { tvSeasons: [], media: {} };
-  app.get('/api/v1/tv/:id', (req, res) => res.json({ id: Number(req.params.id), seasons: state.tvSeasons, mediaInfo: state.media[`tv:${req.params.id}`] }));
-  return new Promise(resolve => {
-    const server = app.listen(0, () => resolve({ server, state, port: server.address().port }));
+test('owns() claims only the wizard\'s own button/modal/select ids', () => {
+  assert.equal(owns({ isButton: () => true, customId: 'setup:quick:request' }), true);
+  assert.equal(owns({ isButton: () => true, customId: 'setup:request_confirm:abc:hd' }), true);
+  assert.equal(owns({ isButton: () => true, customId: 'setup:open' }), false);
+  assert.equal(owns({ isButton: () => false, isModalSubmit: () => true, customId: 'setup:request_modal' }), true);
+  assert.equal(owns({ isButton: () => false, isModalSubmit: () => false, isStringSelectMenu: () => true, customId: 'setup:request_results' }), true);
+  assert.equal(owns({ isButton: () => false, isModalSubmit: () => false, isStringSelectMenu: () => true, customId: 'setup:request_seasons:abc123' }), true);
+  assert.equal(owns({ isButton: () => false, isModalSubmit: () => false, isStringSelectMenu: () => false }), false);
+});
+
+function feature(overrides = {}) {
+  const calls = { forwarded: [], warned: [] };
+  const instance = createSetupRequestUiFeature({
+    getUserByDiscordId: () => ({ discord_id: 'member' }),
+    searchSeerr: async () => [{ mediaType: 'movie', id: 1, title: 'Example Movie', mediaInfo: {} }],
+    fetchSeerrTvSeasonInfo: async () => ({ eligible: [], covered: [] }),
+    log: { warn: (...a) => calls.warned.push(a), error: () => {} },
+    forwardSlashCommand: async interaction => calls.forwarded.push({
+      commandName: interaction.commandName,
+      title: interaction.options.getString('title'),
+      is4k: interaction.options.getBoolean('is4k'),
+      seasons: interaction.options.getString('seasons'),
+    }),
+    ...overrides,
   });
+  return { instance, calls };
 }
 
-function fakeSelectInteraction({ userId = '123', values = [], customId }) {
-  const calls = { updates: [] };
+function button(customId, overrides = {}) {
   return {
-    calls,
-    user: { id: userId },
     customId,
-    values,
-    update: async payload => { calls.updates.push(payload); return payload; },
+    user: { id: 'member' },
+    isChatInputCommand: () => false,
+    isButton: () => true,
+    isModalSubmit: () => false,
+    isStringSelectMenu: () => false,
+    showModal: async () => {},
+    reply: async () => {},
+    ...overrides,
   };
 }
 
-test('mobile wizard: picking a TV result offers a season step instead of requesting everything', async () => {
-  const { server, state, port } = await mockSeerrForWizard();
-  CONFIG.OVERSEERR_URL = `http://127.0.0.1:${port}`;
-  CONFIG.OVERSEERR_API_KEY = 'k';
-  try {
-    state.tvSeasons = [{ seasonNumber: 1, episodeCount: 8 }, { seasonNumber: 2, episodeCount: 10 }];
-    const interaction = fakeSelectInteraction({ values: ['tv:1396:Breaking Bad'] });
-    await pickRequest(interaction);
-    assert.equal(interaction.calls.updates.length, 1);
-    const menuRow = interaction.calls.updates[0].components[0];
-    const menu = menuRow.components[0];
-    assert.match(menu.data.custom_id, /^setup:request_seasons:[0-9a-z]{8}$/);
-    const values = menu.toJSON().options.map(o => o.value);
-    assert.deepEqual(values, ['all', 'season:1', 'season:2']);
+function select(customId, values, overrides = {}) {
+  return {
+    customId,
+    user: { id: 'member' },
+    isChatInputCommand: () => false,
+    isButton: () => false,
+    isModalSubmit: () => false,
+    isStringSelectMenu: () => true,
+    values,
+    update: async () => {},
+    reply: async () => {},
+    ...overrides,
+  };
+}
 
-    // Full round trip: picking specific seasons lands on the quality-confirm step with THAT
-    // selection stashed under a fresh nonce, and the original raw selection survives.
-    const nonce = menu.data.custom_id.split(':')[2];
-    const seasonInteraction = fakeSelectInteraction({ values: ['season:2'], customId: menu.data.custom_id });
-    await pickSeasons(seasonInteraction);
-    assert.match(seasonInteraction.calls.updates[0].embeds[0].data.description, /Seasons: \*\*season 2\*\*/);
-    const confirmRow = seasonInteraction.calls.updates[0].components[0];
-    const confirmNonce = confirmRow.components[0].data.custom_id.split(':')[2];
-    assert.notEqual(confirmNonce, nonce, 'season step consumes the first nonce and mints a new one');
-    assert.equal(takeSelection(nonce, '123'), null, 'the pre-season-pick nonce is single-use');
-    const picked = takeSelection(confirmNonce, '123');
-    assert.deepEqual(picked, { raw: 'tv:1396:Breaking Bad', seasonsRaw: '2' });
-  } finally {
-    server.close();
-  }
+test('createSetupRequestUiFeature requires all its dependencies, including the season-info lookup', () => {
+  assert.throws(() => createSetupRequestUiFeature({
+    getUserByDiscordId: () => {},
+    searchSeerr: async () => [],
+    log: { warn() {}, error() {} },
+    forwardSlashCommand: async () => {},
+  }), TypeError);
 });
 
-test('mobile wizard: movies skip the season step entirely', async () => {
-  const interaction = fakeSelectInteraction({ values: ['movie:603:The Matrix'] });
-  await pickRequest(interaction);
-  assert.equal(interaction.calls.updates.length, 1);
-  assert.match(interaction.calls.updates[0].embeds[0].data.title, /Confirm Request/);
-  const button = interaction.calls.updates[0].components[0].components[0];
-  assert.match(button.data.custom_id, /^setup:request_confirm:/);
+test('explicit handler ignores interactions it does not own', async () => {
+  const { instance, calls } = feature();
+  const handled = await instance.handleInteraction(button('setup:open'));
+  assert.equal(handled, false);
+  assert.deepEqual(calls.forwarded, []);
 });
 
-test('mobile wizard: an unreachable Seerr fails open to All Seasons instead of blocking the request', async () => {
-  CONFIG.OVERSEERR_URL = 'http://127.0.0.1:1';
-  const interaction = fakeSelectInteraction({ values: ['tv:1396:Breaking Bad'] });
-  await pickRequest(interaction);
-  assert.equal(interaction.calls.updates.length, 1);
-  assert.match(interaction.calls.updates[0].embeds[0].data.title, /Confirm Request/, 'goes straight to quality, no season menu');
-  assert.match(interaction.calls.updates[0].embeds[0].data.description, /all seasons/);
+test('quick-request button shows the modal for a linked account', async () => {
+  let shown = null;
+  const { instance } = feature();
+  const handled = await instance.handleInteraction(button('setup:quick:request', {
+    showModal: async modal => { shown = modal; },
+  }));
+  assert.equal(handled, true);
+  assert.equal(shown.data.custom_id, 'setup:request_modal');
 });
 
-test('mobile wizard: selecting "All Seasons" alongside specific seasons wins over the specific picks', async () => {
-  const nonce = stashSelection('123', 'tv:1396:Breaking Bad');
-  const interaction = fakeSelectInteraction({ values: ['all', 'season:1'], customId: `setup:request_seasons:${nonce}` });
-  await pickSeasons(interaction);
-  assert.match(interaction.calls.updates[0].embeds[0].data.description, /Seasons: \*\*all seasons\*\*/);
+test('quick-request button asks an unlinked account to finish setup first', async () => {
+  let replied = null;
+  const { instance } = feature({ getUserByDiscordId: () => null });
+  const handled = await instance.handleInteraction(button('setup:quick:request', {
+    reply: async payload => { replied = payload; },
+  }));
+  assert.equal(handled, true);
+  assert.match(replied.content, /not linked yet/);
+});
+
+test('modal submit searches Seerr and offers a select menu of results', async () => {
+  let edited = null;
+  const { instance } = feature();
+  const modal = {
+    customId: 'setup:request_modal',
+    user: { id: 'member' },
+    isChatInputCommand: () => false,
+    isButton: () => false,
+    isModalSubmit: () => true,
+    isStringSelectMenu: () => false,
+    fields: { getTextInputValue: () => 'Example Movie' },
+    deferReply: async () => {},
+    editReply: async payload => { edited = payload; },
+  };
+  const handled = await instance.handleInteraction(modal);
+  assert.equal(handled, true);
+  assert.ok(edited.components[0].components[0].data.custom_id === 'setup:request_results');
+});
+
+test('modal submit reports no matches with a search-again button', async () => {
+  let edited = null;
+  const { instance } = feature({ searchSeerr: async () => [] });
+  const modal = {
+    customId: 'setup:request_modal',
+    user: { id: 'member' },
+    isChatInputCommand: () => false,
+    isButton: () => false,
+    isModalSubmit: () => true,
+    isStringSelectMenu: () => false,
+    fields: { getTextInputValue: () => 'Nothing Matches' },
+    deferReply: async () => {},
+    editReply: async payload => { edited = payload; },
+  };
+  const handled = await instance.handleInteraction(modal);
+  assert.equal(handled, true);
+  assert.match(edited.embeds[0].data.title, /No Matches Found/);
+});
+
+test('modal submit surfaces a Seerr search failure instead of throwing', async () => {
+  let edited = null;
+  const { instance, calls } = feature({ searchSeerr: async () => { throw new Error('boom'); } });
+  const modal = {
+    customId: 'setup:request_modal',
+    user: { id: 'member' },
+    isChatInputCommand: () => false,
+    isButton: () => false,
+    isModalSubmit: () => true,
+    isStringSelectMenu: () => false,
+    fields: { getTextInputValue: () => 'Example Movie' },
+    deferReply: async () => {},
+    editReply: async payload => { edited = payload; },
+  };
+  const handled = await instance.handleInteraction(modal);
+  assert.equal(handled, true);
+  assert.match(edited, /could not search Seerr/);
+  assert.equal(calls.warned.length, 1);
+});
+
+test('select menu picking a movie skips the season step entirely and goes straight to quality', async () => {
+  let updated = null;
+  const { instance } = feature();
+  const handled = await instance.handleInteraction(select('setup:request_results', ['movie:100:Example Movie'], {
+    update: async payload => { updated = payload; },
+  }));
+  assert.equal(handled, true);
+  assert.match(updated.embeds[0].data.title, /Confirm Request/);
+  const ids = updated.components[0].components.map(c => c.data.custom_id);
+  assert.equal(ids.length, 3);
+  assert.match(ids[0], /^setup:request_confirm:.+:hd$/);
+  assert.match(ids[1], /^setup:request_confirm:.+:4k$/);
+});
+
+test('select menu picking a TV result with eligible seasons offers a season step instead of requesting everything', async () => {
+  let updated = null;
+  const { instance } = feature({
+    fetchSeerrTvSeasonInfo: async () => ({ eligible: [1, 2], covered: [] }),
+  });
+  const handled = await instance.handleInteraction(select('setup:request_results', ['tv:1396:Breaking Bad'], {
+    update: async payload => { updated = payload; },
+  }));
+  assert.equal(handled, true);
+  assert.match(updated.embeds[0].data.title, /Choose Seasons/);
+  const menu = updated.components[0].components[0];
+  assert.match(menu.data.custom_id, /^setup:request_seasons:[0-9a-z]{8}$/);
+  const values = menu.toJSON().options.map(o => o.value);
+  assert.deepEqual(values, ['all', 'season:1', 'season:2']);
+});
+
+test('an unreachable/empty Seerr season lookup fails open to All Seasons instead of blocking the request', async () => {
+  let updated = null;
+  const { instance } = feature({
+    fetchSeerrTvSeasonInfo: async () => { throw new Error('ECONNREFUSED'); },
+  });
+  const handled = await instance.handleInteraction(select('setup:request_results', ['tv:1396:Breaking Bad'], {
+    update: async payload => { updated = payload; },
+  }));
+  assert.equal(handled, true);
+  assert.match(updated.embeds[0].data.title, /Confirm Request/, 'goes straight to quality, no season menu');
+  assert.match(updated.embeds[0].data.description, /all seasons/);
+});
+
+test('full round trip: picking specific seasons lands on the quality-confirm step with that selection stashed under a fresh nonce', async () => {
+  const { instance } = feature({
+    fetchSeerrTvSeasonInfo: async () => ({ eligible: [1, 2], covered: [] }),
+  });
+  let firstUpdate = null;
+  await instance.handleInteraction(select('setup:request_results', ['tv:1396:Breaking Bad'], {
+    update: async payload => { firstUpdate = payload; },
+  }));
+  const menu = firstUpdate.components[0].components[0];
+  const nonce = menu.data.custom_id.split(':')[2];
+
+  let seasonsUpdate = null;
+  const handled = await instance.handleInteraction(select(menu.data.custom_id, ['season:2'], {
+    update: async payload => { seasonsUpdate = payload; },
+  }));
+  assert.equal(handled, true);
+  assert.match(seasonsUpdate.embeds[0].data.description, /Seasons: \*\*season 2\*\*/);
+  const confirmRow = seasonsUpdate.components[0];
+  const confirmNonce = confirmRow.components[0].data.custom_id.split(':')[2];
+  assert.notEqual(confirmNonce, nonce, 'season step consumes the first nonce and mints a new one');
+  assert.equal(takeSelection(nonce, 'member'), null, 'the pre-season-pick nonce is single-use');
+  const picked = takeSelection(confirmNonce, 'member');
+  assert.deepEqual(picked, { raw: 'tv:1396:Breaking Bad', seasonsRaw: '2' });
+});
+
+test('selecting "All Seasons" alongside specific seasons wins over the specific picks', async () => {
+  let updated = null;
+  const { instance } = feature();
+  const nonce = stashSelection('member', 'tv:1396:Breaking Bad');
+  const handled = await instance.handleInteraction(select(`setup:request_seasons:${nonce}`, ['all', 'season:1'], {
+    update: async payload => { updated = payload; },
+  }));
+  assert.equal(handled, true);
+  assert.match(updated.embeds[0].data.description, /Seasons: \*\*all seasons\*\*/);
+});
+
+test('season picker on an expired/unknown nonce asks the member to search again instead of throwing', async () => {
+  let updated = null;
+  const { instance } = feature();
+  const handled = await instance.handleInteraction(select('setup:request_seasons:missing-nonce', ['all'], {
+    update: async payload => { updated = payload; },
+  }));
+  assert.equal(handled, true);
+  assert.match(updated.content, /expired/);
+});
+
+test('confirm button forwards a synthetic /request interaction with the stashed title and quality (no season pick made)', async () => {
+  const { instance, calls } = feature();
+  const nonce = stashSelection('member', 'tv:321:Example Show');
+  const handled = await instance.handleInteraction(button(`setup:request_confirm:${nonce}:4k`));
+  assert.equal(handled, true);
+  assert.deepEqual(calls.forwarded, [{ commandName: 'request', title: 'tv:321:Example Show', is4k: true, seasons: null }]);
+});
+
+test('confirm button threads a stashed season selection through to the forwarded /request "seasons" option', async () => {
+  const { instance, calls } = feature();
+  const nonce = stashSelection('member', 'tv:1396:Breaking Bad', '2,5');
+  const handled = await instance.handleInteraction(button(`setup:request_confirm:${nonce}:hd`));
+  assert.equal(handled, true);
+  assert.deepEqual(calls.forwarded, [{ commandName: 'request', title: 'tv:1396:Breaking Bad', is4k: false, seasons: '2,5' }]);
+});
+
+test('confirm button tells the user to search again once the selection has expired', async () => {
+  let replied = null;
+  const { instance, calls } = feature();
+  const handled = await instance.handleInteraction(button('setup:request_confirm:missing-nonce:hd', {
+    reply: async payload => { replied = payload; },
+  }));
+  assert.equal(handled, true);
+  assert.deepEqual(calls.forwarded, []);
+  assert.match(replied.content, /expired/);
+});
+
+test('setup request UI no longer intercepts Discord prototypes', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../src/setup-request-ui.js'), 'utf8');
+  assert.doesNotMatch(source, /Client\.prototype\.emit|REST\.prototype\.put/);
+  const discordImport = source.match(/const\s*\{([^}]*)\}\s*=\s*require\(['"]discord\.js['"]\)/)[1];
+  assert.doesNotMatch(discordImport, /\bClient\b/, 'no longer needs the Discord Client to patch its prototype');
+  assert.doesNotMatch(discordImport, /\bREST\b/, 'no longer needs the Discord REST client to patch its prototype');
+});
+
+test('bootstrap no longer installs a prototype-patching layer for the request wizard', () => {
+  const bootstrap = fs.readFileSync(path.join(__dirname, '..', '..', 'bootstrap.js'), 'utf8');
+  assert.doesNotMatch(bootstrap, /installSetupRequestUi/);
+});
+
+test('setup-discord-extension defers to the request wizard\'s owned ids ahead of its catch-all', () => {
+  const { isOwnedInteraction } = require('../../src/setup-discord-extension');
+  assert.equal(isOwnedInteraction({ isButton: () => true, customId: 'setup:quick:request' }), false);
+  assert.equal(isOwnedInteraction({ isButton: () => true, customId: 'setup:request_confirm:abc:hd' }), false);
+  // Its own buttons remain owned as before.
+  assert.equal(isOwnedInteraction({ isButton: () => true, customId: 'setup:open' }), true);
 });

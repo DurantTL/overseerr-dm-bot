@@ -28,7 +28,7 @@ const crypto = require('crypto');
 
 const { log } = require('./src/log');
 const { createMediaPanelFeature, mediaPanelCommand } = require('./src/media-panel');
-const { requestModal } = require('./src/setup-request-ui');
+const { createSetupRequestUiFeature, requestModal } = require('./src/setup-request-ui');
 const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
@@ -4709,6 +4709,14 @@ const mediaPanelFeature = createMediaPanelFeature({
   forwardSlashCommand: handleSlashCommand,
 });
 
+const setupRequestUiFeature = createSetupRequestUiFeature({
+  getUserByDiscordId,
+  searchSeerr,
+  fetchSeerrTvSeasonInfo,
+  log,
+  forwardSlashCommand: handleSlashCommand,
+});
+
 client.on('interactionCreate', async interaction => {
   try {
     if (interaction.isAutocomplete()) return handleAutocomplete(interaction);
@@ -4717,6 +4725,7 @@ client.on('interactionCreate', async interaction => {
       return;
     }
     if (await mediaPanelFeature.handleInteraction(interaction)) return;
+    if (await setupRequestUiFeature.handleInteraction(interaction)) return;
     if (interaction.isButton()) {
       if (buttonActionsInFlight.has(interaction.customId)) {
         return interaction.reply({ content: '⏳ This action is already being processed.', ephemeral: true });

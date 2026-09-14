@@ -23,6 +23,7 @@ const { db, getUserByDiscordId, getTrustScore, audit } = require('./db');
 const { inviteUserToPlex } = require('./plex');
 const { fetchUserQuota } = require('./seerr');
 const { quotaLine } = require('./util');
+const { owns: requestUiOwns } = require('./setup-request-ui');
 const {
   setupStateForUser,
   setupSummaryLines,
@@ -450,7 +451,11 @@ async function quickCommand(interaction, command) {
 
 function isOwnedInteraction(interaction) {
   if (interaction?.isChatInputCommand?.() && ['setup', 'me'].includes(interaction.commandName)) return true;
-  if (interaction?.isButton?.() && String(interaction.customId || '').startsWith('setup:')) return true;
+  // The Request Media wizard (src/setup-request-ui.js) is now an explicit index.js interaction
+  // handler rather than a Client.prototype.emit layer, so this catch-all must not swallow its
+  // buttons — it still needs first refusal over the generic 'setup:' handling below, matching the
+  // order that existed while it was installed after this extension.
+  if (interaction?.isButton?.() && String(interaction.customId || '').startsWith('setup:')) return !requestUiOwns(interaction);
   if (interaction?.isModalSubmit?.() && interaction.customId === 'setup:plex_username_modal') return true;
   return false;
 }
