@@ -9,7 +9,6 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  Client,
   EmbedBuilder,
   ModalBuilder,
   StringSelectMenuBuilder,
@@ -17,11 +16,6 @@ const {
   TextInputStyle,
 } = require('discord.js');
 
-const { getUserByDiscordId } = require('./db');
-const { searchSeerr } = require('./seerr');
-const { log } = require('./log');
-
-const INSTALL_MARK = Symbol.for('durant.setupRequestUiInstalled');
 const SESSION_TTL_MS = 15 * 60 * 1000;
 const sessions = new Map();
 
@@ -102,68 +96,6 @@ function requestModal() {
     ));
 }
 
-async function startRequest(interaction) {
-  const linked = getUserByDiscordId(interaction.user.id);
-  if (!linked) {
-    return interaction.reply({
-      content: '❌ Your Discord account is not linked yet. Open **Setup / Troubleshooting** first, or ask an admin to finish your access setup.',
-      ephemeral: true,
-    });
-  }
-  return interaction.showModal(requestModal());
-}
-
-async function searchRequest(interaction) {
-  const query = String(interaction.fields.getTextInputValue('title') || '').trim();
-  await interaction.deferReply({ ephemeral: true });
-  let results;
-  try {
-    results = await searchSeerr(query, 5000);
-  } catch (err) {
-    log.warn(`Mobile request search failed: ${err.message}`);
-    return interaction.editReply('❌ I could not search Seerr right now. Try again in a moment or use `/request`.');
-  }
-  const options = requestResultOptions(results);
-  if (!options.length) {
-    return interaction.editReply({
-      embeds: [brandedEmbed(0xf59e0b)
-        .setTitle('No Matches Found')
-        .setDescription(`I could not find a movie or TV show matching **${query}**. Try a shorter title or include the year.`)],
-      components: [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('setup:quick:request').setLabel('Search Again').setStyle(ButtonStyle.Primary),
-      )],
-    });
-  }
-
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId('setup:request_results')
-    .setPlaceholder('Choose the movie or show')
-    .addOptions(options);
-  return interaction.editReply({
-    embeds: [brandedEmbed().setTitle('🎬 Choose What You Want').setDescription(`Search results for **${query}**. Pick the correct title below.`)],
-    components: [new ActionRowBuilder().addComponents(menu)],
-  });
-}
-
-async function pickRequest(interaction) {
-  const raw = String(interaction.values?.[0] || '');
-  const match = raw.match(/^(movie|tv):(\d+):(.+)$/);
-  if (!match) return interaction.reply({ content: 'That result is no longer valid. Tap **Request Media** and search again.', ephemeral: true });
-  const [, mediaType, , title] = match;
-  const nonce = stashSelection(interaction.user.id, raw);
-  const description = mediaType === 'tv'
-    ? `**${title}**\n\nChoose the quality. TV requests include all available seasons.`
-    : `**${title}**\n\nChoose the quality.`;
-  return interaction.update({
-    embeds: [brandedEmbed().setTitle(`${mediaEmoji(mediaType)} Confirm Request`).setDescription(description)],
-    components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`setup:request_confirm:${nonce}:hd`).setLabel('Request HD / 1080p').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`setup:request_confirm:${nonce}:4k`).setLabel('Request 4K').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId('setup:quick:request').setLabel('Search Again').setStyle(ButtonStyle.Secondary),
-    )],
-  });
-}
-
 // Make a real ButtonInteraction look like the normal /request ChatInputCommand to the downstream
 // listener. Methods such as deferReply/editReply remain bound to the ORIGINAL button interaction,
 // so Discord receives a valid acknowledgement while index.js executes its existing request code.
@@ -194,51 +126,119 @@ function owns(interaction) {
   return false;
 }
 
-function installSetupRequestUi() {
-  if (globalThis[INSTALL_MARK]) return;
-  globalThis[INSTALL_MARK] = true;
-  const downstreamEmit = Client.prototype.emit;
-  if (downstreamEmit.__durantRequestUiWrapped) return;
+// Explicit button/modal/select handler registration with dependency injection, matching the
+// pattern src/media-panel.js established: no Discord prototype patching here at all — index.js
+// calls handleInteraction directly from its own interactionCreate listener.
+function createSetupRequestUiFeature({ getUserByDiscordId, searchSeerr, log, forwardSlashCommand }) {
+  if (!getUserByDiscordId || !searchSeerr || !log || !forwardSlashCommand) {
+    throw new TypeError('Setup request UI dependencies are required');
+  }
 
-  function wrappedEmit(event, ...args) {
-    const interaction = args[0];
-    if (event !== 'interactionCreate' || !owns(interaction)) return downstreamEmit.call(this, event, ...args);
+  async function startRequest(interaction) {
+    const linked = getUserByDiscordId(interaction.user.id);
+    if (!linked) {
+      return interaction.reply({
+        content: '❌ Your Discord account is not linked yet. Open **Setup / Troubleshooting** first, or ask an admin to finish your access setup.',
+        ephemeral: true,
+      });
+    }
+    return interaction.showModal(requestModal());
+  }
+
+  async function searchRequest(interaction) {
+    const query = String(interaction.fields.getTextInputValue('title') || '').trim();
+    await interaction.deferReply({ ephemeral: true });
+    let results;
+    try {
+      results = await searchSeerr(query, 5000);
+    } catch (err) {
+      log.warn(`Mobile request search failed: ${err.message}`);
+      return interaction.editReply('❌ I could not search Seerr right now. Try again in a moment or use `/request`.');
+    }
+    const options = requestResultOptions(results);
+    if (!options.length) {
+      return interaction.editReply({
+        embeds: [brandedEmbed(0xf59e0b)
+          .setTitle('No Matches Found')
+          .setDescription(`I could not find a movie or TV show matching **${query}**. Try a shorter title or include the year.`)],
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('setup:quick:request').setLabel('Search Again').setStyle(ButtonStyle.Primary),
+        )],
+      });
+    }
+
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId('setup:request_results')
+      .setPlaceholder('Choose the movie or show')
+      .addOptions(options);
+    return interaction.editReply({
+      embeds: [brandedEmbed().setTitle('🎬 Choose What You Want').setDescription(`Search results for **${query}**. Pick the correct title below.`)],
+      components: [new ActionRowBuilder().addComponents(menu)],
+    });
+  }
+
+  async function pickRequest(interaction) {
+    const raw = String(interaction.values?.[0] || '');
+    const match = raw.match(/^(movie|tv):(\d+):(.+)$/);
+    if (!match) return interaction.reply({ content: 'That result is no longer valid. Tap **Request Media** and search again.', ephemeral: true });
+    const [, mediaType, , title] = match;
+    const nonce = stashSelection(interaction.user.id, raw);
+    const description = mediaType === 'tv'
+      ? `**${title}**\n\nChoose the quality. TV requests include all available seasons.`
+      : `**${title}**\n\nChoose the quality.`;
+    return interaction.update({
+      embeds: [brandedEmbed().setTitle(`${mediaEmoji(mediaType)} Confirm Request`).setDescription(description)],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`setup:request_confirm:${nonce}:hd`).setLabel('Request HD / 1080p').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`setup:request_confirm:${nonce}:4k`).setLabel('Request 4K').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('setup:quick:request').setLabel('Search Again').setStyle(ButtonStyle.Secondary),
+      )],
+    });
+  }
+
+  async function confirmRequest(interaction) {
+    const [, , nonce, quality] = String(interaction.customId).split(':');
+    const raw = takeSelection(nonce, interaction.user.id);
+    if (!raw) {
+      return interaction.reply({ content: '⏳ That request screen expired. Tap **Request Media** and search again.', ephemeral: true });
+    }
+    // Forward the proxy directly to the same slash-command dispatcher index.js uses for a real
+    // /request invocation. That handler is the only code that actually creates/gates the request.
+    return forwardSlashCommand(requestInteractionProxy(interaction, raw, quality === '4k'));
+  }
+
+  async function handleInteraction(interaction) {
+    if (!owns(interaction)) return false;
 
     if (interaction.isButton?.() && interaction.customId === 'setup:quick:request') {
-      Promise.resolve(startRequest(interaction)).catch(err => log.error(`Request wizard start failed: ${err.stack || err.message}`));
+      await startRequest(interaction);
       return true;
     }
     if (interaction.isModalSubmit?.() && interaction.customId === 'setup:request_modal') {
-      Promise.resolve(searchRequest(interaction)).catch(err => log.error(`Request wizard search failed: ${err.stack || err.message}`));
+      await searchRequest(interaction);
       return true;
     }
     if (interaction.isStringSelectMenu?.() && interaction.customId === 'setup:request_results') {
-      Promise.resolve(pickRequest(interaction)).catch(err => log.error(`Request wizard pick failed: ${err.stack || err.message}`));
+      await pickRequest(interaction);
       return true;
     }
     if (interaction.isButton?.() && String(interaction.customId || '').startsWith('setup:request_confirm:')) {
-      const [, , nonce, quality] = String(interaction.customId).split(':');
-      const raw = takeSelection(nonce, interaction.user.id);
-      if (!raw) {
-        Promise.resolve(interaction.reply({ content: '⏳ That request screen expired. Tap **Request Media** and search again.', ephemeral: true })).catch(() => {});
-        return true;
-      }
-      // Send the proxy THROUGH the wrapped layers beneath us. The normal index.js /request handler
-      // is the only code that actually creates/gates the request.
-      return downstreamEmit.call(this, 'interactionCreate', requestInteractionProxy(interaction, raw, quality === '4k'));
+      await confirmRequest(interaction);
+      return true;
     }
-    return downstreamEmit.call(this, event, ...args);
+    return false;
   }
-  wrappedEmit.__durantRequestUiWrapped = true;
-  Client.prototype.emit = wrappedEmit;
+
+  return { handleInteraction, owns, requestModal };
 }
 
 module.exports = {
-  installSetupRequestUi,
+  createSetupRequestUiFeature,
   requestModal,
   requestResultOptions,
   encodePickedResult,
   requestInteractionProxy,
   stashSelection,
   takeSelection,
+  owns,
 };
