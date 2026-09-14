@@ -1,5 +1,7 @@
 'use strict';
 
+const { seasonsToStorageKey } = require('./season-select');
+
 function actorMetadata(actor) {
   return {
     actorKind: actor.kind,
@@ -42,9 +44,12 @@ function createRequestGate(deps) {
     if (!pending) return { ok: false, requestId: null, mediaKey: null, quotaWarning: null, verified: false, restashed: false, error: 'already_handled', pending: null };
 
     const actorMeta = actorMetadata(actor);
+    // #255: pending.seasons is 'all'/undefined (default, pre-#255 stashes included) or the
+    // member's explicit season list — carried straight through from the /request-time selection.
+    const seasonsKey = seasonsToStorageKey(pending.mediaType, pending.seasons);
     const quotaWarning = await quotaBlockReason(pending.seerrUserId, pending.discordId, pending.mediaType, { tmdbId: pending.tmdbId, is4k: pending.is4k }).catch(() => null);
     try {
-      const data = await createSeerrRequestAs(pending.seerrUserId, pending.mediaType, pending.tmdbId, pending.is4k);
+      const data = await createSeerrRequestAs(pending.seerrUserId, pending.mediaType, pending.tmdbId, pending.is4k, pending.seasons);
       const requestId = data?.id ?? null;
       const mediaKey = pending.mediaType === 'tv' && data?.media?.tvdbId ? `tvdb:${data.media.tvdbId}` : `tmdb:${pending.tmdbId}`;
       if (requestId != null) markApprovalNoticePosted(requestId);
@@ -56,8 +61,8 @@ function createRequestGate(deps) {
         return { ok: false, requestId, mediaKey, quotaWarning, verified: false, restashed: true, error: verification.reason, pending };
       }
 
-      upsertRequest(requestId, mediaKey, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
-      if (mediaKey !== `tmdb:${pending.tmdbId}`) upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
+      upsertRequest(requestId, mediaKey, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved', seasonsKey);
+      if (mediaKey !== `tmdb:${pending.tmdbId}`) upsertRequest(null, `tmdb:${pending.tmdbId}`, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved', seasonsKey);
       if (canEscalate(pending)) {
         recordEscalationWatch({ mediaType: pending.mediaType, tmdbId: pending.tmdbId, tvdbId: data?.media?.tvdbId ?? null, title: pending.label, discordId: pending.discordId, preAuthorized: azPreAuth });
         if (azPreAuth) {
@@ -77,8 +82,8 @@ function createRequestGate(deps) {
       audit('external_api_error', { ...actorMeta, provider: 'overseerr', error, action: 'gate_approve', targetDiscordId: pending.discordId });
       if (status === 202 || status === 409 || /already (exists|available|requested)/i.test(seerrMessage || '')) {
         const mediaKey = `tmdb:${pending.tmdbId}`;
-        upsertRequest(null, mediaKey, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved');
-        const subscribed = addRequestSubscriber(subscriberKeyFor(pending.tmdbId, pending.is4k), pending.discordId);
+        upsertRequest(null, mediaKey, pending.mediaType, pending.is4k, pending.label, pending.discordId, 'approved', seasonsKey);
+        const subscribed = addRequestSubscriber(subscriberKeyFor(pending.tmdbId, pending.is4k, pending.seasons), pending.discordId);
         audit('request_subscribed', { ...actorMeta, targetDiscordId: pending.discordId, title: pending.label, tmdbId: pending.tmdbId, is4k: pending.is4k, stage: 'gate_approve_collision' });
         await notifyAlreadyRequested(pending, subscribed);
         await closeNotice(pending);

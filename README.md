@@ -49,6 +49,13 @@ advanced-infrastructure layer lives in `docs/`:
   all credit the right person. (Requestrr does *not* do this by default — it submits everything
   under its own configured Seerr account, which makes every request look like the admin's unless
   each Discord user is manually associated with a Seerr user in Requestrr's settings.)
+- TV season selection: a request can name specific season(s) (`/request`'s `seasons` option, e.g.
+  `1,3,5`, or the mobile wizard's season picker) instead of always pulling every season — defaults
+  to all seasons when omitted. A selection already covered by Seerr (already requested/available)
+  is skipped and called out rather than silently dropped, and it's carried through approval,
+  restart recovery, Seerr submission, duplicate/subscriber tracking, `/request-status`, and
+  `/request-cancel` so a different season pick is never conflated with a completed request for
+  another one. Movie requests are unaffected.
 - Bot-side approval gate: Seerr **always auto-approves** requests created with an admin API key
   (its status check uses the authenticated caller's permissions, and admins pass every check), so
   a Seerr-side pending state can't exist for bot requests. Instead, a non-admin `/request` is
