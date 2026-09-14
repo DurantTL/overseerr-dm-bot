@@ -92,6 +92,7 @@ rewritten and reloaded. Rotating the token with `/tier-node token` again just me
 | `EDGE_LOCAL_ROOT` | | (#181) The merged mount's local (RW) branch, if it differs from this node's own folder root — most nodes leave this unset and it defaults to `TIER_FOLDER_ROOT` / the first `TIER_FOLDERS` entry. |
 | `EDGE_MOUNT_SAMPLE_RELPATHS` | | (#181) Comma-separated paths (relative to both branches) of one or more titles known to be cached locally, used to verify local-first precedence every cycle. Optional but recommended — without it the diagnostic can't prove precedence, only presence/read-only. |
 | `TIER_DRY_RUN` | | `1` = log what would happen, write and delete nothing |
+| `TIER_AGENT_LEGACY_IGNORE_DIR` | | §182. Directory holding the persistent manual ignore overlay (`<folderId>.txt`, one `/relPath` pattern per line). **Unset by default — reproduces prior behaviour exactly.** When set, the agent merges `planner-drops ∪ legacy-ignores − active-promotion-pins` (the manifest's `pinnedRelPaths`) instead of writing the planner's drops verbatim, so an active play-promotion pin can override a legacy-ignored title, and the override reverts on its own once the pin expires. |
 
 ## Mount guard (external media drive)
 

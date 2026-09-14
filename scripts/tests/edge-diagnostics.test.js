@@ -59,6 +59,8 @@ else process.exitCode = 2;
     assert.ok(checks.some(c => c.name === 'Main source' && c.status === 'ok'));
     assert.ok(checks.some(c => c.name === 'Philippines free space' && /100\.0 GB free/.test(c.detail)));
     assert.ok(checks.some(c => c.name === 'Philippines cache read' && c.status === 'ok'));
+    assert.ok(checks.some(c => c.name === 'California play-promotion gate' && c.status === 'ok'), 'disabled (default) reads as ok, not merely absent');
+    assert.ok(checks.some(c => c.name === 'California tier-node identity routing' && c.status === 'ok'), 'CA_EDGE_SERVER_NAMES alone is enough to resolve a node');
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 });
@@ -109,4 +111,26 @@ test('edge-diagnostics: §181 a stale merged-mount report is a warning, not a st
     assert.strictEqual(staleCheck.status, 'warn');
     assert.strictEqual(checks.some(c => c.name.includes(' — ')), false, 'per-sub-check results are not shown once the report is stale');
   });
+});
+
+test('edge-diagnostics: §182 California play-promotion telemetry — enabled+audit-only warns, no identity map fails', async () => {
+  Object.assign(process.env, {
+    STAGING_ENABLED: 'false',
+    PH_SERVER_NAMES: '',
+    CA_EDGE_SERVER_NAMES: '',
+    EDGE_TIER_NODE_MAP: '',
+    PRIMARY_SERVER_NAMES: '',
+    CA_PLAY_PROMOTE_ENABLED: 'true',
+    CA_PLAY_PROMOTE_AUDIT_ONLY: 'true',
+  });
+  // CONFIG is computed once at require time from the environment — the earlier test in this file
+  // already loaded it, so force a fresh read of both this module and its src/config.js dependency.
+  delete require.cache[require.resolve('../../src/config')];
+  delete require.cache[require.resolve('../../src/edge-diagnostics')];
+  const { runEdgeDiagnostics } = require('../../src/edge-diagnostics');
+  const checks = await runEdgeDiagnostics({ live: false });
+  const gate = checks.find(c => c.name === 'California play-promotion gate');
+  assert.strictEqual(gate.status, 'warn', 'enabled (even audit-only) is surfaced, not silently ok');
+  const routing = checks.find(c => c.name === 'California tier-node identity routing');
+  assert.strictEqual(routing.status, 'fail', 'enabled with no identity map at all can never promote anything — that is a real misconfiguration');
 });

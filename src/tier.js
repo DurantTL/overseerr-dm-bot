@@ -631,7 +631,12 @@ function computePlanHash(manifest) {
 // enabled node. Disabled nodes are skipped entirely — no manifest, no pins, and their
 // histories never feed the universal core (historiesByNode should only contain enabled
 // nodes, but this filters again to be safe).
-function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, memberRequests = {}, keepListIds = [], neverDeleteIds = [], prevPlans = {}, now = Date.now(), config = {} }) {
+// playPinsByNode: { [nodeName]: [{ mediaId, expiresAt }] } — durable, expiring play-promotion
+// pins (§182). Filtered to only-still-active here (so an expired pin simply stops floor-pinning,
+// with no separate "unpin" step) and unioned into EVERY node's floor regardless of access mode —
+// unlike memberRequests (restricted-only cold-start grace), a play pin is earned by an actual
+// play event on that node and should hold the title local there no matter who else can see it.
+function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, memberRequests = {}, playPinsByNode = {}, keepListIds = [], neverDeleteIds = [], prevPlans = {}, now = Date.now(), config = {} }) {
   const cfg = { ...TIER_DEFAULTS, ...config };
   const enabled = nodes.filter(n => n.enabled);
   const warnings = [];
@@ -721,6 +726,10 @@ function planTier({ nodes, inventory, historiesByNode = {}, atimeReports = {}, m
     } else {
       // Open nodes: the universal core is Tier 0 floor.
       for (const id of coreIds) floorIds.add(id);
+    }
+    // §182: active play-promotion pins are floor on every access mode (see comment above).
+    for (const pin of playPinsByNode[node.name] || []) {
+      if (pin && Number(pin.expiresAt) > now) floorIds.add(pin.mediaId);
     }
     manifests[node.name] = planNode({
       node,

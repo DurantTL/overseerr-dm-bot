@@ -269,6 +269,35 @@ test('tier: computeNodeValues rolls atime file reads up to the owning title fold
   assert.ok(Math.abs(v.get('tmdb:1').value - 0.5) < 1e-9, 'newest file atime wins (nested season folder resolved)');
 });
 
+test('tier: planTier §182 play-promotion pins are floor on BOTH access modes, and expire on their own', () => {
+  // Budget only fits ONE 10GB title. Without a pin, 'hot' (real demand) always wins over 'cold'
+  // (zero demand) — so a pin changing that outcome is unambiguous, deterministic proof the pin is
+  // acting as floor, not an artifact of tie-breaking.
+  const inv = [title('tmdb:cold', 10, 'm/Cold'), title('tmdb:hot', 10, 'm/Hot')];
+  const historiesByNode = { x: [{ title: 'tmdb:hot', mediaType: 'movie', plays: 50, distinctUsers: 5, lastPlayed: daysAgo(1) }] };
+  const mk = access => playPinsByNode => planTier({
+    nodes: [home, node({ name: 'x', usable_bytes: 10 * GB, access, demand_source: 'tautulli' })],
+    inventory: inv,
+    historiesByNode,
+    playPinsByNode,
+    now: NOW,
+    config: { coreTopK: 0 },
+  }).manifests.x;
+
+  const noPin = mk('open')({});
+  assert.strictEqual(keepIds(noPin), 'tmdb:hot', 'baseline: real demand wins the only budget slot');
+
+  const openWithPin = mk('open')({ x: [{ mediaId: 'tmdb:cold', expiresAt: NOW + 1000 }] });
+  assert.strictEqual(keepIds(openWithPin), 'tmdb:cold', 'open node: an active play pin is floor and displaces real demand, even though open nodes don\'t pin member requests');
+  const restrictedWithPin = mk('restricted')({ x: [{ mediaId: 'tmdb:cold', expiresAt: NOW + 1000 }] });
+  assert.strictEqual(keepIds(restrictedWithPin), 'tmdb:cold', 'restricted node: pin also applies');
+
+  // An expired pin (expiresAt already in the past) must NOT be floor — planTier re-checks `now`
+  // itself, so a caller passing a stale row automatically restores default policy.
+  const expired = mk('open')({ x: [{ mediaId: 'tmdb:cold', expiresAt: NOW - 1000 }] });
+  assert.strictEqual(keepIds(expired), 'tmdb:hot', 'expired pin no longer displaces real demand');
+});
+
 test('tier: master coverage invariant — a title with no full-node copy is never dropped anywhere', () => {
   const inv = [title('tmdb:orphan', 10, 'm/Orphan', { onFullNode: false }), title('tmdb:x', 10, 'm/X')];
   const { manifests, warnings } = planTier({
