@@ -2,9 +2,11 @@
 
 ## Supported versions
 
-This project does not yet publish versioned releases. Security fixes target the current `main`
-branch and the current `latest` container image. Earlier commits and commit-addressed images do not
-receive backported fixes.
+Security fixes target the current `main` branch and the current `latest` container image only.
+Tagged releases (`vX.Y.Z`) and commit-addressed images (`sha-<commit>`) are immutable snapshots for
+rollback, not maintained branches — earlier releases and commits do not receive backported fixes.
+Every published image is scanned for known vulnerabilities before it ships; see "Versioned releases
+and image security" in [`DEPLOYMENT.md`](DEPLOYMENT.md) for the severity policy.
 
 ## Report a vulnerability privately
 

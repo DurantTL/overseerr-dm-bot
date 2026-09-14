@@ -32,9 +32,9 @@ test('runMigrations is idempotent and records the schema version', () => {
     const version = schemaVersion();
     assert.ok(version > 0);
 
-    // Re-running must not throw and must not change the recorded version — the migration body is
-    // still re-evaluated today (all statements are individually idempotent), but the ledger this
-    // packet introduces is what a later skip-if-current-version fast path will read.
+    // Re-running must not throw and must not change the recorded version — every migration step
+    // is still individually idempotent, and is now also skipped outright once its version is
+    // already recorded (see the dedicated skip test below).
     runMigrations();
     assert.strictEqual(schemaVersion(), version);
 
@@ -43,6 +43,97 @@ test('runMigrations is idempotent and records the schema version', () => {
     assert.ok(tables.includes('tier_node_files'));
   } finally {
     cleanup(handle);
+  }
+});
+
+test('an already-applied migration step is skipped, not just idempotent', () => {
+  const handle = freshDb();
+  const { runMigrations, schemaVersion, MIGRATIONS } = handle;
+  try {
+    runMigrations();
+    const version = schemaVersion();
+    assert.ok(MIGRATIONS.length >= 1);
+    assert.ok(MIGRATIONS.every(step => step.version <= version), 'test assumes the fixture db is fully migrated');
+
+    let calls = 0;
+    const originalRun = MIGRATIONS[0].run;
+    MIGRATIONS[0].run = (...args) => { calls += 1; return originalRun(...args); };
+    try {
+      runMigrations();
+      assert.strictEqual(calls, 0, 'a step whose version is already recorded must not be re-invoked');
+    } finally {
+      MIGRATIONS[0].run = originalRun;
+    }
+  } finally {
+    cleanup(handle);
+  }
+});
+
+test('an upgrade of an existing database is backed up before the migration transaction opens', () => {
+  const handle = freshDb();
+  const { db, dir, runMigrations, schemaVersion } = handle;
+  try {
+    // Simulate a pre-ledger database: some schema already exists (as any real deployed database
+    // would have), but user_version is still at its SQLite default of 0.
+    db.exec('CREATE TABLE placeholder (id INTEGER PRIMARY KEY)');
+    assert.strictEqual(schemaVersion(), 0);
+
+    runMigrations();
+
+    const backups = fs.readdirSync(dir).filter(name => name.includes('.pre-migration-v0-'));
+    assert.strictEqual(backups.length, 1, 'exactly one pre-migration backup should be written');
+
+    const backupDb = new (require('better-sqlite3'))(path.join(dir, backups[0]), { readonly: true });
+    try {
+      const tables = backupDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map(r => r.name);
+      assert.ok(tables.includes('placeholder'), 'the backup is a snapshot of the pre-migration schema');
+      assert.ok(!tables.includes('users'), 'the backup predates the migration, not a copy taken after it');
+    } finally {
+      backupDb.close();
+    }
+  } finally {
+    cleanup(handle);
+  }
+});
+
+test('a brand-new database is not backed up before its first migration', () => {
+  const handle = freshDb();
+  const { dir, runMigrations } = handle;
+  try {
+    runMigrations();
+    const backups = fs.readdirSync(dir).filter(name => name.includes('.pre-migration-'));
+    assert.deepStrictEqual(backups, [], 'nothing existed yet to back up');
+  } finally {
+    cleanup(handle);
+  }
+});
+
+test('the .env tier-node seed still applies on a restart after the database is already fully migrated', () => {
+  const CONFIG_MODULE = require.resolve('../../src/config');
+  const handle = freshDb();
+  try {
+    handle.runMigrations();
+    assert.strictEqual(handle.db.prepare('SELECT COUNT(*) AS n FROM tier_nodes').get().n, 0);
+    handle.db.close();
+
+    // An operator adding TIER_NODES_SEED long after first deploy must still see it take effect on
+    // the next restart — this seed is not part of the versioned migration ledger, so it must keep
+    // running even when every migration step above it is skipped as already-applied.
+    process.env.TIER_NODES_SEED = JSON.stringify([{ name: 'ph', usable_bytes: 1024 }]);
+    delete require.cache[CONFIG_MODULE];
+    delete require.cache[DB_MODULE];
+    const reloaded = require('../../src/db');
+    try {
+      reloaded.runMigrations();
+      assert.strictEqual(reloaded.db.prepare('SELECT COUNT(*) AS n FROM tier_nodes').get().n, 1);
+    } finally {
+      reloaded.db.close();
+      delete require.cache[CONFIG_MODULE];
+    }
+  } finally {
+    delete process.env.TIER_NODES_SEED;
+    delete process.env.DB_PATH;
+    fs.rmSync(handle.dir, { recursive: true, force: true });
   }
 });
 

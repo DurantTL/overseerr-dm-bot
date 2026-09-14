@@ -13,25 +13,49 @@ jobs:
   # the image passed review green and only failed after merge — which is how main went four
   # consecutive pushes with no publishable image. Keep this in step with build-image.yml's build
   # step if that ever grows build-args or a different context.
+  #
+  # The vulnerability scan (#184) runs here too, against the same image build-image.yml would
+  # publish, so a dependency/base-image bump that introduces a fixable CRITICAL/HIGH finding fails
+  # review instead of only showing up after it already reached GHCR.
   docker:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
       - name: Build image (no push)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           push: false
+          load: true
+          tags: overseerr-dm-bot:pr-check
+      - name: Scan bot image for known vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: overseerr-dm-bot:pr-check
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
       - name: Build tier-agent image (no push)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: agent
           push: false
+          load: true
+          tags: overseerr-tier-agent:pr-check
+      - name: Scan tier-agent image for known vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: overseerr-tier-agent:pr-check
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
 
   test:
     runs-on: ubuntu-latest
@@ -39,9 +63,9 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set up Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
       - name: Install dependencies
