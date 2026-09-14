@@ -4,6 +4,7 @@
 require('dotenv').config({ quiet: true });
 const fs = require('fs');
 const http = require('http');
+const { buildEdgeTierNodeMap } = require('./edge-promotion');
 
 function parseBool(v, fallback = false) {
   if (v === undefined) return fallback;
@@ -416,6 +417,35 @@ const CONFIG = (() => {
   EDGE_PROMOTE_AUDIT_ONLY: parseBool(process.env.EDGE_PROMOTE_AUDIT_ONLY, false),
   EDGE_PROMOTE_COOLDOWN_HOURS: Number.parseInt(process.env.EDGE_PROMOTE_COOLDOWN_HOURS || '12', 10),
   EDGE_PROMOTE_MAX_PER_USER_PER_DAY: Number.parseInt(process.env.EDGE_PROMOTE_MAX_PER_USER_PER_DAY || '6', 10),
+  // California play-triggered promotion (#182, docs/edge-playback-architecture.md §2.2). This is
+  // deliberately DOUBLE-gated and both gates default to the inert state, because the physical
+  // remote-fallback mount rollout (#181) has not happened on real hardware yet:
+  //   CA_PLAY_PROMOTE_ENABLED    — master switch, default false (today's behaviour: observed only)
+  //   CA_PLAY_PROMOTE_AUDIT_ONLY — default TRUE, unlike EDGE_PROMOTE_AUDIT_ONLY's default false —
+  //     so even after a human flips CA_PLAY_PROMOTE_ENABLED on, nothing durable happens (no pin is
+  //     recorded, no plan is republished) until that human ALSO explicitly sets this to false. A
+  //     single flag flip can never turn this on live by accident.
+  // EDGE_TIER_NODE_MAP generalizes the old CA-only CA_EDGE_SERVER_NAMES constant into a validated
+  // identity→tier-node map (`identity:node,identity2:node2`) so more tier Plex origins can be added
+  // without new code. It does NOT replace or alter classifyServerIdentity()'s 'ph'/'ca-edge'/
+  // 'primary'/'unknown' deletion-routing classification in any way — that fail-closed contract is
+  // untouched; this map is consulted only after that classifier has already isolated 'ca-edge'
+  // traffic, purely to pick which tier node a play-promotion pin belongs to. Every
+  // CA_EDGE_SERVER_NAMES identity is still honored automatically, mapped onto the 'california' tier
+  // node, so an existing single-node deployment needs no env changes at all.
+  EDGE_TIER_NODE_MAP: buildEdgeTierNodeMap(process.env.EDGE_TIER_NODE_MAP, parseIdentityList(process.env.CA_EDGE_SERVER_NAMES)).map,
+  CA_PLAY_PROMOTE_ENABLED: parseBool(process.env.CA_PLAY_PROMOTE_ENABLED, false),
+  CA_PLAY_PROMOTE_AUDIT_ONLY: parseBool(process.env.CA_PLAY_PROMOTE_AUDIT_ONLY, true),
+  CA_PLAY_PROMOTE_COOLDOWN_HOURS: Number.parseInt(process.env.CA_PLAY_PROMOTE_COOLDOWN_HOURS || '12', 10),
+  CA_PLAY_PROMOTE_MAX_PER_USER_PER_DAY: Number.parseInt(process.env.CA_PLAY_PROMOTE_MAX_PER_USER_PER_DAY || '6', 10),
+  // Durable play-promotion pin lifetime and the bounded per-viewer cap on SIMULTANEOUS active pins
+  // per node (distinct from the daily counter above — a pin holds persistent local storage for
+  // days, so the cap that matters is concurrent outstanding promotions).
+  TIER_PLAY_PIN_DAYS: Number.parseInt(process.env.TIER_PLAY_PIN_DAYS || '21', 10),
+  TIER_PLAY_PIN_MAX_PER_VIEWER: Number.parseInt(process.env.TIER_PLAY_PIN_MAX_PER_VIEWER || '3', 10),
+  // Reserved for a future agent pull-now/kick transport (docs §2.2c) — no such transport exists in
+  // this repo yet, so this stays false and the hook it guards is a logged no-op until one lands.
+  TIER_AGENT_KICK_ENABLED: parseBool(process.env.TIER_AGENT_KICK_ENABLED, false),
   // Tunnel watchdog: any HTTP response from this URL (e.g. the PH Plex /identity endpoint via
   // the VPS tunnel) counts as up; connect errors/timeouts count as down.
   PH_TUNNEL_HEALTH_URL: omitPlaceholder(process.env.PH_TUNNEL_HEALTH_URL),
@@ -497,6 +527,11 @@ const CONFIG = (() => {
 })();
 
 CONFIG.PLACEHOLDER_WARNINGS = placeholderConfigWarnings(CONFIG, RESOLVED_ENV);
+// Computed once here (not inside configWarnings) so that function stays a pure read of CONFIG —
+// scripts/tests/extract.js's sandbox evaluates configWarnings' extracted source without this
+// module's own `require`s in scope, so a call to buildEdgeTierNodeMap from inside that function
+// body would be a ReferenceError there.
+CONFIG.EDGE_TIER_NODE_MAP_ERRORS = buildEdgeTierNodeMap(process.env.EDGE_TIER_NODE_MAP, CONFIG.CA_EDGE_SERVER_NAMES).errors;
 
 const REQUIRED_ENV = [
   'DISCORD_BOT_TOKEN', 'DISCORD_CLIENT_ID', 'DISCORD_GUILD_ID', 'ADMIN_CHANNEL_ID', 'ADMIN_USER_ID',
@@ -678,6 +713,13 @@ function configWarnings() {
   }
   if (overlaps.length) {
     warnings.push(`Server identities overlap between routing lists: ${overlaps.join('; ')}. Remove every overlap before trusting webhook routing.`);
+  }
+  for (const err of (CONFIG.EDGE_TIER_NODE_MAP_ERRORS || [])) warnings.push(`\`EDGE_TIER_NODE_MAP\` — ${err}.`);
+  if (CONFIG.CA_PLAY_PROMOTE_ENABLED && !CONFIG.EDGE_TIER_NODE_MAP.length) {
+    warnings.push('`CA_PLAY_PROMOTE_ENABLED=true` but no identity resolves to a tier node (`EDGE_TIER_NODE_MAP` / `CA_EDGE_SERVER_NAMES` are both empty) — California play events can never be attributed to a node, so nothing will ever promote.');
+  }
+  if (CONFIG.CA_PLAY_PROMOTE_ENABLED && !CONFIG.CA_PLAY_PROMOTE_AUDIT_ONLY) {
+    warnings.push('⚠️ `CA_PLAY_PROMOTE_ENABLED=true` and `CA_PLAY_PROMOTE_AUDIT_ONLY=false` — California play-triggered promotion will record real pins and republish tier plans. The remote-fallback mount rollout (#181) should be verified on real hardware first; see docs/edge-playback-architecture.md.');
   }
   return warnings;
 }

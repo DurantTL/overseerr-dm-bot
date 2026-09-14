@@ -44,6 +44,26 @@ async function runEdgeDiagnostics({ live = true } = {}) {
   checks.push(check('Identity separation', overlap.length ? 'fail' : 'ok', overlap.length ? overlap.join('; ') : 'Philippines, California edge, and full Main identity lists do not overlap'));
   checks.push(check('Cache layout', CONFIG.STAGE_MOVIES_SUBDIR && CONFIG.STAGE_TV_SUBDIR ? 'ok' : 'fail', `movies=${CONFIG.STAGE_MOVIES_SUBDIR || '(empty)'}, tv=${CONFIG.STAGE_TV_SUBDIR || '(empty)'}`));
 
+  // §182 California play-triggered promotion telemetry — read-only, mirrors the pattern above.
+  // 'ok' here means "provably inert", not "working": the whole point of the double gate is that
+  // it is safe to leave in this state in production before #181's physical rollout is verified.
+  checks.push(check(
+    'California play-promotion gate',
+    CONFIG.CA_PLAY_PROMOTE_ENABLED ? 'warn' : 'ok',
+    !CONFIG.CA_PLAY_PROMOTE_ENABLED
+      ? 'CA_PLAY_PROMOTE_ENABLED=false — disabled (safe default; today\'s observed-only behaviour)'
+      : (CONFIG.CA_PLAY_PROMOTE_AUDIT_ONLY
+        ? 'CA_PLAY_PROMOTE_ENABLED=true, CA_PLAY_PROMOTE_AUDIT_ONLY=true — decides and logs only, records no pin and publishes no plan'
+        : '⚠️ CA_PLAY_PROMOTE_ENABLED=true, CA_PLAY_PROMOTE_AUDIT_ONLY=false — LIVE: will record durable pins and republish tier plans'),
+  ));
+  checks.push(check(
+    'California tier-node identity routing',
+    CONFIG.EDGE_TIER_NODE_MAP.length ? 'ok' : (CONFIG.CA_PLAY_PROMOTE_ENABLED ? 'fail' : 'warn'),
+    CONFIG.EDGE_TIER_NODE_MAP.length
+      ? `${CONFIG.EDGE_TIER_NODE_MAP.length} identity→node mapping(s) (EDGE_TIER_NODE_MAP / CA_EDGE_SERVER_NAMES)`
+      : 'no identity resolves to a tier node — a California play event can never be attributed',
+  ));
+
   const sourceRoot = CONFIG.TIER_SOURCE_ROOT || CONFIG.PATH_REMAP_TO || CONFIG.RAID_PATH;
   try {
     fs.accessSync(sourceRoot, fs.constants.R_OK);

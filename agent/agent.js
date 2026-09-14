@@ -171,6 +171,15 @@ function buildCtx(env = process.env) {
     folderId: folders[0].id,
     folderRoot: folders[0].root,
     stateDir: env.TIER_STATE_DIR || '/var/lib/tier-agent',
+    // §182 BLOCKER fix, opt-in. Unset (the default) reproduces today's behaviour byte-for-byte —
+    // the manifest's .stignore is written as-is, exactly as before this option existed. When set,
+    // this points at the directory holding the persistent manual overlay files
+    // (`<folderId>.txt`, one ignore pattern per line, `//`/`#` comment lines allowed) that used to
+    // be applied out-of-band by a separate process; the agent now merges them itself so an active
+    // play-promotion pin (delivered in the manifest as each folder's `pinnedRelPaths`) can override
+    // them, and the override reverts automatically once the pin expires and stops being sent. See
+    // mergeLegacyIgnores() below and docs/edge-playback-architecture.md §2.2c.
+    legacyIgnoreDir: (env.TIER_AGENT_LEGACY_IGNORE_DIR || '').replace(/\/+$/, ''),
     // Report the local file inventory (the atime demand signal). Default on — harmless for
     // Tautulli nodes, essential for atime nodes.
     reportInventory: (env.TIER_REPORT_INVENTORY ?? '1') !== '0',
@@ -245,6 +254,56 @@ function renderStignore(drop) {
   return `${lines.join('\n')}\n`;
 }
 
+// §182 BLOCKER fix. Reads the persistent manual overlay file for one folder — one ignore pattern
+// per line, already in `/escaped/relPath` .stignore syntax (the same format this file itself
+// writes), `//`/`#` lines and blanks skipped. Missing file (never configured, or nothing overlaid
+// for this folder yet) → no legacy lines, not an error.
+function readLegacyIgnoreLines(dir, folderId, fsImpl = fs) {
+  if (!dir || !folderId) return [];
+  try {
+    const raw = fsImpl.readFileSync(path.join(dir, `${folderId}.txt`), 'utf8');
+    return raw.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('//') && !l.startsWith('#'));
+  } catch (_e) { return []; }
+}
+
+// Final ignore set = planner-drops ∪ legacy-ignores − active-promotion-pins. All three are
+// `/escaped/relPath` lines (see escapeStignore). An active pin wins over BOTH the planner's own
+// drop and the legacy overlay; once the pin is no longer sent in `pinnedRelPaths` (expired), the
+// legacy line reappears on its own — no separate "restore" step exists or is needed. This mirrors
+// src/edge-promotion.js's computeFinalIgnoreLines exactly (the agent runs standalone, without a
+// dependency on that module, so this is a deliberate small duplication, not a divergent algorithm —
+// scripts/tests/tier-agent-legacy-ignore.test.js and scripts/tests/edge-promotion.test.js both
+// assert the same input/output pairs).
+function mergeLegacyIgnores({ plannerLines, legacyLines, pinnedRelPaths = [] }) {
+  const pinned = new Set(pinnedRelPaths.map(p => `/${escapeStignore(p)}`));
+  const merged = new Set();
+  for (const l of plannerLines) if (!pinned.has(l)) merged.add(l);
+  for (const l of legacyLines) if (!pinned.has(l)) merged.add(l);
+  return [...merged].sort();
+}
+
+function renderMergedStignore(lines) {
+  return [
+    '// Managed by overseerr-dm-bot regional tiering — DO NOT EDIT BY HAND.',
+    '// Includes the persistent legacy overlay, minus any titles with an active play-promotion pin.',
+    ...lines,
+  ].join('\n') + '\n';
+}
+
+// Merge in the legacy overlay + subtract active pins for one resolved folder plan, IN PLACE on
+// its `stignore` field only — `drop` (what pruneDrops acts on) is untouched, since a legacy-only
+// ignore (never in the planner's own drop list) must never be treated as something to DELETE, only
+// something to keep un-pulled. A no-op (returns fp.stignore unchanged) whenever ctx.legacyIgnoreDir
+// is unset — the default, and the one that must reproduce prior behaviour exactly.
+function applyLegacyIgnoreOverlay(ctx, fp, manifestPinnedRelPaths) {
+  if (!ctx.legacyIgnoreDir) return fp.stignore;
+  const legacyLines = readLegacyIgnoreLines(ctx.legacyIgnoreDir, fp.folderId);
+  const pinnedRelPaths = manifestPinnedRelPaths || [];
+  if (!legacyLines.length && !pinnedRelPaths.length) return fp.stignore;
+  const plannerLines = fp.drop.map(e => `/${escapeStignore(e.relPath)}`);
+  return renderMergedStignore(mergeLegacyIgnores({ plannerLines, legacyLines, pinnedRelPaths }));
+}
+
 // Map the manifest's folders onto this node's local folder roots (by id), producing the concrete
 // per-folder work items. A legacy single-folder manifest (no `folders` array) yields one item
 // from the top-level drop + stignore and this node's first folder.
@@ -259,22 +318,26 @@ function resolveFolderPlans(ctx, manifest) {
       const local = byId.get(mf.folder_id) || (singleLegacy ? ctx.folders[0] : null);
       const folderRoot = String((local && local.root) || mf.folder_root || '').replace(/\/+$/, '');
       const folderId = (local && local.id) || mf.folder_id || ctx.folderId;
-      return {
+      const fp = {
         folderId,
         syncFolderId: mf.folder_id || folderId,
         folderRoot,
         drop: mf.drop || [],
         stignore: mf.stignore || renderStignore(mf.drop),
       };
+      fp.stignore = applyLegacyIgnoreOverlay(ctx, fp, mf.pinnedRelPaths);
+      return fp;
     });
   }
-  return [{
+  const fp = {
     folderId: ctx.folderId,
     syncFolderId: ctx.folderId,
     folderRoot: ctx.folderRoot,
     drop: manifest.drop || [],
     stignore: manifest.stignore || renderStignore(manifest.drop),
-  }];
+  };
+  fp.stignore = applyLegacyIgnoreOverlay(ctx, fp, manifest.pinnedRelPaths);
+  return [fp];
 }
 
 // §4a step 2: the one check that protects the master. A Receive Only folder never pushes local
@@ -696,4 +759,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, collectSystemTelemetry, escapeStignore, loadState, saveState, writeStignore, agentVersion };
+module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, collectSystemTelemetry, escapeStignore, loadState, saveState, writeStignore, agentVersion, readLegacyIgnoreLines, mergeLegacyIgnores, renderMergedStignore, applyLegacyIgnoreOverlay };

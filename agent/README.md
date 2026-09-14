@@ -88,6 +88,7 @@ rewritten and reloaded. Rotating the token with `/tier-node token` again just me
 | `TIER_EXPECTED_UUID` | | Filesystem UUID the drive at `TIER_MOUNT_ROOT` must have (`blkid`/`lsblk -o NAME,UUID`). Requires `TIER_MOUNT_ROOT`. Linux/host deploys. |
 | `TIER_MOUNT_MARKER` | | Sentinel file that lives on the drive, relative to the mount root (e.g. `.tier-media-ok` — create once with `touch /mnt/media/.tier-media-ok`). Its absence means the real drive isn't there. Requires `TIER_MOUNT_ROOT`. **The right proof for Docker / bind-mount deploys.** |
 | `TIER_DRY_RUN` | | `1` = log what would happen, write and delete nothing |
+| `TIER_AGENT_LEGACY_IGNORE_DIR` | | §182. Directory holding the persistent manual ignore overlay (`<folderId>.txt`, one `/relPath` pattern per line). **Unset by default — reproduces prior behaviour exactly.** When set, the agent merges `planner-drops ∪ legacy-ignores − active-promotion-pins` (the manifest's `pinnedRelPaths`) instead of writing the planner's drops verbatim, so an active play-promotion pin can override a legacy-ignored title, and the override reverts on its own once the pin expires. |
 
 ## Mount guard (external media drive)
 
