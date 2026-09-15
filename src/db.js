@@ -515,11 +515,6 @@ const MIGRATIONS = [
   // the signal the auto-tag-for-AvistaZ feature uses to spot a season stuck on dead public
   // releases. Reset to 0 the moment a search makes real progress.
   ensureColumn('season_searches', 'stall_count', 'INTEGER DEFAULT 0');
-  // #255: which TV seasons a request actually covers — 'all', a JSON array of season numbers,
-  // or NULL (movies, and pre-#255 rows whose selection predates this column). Distinct from
-  // season_searches (#183's series/season search-cadence key): this column records REQUEST
-  // scope, not search or cache/promotion state, so it can't collide with that identity.
-  ensureColumn('requests', 'seasons', 'TEXT');
 
   // R2.1 multi-folder: older installs have tier_node_files keyed on (node, rel_path) with no
   // folder_id. Rebuild it under the new (node, folder_id, rel_path) key so the same relPath can
@@ -566,16 +561,6 @@ const MIGRATIONS = [
   // column and overwrote each other. NULL is allowed to repeat.
   db.prepare("UPDATE requests SET overseerr_request_id = NULL WHERE overseerr_request_id = ''").run();
 
-  // Older approval flows inserted a Seerr-backed row beside the provisional Discord pending
-  // row. Repair only rows whose authoritative sibling has advanced beyond pending.
-  const repairedRequests = collapseStalePendingRequests(db);
-  if (repairedRequests.length) {
-    audit('stale_pending_requests_repaired', {
-      count: repairedRequests.length,
-      rows: repairedRequests.slice(0, 50),
-    });
-  }
-
   db.prepare(`INSERT OR IGNORE INTO media_retention_rules (media_class, retention_days, enabled)
     VALUES
     ('movie_4k', 30, 1),
@@ -584,6 +569,33 @@ const MIGRATIONS = [
     ('tv_season', 90, 1)
   `).run();
 
+    },
+  },
+  // #255: which TV seasons a request actually covers — 'all', a JSON array of season numbers,
+  // or NULL (movies, and pre-#255 rows whose selection predates this column). Distinct from
+  // season_searches (#183's series/season search-cadence key): this column records REQUEST
+  // scope, not search or cache/promotion state, so it can't collide with that identity.
+  //
+  // This must stay its own versioned step rather than an edit to v1's body: runMigrations()
+  // only invokes a step whose version is greater than the database's recorded user_version, so a
+  // database that already migrated to v1 before this line existed would otherwise never run it
+  // and would be missing the column entirely (as happened when this was first added inline).
+  //
+  // The stale-pending repair below also moved here from v1: it filters on `seasons` (bug #255 —
+  // don't collapse a pending row for one season selection into a completed row for a different
+  // one), so it can only run once this step's ensureColumn has put the column in place.
+  {
+    version: 2,
+    run(db) {
+      ensureColumn('requests', 'seasons', 'TEXT');
+
+      const repairedRequests = collapseStalePendingRequests(db);
+      if (repairedRequests.length) {
+        audit('stale_pending_requests_repaired', {
+          count: repairedRequests.length,
+          rows: repairedRequests.slice(0, 50),
+        });
+      }
     },
   },
 ];
