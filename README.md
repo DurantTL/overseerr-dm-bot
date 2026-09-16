@@ -217,14 +217,53 @@ Compose defaults:
 5. Deploy the stack.
 6. Confirm container health is `healthy`.
 
-## Cloudflare Tunnel Setup (optional)
-1. Create/manage tunnel in Cloudflare Zero Trust.
-2. Set `CLOUDFLARE_TUNNEL_TOKEN`.
-3. Enable tunnel sidecar profile:
+## HTTPS for the dashboard and passkeys (#191)
+
+Port 3000 is **plain internal HTTP**. `docker-compose.yml` publishes it on the host
+(`3000:3000`) so a same-LAN client or a reverse proxy can reach it, but nothing in this
+repository terminates TLS on that port. Never point a public DNS record straight at
+`http://<server-ip>:3000` — passkey enrollment requires a secure context and browsers refuse
+`navigator.credentials` outside one, and any password/token dashboard login sent over plain
+HTTP travels unencrypted. Put a TLS-terminating tunnel or reverse proxy in front of it and
+give the dashboard's public hostname to `DASHBOARD_PUBLIC_URL` (see `.env.example`) so passkey
+origin validation and the readiness diagnostics below know what "public" means.
+
+Use `GET /doctor` (or the dashboard) to tell local liveness apart from public readiness:
+`Local process liveness` only proves the Node process answers on `127.0.0.1:3000`; the
+`Public HTTPS origin` / `Public TLS certificate` / `Proxy trust configuration` checks
+(`src/public-origin-diagnostics.js`) verify `DASHBOARD_PUBLIC_URL` actually resolves over
+HTTPS with a trusted certificate and that `TRUST_PROXY` is set when a tunnel/proxy sits in
+front, so rate limiting and `req.secure` see the real client instead of the proxy.
+
+### Option A — Cloudflare Tunnel (bundled sidecar)
+1. Create/manage the tunnel in Cloudflare Zero Trust and pick the public hostname you'll use
+   for the dashboard (this is the value that goes in `DASHBOARD_PUBLIC_URL`).
+2. In Cloudflare's Public Hostname config, route that hostname to
+   `http://overseerr-dm-bot:3000` — the bot's Compose service name and internal port, reachable
+   from the `cloudflared` sidecar over the Compose network (not `localhost`, not the host's
+   LAN/public IP).
+3. Set `CLOUDFLARE_TUNNEL_TOKEN` on the **host** — in `.env` or `stack.env` next to the other
+   Compose variables, not only inside the bot service's own env — because Compose interpolates
+   `${CLOUDFLARE_TUNNEL_TOKEN}` for the `cloudflared` service from the shell/`.env` at stack
+   parse time, before either container starts.
+4. The `cloudflared` sidecar is defined under the `tunnel` Compose profile and is **not**
+   started by a plain `docker compose up -d` — you must opt in explicitly:
    ```bash
    docker compose --profile tunnel up -d
    ```
-4. Point hostname (for downloads/webhooks) to bot service URL.
+   Skipping this step leaves the dashboard reachable only over plain HTTP on port 3000.
+5. Verify `https://<your-dashboard-hostname>/live`, then `/doctor`, before relying on the
+   deployment; `/doctor` will report a failing `Public HTTPS origin` check until the tunnel is
+   both running and correctly routed.
+
+### Option B — an external reverse proxy (Caddy, Nginx, Traefik, or your own Cloudflare connector)
+Any TLS terminator that forwards to `http://<host-or-service>:3000` and forwards
+`X-Forwarded-Proto`/`X-Forwarded-For` works the same way. Set `DASHBOARD_PUBLIC_URL` to the
+proxy's public hostname, set `TRUST_PROXY=true` so Express honors the forwarded headers, and
+confirm Secure session/challenge cookies are actually being set by loading the dashboard
+through the proxy (not through `http://<host>:3000` directly) and checking the browser's
+cookie inspector — a proxy that terminates TLS but drops the forwarded-proto header will still
+result in `req.secure` reading `false` and cookies not being marked `Secure`.
 
 ## Webhook Setup
 - Seerr: `POST /webhook/overseerr` — header `x-webhook-secret: $WEBHOOK_SECRET`
