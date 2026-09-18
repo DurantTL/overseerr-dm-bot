@@ -34,12 +34,32 @@ function setup() {
     messages: ['a message'],
   }];
   const seerrRequests = [
-    { id: 1, status: 1, media: { mediaType: 'movie', title: 'Pending Film' }, requestedBy: { displayName: 'Alice' }, createdAt: '2026-01-01' },
-    { id: 2, status: 3, media: { mediaType: 'tv', name: 'Available Show' }, requestedBy: { displayName: 'Bob' }, createdAt: '2026-01-02' },
+    // Real Seerr /api/v1/request items join only the Media row (tmdbId/status) — no title.
+    { id: 1, status: 1, media: { mediaType: 'movie', tmdbId: 101, status: 2 }, requestedBy: { displayName: 'Alice' }, createdAt: '2026-01-01' },
+    { id: 2, status: 5, media: { mediaType: 'tv', tmdbId: 202, status: 5 }, requestedBy: { displayName: 'Bob' }, createdAt: '2026-01-02' },
+    { id: 3, status: 2, media: { mediaType: 'movie', tmdbId: 103, status: 5 }, requestedBy: { displayName: 'Cara' }, createdAt: '2026-01-03' },
+    { id: 4, status: 3, media: { mediaType: 'movie', tmdbId: 104, status: 2 }, requestedBy: { displayName: 'Dan' }, createdAt: '2026-01-04' },
+    { id: 5, status: 4, media: { mediaType: 'tv', tmdbId: 205, status: 2 }, requestedBy: { displayName: 'Erin' }, createdAt: '2026-01-05' },
+    { id: 6, status: 2, media: { mediaType: 'movie', tmdbId: 0, status: 3 }, requestedBy: { displayName: 'Frank' }, createdAt: '2026-01-06' },
   ];
+  const seerrTitles = {
+    'movie:101': 'Pending Film',
+    'tv:202': 'Available Show',
+    'movie:103': 'Approved And Ready',
+    'movie:104': 'Declined Flick',
+    'tv:205': 'Failed Series',
+  };
   const httpClient = {
-    get: async url => {
+    get: async (url, opts = {}) => {
       assert.ok(!String(url).includes('SECRET'), 'no secret may appear in outbound URLs');
+      assert.ok(!String(url).includes('seerr-key'), 'Seerr API key must not appear in outbound URLs');
+      const seerrDetail = String(url).match(/\/api\/v1\/(movie|tv)\/(\d+)$/);
+      if (seerrDetail) {
+        assert.strictEqual(opts.headers?.['X-Api-Key'], 'seerr-key', 'Seerr API key travels in a header');
+        const title = seerrTitles[`${seerrDetail[1]}:${seerrDetail[2]}`];
+        if (!title) throw new Error('not found');
+        return { data: seerrDetail[1] === 'movie' ? { title } : { name: title } };
+      }
       return {
         data: {
           MediaContainer: {
@@ -54,7 +74,7 @@ function setup() {
   };
   const app = createApp();
   registerAgentApiRoutes(app, {
-    config: { AGENT_API_READ_MAX_PER_MINUTE: 1000 },
+    config: { AGENT_API_READ_MAX_PER_MINUTE: 1000, OVERSEERR_URL: 'http://seerr:5055', OVERSEERR_API_KEY: 'seerr-key' },
     getAgentApiTokenHash: () => tokenHash,
     sha256,
     safeEqual,
@@ -144,19 +164,48 @@ test('agent API queue strips instance secrets and computes progress', async () =
   } finally { await close(server); }
 });
 
-test('agent API requests map status and support filtering', async () => {
+test('agent API requests resolve titles and map every Seerr status', async () => {
   const { app } = setup();
   const server = await listen(app, 0);
   try {
     const port = server.address().port;
     const all = JSON.parse((await request(port, { path: '/api/v1/requests', token: 'valid-agent-token' })).body);
-    assert.strictEqual(all.total, 2);
-    assert.strictEqual(all.requests[0].status, 'pending');
-    assert.strictEqual(all.requests[0].requestedBy, 'Alice');
-    assert.strictEqual(all.requests[1].status, 'available');
-    const pending = JSON.parse((await request(port, { path: '/api/v1/requests', token: 'valid-agent-token', query: '?status=pending' })).body);
-    assert.strictEqual(pending.count, 1);
-    assert.strictEqual(pending.requests[0].id, 1);
+    assert.strictEqual(all.total, 6);
+    const byId = Object.fromEntries(all.requests.map(r => [r.id, r]));
+    // Titles resolve through the Seerr movie/tv detail endpoints (the request list payload
+    // carries only tmdbId — no title).
+    assert.strictEqual(byId[1].title, 'Pending Film');
+    assert.strictEqual(byId[1].mediaType, 'movie');
+    assert.strictEqual(byId[2].title, 'Available Show');
+    assert.strictEqual(byId[2].mediaType, 'tv');
+    assert.strictEqual(byId[1].requestedBy, 'Alice');
+    // Status labels follow the bot's own Seerr mapping (src/request-tracking.js).
+    assert.strictEqual(byId[1].status, 'pending');
+    assert.strictEqual(byId[2].status, 'available'); // request status 5 = completed
+    assert.strictEqual(byId[3].status, 'available'); // approved, but the media itself is available
+    assert.strictEqual(byId[4].status, 'declined'); // request status 3 — never "available"
+    assert.strictEqual(byId[5].status, 'failed');
+    assert.strictEqual(byId[6].status, 'approved');
+    // An unresolvable title degrades gracefully instead of failing the request.
+    assert.strictEqual(byId[6].title, 'Unknown');
+  } finally { await close(server); }
+});
+
+test('agent API requests filter accepts every mapped status label', async () => {
+  const { app } = setup();
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    for (const [status, expectedIds] of [
+      ['pending', [1]],
+      ['approved', [6]],
+      ['available', [2, 3]],
+      ['declined', [4]],
+      ['failed', [5]],
+    ]) {
+      const body = JSON.parse((await request(port, { path: '/api/v1/requests', token: 'valid-agent-token', query: `?status=${status}` })).body);
+      assert.deepStrictEqual(body.requests.map(r => r.id), expectedIds, `filter ${status}`);
+    }
     const bad = await request(port, { path: '/api/v1/requests', token: 'valid-agent-token', query: '?status=bogus' });
     assert.strictEqual(bad.statusCode, 400);
   } finally { await close(server); }
