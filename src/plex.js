@@ -151,10 +151,19 @@ function findPlexServerShare(friend, machineIdentifier) {
   return shares.find(share => String(share?.machineIdentifier || share?.machine_identifier || '') === String(machineIdentifier));
 }
 
-// plex.tv's /api/servers/{machineIdentifier} response has used a few JSON wrappers over time.
-// The legacy sharing endpoint needs the section *id* (not the local section key) for every
-// library that should be shared.
+// Plex's server-library endpoint is XML too. The legacy sharing endpoint needs the section
+// *id* (not the local section key) for every library that should be shared.
 function normalizePlexLibrarySectionIds(raw) {
+  if (typeof raw === 'string') {
+    const ids = [];
+    const directories = /<Directory\b([^>]*?)(?:\/>|>[\s\S]*?<\/Directory>)/g;
+    let match;
+    while ((match = directories.exec(raw))) {
+      const id = parsePlexXmlAttributes(match[1]).id;
+      if (id) ids.push(String(id));
+    }
+    return [...new Set(ids)];
+  }
   const container = raw?.MediaContainer || raw || {};
   const sections = [
     ...asArray(container.Directory),
@@ -168,7 +177,7 @@ function normalizePlexLibrarySectionIds(raw) {
 }
 
 async function fetchPlexLibrarySectionIds(machineIdentifier, token) {
-  const raw = await plexApiGet(`/api/servers/${encodeURIComponent(machineIdentifier)}`, token);
+  const raw = await plexApiGetXml(`/api/servers/${encodeURIComponent(machineIdentifier)}`, token);
   const sectionIds = normalizePlexLibrarySectionIds(raw);
   if (!sectionIds.length) throw new Error(`Plex returned no library sections for server ${machineIdentifier}`);
   return sectionIds;
