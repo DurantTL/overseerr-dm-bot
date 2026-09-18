@@ -6,6 +6,7 @@ const fs = require('fs');
 const http = require('http');
 const { buildEdgeTierNodeMap } = require('./edge-promotion');
 const { passkeyRp } = require('./passkeys');
+const { sha256 } = require('./util');
 
 function parseBool(v, fallback = false) {
   if (v === undefined) return fallback;
@@ -364,6 +365,9 @@ const CONFIG = (() => {
   PATH_REMAP_FROM: process.env.PATH_REMAP_FROM || '',
   PATH_REMAP_TO: process.env.PATH_REMAP_TO || process.env.RAID_PATH || '/mnt/raid',
   TAUTULLI_WEBHOOK_SECRET: process.env.TAUTULLI_WEBHOOK_SECRET || '',
+  // Only the hash is ever kept: the raw token is hashed here at startup and the plaintext
+  // is never stored on CONFIG. Empty disables the agent API entirely (routes are not mounted).
+  AGENT_API_TOKEN_HASH: process.env.AGENT_API_TOKEN ? sha256(process.env.AGENT_API_TOKEN) : '',
   // Optional per-topic notification channels; anything unset falls back to ADMIN_CHANNEL_ID.
   REQUESTS_CHANNEL_ID: parseId(process.env.REQUESTS_CHANNEL_ID),
   SYSTEM_ALERTS_CHANNEL_ID: parseId(process.env.SYSTEM_ALERTS_CHANNEL_ID),
@@ -531,6 +535,7 @@ const CONFIG = (() => {
   // so this only needs headroom for manual re-runs/retries, not the steady-state cadence.
   AGENT_REPORT_MAX_PER_MINUTE: Number.parseInt(process.env.AGENT_REPORT_MAX_PER_MINUTE || '12', 10),
   AGENT_READ_MAX_PER_MINUTE: Number.parseInt(process.env.AGENT_READ_MAX_PER_MINUTE || '60', 10),
+  AGENT_API_READ_MAX_PER_MINUTE: Number.parseInt(process.env.AGENT_API_READ_MAX_PER_MINUTE || '60', 10),
   // Full reports may carry 25 MB / 200k rows. Count admission above limits frequency; this
   // separately bounds simultaneous authenticated parses and report processing.
   AGENT_REPORT_MAX_CONCURRENT: Number.parseInt(process.env.AGENT_REPORT_MAX_CONCURRENT || '2', 10),
@@ -603,6 +608,9 @@ function validateConfig() {
   }
   if (CONFIG.TUNNEL_DOMAIN && !CONFIG.TAUTULLI_WEBHOOK_SECRET) {
     throw new Error('TAUTULLI_WEBHOOK_SECRET is required whenever TUNNEL_DOMAIN is set; the Tautulli webhook endpoint would otherwise be reachable from the internet without authentication');
+  }
+  if (process.env.AGENT_API_TOKEN && process.env.AGENT_API_TOKEN.length < 32) {
+    throw new Error('AGENT_API_TOKEN must be at least 32 characters (generate one with `openssl rand -hex 32`); a short internet-reachable API token is worse than none');
   }
   // Redundant with the TUNNEL_DOMAIN check above (which already covers every deployment, since
   // TUNNEL_DOMAIN is itself required), kept as a second, deletion-specific guard so unauthenticated

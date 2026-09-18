@@ -67,6 +67,7 @@ const { recordDiskSamples, pruneDiskSamples, forecastDisks, pathIsOnRoot, foreca
 const { webhookEventKey } = require('./src/webhook-events');
 const { createWebhookHandlers, requireWebhookSecret } = require('./src/routes/webhooks');
 const { registerTierAgentRoutes } = require('./src/routes/tier-agent');
+const { registerAgentApiRoutes } = require('./src/routes/agent-api');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
 const { registerDashboardReadRoutes } = require('./src/routes/dashboard-read');
 const { registerDashboardMutationRoutes } = require('./src/routes/dashboard-mutations');
@@ -9663,6 +9664,26 @@ function startExpressServer() {
         ].filter(Boolean).join('\n').slice(0, 4000))] });
     },
   });
+
+  // Agent API (v1, read-only): machine access for the Plex Director agent. Only mounted when
+  // AGENT_API_TOKEN is configured — no token, no API surface at all.
+  if (CONFIG.AGENT_API_TOKEN_HASH) {
+    registerAgentApiRoutes(app, {
+      config: CONFIG,
+      getAgentApiTokenHash: () => CONFIG.AGENT_API_TOKEN_HASH,
+      sha256,
+      safeEqual,
+      audit,
+      gatherHealth,
+      fetchArrQueues,
+      fetchSeerrRequests,
+      getPlexToken,
+      getPlexServers,
+      httpRateLimitKey,
+    });
+  } else {
+    log.info('Agent API disabled: AGENT_API_TOKEN is not set.');
+  }
 
   if (CONFIG.DASHBOARD_ENABLED) {
     const webauthnBrowserPath = path.join(path.dirname(require.resolve('@simplewebauthn/browser')), '..', 'dist', 'bundle', 'index.es5.umd.min.js');
