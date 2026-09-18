@@ -22,6 +22,14 @@ async function plexApiGet(urlPath, token) {
   return res.data;
 }
 
+async function plexApiGetXml(urlPath, token) {
+  const res = await axios.get(`https://plex.tv${urlPath}`, {
+    responseType: 'text',
+    headers: { 'X-Plex-Token': token, 'X-Plex-Client-Identifier': PLEX_CLIENT_ID },
+  });
+  return res.data;
+}
+
 async function getPlexServers(token, { includeExcluded = false } = {}) {
   const data = await plexApiGet('/api/v2/resources?includeHttps=1&includeRelay=1', token);
   return (Array.isArray(data) ? data : []).filter(r => r.provides?.includes('server')
@@ -70,14 +78,8 @@ async function inviteUserToPlex(email, { homeServer = 'primary' } = {}) {
   return { successCount, total: servers.length };
 }
 
-// plex.tv's dedicated friends-list JSON endpoint (/api/v2/friends) was deprecated and now
-// returns HTTP 410 Gone. /api/users is the legacy XML-era endpoint plex.tv still serves (the
-// same one python-plexapi's MyPlexAccount.users() uses) — it honors the same
-// Accept: application/json header plexApiGet already sends, but wraps its list in a
-// MediaContainer the way Plex's older endpoints do, instead of returning a bare array like
-// /api/v2/friends used to. Every shape normalizes to a flat array of { id, title, username,
-// email, thumb, ... } objects, the same fields the old endpoint returned, so every caller below
-// is unaffected by the switch.
+// Plex's /api/users endpoint is XML even though the old v2 friends endpoint was JSON. Keep the
+// JSON normalizer for compatibility with old payloads, but parse the live XML response below.
 function normalizePlexFriendsResponse(raw) {
   if (Array.isArray(raw)) return raw;
   if (!raw || typeof raw !== 'object') return [];
@@ -90,9 +92,43 @@ function normalizePlexFriendsResponse(raw) {
   return [];
 }
 
+function decodePlexXml(value) {
+  return String(value || '')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+function parsePlexXmlAttributes(source) {
+  const attributes = {};
+  String(source || '').replace(/([\w:-]+)=(?:"([^"]*)"|'([^']*)')/g, (_match, key, doubleQuoted, singleQuoted) => {
+    attributes[key] = decodePlexXml(doubleQuoted ?? singleQuoted);
+    return _match;
+  });
+  return attributes;
+}
+
+function normalizePlexFriendsXml(xml) {
+  const friends = [];
+  const users = /<User\b([^>]*)(?:\/>|>([\s\S]*?)<\/User>)/g;
+  let match;
+  while ((match = users.exec(String(xml || '')))) {
+    const friend = parsePlexXmlAttributes(match[1]);
+    const shares = [];
+    const servers = /<Server\b([^>]*?)(?:\/>|>[\s\S]*?<\/Server>)/g;
+    let serverMatch;
+    while ((serverMatch = servers.exec(match[2] || ''))) shares.push(parsePlexXmlAttributes(serverMatch[1]));
+    friend.Server = shares;
+    friends.push(friend);
+  }
+  return friends;
+}
+
 async function fetchPlexFriends(token) {
-  const raw = await plexApiGet('/api/users', token);
-  return normalizePlexFriendsResponse(raw);
+  const raw = await plexApiGetXml('/api/users', token);
+  return typeof raw === 'string' ? normalizePlexFriendsXml(raw) : normalizePlexFriendsResponse(raw);
 }
 
 function asArray(value) {
@@ -235,4 +271,4 @@ async function removePlexAccess(email) {
   return { removed: removedCount > 0, removedCount, total: servers.length };
 }
 
-module.exports = { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, serversForHomeServer, plexServersForHomeServer, inviteUserToPlex, removePlexAccess, fetchPlexFriends, normalizePlexFriendsResponse, normalizePlexLibrarySectionIds, createPlexShareRefreshContext, refreshPlexShare };
+module.exports = { PLEX_CLIENT_ID, getPlexToken, plexApiGet, plexApiGetXml, getPlexServers, serversForHomeServer, plexServersForHomeServer, inviteUserToPlex, removePlexAccess, fetchPlexFriends, normalizePlexFriendsResponse, normalizePlexFriendsXml, normalizePlexLibrarySectionIds, createPlexShareRefreshContext, refreshPlexShare };

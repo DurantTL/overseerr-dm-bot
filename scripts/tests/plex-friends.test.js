@@ -1,10 +1,8 @@
 #!/usr/bin/env node
-// plex.tv deprecated /api/v2/friends (now HTTP 410 Gone); fetchPlexFriends switched to the
-// legacy /api/users endpoint, which wraps its list in a MediaContainer instead of returning a
-// bare array. normalizePlexFriendsResponse has to handle every shape Plex has used for this
-// list so callers never have to know which one came back. Extracted via loadSandbox (like every
-// other src/*.js test here) rather than required directly, since requiring src/plex.js pulls in
-// src/db.js and opens the real SQLite database.
+// plex.tv deprecated /api/v2/friends (now HTTP 410 Gone). The surviving /api/users endpoint is
+// XML, so fetchPlexFriends parses its User and nested Server records. Extracted via loadSandbox
+// (like every other src/*.js test here) rather than required directly, since requiring
+// src/plex.js pulls in src/db.js and opens the real SQLite database.
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { loadSandbox } = require('./extract');
@@ -30,12 +28,30 @@ test('normalizePlexFriendsResponse: handles every response shape plex.tv has use
   assert.deepStrictEqual(norm({}), [], 'an unrecognized object shape is an empty list, not a throw');
 });
 
-test('fetchPlexFriends: calls plexApiGet against /api/users, not the deprecated /api/v2/friends', async () => {
+test('normalizePlexFriendsXml: preserves users and their server-share IDs', () => {
+  const { normalizePlexFriendsXml, parsePlexXmlAttributes, decodePlexXml } = loadSandbox([
+    'decodePlexXml', 'parsePlexXmlAttributes', 'normalizePlexFriendsXml',
+  ]);
+  const users = JSON.parse(JSON.stringify(normalizePlexFriendsXml(`
+    <MediaContainer size="1">
+      <User id="42" email="friend@example.com" title="Friend &amp; Family">
+        <Server id="88" machineIdentifier="main-id" name="Main" />
+      </User>
+    </MediaContainer>`)));
+  assert.deepStrictEqual(users, [{
+    id: '42', email: 'friend@example.com', title: 'Friend & Family',
+    Server: [{ id: '88', machineIdentifier: 'main-id', name: 'Main' }],
+  }]);
+});
+
+test('fetchPlexFriends: calls the XML /api/users endpoint, not the deprecated /api/v2/friends', async () => {
   const calls = [];
-  const { fetchPlexFriends } = loadSandbox(['fetchPlexFriends', 'normalizePlexFriendsResponse'], {
-    plexApiGet: async path => { calls.push(path); return { MediaContainer: { size: 1, User: [{ id: 42, email: 'friend@example.com' }] } }; },
+  const { fetchPlexFriends } = loadSandbox([
+    'decodePlexXml', 'parsePlexXmlAttributes', 'normalizePlexFriendsXml', 'normalizePlexFriendsResponse', 'fetchPlexFriends',
+  ], {
+    plexApiGetXml: async path => { calls.push(path); return '<MediaContainer><User id="42" email="friend@example.com" /></MediaContainer>'; },
   });
-  const friends = Array.from(await fetchPlexFriends('tok'));
-  assert.deepStrictEqual(friends, [{ id: 42, email: 'friend@example.com' }]);
+  const friends = JSON.parse(JSON.stringify(await fetchPlexFriends('tok')));
+  assert.deepStrictEqual(friends, [{ id: '42', email: 'friend@example.com', Server: [] }]);
   assert.deepStrictEqual(calls, ['/api/users']);
 });
