@@ -4277,6 +4277,7 @@ const slashCommands = [
   new SlashCommandBuilder().setName('invite').setDescription('Invite a member: bot DMs them for their Plex email and auto-sets them up').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('Member to invite').setRequired(true)).addStringOption(o => o.setName('email').setDescription('Skip the DM — set them up with this Plex email right away').setAutocomplete(true)).addStringOption(o => o.setName('server').setDescription('Home server (only applies with `email` set — otherwise they pick it in the DM)').addChoices({ name: 'Main (USA)', value: 'primary' }, { name: 'Philippines', value: 'ph' })),
   new SlashCommandBuilder().setName('invite-post').setDescription('Post a public "Request Plex Access" button in this channel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('reinvite').setDescription('Re-send a Plex invite to a linked user').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addUserOption(o => o.setName('user').setDescription('Discord user currently in the server')).addStringOption(o => o.setName('email').setDescription('Any linked user — start typing to search the DB').setAutocomplete(true)),
+  new SlashCommandBuilder().setName('reshare-all').setDescription('Re-push the Plex share to every invited user at once').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('mode').setDescription('preview or apply').setRequired(true).addChoices({ name: 'preview', value: 'preview' }, { name: 'apply', value: 'apply' })),
   new SlashCommandBuilder().setName('requests').setDescription('Show the most recent Seerr requests').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addIntegerOption(o => o.setName('count').setDescription('How many to show (default 10)').setMinValue(1).setMaxValue(25)),
   new SlashCommandBuilder().setName('pending').setDescription('Review requests awaiting approval').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('whorequested').setDescription('Find who requested a tracked title').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addStringOption(o => o.setName('title').setDescription('Start typing — matches all tracked requests').setRequired(true).setAutocomplete(true)),
@@ -5029,6 +5030,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'invite') return handleInviteCommand(interaction);
   if (n === 'invite-post') return handleInvitePostCommand(interaction);
   if (n === 'reinvite') return handleReinviteCommand(interaction);
+  if (n === 'reshare-all') return handleReshareAllCommand(interaction);
   if (n === 'requests') return handleRequestsCommand(interaction);
   if (n === 'pending') return handlePendingCommand(interaction);
   if (n === 'whorequested') return handleWhoRequestedCommand(interaction);
@@ -6366,6 +6368,54 @@ async function handleReinviteCommand(interaction) {
     `${ok ? '✅' : '⚠️'} Re-sent Plex invite for **${label}** → \`${email}\` (${result.successCount}/${result.total} server${result.total === 1 ? '' : 's'}).`
     + (ok ? '' : '\nNo servers accepted the invite — they may already have pending/active access.'),
   );
+}
+
+// /reshare-all: re-push the Plex share to every currently-invited user at once — e.g. after
+// adding a library section or fixing a shared_servers setting that needs to reach everyone.
+// preview lists who would be touched without sending anything; apply walks the list one user at
+// a time with a short delay between calls so a large run doesn't hammer plex.tv's API.
+async function handleReshareAllCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  const mode = interaction.options.getString('mode', true);
+  await interaction.deferReply({ ephemeral: true });
+
+  const rows = db.prepare('SELECT discord_id, email FROM users WHERE invited = 1').all()
+    .filter(u => u.discord_id !== CONFIG.DISCORD_CLIENT_ID)
+    .filter(u => isValidEmail(u.email) && !canonicalizeEmail(u.email).startsWith('__placeholder__:'));
+
+  if (!rows.length) return interaction.editReply('ℹ️ No invited users with a real email to reshare.');
+
+  if (mode === 'preview') {
+    const lines = rows.map(u => `• \`${u.email}\`${u.discord_id.startsWith('plex_') ? ' (Plex-only)' : ` — <@${u.discord_id}>`}`);
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.INFO)
+      .setTitle('🔁 Reshare All — Preview')
+      .setDescription([
+        `This will re-push the Plex share to **${rows.length}** invited user${rows.length === 1 ? '' : 's'}, one at a time.`,
+        'Run `/reshare-all mode:apply` to actually send it.',
+        '',
+        lines.join('\n'),
+      ].join('\n').slice(0, 4000))] });
+  }
+
+  let successCount = 0; const failures = [];
+  for (const u of rows) {
+    try {
+      const result = await inviteUserToPlex(u.email, { homeServer: homeServerFor(u.discord_id) });
+      if (result.successCount > 0) successCount++;
+      else failures.push(u.email);
+    } catch (err) {
+      failures.push(u.email);
+      audit('external_api_error', { provider: 'plex', error: err.message, targetDiscordId: u.discord_id });
+    }
+    await sleepMs(750); // stay well under plex.tv's rate limits across a full run
+  }
+  audit('plex_reshare_all', { actorDiscordId: interaction.user.id, total: rows.length, successCount, failCount: failures.length });
+  await interaction.editReply({ embeds: [brandedEmbed(failures.length ? COLORS.WARN : COLORS.SUCCESS)
+    .setTitle('🔁 Reshare All — Complete')
+    .setDescription([
+      `Resent the Plex share to **${successCount}/${rows.length}** user${rows.length === 1 ? '' : 's'}.`,
+      failures.length ? `**Failed (${failures.length}):** ${failures.map(e => `\`${e}\``).join(', ')}` : null,
+    ].filter(Boolean).join('\n').slice(0, 4000))] });
 }
 
 // Most recent requests across everyone, drawn from the local requests table (populated by Overseerr
@@ -7761,6 +7811,7 @@ async function handleHelpCommand(interaction) {
       '`/sync` — Preview or apply user sync',
       '`/sync-fix` — Resolve duplicates / placeholders / orphans / suggested links',
       '`/reinvite` — Re-send a Plex invite to a linked user',
+      '`/reshare-all` — Re-push the Plex share to every invited user at once',
     ];
     const operationsCommands = [
       '`/status` — Show system health and stats',
