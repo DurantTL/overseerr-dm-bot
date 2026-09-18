@@ -39,13 +39,18 @@ function serversForHomeServer(servers, homeServer) {
   return homeServer === 'ph' ? servers.filter(isPh) : servers.filter(s => !isPh(s));
 }
 
+function plexServersForHomeServer(servers, homeServer) {
+  let scoped = serversForHomeServer(servers, homeServer);
+  if (homeServer !== 'ph') scoped = scoped.filter(s => !CONFIG.PLEX_EXCLUDE_SERVERS.includes((s.name || '').toLowerCase()));
+  return scoped;
+}
+
 async function inviteUserToPlex(email, { homeServer = 'primary' } = {}) {
   const token = await getPlexToken();
   // Scope from the FULL server list, then apply PLEX_EXCLUDE_SERVERS only to primary invites:
   // excluding the PH box was the pre-staging way to keep it out of invites, and a PH-scoped
   // invite must still reach it even when it's on that list.
-  let servers = serversForHomeServer(await getPlexServers(token, { includeExcluded: true }), homeServer);
-  if (homeServer !== 'ph') servers = servers.filter(s => !CONFIG.PLEX_EXCLUDE_SERVERS.includes((s.name || '').toLowerCase()));
+  const servers = plexServersForHomeServer(await getPlexServers(token, { includeExcluded: true }), homeServer);
   if (!servers.length) log.warn(`Plex invite for ${email}: no servers match home_server='${homeServer}' — are the ${homeServer === 'ph' ? 'Philippines server' : 'Main servers'} in this Plex account?`);
   let successCount = 0;
   for (const server of servers) {
@@ -90,6 +95,124 @@ async function fetchPlexFriends(token) {
   return normalizePlexFriendsResponse(raw);
 }
 
+function asArray(value) {
+  if (value == null) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function findPlexFriend(friends, email) {
+  const wanted = String(email || '').trim().toLowerCase();
+  return friends.find(friend => [friend.email, friend.username, friend.title]
+    .some(value => String(value || '').trim().toLowerCase() === wanted));
+}
+
+function findPlexServerShare(friend, machineIdentifier) {
+  const shares = [
+    ...asArray(friend?.Server),
+    ...asArray(friend?.servers),
+    ...asArray(friend?.sharedServers),
+  ];
+  return shares.find(share => String(share?.machineIdentifier || share?.machine_identifier || '') === String(machineIdentifier));
+}
+
+// plex.tv's /api/servers/{machineIdentifier} response has used a few JSON wrappers over time.
+// The legacy sharing endpoint needs the section *id* (not the local section key) for every
+// library that should be shared.
+function normalizePlexLibrarySectionIds(raw) {
+  const container = raw?.MediaContainer || raw || {};
+  const sections = [
+    ...asArray(container.Directory),
+    ...asArray(container.LibrarySection),
+    ...asArray(container.librarySections),
+  ];
+  return [...new Set(sections
+    .map(section => section?.id)
+    .filter(id => id !== undefined && id !== null && String(id).trim() !== '')
+    .map(id => String(id)))];
+}
+
+async function fetchPlexLibrarySectionIds(machineIdentifier, token) {
+  const raw = await plexApiGet(`/api/servers/${encodeURIComponent(machineIdentifier)}`, token);
+  const sectionIds = normalizePlexLibrarySectionIds(raw);
+  if (!sectionIds.length) throw new Error(`Plex returned no library sections for server ${machineIdentifier}`);
+  return sectionIds;
+}
+
+async function createPlexShareRefreshContext() {
+  const token = await getPlexToken();
+  const [servers, friends] = await Promise.all([
+    getPlexServers(token, { includeExcluded: true }),
+    fetchPlexFriends(token),
+  ]);
+  return { token, servers, friends, librarySectionIdsByMachine: new Map() };
+}
+
+function plexJsonHeaders(token) {
+  return {
+    'X-Plex-Token': token,
+    'X-Plex-Client-Identifier': PLEX_CLIENT_ID,
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+  };
+}
+
+// Refresh an existing Plex share instead of trying to invite the same user again. Plex rejects
+// duplicate invitations, while this PUT updates the current share with every live library.
+// If a known Plex friend has no share on one of their assigned servers, create that one missing
+// server share only; never send a duplicate invite for a share that already exists.
+async function refreshPlexShare(email, { homeServer = 'primary', context = null } = {}) {
+  const refreshContext = context || await createPlexShareRefreshContext();
+  const servers = plexServersForHomeServer(refreshContext.servers, homeServer);
+  const friend = findPlexFriend(refreshContext.friends, email);
+  const result = { updatedCount: 0, createdCount: 0, failedCount: 0, total: servers.length, errors: [] };
+
+  if (!friend) {
+    result.failedCount = servers.length || 1;
+    result.errors.push('No matching Plex friend or accepted invite was found');
+    return result;
+  }
+
+  for (const server of servers) {
+    try {
+      let sectionIds = refreshContext.librarySectionIdsByMachine.get(server.clientIdentifier);
+      if (!sectionIds) {
+        sectionIds = await fetchPlexLibrarySectionIds(server.clientIdentifier, refreshContext.token);
+        refreshContext.librarySectionIdsByMachine.set(server.clientIdentifier, sectionIds);
+      }
+      const share = findPlexServerShare(friend, server.clientIdentifier);
+      if (share?.id != null) {
+        await axios.put(
+          `https://plex.tv/api/servers/${encodeURIComponent(server.clientIdentifier)}/shared_servers/${encodeURIComponent(share.id)}`,
+          { server_id: server.clientIdentifier, shared_server: { library_section_ids: sectionIds } },
+          { headers: plexJsonHeaders(refreshContext.token) },
+        );
+        result.updatedCount++;
+      } else {
+        await axios.post(
+          `https://plex.tv/api/servers/${encodeURIComponent(server.clientIdentifier)}/shared_servers`,
+          { server_id: server.clientIdentifier, shared_server: { library_section_ids: sectionIds, invited_id: friend.id } },
+          { headers: plexJsonHeaders(refreshContext.token) },
+        );
+        result.createdCount++;
+      }
+    } catch (err) {
+      result.failedCount++;
+      const message = err?.response?.data?.error || err?.message || 'Unknown Plex API error';
+      result.errors.push(`${server.name || server.clientIdentifier}: ${message}`);
+      log.warn(`Plex share refresh failed for ${email} on ${server.name || server.clientIdentifier}: ${message}`);
+    }
+  }
+  audit('plex_share_refreshed', {
+    email,
+    homeServer,
+    updatedCount: result.updatedCount,
+    createdCount: result.createdCount,
+    failedCount: result.failedCount,
+    total: result.total,
+  });
+  return result;
+}
+
 async function removePlexAccess(email) {
   const token = await getPlexToken();
   const friends = await fetchPlexFriends(token).catch(() => []);
@@ -112,4 +235,4 @@ async function removePlexAccess(email) {
   return { removed: removedCount > 0, removedCount, total: servers.length };
 }
 
-module.exports = { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, serversForHomeServer, inviteUserToPlex, removePlexAccess, fetchPlexFriends, normalizePlexFriendsResponse };
+module.exports = { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, serversForHomeServer, plexServersForHomeServer, inviteUserToPlex, removePlexAccess, fetchPlexFriends, normalizePlexFriendsResponse, normalizePlexLibrarySectionIds, createPlexShareRefreshContext, refreshPlexShare };

@@ -40,7 +40,7 @@ const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeaso
   markSeasonEpisodeFallbackSubmitted, attachSeasonEpisodeFallbackCommand, finishSeasonEpisodeFallback, deferSubmittedSeasonEpisodeFallback,
   clearSeasonEpisodeFallback } = require('./src/db');
 const { recordDeadReleaseGroupSighting, getReleaseGroupSighting, markReleaseGroupSuggested, markReleaseGroupBlocklisted, dismissReleaseGroupSuggestion } = require('./src/db');
-const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess, fetchPlexFriends } = require('./src/plex');
+const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess, fetchPlexFriends, createPlexShareRefreshContext, refreshPlexShare } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvSeasonInfo, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
 const { ALL_SEASONS, parseSeasonSelection, formatSeasonsLabel, splitCoveredSeasons, seasonsToStorageKey, seasonsFromStorageKey } = require('./src/season-select');
@@ -6397,11 +6397,21 @@ async function handleReshareAllCommand(interaction) {
       ].join('\n').slice(0, 4000))] });
   }
 
-  let successCount = 0; const failures = [];
+  let refreshContext;
+  try {
+    refreshContext = await createPlexShareRefreshContext();
+  } catch (err) {
+    audit('external_api_error', { provider: 'plex', error: err.message, actorDiscordId: interaction.user.id, operation: 'reshare_all_prepare' });
+    return interaction.editReply(`❌ Couldn't read the current Plex shares, so nothing was changed: ${err.message}`);
+  }
+
+  let successCount = 0; let updatedShares = 0; let createdShares = 0; const failures = [];
   for (const u of rows) {
     try {
-      const result = await inviteUserToPlex(u.email, { homeServer: homeServerFor(u.discord_id) });
-      if (result.successCount > 0) successCount++;
+      const result = await refreshPlexShare(u.email, { homeServer: homeServerFor(u.discord_id), context: refreshContext });
+      updatedShares += result.updatedCount;
+      createdShares += result.createdCount;
+      if (result.updatedCount + result.createdCount > 0) successCount++;
       else failures.push(u.email);
     } catch (err) {
       failures.push(u.email);
@@ -6409,11 +6419,11 @@ async function handleReshareAllCommand(interaction) {
     }
     await sleepMs(750); // stay well under plex.tv's rate limits across a full run
   }
-  audit('plex_reshare_all', { actorDiscordId: interaction.user.id, total: rows.length, successCount, failCount: failures.length });
+  audit('plex_reshare_all', { actorDiscordId: interaction.user.id, total: rows.length, successCount, updatedShares, createdShares, failCount: failures.length });
   await interaction.editReply({ embeds: [brandedEmbed(failures.length ? COLORS.WARN : COLORS.SUCCESS)
     .setTitle('🔁 Reshare All — Complete')
     .setDescription([
-      `Resent the Plex share to **${successCount}/${rows.length}** user${rows.length === 1 ? '' : 's'}.`,
+      `Refreshed the Plex share for **${successCount}/${rows.length}** user${rows.length === 1 ? '' : 's'} (${updatedShares} updated, ${createdShares} newly created server share${createdShares === 1 ? '' : 's'}).`,
       failures.length ? `**Failed (${failures.length}):** ${failures.map(e => `\`${e}\``).join(', ')}` : null,
     ].filter(Boolean).join('\n').slice(0, 4000))] });
 }
