@@ -3,6 +3,7 @@
 const axios = require('axios');
 const { rateLimit } = require('express-rate-limit');
 const { createAgentApiAuth } = require('./agent-api-auth');
+const { statusFromSeerrRequest } = require('../request-tracking');
 
 // Read-only machine API for the Plex Director agent (v1).
 // Auth: `Authorization: Bearer <AGENT_API_TOKEN>`, hash-compared like the tier-agent tokens.
@@ -10,8 +11,10 @@ const { createAgentApiAuth } = require('./agent-api-auth');
 // behind explicit approval. Responses are small, typed projections — never raw upstream payloads,
 // so tokens, API keys, and full config can never leak through this surface.
 
-// Seerr's MediaRequestStatus enum for /api/v1/request.
-const SEERR_REQUEST_STATUS = { 1: 'pending', 2: 'approved', 3: 'available' };
+// Readable request states the /api/v1/requests ?status= filter accepts. Status labels come
+// from statusFromSeerrRequest (src/request-tracking.js) — the same mapping the bot's own
+// request reconciliation uses — so the API never invents its own vocabulary.
+const REQUEST_STATUS_FILTERS = ['pending', 'approved', 'available', 'declined', 'failed'];
 const MAX_RESULTS = 25;
 const MAX_REQUESTS = 200;
 const HEALTH_CACHE_MS = 30000;
@@ -46,13 +49,74 @@ function projectQueueItem(item) {
   };
 }
 
-function projectSeerrRequest(r) {
-  const media = r.media || {};
+// Seerr's /api/v1/request items join only the Media row (tmdbId/tvdbId/status) — no title.
+// Resolve titles through the movie/tv detail endpoints. TMDB titles are immutable, so cache
+// by mediaType:tmdbId with a bounded size; per-item lookup failures degrade to a fallback
+// title, never a failed request.
+const SEERR_TITLE_CACHE_MAX = 2000;
+const seerrTitleCache = new Map();
+
+function seerrTitleCacheSet(key, title) {
+  if (seerrTitleCache.size >= SEERR_TITLE_CACHE_MAX) {
+    const oldest = seerrTitleCache.keys().next();
+    if (!oldest.done) seerrTitleCache.delete(oldest.value);
+  }
+  seerrTitleCache.set(key, title);
+}
+
+async function resolveSeerrTitle(r, { seerrUrl, seerrApiKey, httpClient }) {
+  const media = r?.media || {};
+  // Prefer a title the payload already carries when present.
+  const direct = String(media.title || media.name || '').trim();
+  if (direct) return direct.slice(0, 200);
+  const mediaType = media.mediaType === 'tv' ? 'tv' : 'movie';
+  const tmdbId = Number(media.tmdbId);
+  if (!seerrUrl || !seerrApiKey || !Number.isFinite(tmdbId) || tmdbId <= 0) return 'Unknown';
+  const cacheKey = `${mediaType}:${tmdbId}`;
+  const cached = seerrTitleCache.get(cacheKey);
+  if (cached) return cached;
+  try {
+    const res = await httpClient.get(`${seerrUrl}/api/v1/${mediaType}/${tmdbId}`, {
+      headers: { 'X-Api-Key': seerrApiKey },
+      timeout: 8000,
+    });
+    const title = String(res.data?.title || res.data?.name || '').trim();
+    if (title) {
+      const clipped = title.slice(0, 200);
+      seerrTitleCacheSet(cacheKey, clipped);
+      return clipped;
+    }
+  } catch (_err) {
+    // Swallowed: an unresolvable title degrades to 'Unknown', not a failed request.
+  }
+  return 'Unknown';
+}
+
+// Bounded-concurrency map so a full 200-request inventory doesn't fan out hundreds of
+// simultaneous Seerr detail calls.
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+function projectSeerrRequestStatus(r) {
+  return statusFromSeerrRequest(r) || `unknown(${r.status})`;
+}
+
+async function projectSeerrRequest(r, status, { seerrUrl, seerrApiKey, httpClient }) {
   return {
     id: r.id,
-    status: SEERR_REQUEST_STATUS[r.status] || `unknown(${r.status})`,
-    mediaType: media.mediaType === 'tv' ? 'tv' : 'movie',
-    title: String(media.title || media.name || 'Unknown').slice(0, 200),
+    status,
+    mediaType: r.media?.mediaType === 'tv' ? 'tv' : 'movie',
+    title: await resolveSeerrTitle(r, { seerrUrl, seerrApiKey, httpClient }),
     requestedBy: String(r.requestedBy?.displayName || r.requestedBy?.username || 'unknown').slice(0, 120),
     createdAt: r.createdAt || null,
   };
@@ -187,13 +251,17 @@ function registerAgentApiRoutes(app, deps) {
 
   app.get('/api/v1/requests', auth, readLimiter, guarded(async (req, res) => {
     const statusFilter = String(req.query.status || '').trim().toLowerCase();
-    if (statusFilter && !['pending', 'approved', 'available'].includes(statusFilter)) {
-      return res.status(400).json({ error: "status must be 'pending', 'approved', or 'available'" });
+    if (statusFilter && !REQUEST_STATUS_FILTERS.includes(statusFilter)) {
+      return res.status(400).json({ error: `status must be one of: ${REQUEST_STATUS_FILTERS.join(', ')}` });
     }
-    const all = (await fetchSeerrRequests()).map(projectSeerrRequest);
-    const filtered = statusFilter ? all.filter(r => r.status === statusFilter) : all;
+    // Status mapping is cheap and synchronous — filter first, then resolve titles only for the
+    // page actually returned so one call never fans out more detail lookups than needed.
+    const withStatus = (await fetchSeerrRequests()).map(r => ({ r, status: projectSeerrRequestStatus(r) }));
+    const filtered = statusFilter ? withStatus.filter(x => x.status === statusFilter) : withStatus;
     const capped = filtered.slice(0, MAX_REQUESTS);
-    res.json({ ok: true, count: capped.length, total: filtered.length, requests: capped });
+    const titleDeps = { seerrUrl: config.OVERSEERR_URL, seerrApiKey: config.OVERSEERR_API_KEY, httpClient };
+    const requests = await mapWithConcurrency(capped, 8, x => projectSeerrRequest(x.r, x.status, titleDeps));
+    res.json({ ok: true, count: requests.length, total: filtered.length, requests });
   }));
 }
 
