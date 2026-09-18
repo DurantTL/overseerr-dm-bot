@@ -3,12 +3,17 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { loadSandbox } = require('./extract');
 
-test('normalizePlexLibrarySectionIds keeps Plex section ids and ignores empty values', () => {
-  const { normalizePlexLibrarySectionIds } = loadSandbox(['asArray', 'normalizePlexLibrarySectionIds']);
+test('normalizePlexLibrarySectionIds keeps Plex section ids and ignores empty values in JSON or XML', () => {
+  const { normalizePlexLibrarySectionIds, parsePlexXmlAttributes, decodePlexXml } = loadSandbox([
+    'asArray', 'decodePlexXml', 'parsePlexXmlAttributes', 'normalizePlexLibrarySectionIds',
+  ]);
   const ids = Array.from(normalizePlexLibrarySectionIds({
     MediaContainer: { Directory: [{ id: 7, key: 2 }, { id: '9', key: 4 }, { id: 7 }, { key: 8 }] },
   }));
   assert.deepEqual(ids, ['7', '9']);
+  const xmlIds = Array.from(normalizePlexLibrarySectionIds(`
+    <MediaContainer><Directory id="2" key="1" /><Directory id="3" key="2" /><Directory id="2" /></MediaContainer>`));
+  assert.deepEqual(xmlIds, ['2', '3']);
 });
 
 test('refreshPlexShare updates an existing share instead of re-inviting the user', async () => {
