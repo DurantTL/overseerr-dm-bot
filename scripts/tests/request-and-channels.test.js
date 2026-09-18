@@ -223,7 +223,7 @@ test('discord: every registered command dispatches and bounded options stay boun
   const source = fs.readFileSync(path.join(__dirname, '..', '..', 'index.js'), 'utf8');
   const block = source.match(/const slashCommands = \[([\s\S]*?)\]\.map\(v => v\.toJSON\(\)\);/)[1];
   const commands = Function('SlashCommandBuilder', 'PermissionFlagsBits', 'mediaPanelCommand', 'casesCommand', 'myCasesCommand', `return [${block}].map(v => v.toJSON());`)(SlashCommandBuilder, PermissionFlagsBits, mediaPanelCommand, casesCommand, myCasesCommand);
-  assert.strictEqual(commands.length, 51);
+  assert.strictEqual(commands.length, 52);
   assert.strictEqual(new Set(commands.map(command => command.name)).size, commands.length);
   for (const command of commands) assert.match(source, new RegExp(`if \\(n === '${command.name}'\\) return handle`), `${command.name} dispatches`);
 
