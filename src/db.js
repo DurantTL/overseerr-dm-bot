@@ -504,6 +504,9 @@ const MIGRATIONS = [
   ensureColumn('tier_nodes', 'plex_url', 'TEXT');
   ensureColumn('tier_nodes', 'plex_token', 'TEXT');
   ensureColumn('tier_nodes', 'atime_mask', 'TEXT');
+  // Monitor-only nodes (backup boxes, non-Plex servers): the agent reports telemetry +
+  // disk + SMART on its schedule and skips all tier-plan work. Set via /tier-node add.
+  ensureColumn('tier_nodes', 'monitor_only', 'INTEGER');
   // The generic alert-cooldown table also carries durable no-grab backoff state for season
   // searches. Other scopes keep using only last_alerted_at and are unaffected by these defaults.
   ensureColumn('alert_cooldowns', 'attempt_count', 'INTEGER DEFAULT 0');
@@ -1513,7 +1516,7 @@ function pruneExpiredTierPlayPins(now = Date.now()) {
 // manifest/report routes; tier_node_files the agent-reported local inventory that atime nodes
 // use as their demand signal. Last published plans live in app_settings (tier_plan:/tier_manifest:).
 
-const TIER_NODE_FIELDS = ['usable_bytes', 'headroom_pct', 'full', 'access', 'demand_source', 'transport', 'folder_root', 'tautulli_url', 'tautulli_api_key', 'plex_url', 'plex_token', 'atime_mask', 'enabled', 'sticky', 'warm_days', 'fresh_days'];
+const TIER_NODE_FIELDS = ['usable_bytes', 'headroom_pct', 'full', 'access', 'demand_source', 'transport', 'folder_root', 'tautulli_url', 'tautulli_api_key', 'plex_url', 'plex_token', 'atime_mask', 'enabled', 'sticky', 'warm_days', 'fresh_days', 'monitor_only'];
 
 // Insert-or-partial-update: only the fields present in `fields` change, so /tier-node edit can
 // tweak one column without callers round-tripping the whole row.

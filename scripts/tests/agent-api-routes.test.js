@@ -337,6 +337,17 @@ function setupV11() {
       { path: '/share/media', displayPath: '/share/media', totalSpace: 8e12, freeSpace: 2e12 },
       { path: '/', totalSpace: 1e11, freeSpace: 5e10 },
     ],
+    // Fleet disks: tier-agent telemetry merges with the *arr volumes.
+    listTierNodes: () => [{ name: 'california' }, { name: 'europe' }],
+    getTierPlan: name => {
+      if (name === 'california') {
+        return { lastTelemetry: { agentVersion: 'x', at: Date.now(), collectedAt: Date.now(), node: 'california', host: 'california', filesystemTotalBytes: 8e12, filesystemFreeBytes: 1e12, smartHealth: [{ device: '/dev/sda', health: 'failing' }] } };
+      }
+      if (name === 'europe') {
+        return { lastTelemetry: { agentVersion: 'x', at: Date.now(), collectedAt: Date.now() - 40 * 60 * 1000, node: 'europe', host: 'europe', filesystemTotalBytes: 1e12, filesystemFreeBytes: 9e11 } };
+      }
+      return null;
+    },
     getPlexToken: async () => 'plex-token',
     getPlexServers: async () => [],
     httpRateLimitKey: req => ipKeyGenerator(req.ip || 'unknown'),
@@ -395,21 +406,25 @@ test('agent API v1.1: mutation endpoints reject missing tokens with 401', async 
   } finally { await close(server); }
 });
 
-test('agent API v1.1: disks project safe shapes with percent used', async () => {
+test('agent API v1.1: disks merge *arr volumes with tier-agent fleet disks', async () => {
   const { app } = setupV11();
   const server = await listen(app, 0);
   try {
     const res = await request(server.address().port, { path: '/api/v1/disks', token: 'valid-agent-token' });
     assert.strictEqual(res.statusCode, 200);
     const body = JSON.parse(res.body);
-    assert.deepStrictEqual(body, {
-      ok: true,
-      count: 2,
-      disks: [
-        { name: '/share/media', freeBytes: 2e12, totalBytes: 8e12, percentUsed: 75 },
-        { name: '/', freeBytes: 5e10, totalBytes: 1e11, percentUsed: 50 },
-      ],
-    });
+    assert.strictEqual(body.ok, true);
+    assert.strictEqual(body.count, 4);
+    assert.deepStrictEqual(body.disks[0], { name: '/share/media', freeBytes: 2e12, totalBytes: 8e12, percentUsed: 75, source: 'arr', node: 'durant-server', telemetryAgeMs: null, smartHealth: null });
+    assert.deepStrictEqual(body.disks[1], { name: '/', freeBytes: 5e10, totalBytes: 1e11, percentUsed: 50, source: 'arr', node: 'durant-server', telemetryAgeMs: null, smartHealth: null });
+    const cal = body.disks[2];
+    assert.deepStrictEqual({ ...cal, telemetryAgeMs: 'number' }, { name: 'california', freeBytes: 1e12, totalBytes: 8e12, percentUsed: 87.5, source: 'tier-agent', node: 'california', telemetryAgeMs: 'number', smartHealth: [{ device: '/dev/sda', health: 'failing' }] });
+    assert.strictEqual(typeof cal.telemetryAgeMs, 'number');
+    // Stale telemetry is still included, flagged with its age.
+    const europe = body.disks[3];
+    assert.strictEqual(europe.node, 'europe');
+    assert.ok(europe.telemetryAgeMs > 39 * 60 * 1000, 'stale telemetry carries its age');
+    assert.strictEqual(europe.smartHealth, null);
   } finally { await close(server); }
 });
 

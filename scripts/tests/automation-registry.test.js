@@ -89,9 +89,9 @@ test('automation inventory is declarative and contains every recurring media wor
   const block = source.slice(source.indexOf('function createAutomationDefinitions()'), source.indexOf('function channelFor'));
   const ids = [...block.matchAll(/id: '([^']+)'/g)].map(match => match[1]);
   assert.deepStrictEqual(ids.sort(), [
-    'adoption', 'backup', 'episode-recovery', 'escalation', 'grab', 'janitor', 'monthly-recap',
-    'pending-approvals', 'premiumize', 'ratio-cleanup', 'request-reconcile', 'season-pack',
-    'stage-queue', 'stage-reconcile', 'stuck', 'tier-plan-stale-alert', 'transcode', 'tunnel',
+    'adoption', 'backup', 'disk-space', 'episode-recovery', 'escalation', 'grab', 'janitor',
+    'monthly-recap', 'pending-approvals', 'premiumize', 'ratio-cleanup', 'request-reconcile',
+    'season-pack', 'stage-queue', 'stage-reconcile', 'stuck', 'tier-plan-stale-alert', 'transcode', 'tunnel',
   ]);
   assert.ok(!/setInterval\(/.test(source.slice(source.indexOf('async function startDiscordWorkers()'), source.indexOf("client.on('guildMemberAdd'"))), 'worker startup must schedule only through the registry');
 });

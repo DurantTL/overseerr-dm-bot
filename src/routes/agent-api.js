@@ -6,6 +6,7 @@ const axios = require('axios');
 const { rateLimit } = require('express-rate-limit');
 const { createAgentApiAuth } = require('./agent-api-auth');
 const { statusFromSeerrRequest } = require('../request-tracking');
+const { mergeFleetDisks } = require('../fleet-disks');
 const { pad } = require('../util');
 
 // Machine API for the Plex Director agent (v1.1).
@@ -210,6 +211,10 @@ function registerAgentApiRoutes(app, deps) {
     fetchArrQueues,
     fetchSeerrRequests,
     fetchDiskSpace = async () => [],
+    // Fleet disks: tier-node telemetry disks merge with the *arr volumes. Both default to
+    // empty so the route still works in tests that don't wire the tier registry.
+    listTierNodes = () => [],
+    getTierPlan = () => null,
     getPlexToken,
     getPlexServers,
     httpRateLimitKey,
@@ -287,20 +292,15 @@ function registerAgentApiRoutes(app, deps) {
     });
   }));
 
-  // v1.1: per-node disk space, projected from the same fetchDiskSpace() the Director tab uses.
-  // Safe shape only: mount path + byte counts, no arr URLs or keys.
+  // v1.1: fleet disk space. Merges (a) the *arr-reported volumes (durant-server's own
+  // disks, the same fetchDiskSpace() the Director tab uses) with (b) per-tier-node disks
+  // from the latest agent telemetry. Safe shape only: names + byte counts, no arr URLs,
+  // keys, or raw mount internals. Tier nodes with no telemetry yet are skipped; stale
+  // telemetry is included but flagged via telemetryAgeMs.
   app.get('/api/v1/disks', auth, readLimiter, guarded(async (_req, res) => {
     const raw = (await fetchDiskSpace()) || [];
-    const disks = raw.map(d => {
-      const total = Number(d.totalSpace) || 0;
-      const free = Number(d.freeSpace) || 0;
-      return {
-        name: String(d.displayPath || d.path || 'unknown').slice(0, 200),
-        freeBytes: free,
-        totalBytes: total,
-        percentUsed: total > 0 ? Math.round(((total - free) / total) * 1000) / 10 : null,
-      };
-    });
+    const tierNodes = listTierNodes().map(n => ({ name: n.name, telemetry: getTierPlan(n.name)?.lastTelemetry || null }));
+    const disks = mergeFleetDisks({ arrDisks: raw, tierNodes });
     res.json({ ok: true, count: disks.length, disks });
   }));
 

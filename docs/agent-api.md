@@ -11,7 +11,7 @@ errors, and downstream secrets stay in outbound headers.
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/v1/health` | Bot + downstream service status. v1.1 adds `backupLastSuccessfulAt` and `backupAgeHours` (additive — the v1 shape is unchanged). |
-| GET | `/api/v1/disks` | Per-node disk space: `[{ name, freeBytes, totalBytes, percentUsed }]` (v1.1). |
+| GET | `/api/v1/disks` | Fleet disk space (v1.1): `[{ name, freeBytes, totalBytes, percentUsed, source, node, telemetryAgeMs, smartHealth }]`. `source` is `arr` (durant-server's *arr-reported volumes, `node: "durant-server"`) or `tier-agent` (a tier node's watched filesystem from its latest telemetry). `telemetryAgeMs` is null for *arr entries and the sample age in ms for tier-agent entries — stale telemetry is still listed, flagged by its age. `smartHealth` is null unless the agent reported SMART data (`[{ device, health }]` where health is `ok`/`failing`). |
 | GET | `/api/v1/library/search` | "Do I have this" across Plex servers (`?title=`, `&type=movie\|tv`). |
 | GET | `/api/v1/queue` | Download queue, projected safe shape. |
 | GET | `/api/v1/requests` | Seerr requests with resolved titles (`?status=pending\|approved\|available\|declined\|failed`). |
@@ -61,6 +61,24 @@ fallback so existing clients keep working while you migrate them. To retire it:
 
 With no `AGENT_API_TOKEN` and the dashboard disabled, the API routes are not mounted and
 every request returns 401.
+
+## Fleet disk & drive-health monitoring
+
+The `disk-space` automation sweep runs on a cadence (`DISK_CHECK_MINUTES`, default 30)
+over the same fleet `/api/v1/disks` reports, and pages the system channel only on
+**transitions** — ok → warn → urgent and recoveries — so a disk riding a threshold
+alerts once, not every sweep.
+
+- **Thresholds** (env-overridable): `DISK_WARN_FREE_PCT` (default 15), `DISK_URGENT_FREE_PCT`
+  (default 8), `DISK_CLEAR_MARGIN_PCT` (default 3, hysteresis — a warn clears only when
+  free space climbs past warn + margin). Config validation rejects `urgent >= warn`.
+- **Stale telemetry is never paged as disk-full.** A tier node whose telemetry is older
+  than 12 hours is assessed as `unknown` (its liveness is covered by the existing
+  node-heartbeat alerts); its disk still appears in `/api/v1/disks` with its age.
+- **SMART health.** Tier agents report per-drive health (`ok`/`failing`) when
+  `smartctl` is available. The sweep pages on newly failing drives and on recovery,
+  and persists the failing-device set per node. Every transition is audited
+  (`disk_space_transition`, `smart_health_transition`).
 
 ## Admin sign-in hardening
 

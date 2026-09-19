@@ -80,6 +80,8 @@ const { createApp } = require('./src/app');
 const { createRuntimeLifecycle, createDiscordReadyGuard } = require('./src/runtime-lifecycle');
 const { createAutomationRegistry } = require('./src/automation-registry');
 const { evaluateTierPlanStaleness } = require('./src/tier-plan-staleness');
+const { mergeFleetDisks, evaluateFleetDiskAlerts, evaluateSmartTransitions } = require('./src/fleet-disks');
+const { assessDiskLevel } = require('./src/node-telemetry');
 const { findUnprocessableTorrents, unacknowledgedTorrents, pruneAcknowledged, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate, planStuckTransferActions } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
@@ -153,6 +155,7 @@ const scheduledOnly = reason => ({ enabled: false, reason });
 function createAutomationDefinitions() {
   return [
     { id: 'tier-plan-stale-alert', label: 'Tier plan staleness', cadence: () => staticCadence(60, 'TIER_PLAN_STALE_DAYS'), prerequisite: () => enabled(true), firstRunDelayMs: 120000, runOnStartup: true, run: sweepTierPlanStaleAlerts, manual: scheduledOnly('Read-only operator alert; scheduled execution only.') },
+    { id: 'disk-space', label: 'Disk space & drive health', cadence: () => staticCadence(CONFIG.DISK_CHECK_MINUTES, 'DISK_CHECK_MINUTES'), prerequisite: () => enabled(true), firstRunDelayMs: 60000, run: sweepFleetDiskAlerts, preview: () => previewFleetDiskAlerts(), manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
     { id: 'pending-approvals', label: 'Pending approvals', cadence: () => runtimeCadence('PENDING_APPROVAL_CHECK_MINUTES'), prerequisite: () => enabled(true), run: sweepPendingApprovals, manual: scheduledOnly('Uses notification and expiry timing; scheduled execution only.') },
     { id: 'request-reconcile', label: 'Request reconciliation', cadence: () => staticCadence(CONFIG.REQUEST_RECONCILE_MINUTES, 'REQUEST_RECONCILE_MINUTES'), prerequisite: () => enabled(true), firstRunDelayMs: 60000, runOnStartup: true, run: sweepRequestStatuses, manual: scheduledOnly('May notify many requesters; scheduled execution only.') },
     { id: 'stuck', label: 'Stuck downloads', cadence: () => runtimeCadence('STUCK_CHECK_MINUTES'), prerequisite: () => enabled(arrSources().length > 0, 'Radarr or Sonarr is not configured.'), run: sweepStuckDownloads, preview: () => previewAutomation('stuck'), manual: safeManual },
@@ -213,6 +216,105 @@ async function sweepTierPlanStaleAlerts() {
     staleAlerts: events.filter(event => event.type === 'stale').length,
     recoveries: events.filter(event => event.type === 'recovered').length,
   };
+}
+
+// Fleet disk-space + drive-health sweep. Runs on DISK_CHECK_MINUTES cadence: assesses every
+// *arr-reported volume and every tier node's latest telemetry disk against the warn/urgent
+// free-space thresholds (with hysteresis), and diffs SMART failing sets. Transition-gated
+// like the temperature alerts — a disk riding a threshold pages once, not every sweep.
+const diskAlertStateKey = key => `disk_alert:${key}`;
+const smartAlertStateKey = node => `smart_alert:${String(node).toLowerCase()}`;
+
+function readJsonSetting(key) {
+  const raw = getSetting(key);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (_err) { return null; }
+}
+
+async function sweepFleetDiskAlerts() {
+  const arrReport = await fetchDiskSpaceReport().catch(error => ({ disks: [], errors: { unknown: error.message } }));
+  const arrDisks = arrReport.disks || [];
+  const tierNodes = listTierNodes().map(n => ({ name: n.name, telemetry: getTierPlan(n.name)?.lastTelemetry || null }));
+  const diskThresholds = {
+    warnFreePct: CONFIG.DISK_WARN_FREE_PCT,
+    urgentFreePct: CONFIG.DISK_URGENT_FREE_PCT,
+    clearMarginPct: CONFIG.DISK_CLEAR_MARGIN_PCT,
+  };
+  const { events, levels } = evaluateFleetDiskAlerts({
+    arrDisks,
+    tierNodes,
+    getAlertState: key => readJsonSetting(diskAlertStateKey(key)),
+    ...diskThresholds,
+  });
+  const smart = evaluateSmartTransitions({
+    tierNodes,
+    getPreviousFailing: node => readJsonSetting(smartAlertStateKey(node))?.failing || null,
+  });
+
+  for (const [key, level] of Object.entries(levels)) {
+    setSetting(diskAlertStateKey(key), JSON.stringify({ level, at: Date.now() }));
+  }
+  for (const event of events) {
+    const recovered = event.to === 'ok';
+    const color = recovered ? COLORS.SUCCESS : event.to === 'urgent' ? COLORS.DANGER : COLORS.WARN;
+    const icon = recovered ? '✅' : event.to === 'urgent' ? '🔴' : '⚠️';
+    notifyChannel('system', { embeds: [brandedEmbed(color)
+      .setTitle(`${icon} Disk space ${recovered ? 'recovered' : event.to} — ${event.label}`)
+      .setDescription([
+        event.reason,
+        recovered ? `Recovered from ${event.from}.` : `Warn at ≤${CONFIG.DISK_WARN_FREE_PCT}% free · urgent at ≤${CONFIG.DISK_URGENT_FREE_PCT}% free.`,
+      ].filter(Boolean).join('\n'))] });
+    audit('disk_space_transition', { key: event.key, label: event.label, from: event.from, to: event.to, freePct: event.freePct });
+  }
+
+  for (const [node, failing] of Object.entries(smart.failingByNode)) {
+    setSetting(smartAlertStateKey(node), JSON.stringify({ failing, at: Date.now() }));
+  }
+  for (const event of smart.events) {
+    const lines = [];
+    if (event.newlyFailing.length) lines.push(`🔴 **Failing:** ${event.newlyFailing.map(d => `\`${d}\``).join(', ')}`);
+    if (event.recovered.length) lines.push(`✅ **Recovered:** ${event.recovered.map(d => `\`${d}\``).join(', ')}`);
+    notifyChannel('system', { embeds: [brandedEmbed(event.newlyFailing.length ? COLORS.DANGER : COLORS.SUCCESS)
+      .setTitle(`💽 Drive health — ${event.node}`)
+      .setDescription(lines.join('\n'))] });
+    audit('smart_health_transition', { node: event.node, newlyFailing: event.newlyFailing, recovered: event.recovered });
+  }
+
+  return {
+    volumesChecked: Object.keys(levels).length,
+    nodesWithSmart: Object.keys(smart.failingByNode).length,
+    diskTransitions: events.length,
+    smartTransitions: smart.events.length,
+  };
+}
+
+// Read-only preview for the automation surface: current fleet disk levels + SMART state,
+// no notifications, no state writes.
+async function previewFleetDiskAlerts() {
+  const arrReport = await fetchDiskSpaceReport().catch(() => ({ disks: [] }));
+  const tierNodes = listTierNodes().map(n => ({ name: n.name, telemetry: getTierPlan(n.name)?.lastTelemetry || null }));
+  const disks = mergeFleetDisks({ arrDisks: arrReport.disks || [], tierNodes });
+  const items = disks.map(d => {
+    const assessed = assessDiskLevel(
+      { freeBytes: d.freeBytes, totalBytes: d.totalBytes },
+      { warnFreePct: CONFIG.DISK_WARN_FREE_PCT, urgentFreePct: CONFIG.DISK_URGENT_FREE_PCT, clearMarginPct: CONFIG.DISK_CLEAR_MARGIN_PCT, previousLevel: 'unknown' },
+    );
+    return {
+      title: `${d.node}: ${d.name}`,
+      stage: assessed.level,
+      reason: assessed.freePct != null ? `${assessed.freePct.toFixed(1)}% free` : assessed.reason,
+    };
+  });
+  for (const d of disks) {
+    if (!d.smartHealth) continue;
+    const failing = d.smartHealth.filter(s => s.health === 'failing');
+    items.push({
+      title: `${d.node}: SMART`,
+      stage: failing.length ? 'failing' : 'ok',
+      reason: failing.length ? failing.map(s => s.device).join(', ') : `${d.smartHealth.length} drive(s) healthy`,
+    });
+  }
+  return items;
 }
 
 function channelFor(kind) {
@@ -4377,6 +4479,7 @@ const slashCommands = [
       .addStringOption(o => o.setName('atime_mask').setDescription('UTC window to launder Plex-maintenance reads from atime, e.g. 09:00-13:00'))
       .addBooleanOption(o => o.setName('full').setDescription('Never-pruned master (holds everything)'))
       .addBooleanOption(o => o.setName('sticky').setDescription('Extra-low churn (old drives): longer warm window'))
+      .addBooleanOption(o => o.setName('monitor_only').setDescription('Monitor-only: telemetry + disk + SMART reports, no tier plan (backup boxes)'))
       .addIntegerOption(o => o.setName('warm_days').setDescription('Override: recently-watched protection window').setMinValue(0).setMaxValue(3650))
       .addIntegerOption(o => o.setName('fresh_days').setDescription('Override: newly-added grace window').setMinValue(0).setMaxValue(3650)))
     .addSubcommand(s => s.setName('list').setDescription('List all nodes'))
@@ -8397,7 +8500,18 @@ async function handleTierNodeCommand(interaction) {
   }
 
   if (sub === 'token') {
-    if (!getTierNode(name)) return interaction.reply({ content: `❌ Unknown node \`${name}\` — add it first.`, ephemeral: true });
+    const nodeRec = getTierNode(name);
+    if (!nodeRec) return interaction.reply({ content: `❌ Unknown node \`${name}\` — add it first.`, ephemeral: true });
+    const botUrl = CONFIG.TUNNEL_DOMAIN ? `https://${CONFIG.TUNNEL_DOMAIN}` : `http://127.0.0.1:${CONFIG.PORT}`;
+    // Monitor-only nodes (backup boxes): no Syncthing folders needed — the token mints
+    // against the watched path, and the install command carries TIER_MONITOR_ONLY=1.
+    if (nodeRec.monitor_only) {
+      if (!nodeRec.folder_root) return interaction.reply({ content: `❌ \`${name}\` is monitor-only but has no watched path. Set one with \`/tier-node add name:${name} folder_root:/mnt/backup\`.`, ephemeral: true });
+      const raw = setTierAgentToken(name);
+      audit('tier_agent_token_rotated', { actorDiscordId: interaction.user.id, node: name, monitorOnly: true });
+      const install = tierInstallCommand({ botUrl, node: name, token: raw, monitorOnly: true, monitorPath: nodeRec.folder_root });
+      return interaction.reply({ content: `🔑 Monitor-only agent token for \`${name}\` — **shown once**, and it replaces any previous token.\n\nRun this **on that box** (as root; add \`TIER_SMART_DEVICES=/dev/sda\` to the \`env\` list for SMART drive health):\n\`\`\`sh\n${install}\n\`\`\`\nIt installs the agent to \`/opt/tier-agent\`, writes the token to root-only \`/etc/tier-agent.env\`, enables a 15-minute systemd timer, and runs once so you see immediately whether it worked. The agent reports telemetry + disk space + SMART only — no tier plan, no pruning.`, ephemeral: true });
+    }
     const folders = listTierNodeFolders(name).filter(folder => folder.folderRoot)
       .map(folder => ({ id: folder.folderId || 'CHANGEME_FOLDER_ID', path: folder.folderRoot }));
     if (!folders.length) {
@@ -8405,7 +8519,6 @@ async function handleTierNodeCommand(interaction) {
     }
     const raw = setTierAgentToken(name);
     audit('tier_agent_token_rotated', { actorDiscordId: interaction.user.id, node: name });
-    const botUrl = CONFIG.TUNNEL_DOMAIN ? `https://${CONFIG.TUNNEL_DOMAIN}` : `http://127.0.0.1:${CONFIG.PORT}`;
     // Shown once, so hand over the finished command rather than a token and a documentation hunt.
     const install = tierInstallCommand({ botUrl, node: name, token: raw, folders, syncthingApiKey: 'CHANGEME' });
     const placeholders = folders.some(folder => folder.id === 'CHANGEME_FOLDER_ID') ? ' and folder-ID placeholders' : '';
@@ -8433,7 +8546,7 @@ async function handleTierNodeCommand(interaction) {
   if (fields.atime_mask !== undefined && fields.atime_mask !== '' && !parseAtimeMask(fields.atime_mask)) {
     return interaction.reply({ content: `❌ \`atime_mask\` must be a UTC time window like \`09:00-13:00\` (may wrap midnight). Got \`${fields.atime_mask}\`.`, ephemeral: true });
   }
-  for (const opt of ['full', 'sticky']) {
+  for (const opt of ['full', 'sticky', 'monitor_only']) {
     const v = interaction.options.getBoolean(opt);
     if (v != null) fields[opt] = v;
   }
@@ -8443,8 +8556,9 @@ async function handleTierNodeCommand(interaction) {
     .setTitle(created ? `📦 Node Added: ${name}` : `📦 Node Updated: ${name}`)
     .setDescription([
       `Capacity **${fmtSpace(node.usable_bytes || 0)}**, headroom **${node.headroom_pct}%** → budget ${fmtSpace(Math.floor((node.usable_bytes || 0) * (1 - node.headroom_pct / 100)))}`,
-      `Access **${node.access}** · demand **${node.demand_source}** · transport **${node.transport}**${node.full ? ' · **full master**' : ''}${node.sticky ? ' · sticky' : ''}`,
+      `Access **${node.access}** · demand **${node.demand_source}** · transport **${node.transport}**${node.full ? ' · **full master**' : ''}${node.sticky ? ' · sticky' : ''}${node.monitor_only ? ' · **monitor-only**' : ''}`,
       (() => {
+        if (node.monitor_only) return node.folder_root ? `Watched path \`${node.folder_root}\` — the agent reports disk + SMART for its filesystem.` : '⚠️ No `folder_root` set — the agent needs a watched path (`folder_root:`).';
         const folders = listTierNodeFolders(name);
         if (folders.length > 1 || folders.some(f => f.folderId)) return `Folders (${folders.length}): ${folders.map(f => `\`${f.folderId || 'default'}\`→\`${f.folderRoot}\``).join(', ')}`;
         return node.folder_root ? `Folder root \`${node.folder_root}\` — add more with \`/tier-node folder add\` for a multi-folder node.` : '⚠️ No `folder_root`/folders set — the agent needs at least one (`folder_root:` or `/tier-node folder add`).';
@@ -9708,6 +9822,9 @@ function startExpressServer() {
       fetchArrQueues,
       fetchSeerrRequests,
       fetchDiskSpace,
+      // Fleet disks: tier-node telemetry disks merge with the *arr volumes.
+      listTierNodes,
+      getTierPlan,
       getPlexToken,
       getPlexServers,
       httpRateLimitKey,

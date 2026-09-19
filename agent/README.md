@@ -92,6 +92,8 @@ rewritten and reloaded. Rotating the token with `/tier-node token` again just me
 | `EDGE_LOCAL_ROOT` | | (#181) The merged mount's local (RW) branch, if it differs from this node's own folder root — most nodes leave this unset and it defaults to `TIER_FOLDER_ROOT` / the first `TIER_FOLDERS` entry. |
 | `EDGE_MOUNT_SAMPLE_RELPATHS` | | (#181) Comma-separated paths (relative to both branches) of one or more titles known to be cached locally, used to verify local-first precedence every cycle. Optional but recommended — without it the diagnostic can't prove precedence, only presence/read-only. |
 | `TIER_DRY_RUN` | | `1` = log what would happen, write and delete nothing |
+| `TIER_MONITOR_ONLY` | | `1` = **monitor-only mode** (backup boxes, non-Plex servers — see below). Only `TIER_AGENT_TOKEN` + `TIER_FOLDER_ROOT` are required; no Syncthing, no tier plan. |
+| `TIER_SMART_DEVICES` | | Comma/space-separated drive devices for SMART health checks, e.g. `/dev/sda, /dev/nvme0n1`. Unset = best-effort derivation from the watched filesystem's block device. `smartctl` missing or a device unreadable just yields no reading — never a failed report. |
 | `TIER_AGENT_LEGACY_IGNORE_DIR` | | §182. Directory holding the persistent manual ignore overlay (`<folderId>.txt`, one `/relPath` pattern per line). **Unset by default — reproduces prior behaviour exactly.** When set, the agent merges `planner-drops ∪ legacy-ignores − active-promotion-pins` (the manifest's `pinnedRelPaths`) instead of writing the planner's drops verbatim, so an active play-promotion pin can override a legacy-ignored title, and the override reverts on its own once the pin expires. |
 
 ## Mount guard (external media drive)
@@ -201,3 +203,26 @@ For pure-atime nodes (PMS unreachable from the bot), the inventory report is the
 signal, so the media filesystem must record atime: `relatime` is what you want
 (`findmnt -no FSTYPE,OPTIONS <mount>`), `noatime` means no signal. Reading file *metadata* never
 bumps atime, and the agent collects the inventory before any pruning — the signal stays honest.
+
+## Monitor-only mode (backup boxes)
+
+Servers that aren't Plex edge nodes — the two backup boxes, for example — still need
+disk-space and drive-health visibility, but they run no tier plan, no Syncthing, and no
+pruning. Register them with `/tier-node add name:<node> monitor_only:true
+folder_root:/mnt/backup`, then mint the token with `/tier-node token name:<node>` —
+the generated installer command carries `TIER_MONITOR_ONLY=1` and needs only the token
+and the watched path (no `SYNCTHING_API_KEY`, no folder IDs).
+
+What the agent does each cycle in monitor-only mode:
+
+- Reports heartbeat + full system telemetry (load, temps, RAM, uptime).
+- Reports free/total bytes of the watched filesystem (`TIER_FOLDER_ROOT`) — this is what
+  feeds the fleet `/api/v1/disks` endpoint and the low-space alerts.
+- Reports SMART health (`TIER_SMART_DEVICES`, or best-effort derivation from the watched
+  filesystem's block device) — this feeds the drive-health alerts.
+- Skips everything else: no manifest fetch, no mount guard, no inventory walk, no
+  `.stignore` writes, no pruning.
+
+These nodes have no tier plan and never appear in `/tier preview`. For SMART readings,
+install `smartmontools` on the box (`apt install smartmontools` / `dnf install
+smartmontools`); if it's missing the agent just reports no SMART data and keeps going.
