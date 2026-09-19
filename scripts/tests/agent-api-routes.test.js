@@ -75,7 +75,8 @@ function setup() {
   const app = createApp();
   registerAgentApiRoutes(app, {
     config: { AGENT_API_READ_MAX_PER_MINUTE: 1000, OVERSEERR_URL: 'http://seerr:5055', OVERSEERR_API_KEY: 'seerr-key' },
-    getAgentApiTokenHash: () => tokenHash,
+    getAgentApiTokenHashes: () => [tokenHash],
+    touchAgentApiTokenUse: () => {},
     sha256,
     safeEqual,
     audit: (action, details) => auditCalls.push({ action, details }),
@@ -208,5 +209,62 @@ test('agent API requests filter accepts every mapped status label', async () => 
     }
     const bad = await request(port, { path: '/api/v1/requests', token: 'valid-agent-token', query: '?status=bogus' });
     assert.strictEqual(bad.statusCode, 400);
+  } finally { await close(server); }
+});
+
+test('agent API accepts dashboard-minted tokens and the legacy env token side by side', async () => {
+  const dbTokenHash = sha256('dashboard-minted-token');
+  const legacyHash = sha256('legacy-env-token');
+  const touched = [];
+  const app = createApp();
+  registerAgentApiRoutes(app, {
+    config: { AGENT_API_READ_MAX_PER_MINUTE: 1000 },
+    getAgentApiTokenHashes: () => [dbTokenHash],
+    legacyTokenHash: legacyHash,
+    touchAgentApiTokenUse: hash => touched.push(hash),
+    sha256,
+    safeEqual,
+    audit: () => {},
+    gatherHealth: async () => ({ timestamp: '2026-01-01T00:00:00.000Z', overall: 'ok' }),
+    fetchArrQueues: async () => [],
+    fetchSeerrRequests: async () => [],
+    getPlexToken: async () => 'plex-token',
+    getPlexServers: async () => [],
+    httpRateLimitKey: req => ipKeyGenerator(req.ip || 'unknown'),
+    httpClient: { get: async () => ({ data: {} }) },
+  });
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const viaDashboard = await request(port, { path: '/api/v1/health', token: 'dashboard-minted-token' });
+    assert.strictEqual(viaDashboard.statusCode, 200, 'dashboard-minted token is accepted');
+    const viaLegacy = await request(port, { path: '/api/v1/health', token: 'legacy-env-token' });
+    assert.strictEqual(viaLegacy.statusCode, 200, 'legacy env token still works');
+    assert.deepStrictEqual(touched, [dbTokenHash], 'only the dashboard token records last-use');
+    const revoked = await request(port, { path: '/api/v1/health', token: 'revoked-token' });
+    assert.strictEqual(revoked.statusCode, 401, 'unknown token is rejected');
+  } finally { await close(server); }
+});
+
+test('agent API with no tokens configured rejects everything', async () => {
+  const app = createApp();
+  registerAgentApiRoutes(app, {
+    config: { AGENT_API_READ_MAX_PER_MINUTE: 1000 },
+    getAgentApiTokenHashes: () => [],
+    sha256,
+    safeEqual,
+    audit: () => {},
+    gatherHealth: async () => ({ overall: 'ok' }),
+    fetchArrQueues: async () => [],
+    fetchSeerrRequests: async () => [],
+    getPlexToken: async () => 'plex-token',
+    getPlexServers: async () => [],
+    httpRateLimitKey: req => ipKeyGenerator(req.ip || 'unknown'),
+    httpClient: { get: async () => ({ data: {} }) },
+  });
+  const server = await listen(app, 0);
+  try {
+    const res = await request(server.address().port, { path: '/api/v1/health', token: 'anything' });
+    assert.strictEqual(res.statusCode, 401, 'no token configured means no access');
   } finally { await close(server); }
 });

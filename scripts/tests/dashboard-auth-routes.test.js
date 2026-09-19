@@ -153,9 +153,10 @@ test('passkey login preserves no-store options, binding cookie, verification, an
     });
     assert.strictEqual(authenticated.statusCode, 200);
     assert.deepStrictEqual(JSON.parse(authenticated.body), { verified: true });
-    assert.strictEqual(authenticated.headers['set-cookie'].length, 2);
+    assert.strictEqual(authenticated.headers['set-cookie'].length, 3);
     assert.match(authenticated.headers['set-cookie'][0], /^dm_session=/);
-    assert.match(authenticated.headers['set-cookie'][1], /^dm_webauthn=;/);
+    assert.match(authenticated.headers['set-cookie'][1], /^dm_setup_nudge=;/);
+    assert.match(authenticated.headers['set-cookie'][2], /^dm_webauthn=;/);
     assert.ok(audits.some(entry => entry.event === 'dashboard_login_success' && entry.metadata.method === 'passkey'));
 
     const failed = await request(port, { method: 'POST', path: '/admin/passkey/authenticate', body: { answer: 'bad' } });
@@ -194,4 +195,24 @@ test('authenticated passkey management preserves validation and last-credential 
   } finally {
     await close(server);
   }
+});
+
+test('password login sets the passkey-setup nudge cookie; logout clears it', async () => {
+  const { app } = createFixture();
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const accepted = await request(port, {
+      method: 'POST', path: '/admin/login', form: { password: 'correct-password' }, headers: { 'x-forwarded-proto': 'https' },
+    });
+    assert.strictEqual(accepted.statusCode, 302);
+    const nudge = accepted.headers['set-cookie'].find(c => c.startsWith('dm_setup_nudge='));
+    assert.ok(nudge, 'password login sets the nudge cookie');
+    assert.match(nudge, /^dm_setup_nudge=1; HttpOnly; SameSite=Strict; Path=\/admin; Secure; Max-Age=43200$/);
+
+    const logout = await request(port, { method: 'POST', path: '/admin/logout' });
+    const cleared = logout.headers['set-cookie'].find(c => c.startsWith('dm_setup_nudge='));
+    assert.ok(cleared, 'logout clears the nudge cookie');
+    assert.match(cleared, /^dm_setup_nudge=; HttpOnly; SameSite=Strict; Path=\/admin; Max-Age=0/);
+  } finally { await close(server); }
 });

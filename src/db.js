@@ -617,6 +617,25 @@ const MIGRATIONS = [
       `);
     },
   },
+  // Dashboard-managed Agent API tokens. v1 of the agent API used a single AGENT_API_TOKEN env var
+  // whose hash lived only in config — provisioning meant hand-generating a secret and editing the
+  // container environment. Tokens are now minted from the dashboard like tier-agent tokens: the
+  // raw value is shown once and only its sha256 is stored.
+  {
+    version: 4,
+    run(db) {
+      db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_api_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      label TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_used_at DATETIME,
+      revoked_at DATETIME
+    );
+      `);
+    },
+  },
 ];
 
 // The highest version this build's ledger knows about — what an up-to-date database's
@@ -1569,6 +1588,50 @@ function setTierAgentToken(node) {
 
 const getTierAgentTokenHash = node => db.prepare('SELECT token_hash FROM tier_agent_tokens WHERE node = ?').get(String(node).toLowerCase())?.token_hash || null;
 
+// Dashboard-managed Agent API tokens. Same show-once policy as tier-agent tokens and download
+// links: the raw token is returned exactly once at creation and only its sha256 is stored, so a
+// database read alone can never impersonate a client.
+function createAgentApiToken(label) {
+  const clean = String(label || '').trim();
+  if (!clean || clean.length > 64) throw new Error('Token label must be between 1 and 64 characters');
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  const info = db.prepare('INSERT INTO agent_api_tokens (label, token_hash) VALUES (?, ?)').run(clean, sha256(rawToken));
+  return { id: Number(info.lastInsertRowid), label: clean, token: rawToken };
+}
+
+// Never returns hashes — the list is for display and revocation only.
+const listAgentApiTokens = () => db.prepare(
+  `SELECT id, label,
+          strftime('%s', created_at) * 1000 AS createdAt,
+          strftime('%s', last_used_at) * 1000 AS lastUsedAt,
+          revoked_at IS NOT NULL AS revoked
+   FROM agent_api_tokens ORDER BY id`
+).all().map(row => ({
+  id: row.id,
+  label: row.label,
+  createdAt: row.createdAt,
+  lastUsedAt: row.lastUsedAt,
+  revoked: !!row.revoked,
+}));
+
+function revokeAgentApiToken(id) {
+  const info = db.prepare('UPDATE agent_api_tokens SET revoked_at = CURRENT_TIMESTAMP WHERE id = ? AND revoked_at IS NULL')
+    .run(Number(id));
+  return info.changes > 0;
+}
+
+const getAgentApiTokenHashes = () => db.prepare(
+  'SELECT token_hash AS hash FROM agent_api_tokens WHERE revoked_at IS NULL'
+).all().map(row => row.hash);
+
+// Throttled last-use tracking: at most one write per token per hour, so a polling client doesn't
+// turn every read into a database write.
+function touchAgentApiTokenUse(tokenHash) {
+  db.prepare(`UPDATE agent_api_tokens SET last_used_at = CURRENT_TIMESTAMP
+    WHERE token_hash = ? AND revoked_at IS NULL
+      AND (last_used_at IS NULL OR last_used_at < datetime('now', '-1 hour'))`).run(tokenHash);
+}
+
 // Full-replace of a node's agent-reported inventory ({folderId, relPath, sizeBytes, atime}). The
 // agent only re-sends when its local snapshot changed, so this stays cheap in the steady state.
 // folderId defaults to '' so single-folder agents (which report no folderId) still work.
@@ -2072,7 +2135,7 @@ function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k, seasonsKey)
   return null;
 }
 
-module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, MIGRATIONS, SCHEMA_VERSION, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, createSupportCase, getSupportCaseById, getSupportCaseByReference, listSupportCases, listSupportCasesForRequester, listSupportCasesNeedingNotifyRetry, recordSupportCaseNotifyResult, recordSupportCaseMemberNotifyResult, assignSupportCase, acknowledgeSupportCase, resolveSupportCase, reopenSupportCase, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, recordTierPlayPin, getTierPlayPin, listActiveTierPlayPins, countActiveTierPlayPinsForViewer, pruneExpiredTierPlayPins, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
+module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, MIGRATIONS, SCHEMA_VERSION, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, createAgentApiToken, listAgentApiTokens, revokeAgentApiToken, getAgentApiTokenHashes, touchAgentApiTokenUse, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, createSupportCase, getSupportCaseById, getSupportCaseByReference, listSupportCases, listSupportCasesForRequester, listSupportCasesNeedingNotifyRetry, recordSupportCaseNotifyResult, recordSupportCaseMemberNotifyResult, assignSupportCase, acknowledgeSupportCase, resolveSupportCase, reopenSupportCase, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, recordTierPlayPin, getTierPlayPin, listActiveTierPlayPins, countActiveTierPlayPinsForViewer, pruneExpiredTierPlayPins, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;
 Object.assign(module.exports, {
   recordPackRejections,

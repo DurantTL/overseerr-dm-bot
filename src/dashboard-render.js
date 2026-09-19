@@ -37,6 +37,7 @@ const DASHBOARD_CSS = `
   .overall { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:baseline; justify-content:space-between; padding:12px 16px; border-radius:14px; margin-bottom:14px; font-size:14px; }
   .overall.ok { background:rgba(34,197,94,.10); border:1px solid rgba(34,197,94,.5); }
   .overall.warn { background:rgba(245,158,11,.10); border:1px solid rgba(245,158,11,.5); }
+  .card.banner-warn { background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.55); }
   .overall .updated { color:var(--muted); font-size:12px; }
   .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:10px; margin-bottom:14px; }
   .stat { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:12px 14px; }
@@ -462,6 +463,41 @@ function renderPasskeyManagement(passkeys, rpID, expectedOrigin = '') {
   </div>`;
 }
 
+// Shown once, at the top of /admin, when this browser session signed in with the password
+// fallback and no passkey is enrolled yet: the guided path from "account created" to "passkey
+// enrolled", instead of hunting for the Passkeys card further down the page.
+function renderPasskeySetupBanner() {
+  return `<div class="card banner-warn" id="passkey-setup-banner">
+    <h2>🔐 Finish securing your admin account</h2>
+    <p class="muted">You signed in with the password fallback and no passkey is enrolled yet. Passkeys are the phishing-resistant way in — enroll one now; the password stays as fallback.</p>
+    <button class="btn primary" type="button" id="passkey-setup-go">Enroll a passkey</button>
+  </div>`;
+}
+
+// Dashboard-minted Agent API tokens: labeled machine credentials for the read-only agent API
+// (e.g. Edith), created and revoked here instead of hand-generating AGENT_API_TOKEN and editing
+// the container environment. Raw values are shown exactly once at creation — only hashes live
+// in the database.
+function renderAgentApiTokens(tokens, { legacyConfigured = false } = {}) {
+  const fmtWhen = ms => (ms ? new Date(ms).toISOString().slice(0, 19).replace('T', ' ') + ' UTC' : 'never');
+  const rows = tokens.length ? tokens.map(token => {
+    const revoked = !!token.revoked;
+    return `<div class="setting" data-agent-token="${token.id}">
+    <div class="setting-main"><div class="setting-name">${escapeHtml(token.label)}</div><div class="setting-help">Created ${escapeHtml(fmtWhen(token.createdAt))} · last used ${escapeHtml(fmtWhen(token.lastUsedAt))}${revoked ? ' · <strong>revoked</strong>' : ''}</div></div>
+    <div class="setting-ctl">${revoked ? '<span class="muted">revoked</span>' : '<button class="btn danger" type="button" data-agent-token-revoke>Revoke</button>'}</div>
+  </div>`;
+  }).join('') : '<p class="muted">No API tokens yet.</p>';
+  return `<div class="card" id="agent-api-tokens">
+    <h2>Agent API tokens<span class="sub">Machine access for the read-only agent API. One token per client — copy it once, revoke anytime.${legacyConfigured ? ' The legacy AGENT_API_TOKEN env var stays active alongside these.' : ''}</span></h2>
+    ${rows}
+    <div class="setting-foot"><input type="text" id="agent-token-label" maxlength="64" placeholder="Label, e.g. Edith" aria-label="New token label"><button class="btn primary" type="button" id="agent-token-create" aria-describedby="agent-token-note">Create token</button><span class="save-note" id="agent-token-note" role="status" aria-live="polite"></span></div>
+    <div id="agent-token-once" hidden>
+      <p><strong>Copy this token now — it will not be shown again.</strong></p>
+      <p><code id="agent-token-value" style="word-break:break-all;user-select:all;"></code> <button class="btn" type="button" id="agent-token-copy">Copy</button></p>
+    </div>
+  </div>`;
+}
+
 function renderStat(label, value) {
   return `<div class="stat"><div class="n">${escapeHtml(String(value))}</div><div class="l">${escapeHtml(label)}</div></div>`;
 }
@@ -588,4 +624,6 @@ module.exports = {
   tierNodeStatus,
   renderTierNodeSetup,
   renderPasskeyManagement,
+  renderPasskeySetupBanner,
+  renderAgentApiTokens,
 };
