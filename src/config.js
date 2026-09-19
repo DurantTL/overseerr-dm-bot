@@ -324,6 +324,10 @@ const CONFIG = (() => {
   // default; set it when that default is relative and .rtorrent.rc is not editable (#238).
   RTORRENT_DOWNLOAD_DIR: (process.env.RTORRENT_DOWNLOAD_DIR || '').replace(/\/+$/, ''),
   RTORRENT_PATH_GUARD: parseBool(process.env.RTORRENT_PATH_GUARD, true),
+  // Path to sync-latest-movies.sh, the script that curates the 1TB Europe node's
+  // library by hardlinking recent movies into a Syncthing folder. The dashboard's
+  // Europe card previews and runs it; empty disables the card's actions.
+  EUROPE_SYNC_SCRIPT_PATH: (process.env.EUROPE_SYNC_SCRIPT_PATH || '/opt/docker/plex-stack/overseerr-dm-bot/sync-latest-movies.sh').replace(/\/+$/, ''),
   // ---- rTorrent ratio-based cleanup: remove finished torrents that have seeded enough ----
   // Two independent triggers (src/ratio-cleanup.js): a torrent whose ratio has been sitting at
   // or above RTORRENT_RATIO_MIN_PERMILLE without moving for RTORRENT_RATIO_STALL_DAYS gets

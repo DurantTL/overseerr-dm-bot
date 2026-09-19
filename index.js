@@ -72,6 +72,7 @@ const { registerHealthAndDownloadRoutes } = require('./src/routes/health-downloa
 const { registerDashboardReadRoutes } = require('./src/routes/dashboard-read');
 const { registerDashboardMutationRoutes } = require('./src/routes/dashboard-mutations');
 const { registerUserAdminRoutes } = require('./src/routes/dashboard-users');
+const { registerEuropeSyncRoutes } = require('./src/routes/dashboard-europe');
 const { registerMemberRoutes } = require('./src/routes/member');
 const { createTtlCache } = require('./src/dashboard-cache');
 const { createDashboardSession, createDashboardAuth, createDashboardGateActor, dashboardActor, registerDashboardAuthRoutes } = require('./src/routes/dashboard-auth');
@@ -9880,6 +9881,16 @@ function startExpressServer() {
         assignServer: handleAssignServerCommand,
         reshareAll: handleReshareAllCommand,
       },
+    });
+
+    registerEuropeSyncRoutes(app, {
+      audit,
+      dashboardAuth,
+      dashboardActor,
+      db,
+      rateLimit,
+      escapeHtml,
+      scriptPath: CONFIG.EUROPE_SYNC_SCRIPT_PATH,
     });
   }
 

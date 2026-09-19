@@ -1,5 +1,8 @@
 'use strict';
 
+const fs = require('fs');
+const { parseScriptConfig } = require('../europe-sync');
+
 function registerDashboardReadRoutes(app, deps) {
   const {
     CONFIG,
@@ -327,6 +330,39 @@ function registerDashboardReadRoutes(app, deps) {
     }).join('') : '<p class="muted">No restricted nodes — member sets only apply to restricted-access nodes.</p>';
     const restrictedNodeOptions = restrictedTierNodes.map(n => `<option value="${escapeHtml(n.name)}">${escapeHtml(n.name)}</option>`).join('');
 
+    // Europe node card: the 1TB Europe Plex box is curated by sync-latest-movies.sh
+    // (hardlinks recent movies into a Syncthing folder). Rendered server-side so the
+    // card shows script/config/last-run state with zero extra round trips; the
+    // preview/run buttons reuse the page's inline data-post mechanism.
+    const europeScriptPath = CONFIG.EUROPE_SYNC_SCRIPT_PATH || '';
+    let europeScriptText = null;
+    try {
+      if (europeScriptPath) europeScriptText = fs.readFileSync(europeScriptPath, 'utf8');
+    } catch (_e) { /* script not present on this host */ }
+    const europeConfig = europeScriptText ? parseScriptConfig(europeScriptText) : null;
+    let europeLastRun = null;
+    try {
+      const row = db.prepare("SELECT created_at, details FROM audit_log WHERE action = 'dashboard_europe_sync_run' ORDER BY id DESC LIMIT 1").get();
+      if (row) europeLastRun = row;
+    } catch (_e) { /* audit table may not exist in every context */ }
+    const europeStatusLine = !europeScriptText
+      ? `<p class="muted">Sync script not found at <code>${escapeHtml(europeScriptPath || '(not configured)')}</code> on this host — preview and run are unavailable.</p>`
+      : !europeConfig
+        ? `<p class="muted">Script found at <code>${escapeHtml(europeScriptPath)}</code>, but its SOURCE / DEST / YEARS_BACK lines couldn't be parsed — preview and run are disabled.</p>`
+        : `<p>Syncing <code>${escapeHtml(europeConfig.source)}</code> → <code>${escapeHtml(europeConfig.dest)}</code> · `
+          + `movies ${escapeHtml(String(europeConfig.yearMin))}–${escapeHtml(String(europeConfig.yearMax))} with a real video file. `
+          + `Hardlinks only — no extra disk on the master; aged-out titles leave the Europe library.</p>`
+          + (europeLastRun ? `<p class="muted">Last sync ${escapeHtml(fmtAgo(europeLastRun.created_at))}.</p>` : '<p class="muted">No sync has run from the dashboard yet.</p>');
+    const europeButtonsDisabled = (!europeScriptText || !europeConfig) ? ' disabled' : '';
+    const europeSyncHtml = `
+        <div class="card" id="europe-sync">
+          <h2>🇪🇺 Europe Node — Latest-Movies Sync<span class="sub">1TB curated box: full 4K + family films, no TV. Also the private-download seedbox.</span></h2>
+          ${europeStatusLine}
+          <button class="btn primary" type="button" data-post="/admin/action/europe-sync/preview" data-body="{}" data-inline="true"${europeButtonsDisabled}>Preview sync</button>
+          <button class="btn danger" type="button" data-post="/admin/action/europe-sync/run" data-body="{}" data-inline="true"${europeButtonsDisabled} data-confirm="Run the Europe sync for real? New movies get hardlinked (no extra disk); aged-out titles leave the Europe library.">Run sync</button>
+          <span class="action-result" aria-live="polite"></span>
+        </div>`;
+
     const diskItems = forecastDisks(db, disks || [], now).map(d => {
       const used = (d.totalSpace || 0) - (d.freeSpace || 0);
       const pct = d.totalSpace ? Math.round((used / d.totalSpace) * 100) : 0;
@@ -466,6 +502,7 @@ function registerDashboardReadRoutes(app, deps) {
           </form>` : ''}
           ${tierMemberManageHtml}
         </div>
+        ${europeSyncHtml}
         <div class="card">
           <h2>🩺 Edge Readiness</h2>
           ${renderItemList(edgeChecks.map(c => ({ state: c.status === 'fail' ? 'down' : c.status, title: c.name, sub: c.detail })), 'No edge checks available.')}
