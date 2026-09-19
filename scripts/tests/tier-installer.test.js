@@ -79,6 +79,10 @@ test('tier installer: required-var validation branches on TIER_MONITOR_ONLY', ()
   assert.match(fullMissing.stdout, /MISSING:.*SYNCTHING_API_KEY/);
 });
 
+test('tier installer: monitor-only install reports the first heartbeat result', () => {
+  assert.match(installer, /Installed \(monitor-only\)\. First heartbeat reported successfully/);
+});
+
 test('tier installer: monitor-only watched-path validation rejects a missing directory', () => {
   const scripts = [...installer.matchAll(/FOLDER_UNIT_LINES=\$\(node -e '\n([\s\S]*?)\n'\) \|\|/g)].map(m => m[1]);
   const monitorScript = scripts.find(s => s.includes('TIER_FOLDER_ROOT'));
@@ -87,7 +91,8 @@ test('tier installer: monitor-only watched-path validation rejects a missing dir
     encoding: 'utf8', env: { ...process.env, TIER_FOLDER_ROOT: os.tmpdir() },
   });
   assert.strictEqual(good.status, 0);
-  assert.match(good.stdout, /ReadWritePaths=/);
+  assert.match(good.stdout, /ReadOnlyPaths=/);
+  assert.doesNotMatch(good.stdout, /ReadWritePaths=/);
   const bad = spawnSync(process.execPath, ['-e', monitorScript], {
     encoding: 'utf8', env: { ...process.env, TIER_FOLDER_ROOT: '/definitely-not-a-watched-path' },
   });

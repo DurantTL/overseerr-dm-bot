@@ -222,6 +222,9 @@ What the agent does each cycle in monitor-only mode:
   filesystem's block device) — this feeds the drive-health alerts.
 - Skips everything else: no manifest fetch, no mount guard, no inventory walk, no
   `.stignore` writes, no pruning.
+- Runs hardened: the watched filesystem is mounted read-only into the unit
+  (`ReadOnlyPaths`); the only writable path is the agent's state directory
+  (`/var/lib/tier-agent`).
 
 These nodes have no tier plan and never appear in `/tier preview`. For SMART readings,
 install `smartmontools` on the box (`apt install smartmontools` / `dnf install
