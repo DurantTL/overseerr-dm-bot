@@ -58,7 +58,7 @@ const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromo
 const { resolveEdgeTierNode, decideCaLocality, planCaPlayPromotion, computePlayPin } = require('./src/edge-promotion');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { checkPublicOriginReadiness } = require('./src/public-origin-diagnostics');
-const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement, renderAgentApiTokens, DASHBOARD_CSS } = require('./src/dashboard-render');
+const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderDirectorPanel, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement, renderPasskeySetupBanner, renderAgentApiTokens, DASHBOARD_CSS } = require('./src/dashboard-render');
 const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, eraseTorrent, getRtorrentVersion, getRtorrentPaths } = require('./src/rtorrent');
 const { decideRatioRemoval, describeDeletionSafety } = require('./src/ratio-cleanup');
@@ -9782,10 +9782,12 @@ function startExpressServer() {
       rateLimit,
       renderAutomationRegistry,
       renderAgentApiTokens,
+      renderDirectorPanel,
       renderHealthBadges,
       renderItemList,
       renderPage,
       renderPasskeyManagement,
+      renderPasskeySetupBanner,
       renderSettingsGroup,
       renderStat,
       renderTable,
