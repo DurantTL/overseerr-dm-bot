@@ -118,6 +118,9 @@ const DASHBOARD_CSS = `
   .setup-grid label { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:12px; }
   .setup-grid input, .setup-grid select { width:100%; padding:10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:14px; }
   .setup-subheading { margin:16px 0 4px; font-size:14px; }
+  .user-actions { white-space:nowrap; }
+  .user-actions .btn { margin:2px 4px 2px 0; font-size:12.5px; padding:6px 10px; }
+  .user-actions .action-result { display:block; white-space:normal; margin-top:6px; }
   #tier-folder-list { display:flex; flex-direction:column; gap:8px; margin:10px 0; }
   .tier-folder-row { display:grid; grid-template-columns:minmax(150px,.7fr) minmax(240px,1.3fr) auto; gap:8px; align-items:end; }
   .tier-folder-row label { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:12px; }

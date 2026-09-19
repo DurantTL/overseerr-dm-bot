@@ -143,6 +143,38 @@ function registerDashboardReadRoutes(app, deps) {
     const pendingRequestCount = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get().c;
     const recentRequests = db.prepare('SELECT * FROM requests ORDER BY id DESC LIMIT 50').all();
     const linkedUsers = db.prepare('SELECT discord_id, email, invited, requested_at, home_server FROM users ORDER BY requested_at DESC LIMIT 100').all();
+
+    // People tab: user administration. Per-row buttons reuse the page's inline
+    // data-post mechanism; the routes return { ok, html } rendered from the real
+    // slash-command handlers.
+    const userBtn = (label, url, body, extra) =>
+      `<button class="btn${extra && extra.danger ? ' danger' : ''}" type="button" data-post="${url}" data-body="${escapeHtml(JSON.stringify(body))}" data-inline="true"${extra && extra.confirm ? ` data-confirm="${escapeHtml(extra.confirm)}"` : ''}>${escapeHtml(label)}</button>`;
+    const pendingUsersHtml = pendingPlex.length ? `<div class="table-wrap"><table><thead><tr><th>Email</th><th>Discord</th><th>Requested</th><th></th></tr></thead><tbody>${
+      pendingPlex.map(u => {
+        const did = u.discord_id || '';
+        return `<tr><td data-label="Email">${escapeHtml(u.email || '—')}</td>`
+          + `<td data-label="Discord"><code>${escapeHtml(did)}</code></td>`
+          + `<td data-label="Requested">${escapeHtml(fmtAgo(u.requested_at))}</td>`
+          + `<td>${did ? userBtn('Invite', '/admin/action/user/invite', { discordId: did, email: u.email || undefined }) : ''}<span class="action-result" aria-live="polite"></span></td></tr>`;
+      }).join('')
+    }</tbody></table></div>` : '<p class="muted">No pending users.</p>';
+    const linkedUsersHtml = linkedUsers.length ? `<div class="table-wrap"><table><thead><tr><th>Email</th><th>Discord</th><th>Server</th><th>Invited</th><th>Since</th><th>Actions</th></tr></thead><tbody>${
+      linkedUsers.map(u => {
+        const did = u.discord_id || '';
+        const isPh = u.home_server === 'ph';
+        const actions = did ? [
+          userBtn('Reinvite', '/admin/action/user/reinvite', { discordId: did }),
+          userBtn(isPh ? '→ Main' : '→ PH', '/admin/action/user/assign-server', { discordId: did, server: isPh ? 'primary' : 'ph' }),
+          userBtn('Unlink', '/admin/action/user/unlink', { discordId: did }, { danger: true, confirm: `Unlink ${u.email || did}? Removes them from the DB (Plex/Seerr access untouched).` }),
+        ].join(' ') : '';
+        return `<tr><td data-label="Email">${escapeHtml(u.email || '—')}</td>`
+          + `<td data-label="Discord"><code>${escapeHtml(did)}</code></td>`
+          + `<td data-label="Server">${isPh ? 'Philippines' : 'Main'}</td>`
+          + `<td data-label="Invited">${u.invited ? '✅' : '⏳'}</td>`
+          + `<td data-label="Since">${escapeHtml(fmtAgo(u.requested_at))}</td>`
+          + `<td class="user-actions">${actions}<span class="action-result" aria-live="polite"></span></td></tr>`;
+      }).join('')
+    }</tbody></table></div>` : '<p class="muted">No linked users yet.</p>';
     const recentDownloads = db.prepare('SELECT * FROM download_access_log ORDER BY id DESC LIMIT 25').all();
     const auditRows = db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 50').all();
     const linkedTotal = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
@@ -308,9 +340,7 @@ function registerDashboardReadRoutes(app, deps) {
       };
     });
 
-    const plexUserRows = pendingPlex.map(u => ({ email: u.email, discord: u.discord_id, requested: fmtAgo(u.requested_at) }));
     const requestRows = recentRequests.map(r => ({ title: r.title, status: r.status, type: mediaTypeLabel(r.media_type, r.is_4k), seerr: r.overseerr_request_id || 'provisional', requester: r.requested_by_discord_id || '—', when: fmtAgo(sqliteUtcMs(r.created_at)) }));
-    const linkedRows = linkedUsers.map(u => ({ email: u.email, discord: u.discord_id, group: u.home_server === 'ph' ? 'Philippines' : 'Main', invited: u.invited ? '✅' : '⏳', since: fmtAgo(u.requested_at) }));
     const downloadRows = recentDownloads.map(d => ({ when: fmtAgo(sqliteUtcMs(d.created_at)), file: (d.file_path || '').split('/').pop() || '—', status: d.status, sent: d.bytes_sent ? fmtSpace(d.bytes_sent) : '', ip: d.ip || '' }));
     const auditTableRows = auditRows.map(a => ({ when: fmtAgo(sqliteUtcMs(a.created_at)), action: a.action, details: String(a.metadata_json || '').slice(0, 160) }));
 
@@ -444,12 +474,40 @@ function registerDashboardReadRoutes(app, deps) {
 
       <section class="panel" data-panel="people">
         <div class="card">
+          <h2>👥 Add User<span class="sub">Runs the real /link and /invite commands — same Plex + Seerr chain, same audits.</span></h2>
+          <div class="setup-grid">
+            <form id="user-link-form">
+              <h3 class="setup-subheading">Link</h3>
+              <label>Discord user ID<input name="discordId" inputmode="numeric" pattern="\\d{5,25}" placeholder="123456789012345678" required></label>
+              <label>Plex email<input name="email" type="email" placeholder="them@example.com" required></label>
+              <button class="btn primary" type="submit">Link user</button>
+              <span class="save-note" id="user-link-note"></span>
+              <div id="user-link-result"></div>
+            </form>
+            <form id="user-invite-form">
+              <h3 class="setup-subheading">Invite</h3>
+              <label>Discord user ID<input name="discordId" inputmode="numeric" pattern="\\d{5,25}" placeholder="123456789012345678" required></label>
+              <label>Plex email <span class="muted">(optional — leave blank and the bot DMs them for it)</span><input name="email" type="email" placeholder="them@example.com"></label>
+              <label>Home server<select name="server"><option value="primary">Main (USA)</option><option value="ph">Philippines</option></select></label>
+              <button class="btn primary" type="submit">Invite user</button>
+              <span class="save-note" id="user-invite-note"></span>
+              <div id="user-invite-result"></div>
+            </form>
+          </div>
+        </div>
+        <div class="card">
           <h2>Pending Plex Users</h2>
-          ${renderTable(plexUserRows)}
+          ${pendingUsersHtml}
         </div>
         <div class="card">
           <h2>Linked Users</h2>
-          ${renderTable(linkedRows)}
+          ${linkedUsersHtml}
+        </div>
+        <div class="card">
+          <h2>🔁 Reshare All<span class="sub">Re-push the Plex share to every invited user — e.g. after a server rebuild.</span></h2>
+          <button class="btn" type="button" data-post="/admin/action/reshare-all" data-body='{"mode":"preview"}' data-inline="true">Preview</button>
+          <button class="btn danger" type="button" data-post="/admin/action/reshare-all" data-body='{"mode":"apply"}' data-inline="true" data-confirm="Re-push the Plex share to EVERY invited user?">Apply</button>
+          <span class="action-result" aria-live="polite"></span>
         </div>
       </section>
 
@@ -501,9 +559,14 @@ function registerDashboardReadRoutes(app, deps) {
               if (ok && (postUrl.endsWith('/tier-node/folder-remove') || postUrl.endsWith('/tier-member/remove'))) {
                 var row = btn.closest('li');
                 if (row) row.remove();
+              } else if (ok && postUrl.endsWith('/user/unlink')) {
+                var userRow = btn.closest('tr');
+                if (userRow) userRow.remove();
               }
               if (note) {
-                note.textContent = message;
+                // User-admin routes return rendered handler output (embeds etc.) as HTML.
+                if (ok && result.html) { note.innerHTML = result.html; }
+                else { note.textContent = message; }
                 note.className = 'action-result ' + (ok ? 'ok' : 'bad');
                 if (!ok && result.retryable) buttonStates.forEach(function (state) { state.button.disabled = state.disabled; });
               } else {
@@ -813,6 +876,29 @@ function registerDashboardReadRoutes(app, deps) {
           };
           wireSimpleForm('tier-folder-add-form', '/admin/action/tier-node/folder-add', 'tier-folder-add-note');
           wireSimpleForm('tier-member-add-form', '/admin/action/tier-member/add', 'tier-member-add-note');
+          // User-admin forms render the handler's HTML result inline instead of reloading.
+          var wireUserForm = function (formId, url, noteId, resultId) {
+            var form = document.getElementById(formId);
+            if (!form) return;
+            form.addEventListener('submit', async function (event) {
+              event.preventDefault();
+              var values = Object.fromEntries(new FormData(form));
+              var noteEl = document.getElementById(noteId);
+              var resultEl = document.getElementById(resultId);
+              var say = function (t, cls) { noteEl.textContent = t; noteEl.className = 'save-note' + (cls ? ' ' + cls : ''); };
+              say('Working…');
+              resultEl.innerHTML = '';
+              try {
+                var r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+                var body = await r.json().catch(function () { return {}; });
+                if (!r.ok || body.ok === false) { say(body.error || 'Failed: ' + r.status, 'bad'); return; }
+                say('Done.', 'ok');
+                resultEl.innerHTML = body.html || '';
+              } catch (err) { say(String(err && err.message || err), 'bad'); }
+            });
+          };
+          wireUserForm('user-link-form', '/admin/action/user/link', 'user-link-note', 'user-link-result');
+          wireUserForm('user-invite-form', '/admin/action/user/invite', 'user-invite-note', 'user-invite-result');
         })();
         (function () {
           var note = function (group, text, cls) {

@@ -73,6 +73,15 @@ test('memberReplyToHtml renders embeds, fields, and link buttons', () => {
   assert.doesNotMatch(html, /Ignore me/, 'custom-id buttons do not survive the trip to the dashboard');
 });
 
+test('createMemberInteraction supports admin mode and getUser', () => {
+  const target = { id: '999', username: 'caleb' };
+  const { interaction } = createMemberInteraction({ discordId: 'dashboard', admin: true, optionUsers: { user: target } });
+  assert.strictEqual(interaction.memberPermissions.has('Administrator'), true);
+  assert.strictEqual(interaction.options.getUser('user'), target);
+  assert.strictEqual(interaction.options.getUser('missing'), null);
+  assert.strictEqual(interaction.user.id, 'dashboard');
+});
+
 test('runMemberCommand returns the terminal reply as HTML', async () => {
   async function stubHandler(interaction) {
     const row = { discord_id: '1' };

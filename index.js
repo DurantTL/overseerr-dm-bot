@@ -71,6 +71,7 @@ const { registerAgentApiRoutes } = require('./src/routes/agent-api');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
 const { registerDashboardReadRoutes } = require('./src/routes/dashboard-read');
 const { registerDashboardMutationRoutes } = require('./src/routes/dashboard-mutations');
+const { registerUserAdminRoutes } = require('./src/routes/dashboard-users');
 const { registerMemberRoutes } = require('./src/routes/member');
 const { createTtlCache } = require('./src/dashboard-cache');
 const { createDashboardSession, createDashboardAuth, createDashboardGateActor, dashboardActor, registerDashboardAuthRoutes } = require('./src/routes/dashboard-auth');
@@ -9862,6 +9863,23 @@ function startExpressServer() {
       getUserByDiscordId,
       getSetting,
       sendMemberDm: (discordId, text) => client.users.fetch(discordId).then(u => u.send(text)),
+    });
+
+    registerUserAdminRoutes(app, {
+      audit,
+      dashboardAuth,
+      rateLimit,
+      escapeHtml,
+      getGuildMembers,
+      fetchDiscordUser: id => client.users.fetch(id),
+      handlers: {
+        link: handleLinkCommand,
+        unlink: handleUnlinkCommand,
+        invite: handleInviteCommand,
+        reinvite: handleReinviteCommand,
+        assignServer: handleAssignServerCommand,
+        reshareAll: handleReshareAllCommand,
+      },
     });
   }
 

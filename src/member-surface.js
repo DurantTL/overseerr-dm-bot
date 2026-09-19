@@ -94,9 +94,12 @@ function memberReplyToHtml(payload, escapeHtml) {
 }
 
 // The fake interaction. Covers exactly the surface the member-facing handlers use:
-// user.id, memberPermissions.has(), options.getString/getBoolean/getInteger/getNumber,
+// user.id, memberPermissions.has(), options.getString/getBoolean/getInteger/getNumber/getUser,
 // deferReply, reply, editReply (+followUp as a safety net that also captures).
-function createMemberInteraction({ discordId, options = {} }) {
+// Member surface: admin defaults to false, so memberPermissions.has() is always false and
+// handlers can never take an admin branch. The admin dashboard passes admin: true, which is
+// what makes requireAdmin() succeed there.
+function createMemberInteraction({ discordId, admin = false, options = {}, optionUsers = {}, username = null }) {
   const replies = [];
   const capture = kind => async payload => {
     replies.push({ kind, payload: typeof payload === 'string' ? { content: payload } : (payload || {}) });
@@ -106,17 +109,16 @@ function createMemberInteraction({ discordId, options = {} }) {
     const value = options[name];
     return value === undefined ? null : value;
   };
+  const name = username || (admin ? 'dashboard' : 'member');
   const interaction = {
-    user: { id: String(discordId), username: 'member' },
-    // Dashboard members act as themselves; admin-only branches stay gated on the admin's own
-    // Discord identity (isAdminInteraction also checks CONFIG.ADMIN_USER_ID against user.id).
-    memberPermissions: { has: () => false },
+    user: { id: String(discordId), username: name, tag: name, bot: false },
+    memberPermissions: { has: () => !!admin },
     options: {
       getString: readOption,
       getBoolean: readOption,
       getInteger: readOption,
       getNumber: readOption,
-      getUser: () => null,
+      getUser: optName => (optionUsers[optName] === undefined ? null : optionUsers[optName]),
     },
     deferReply: async () => {},
     reply: capture('reply'),
@@ -128,8 +130,8 @@ function createMemberInteraction({ discordId, options = {} }) {
 
 // Run a slash-command handler as a member and return the terminal reply as HTML.
 // The terminal reply is the last captured one — handlers end with exactly one.
-async function runMemberCommand(handler, { discordId, options = {}, escapeHtml }) {
-  const { interaction, replies } = createMemberInteraction({ discordId, options });
+async function runMemberCommand(handler, { discordId, admin = false, options = {}, optionUsers = {}, username = null, escapeHtml }) {
+  const { interaction, replies } = createMemberInteraction({ discordId, admin, options, optionUsers, username });
   await handler(interaction);
   const terminal = replies[replies.length - 1];
   if (!terminal) return '<p class="muted">No response.</p>';
