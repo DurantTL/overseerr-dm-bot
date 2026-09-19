@@ -496,6 +496,12 @@ function registerDashboardReadRoutes(app, deps) {
               var result = await r.json().catch(function () { return {}; });
               var ok = r.ok && result.ok !== false;
               var message = ok ? (result.message || 'Action completed.') : (result.error || 'Request failed: ' + r.status);
+              // Successful tier folder/member removals drop their list row so the UI matches the new state.
+              var postUrl = btn.dataset.post || '';
+              if (ok && (postUrl.endsWith('/tier-node/folder-remove') || postUrl.endsWith('/tier-member/remove'))) {
+                var row = btn.closest('li');
+                if (row) row.remove();
+              }
               if (note) {
                 note.textContent = message;
                 note.className = 'action-result ' + (ok ? 'ok' : 'bad');

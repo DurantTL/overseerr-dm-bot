@@ -58,7 +58,7 @@ const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromo
 const { resolveEdgeTierNode, decideCaLocality, planCaPlayPromotion, computePlayPin } = require('./src/edge-promotion');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { checkPublicOriginReadiness } = require('./src/public-origin-diagnostics');
-const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
+const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement, DASHBOARD_CSS } = require('./src/dashboard-render');
 const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, eraseTorrent, getRtorrentVersion, getRtorrentPaths } = require('./src/rtorrent');
 const { decideRatioRemoval, describeDeletionSafety } = require('./src/ratio-cleanup');
@@ -71,6 +71,7 @@ const { registerAgentApiRoutes } = require('./src/routes/agent-api');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
 const { registerDashboardReadRoutes } = require('./src/routes/dashboard-read');
 const { registerDashboardMutationRoutes } = require('./src/routes/dashboard-mutations');
+const { registerMemberRoutes } = require('./src/routes/member');
 const { createTtlCache } = require('./src/dashboard-cache');
 const { createDashboardSession, createDashboardAuth, createDashboardGateActor, dashboardActor, registerDashboardAuthRoutes } = require('./src/routes/dashboard-auth');
 const { createApp } = require('./src/app');
@@ -9834,6 +9835,33 @@ function startExpressServer() {
       upsertTierNode,
       usesDirectGrabEscalation,
       getAutomationRegistry: () => automationRegistry,
+    });
+
+    registerMemberRoutes(app, {
+      CONFIG,
+      db,
+      audit,
+      escapeHtml,
+      css: DASHBOARD_CSS,
+      sessionSecret: CONFIG.SESSION_SECRET,
+      handlers: {
+        request: handleRequestCommand,
+        myRequests: handleMyRequestsCommand,
+        requestStatus: handleRequestStatusCommand,
+        requestCancel: handleRequestCancelCommand,
+        download: handleDownloadCommand,
+        downloads: handleDownloadsCommand,
+        report: handleReportCommand,
+        notifications: handleNotificationsCommand,
+        me: handleMeCommand,
+        stats: handleStatsCommand,
+        keep: handleKeepCommand,
+      },
+      searchSeerr,
+      getGuildMembers,
+      getUserByDiscordId,
+      getSetting,
+      sendMemberDm: (discordId, text) => client.users.fetch(discordId).then(u => u.send(text)),
     });
   }
 
