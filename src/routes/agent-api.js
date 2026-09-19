@@ -1,15 +1,24 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const axios = require('axios');
 const { rateLimit } = require('express-rate-limit');
 const { createAgentApiAuth } = require('./agent-api-auth');
 const { statusFromSeerrRequest } = require('../request-tracking');
+const { mergeFleetDisks } = require('../fleet-disks');
+const { pad } = require('../util');
 
-// Read-only machine API for the Plex Director agent (v1).
-// Auth: `Authorization: Bearer <AGENT_API_TOKEN>`, hash-compared like the tier-agent tokens.
-// Every route is GET-only and rate-limited; mutations are deliberately absent and arrive later
-// behind explicit approval. Responses are small, typed projections — never raw upstream payloads,
-// so tokens, API keys, and full config can never leak through this surface.
+// Machine API for the Plex Director agent (v1.1).
+// Auth: `Authorization: Bearer <token>`, hash-compared like the tier-agent tokens; the matched
+// token's label rides on req.agentTokenLabel so every audited mutation names its client.
+// v1 was GET-only; v1.1 adds a small allowlist of fix endpoints (POST) behind explicit approval.
+// The allowlist is deliberately narrow: only repairs the bot already performs on its own or
+// through existing dashboard/Discord controls. No deletes, restarts, config changes, user
+// management, or token management exist on this surface. Every mutation is audited with an
+// `agent:<label>` actor, and POST routes sit behind a much tighter rate limiter than reads.
+// Responses are small, typed projections — never raw upstream payloads, so tokens, API keys,
+// and full config can never leak through this surface.
 
 // Readable request states the /api/v1/requests ?status= filter accepts. Status labels come
 // from statusFromSeerrRequest (src/request-tracking.js) — the same mapping the bot's own
@@ -28,6 +37,25 @@ function createAgentApiReadLimiter({ limit, windowMs = 60000, keyGenerator }) {
     legacyHeaders: false,
     handler: (_req, res) => res.status(429).json({ error: 'Too many agent API requests' }),
   });
+}
+
+// Mutations get their own, much tighter budget (default 10/min): repairs are human-scale
+// operations, and a runaway client must not be able to hammer the arrs through this surface.
+function createAgentApiWriteLimiter({ limit, windowMs = 60000, keyGenerator }) {
+  return rateLimit({
+    windowMs,
+    limit,
+    keyGenerator,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).json({ error: 'Too many agent API mutations — wait a moment and retry' }),
+  });
+}
+
+// Every audited mutation names its client: `agent:<dashboard token label>` or
+// `agent:legacy-env-token`, so the audit log shows exactly which agent client acted.
+function agentActor(req) {
+  return { actor: `agent:${req.agentTokenLabel || 'unknown'}` };
 }
 
 // fetchArrQueues() items carry `source` with the instance URL and API key — project a safe shape.
@@ -173,6 +201,7 @@ function registerAgentApiRoutes(app, deps) {
   const {
     config,
     getAgentApiTokenHashes,
+    getAgentApiTokenLabel = () => null,
     legacyTokenHash = '',
     touchAgentApiTokenUse = () => {},
     sha256,
@@ -181,12 +210,42 @@ function registerAgentApiRoutes(app, deps) {
     gatherHealth,
     fetchArrQueues,
     fetchSeerrRequests,
+    fetchDiskSpace = async () => [],
+    // Fleet disks: tier-node telemetry disks merge with the *arr volumes. Both default to
+    // empty so the route still works in tests that don't wire the tier registry.
+    listTierNodes = () => [],
+    getTierPlan = () => null,
+    // Master SMART readings persisted by the disk-space sweep (MASTER_SMART_DEVICES).
+    getMasterSmartHealth = () => null,
     getPlexToken,
     getPlexServers,
     httpRateLimitKey,
     httpClient = axios,
-    auth = createAgentApiAuth({ getAgentApiTokenHashes, legacyTokenHash, touchAgentApiTokenUse, sha256, safeEqual, audit }),
+    // v1.1 fix-endpoint collaborators. All are existing bot functions passed in from index.js —
+    // the API invents no repair logic of its own.
+    automationRegistry = null,
+    addMediaToArr = null,
+    fetchSeerrTvdbId = null,
+    listSonarrSeries = null,
+    getSeriesEpisodes = null,
+    getArrTagId = null,
+    triggerSeasonSearch = null,
+    runSeasonDirectGrab = null,
+    findAvistazIndexer = null,
+    grabDailyAllowance = null,
+    grabConfigured = null,
+    tunable = () => undefined,
+    clearSeasonAlertState = () => {},
+    recordSeasonSearch = () => 0,
+    getSeasonSearchTimes = () => ({}),
+    seasonSearchCooldown = () => ({ cooling: false }),
+    getSeasonEpisodeFallback = () => null,
+    monitorSeasonSearch = () => {},
+    sonarrSeriesAliases = () => [],
+    summarizeManualImportPreview = null,
+    auth = createAgentApiAuth({ getAgentApiTokenHashes, getAgentApiTokenLabel, legacyTokenHash, touchAgentApiTokenUse, sha256, safeEqual, audit }),
     readLimiter = createAgentApiReadLimiter({ limit: config.AGENT_API_READ_MAX_PER_MINUTE, keyGenerator: httpRateLimitKey }),
+    writeLimiter = createAgentApiWriteLimiter({ limit: config.AGENT_API_WRITE_MAX_PER_MINUTE || 10, keyGenerator: httpRateLimitKey }),
   } = deps;
 
   // gatherHealth() fans out to every integration; cache briefly like the public /health does so
@@ -212,10 +271,15 @@ function registerAgentApiRoutes(app, deps) {
 
   app.get('/api/v1/health', auth, readLimiter, guarded(async (_req, res) => {
     const h = await getCachedHealth();
+    // v1.1: backup age is additive — the v1 shape is unchanged, two fields are added so a
+    // polling agent can alert on stale backups, not just hard backup failures.
+    const ageMs = Number(h.backupAgeMs);
     res.json({
       ok: true,
       timestamp: h.timestamp || new Date().toISOString(),
       overall: h.overall || 'unknown',
+      backupLastSuccessfulAt: h.backupLastSuccessfulAt || null,
+      backupAgeHours: Number.isFinite(ageMs) ? Math.round((ageMs / 3600000) * 10) / 10 : null,
       bot: {
         discord: h.discord || 'unknown',
         sqlite: h.sqlite || 'unknown',
@@ -228,6 +292,18 @@ function registerAgentApiRoutes(app, deps) {
         sonarr: h.sonarr || 'unknown',
       },
     });
+  }));
+
+  // v1.1: fleet disk space. Merges (a) the *arr-reported volumes (durant-server's own
+  // disks, the same fetchDiskSpace() the Director tab uses) with (b) per-tier-node disks
+  // from the latest agent telemetry. Safe shape only: names + byte counts, no arr URLs,
+  // keys, or raw mount internals. Tier nodes with no telemetry yet are skipped; stale
+  // telemetry is included but flagged via telemetryAgeMs.
+  app.get('/api/v1/disks', auth, readLimiter, guarded(async (_req, res) => {
+    const raw = (await fetchDiskSpace()) || [];
+    const tierNodes = listTierNodes().map(n => ({ name: n.name, telemetry: getTierPlan(n.name)?.lastTelemetry || null }));
+    const disks = mergeFleetDisks({ arrDisks: raw, tierNodes, masterSmartHealth: getMasterSmartHealth() });
+    res.json({ ok: true, count: disks.length, disks });
   }));
 
   app.get('/api/v1/library/search', auth, readLimiter, guarded(async (req, res) => {
@@ -265,6 +341,252 @@ function registerAgentApiRoutes(app, deps) {
     const requests = await mapWithConcurrency(capped, 8, x => projectSeerrRequest(x.r, x.status, titleDeps));
     res.json({ ok: true, count: requests.length, total: filtered.length, requests });
   }));
+
+  // ---- v1.1 fix endpoints ----
+  // Small allowlist of repairs the bot already performs on its own or through existing
+  // dashboard/Discord controls. Every one of these: requires agent auth, sits behind the
+  // tight write limiter, runs inside `guarded` (502 on upstream failure, never raw errors),
+  // and audits with the agent token's label. Anything not listed here does not exist.
+
+  // Run or preview an automation sweep — the same preview()/run() the /automation Discord
+  // command uses. Sweep names are validated against the registry; unknown names are 400.
+  app.post('/api/v1/automation/sweep', auth, writeLimiter, guarded(async (req, res) => {
+    if (!automationRegistry) return res.status(503).json({ error: 'Automation registry is unavailable' });
+    const sweep = String(req.body?.sweep || '').trim();
+    const mode = String(req.body?.mode || '').trim();
+    const names = (automationRegistry.list() || []).map(item => item.id);
+    if (!sweep || !names.includes(sweep)) {
+      audit('agent_api_automation_sweep', { ...agentActor(req), ok: false, reason: 'unknown_sweep', sweep: sweep || null });
+      return res.status(400).json({ error: `Unknown sweep. Valid sweeps: ${names.join(', ') || '(none)'}` });
+    }
+    if (mode !== 'preview' && mode !== 'run') {
+      audit('agent_api_automation_sweep', { ...agentActor(req), ok: false, reason: 'invalid_mode', sweep, mode: mode || null });
+      return res.status(400).json({ error: 'mode must be "preview" or "run"' });
+    }
+    if (mode === 'preview') {
+      const preview = await automationRegistry.preview(sweep);
+      if (!preview.ok) {
+        audit('agent_api_automation_sweep', { ...agentActor(req), ok: false, sweep, mode, reason: preview.busy ? 'busy' : (preview.reason || 'unavailable') });
+        return res.status(409).json({ error: preview.busy ? `${sweep} is already running` : (preview.reason || 'Preview is unavailable') });
+      }
+      const items = (preview.result || []).map(item => ({
+        title: String(item.title || '').slice(0, 200),
+        stage: String(item.stage || '').slice(0, 60),
+        reason: String(item.reason || '').slice(0, 200),
+      }));
+      audit('agent_api_automation_sweep', { ...agentActor(req), ok: true, sweep, mode, items: items.length });
+      return res.json({ ok: true, sweep, mode, count: items.length, items });
+    }
+    const outcome = await automationRegistry.run(sweep, { trigger: 'agent' });
+    if (!outcome.ok) {
+      audit('agent_api_automation_sweep', { ...agentActor(req), ok: false, sweep, mode, reason: outcome.busy ? 'busy' : (outcome.reason || 'unavailable') });
+      return res.status(409).json({ error: outcome.busy ? `${sweep} is already running` : (outcome.reason || 'Sweep is unavailable') });
+    }
+    const result = outcome.result || {};
+    const count = result.searched ?? result.acted ?? result.alerted ?? 0;
+    audit('agent_api_automation_sweep', { ...agentActor(req), ok: true, sweep, mode, actions: count });
+    return res.json({ ok: true, sweep, mode, actions: count });
+  }));
+
+  // Retry a failed Seerr request: re-runs the same direct-add repair the escalation sweep
+  // uses for lost hand-offs (addMediaToArr — bypasses Seerr, adds to the arr, starts a search).
+  // Only requests currently in the `failed` state are eligible; anything else is 404.
+  app.post('/api/v1/requests/:id/retry', auth, writeLimiter, guarded(async (req, res) => {
+    if (!addMediaToArr) return res.status(503).json({ error: 'Request repair is unavailable' });
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) {
+      return res.status(400).json({ error: 'Request id must be a positive integer' });
+    }
+    const raw = (await fetchSeerrRequests()).find(r => Number(r.id) === id);
+    if (!raw || projectSeerrRequestStatus(raw) !== 'failed') {
+      audit('agent_api_request_retry', { ...agentActor(req), ok: false, reason: 'not_failed', requestId: id });
+      return res.status(404).json({ error: 'No failed request with that id' });
+    }
+    const media = raw.media || {};
+    const mediaType = media.mediaType === 'tv' ? 'tv' : 'movie';
+    const tmdbId = Number(media.tmdbId) || null;
+    let tvdbId = Number(media.tvdbId) || null;
+    if (mediaType === 'tv' && !tvdbId && tmdbId && fetchSeerrTvdbId) {
+      tvdbId = await fetchSeerrTvdbId(tmdbId).catch(() => null);
+    }
+    if (mediaType === 'tv' && !tvdbId) {
+      audit('agent_api_request_retry', { ...agentActor(req), ok: false, reason: 'no_tvdb_id', requestId: id });
+      return res.status(409).json({ error: 'Could not resolve a TVDB id for this request — the TMDB↔TVDB mapping is broken' });
+    }
+    const added = await addMediaToArr({ mediaType, tmdbId, tvdbId, tagLabel: config.AVISTAZ_TAG });
+    audit('agent_api_request_retry', { ...agentActor(req), ok: !!added.ok, requestId: id, title: added.title || null, arrId: added.arrId ?? null, reason: added.ok ? undefined : added.reason });
+    if (!added.ok) return res.status(502).json({ error: `Repair failed: ${added.reason || 'unknown'}` });
+    return res.json({ ok: true, requestId: id, title: added.title, arrId: added.arrId, already: !!added.already, detail: String(added.detail || '').slice(0, 500) });
+  }));
+
+  // Force a season search — mirrors the dashboard's "Search Now" button: same series
+  // resolution (Sonarr id or unambiguous title), same missing-episode / fallback / cooldown
+  // gates, and the same AvistaZ-tagged → direct grab vs Sonarr SeasonSearch route decision.
+  app.post('/api/v1/search/season', auth, writeLimiter, guarded(async (req, res) => {
+    const need = { listSonarrSeries, getSeriesEpisodes, triggerSeasonSearch };
+    if (Object.values(need).some(fn => typeof fn !== 'function')) {
+      return res.status(503).json({ error: 'Season search is unavailable' });
+    }
+    const seasonNumber = Number(req.body?.season);
+    if (!Number.isInteger(seasonNumber) || seasonNumber < 0) {
+      audit('agent_api_season_search', { ...agentActor(req), ok: false, reason: 'invalid_season' });
+      return res.status(400).json({ error: 'season must be a non-negative integer' });
+    }
+    const seriesInput = String(req.body?.series || '').trim();
+    if (!seriesInput) {
+      audit('agent_api_season_search', { ...agentActor(req), ok: false, reason: 'missing_series' });
+      return res.status(400).json({ error: 'series is required (Sonarr series id or title)' });
+    }
+    const all = await listSonarrSeries().catch(() => []);
+    let series;
+    if (/^\d+$/.test(seriesInput)) {
+      series = all.find(s => Number(s.id) === Number(seriesInput)) || null;
+    } else {
+      const lower = seriesInput.toLowerCase();
+      const matches = all.filter(s => String(s.title || '').toLowerCase().includes(lower));
+      if (matches.length === 1) series = matches[0];
+      else {
+        audit('agent_api_season_search', { ...agentActor(req), ok: false, reason: matches.length ? 'ambiguous_series' : 'series_not_found', series: seriesInput.slice(0, 120) });
+        return res.status(matches.length ? 409 : 404).json({
+          error: matches.length ? `Multiple series match "${seriesInput.slice(0, 120)}" — use a Sonarr series id` : `No Sonarr series matches "${seriesInput.slice(0, 120)}"`,
+        });
+      }
+    }
+    if (!series) {
+      audit('agent_api_season_search', { ...agentActor(req), ok: false, reason: 'series_not_found', series: seriesInput.slice(0, 120) });
+      return res.status(404).json({ error: `Sonarr series ${seriesInput.slice(0, 120)} was not found` });
+    }
+    const episodes = await getSeriesEpisodes(series.id).catch(() => null);
+    if (!episodes) {
+      audit('agent_api_season_search', { ...agentActor(req), ok: false, reason: 'episodes_unreadable', seriesId: series.id });
+      return res.status(502).json({ error: `Couldn't read episodes for ${series.title} from Sonarr` });
+    }
+    const missing = episodes.filter(ep => Number(ep.seasonNumber) === seasonNumber && ep.monitored && !ep.hasFile
+      && Date.parse(ep.airDateUtc || ep.airDate || '') <= Date.now());
+    if (!missing.length) {
+      audit('agent_api_season_search', { ...agentActor(req), ok: false, reason: 'nothing_missing', seriesId: series.id, season: seasonNumber });
+      return res.status(409).json({ error: `${series.title} S${pad(seasonNumber)} has no aired missing episodes — nothing to search for` });
+    }
+    const fallback = getSeasonEpisodeFallback(series.id, seasonNumber);
+    if (fallback) {
+      audit('agent_api_season_search', { ...agentActor(req), ok: false, reason: 'episode_fallback_active', seriesId: series.id, season: seasonNumber });
+      return res.status(409).json({ error: `A bounded episode fallback already owns ${series.title} S${pad(seasonNumber)} (${fallback.state})` });
+    }
+    const force = req.body?.force === true;
+    const { cooling, nextEligible } = force ? { cooling: false } : seasonSearchCooldown(getSeasonSearchTimes(series.id)[seasonNumber]);
+    if (cooling) {
+      audit('agent_api_season_search', { ...agentActor(req), ok: false, reason: 'cooldown', seriesId: series.id, season: seasonNumber });
+      return res.status(409).json({ error: `Season search is cooling down until ${new Date(nextEligible).toISOString()}`, nextEligible, canOverride: true });
+    }
+    // Same route decision as the dashboard button and the /season Discord command:
+    // AvistaZ-tagged + direct grab enabled goes through the seedbox, everything else
+    // through Sonarr's own SeasonSearch.
+    const tagSource = { url: config.SONARR_URL, key: config.SONARR_API_KEY, label: 'sonarr' };
+    const tagId = getArrTagId ? await getArrTagId(tagSource, config.AVISTAZ_TAG).catch(() => null) : null;
+    const tagged = tagId != null && (series.tags || []).includes(tagId);
+    const directEnabled = tunable('SEASON_PACK_AVISTAZ_DIRECT') && grabConfigured && grabConfigured();
+    const indexer = tagged && directEnabled && findAvistazIndexer ? await findAvistazIndexer().catch(() => null) : null;
+    if (tagged && directEnabled && !indexer) {
+      audit('agent_api_season_search', { ...agentActor(req), ok: false, reason: 'indexer_missing', seriesId: series.id, season: seasonNumber });
+      return res.status(409).json({ error: `${series.title} is tagged for AvistaZ, but the AvistaZ indexer could not be found in Prowlarr` });
+    }
+    if (tagged && directEnabled && indexer && runSeasonDirectGrab && grabDailyAllowance) {
+      const allowance = grabDailyAllowance();
+      const result = await runSeasonDirectGrab({ series, season: { season: seasonNumber, missing: missing.length }, indexer, allowance });
+      clearSeasonAlertState(series.id, seasonNumber);
+      recordSeasonSearch({ seriesId: series.id, seasonNumber, seriesTitle: series.title, missing: missing.length });
+      audit('agent_api_season_search', { ...agentActor(req), ok: result.status !== 'error', seriesId: series.id, season: seasonNumber, title: series.title, route: 'avistaz', status: result.status, override: force });
+      return res.json({ ok: result.status !== 'error', route: 'avistaz', seriesId: series.id, season: seasonNumber, status: result.status, detail: String(result.detail || result.error || '').slice(0, 500) });
+    }
+    const command = await triggerSeasonSearch(series.id, seasonNumber);
+    clearSeasonAlertState(series.id, seasonNumber);
+    const stallCount = recordSeasonSearch({ seriesId: series.id, seasonNumber, seriesTitle: series.title, missing: missing.length });
+    monitorSeasonSearch({ seriesId: series.id, seriesTitle: series.title, seriesYear: series.year, seriesAliases: sonarrSeriesAliases(series), seasonNumber, missingAtSearch: missing.length, commandId: command?.id, searchedAt: Date.now(), stallCount });
+    audit('agent_api_season_search', { ...agentActor(req), ok: true, seriesId: series.id, season: seasonNumber, title: series.title, route: 'sonarr', commandId: command?.id || null, override: force });
+    return res.json({ ok: true, route: 'sonarr', seriesId: series.id, season: seasonNumber, commandId: command?.id || null, message: `Sonarr accepted the S${pad(seasonNumber)} season search for ${series.title}` });
+  }));
+
+  // Trigger an arr import scan of a staging folder — the same safety logic as the
+  // /debrid and /rtorrent Discord `import` subcommands: path traversal guard, `.incoming`
+  // guard, existence through the bot's path view, and a partial-match preview in Move mode
+  // that refuses (409) instead of asking an interactive confirm button.
+  app.post('/api/v1/import-scan', auth, writeLimiter, guarded(async (req, res) => {
+    if (!summarizeManualImportPreview) return res.status(503).json({ error: 'Import scan is unavailable' });
+    const target = String(req.body?.target || '').trim().toLowerCase();
+    if (target !== 'sonarr' && target !== 'radarr') {
+      audit('agent_api_import_scan', { ...agentActor(req), ok: false, reason: 'invalid_target', target: target || null });
+      return res.status(400).json({ error: 'target must be "sonarr" or "radarr"' });
+    }
+    const source = String(req.body?.source || 'premiumize').trim().toLowerCase();
+    const pair = source === 'seedbox'
+      ? { stagingPath: config.GRAB_STAGING_PATH, importPath: config.GRAB_IMPORT_PATH, label: 'seedbox staging' }
+      : source === 'premiumize'
+        ? { stagingPath: config.PREMIUMIZE_STAGING_PATH, importPath: config.PREMIUMIZE_IMPORT_PATH, label: 'Premiumize' }
+        : null;
+    if (!pair) {
+      audit('agent_api_import_scan', { ...agentActor(req), ok: false, reason: 'invalid_source', source });
+      return res.status(400).json({ error: 'source must be "premiumize" or "seedbox"' });
+    }
+    if (!pair.stagingPath || !pair.importPath) {
+      audit('agent_api_import_scan', { ...agentActor(req), ok: false, reason: 'not_configured', target, source });
+      return res.status(409).json({ error: `${pair.label} import isn't configured (needs both a staging and an import path)` });
+    }
+    const arr = target === 'sonarr'
+      ? { url: config.SONARR_URL, key: config.SONARR_API_KEY, cmd: 'DownloadedEpisodesScan', label: 'Sonarr' }
+      : { url: config.RADARR_URL, key: config.RADARR_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr' };
+    if (!arr.url) {
+      audit('agent_api_import_scan', { ...agentActor(req), ok: false, reason: 'arr_not_configured', target });
+      return res.status(409).json({ error: `${arr.label} isn't configured` });
+    }
+    const clean = String(req.body?.folder || '').trim().replace(/^["']+|["']+$/g, '').replace(/^\/+|\/+$/g, '');
+    if (clean && clean.split('/').some(p => !p || p === '.' || p === '..')) {
+      audit('agent_api_import_scan', { ...agentActor(req), ok: false, reason: 'unsafe_path', target, source });
+      return res.status(400).json({ error: 'Unsafe folder path' });
+    }
+    if (clean === '.incoming' || clean.startsWith('.incoming/')) {
+      audit('agent_api_import_scan', { ...agentActor(req), ok: false, reason: 'incoming_folder', target, source });
+      return res.status(400).json({ error: '`.incoming` holds in-flight copies — never import from there' });
+    }
+    const mode = req.body?.mode === 'copy' ? 'Copy' : 'Move';
+    const localPath = clean ? path.join(pair.stagingPath, clean) : pair.stagingPath;
+    if (!fs.existsSync(localPath)) {
+      audit('agent_api_import_scan', { ...agentActor(req), ok: false, reason: 'folder_missing', target, source, folder: clean || null });
+      return res.status(404).json({ error: `\`${clean || '(folder root)'}\` doesn't exist under \`${pair.stagingPath}\`` });
+    }
+    if (!clean) {
+      const incoming = path.join(pair.stagingPath, '.incoming');
+      const busy = fs.existsSync(incoming) && fs.readdirSync(incoming).length > 0;
+      if (busy) {
+        audit('agent_api_import_scan', { ...agentActor(req), ok: false, reason: 'incoming_busy', target, source });
+        return res.status(409).json({ error: 'A transfer is mid-copy (`.incoming` isn\'t empty) — scan a specific folder, or wait for the transfers to finish' });
+      }
+    }
+    const fullImportPath = clean ? `${pair.importPath}/${clean}` : pair.importPath;
+    // Move mode deletes/relocates the source once the arr considers the download handled —
+    // including files that never matched. The Discord flow asks an interactive confirm here;
+    // the API has no buttons, so a partial match refuses instead of risking data loss.
+    if (mode === 'Move') {
+      const preview = await httpClient.get(`${arr.url}/api/v3/manualimport`, {
+        params: { folder: fullImportPath, filterExistingFiles: false },
+        headers: { 'X-Api-Key': arr.key },
+        timeout: 120000,
+      }).then(r => summarizeManualImportPreview(r.data || [], target)).catch(() => null);
+      if (preview && preview.totalFiles > 0 && preview.unmatchedFiles > 0) {
+        audit('agent_api_import_scan', { ...agentActor(req), ok: false, reason: 'partial_match', target, source, folder: clean || null, matched: preview.matchedFiles, total: preview.totalFiles });
+        return res.status(409).json({
+          error: `Refusing Move import: ${preview.unmatchedFiles} of ${preview.totalFiles} file(s) won't import and would be swept away with the folder. Use mode "copy", or fix the mismatch first.`,
+          matchedFiles: preview.matchedFiles,
+          unmatchedFiles: preview.unmatchedFiles,
+          totalFiles: preview.totalFiles,
+        });
+      }
+    }
+    const res2 = await httpClient.post(`${arr.url}/api/v3/command`,
+      { name: arr.cmd, path: fullImportPath, importMode: mode },
+      { headers: { 'X-Api-Key': arr.key }, timeout: 15000 });
+    audit('agent_api_import_scan', { ...agentActor(req), ok: true, target, source, path: fullImportPath, mode, commandId: res2.data?.id ?? null });
+    return res.json({ ok: true, target, source, path: fullImportPath, mode, commandId: res2.data?.id ?? null, message: `${arr.label} is scanning \`${fullImportPath}\` (import mode: ${mode})` });
+  }));
 }
 
-module.exports = { registerAgentApiRoutes, createAgentApiAuth, createAgentApiReadLimiter };
+module.exports = { registerAgentApiRoutes, createAgentApiAuth, createAgentApiReadLimiter, createAgentApiWriteLimiter };

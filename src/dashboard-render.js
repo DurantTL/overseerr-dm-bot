@@ -410,7 +410,22 @@ function renderDirectorPanel({ overall, services, disks, totalFreeLabel }) {
       </div>`;
 }
 
-function tierInstallCommand({ botUrl, node, token, folders, folderRoot, syncthingApiKey, syncthingFolderId, mountRoot, mountMarker }) {
+function tierInstallCommand({ botUrl, node, token, folders, folderRoot, syncthingApiKey, syncthingFolderId, mountRoot, mountMarker, monitorOnly = false, monitorPath }) {
+  // Monitor-only nodes (backup boxes): no Syncthing, no tier plan — the installer only needs
+  // the token, TIER_MONITOR_ONLY=1, and the watched path (TIER_FOLDER_ROOT).
+  if (monitorOnly) {
+    const env = [
+      `TIER_AGENT_TOKEN="$TIER_AGENT_TOKEN"`,
+      `TIER_MONITOR_ONLY=1`,
+      `TIER_FOLDER_ROOT=${shellQuote(monitorPath || folderRoot || '/mnt/backup')}`,
+    ];
+    return [
+      `export TIER_AGENT_TOKEN="$TIER_AGENT_TOKEN"`,
+      `curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" ${shellQuote(`${botUrl}/agent/install/${node}`)} \\`,
+      `  | sudo -E env ${env.join(' ')} sh`,
+      'unset TIER_AGENT_TOKEN',
+    ].join('\n');
+  }
   const normalizedFolders = normalizeTierFolders(folders || [{ id: syncthingFolderId, path: folderRoot }]);
   const env = [
     `TIER_AGENT_TOKEN="$TIER_AGENT_TOKEN"`,
