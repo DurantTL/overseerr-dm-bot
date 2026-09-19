@@ -284,3 +284,52 @@ test('#189: a successful mutation invalidates the dashboard cache; a failed one 
     await close(server);
   }
 });
+
+test('agent API token routes require auth, validate input, and confirm revokes', async () => {
+  const tokens = [];
+  const { app, state } = fixture({
+    createAgentApiToken: label => {
+      const record = { id: tokens.length + 1, label, token: `raw-token-${tokens.length + 1}` };
+      tokens.push(record);
+      return record;
+    },
+    revokeAgentApiToken: id => {
+      const index = tokens.findIndex(t => t.id === id);
+      if (index === -1) return false;
+      tokens.splice(index, 1);
+      return true;
+    },
+  });
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const headers = { 'x-admin-token': 'secret' };
+
+    assert.strictEqual((await post(port, '/admin/action/agent-api-token', { label: 'Edith' })).statusCode, 401);
+    assert.strictEqual((await post(port, '/admin/action/agent-api-token', { label: '' }, headers)).statusCode, 400);
+    assert.strictEqual((await post(port, '/admin/action/agent-api-token', { label: 'x'.repeat(65) }, headers)).statusCode, 400);
+
+    const created = await post(port, '/admin/action/agent-api-token', { label: 'Edith' }, headers);
+    assert.strictEqual(created.statusCode, 200);
+    assert.strictEqual(created.headers['cache-control'], 'no-store');
+    const body = JSON.parse(created.body);
+    assert.deepStrictEqual({ ...body, token: 'redacted' }, { ok: true, id: 1, label: 'Edith', token: 'redacted' });
+    assert.ok(body.token.length >= 10, 'the raw token is returned once at creation');
+    const createdAudit = state.audits.find(a => a.action === 'dashboard_agent_api_token_created');
+    assert.ok(createdAudit, 'creation is audited');
+    assert.ok(!JSON.stringify(createdAudit.metadata).includes(body.token), 'audit metadata never contains the token');
+
+    const unconfirmed = await post(port, '/admin/action/agent-api-token-revoke', { id: 1 }, headers);
+    assert.strictEqual(unconfirmed.statusCode, 400, 'revoke requires confirmed: true');
+
+    const revoked = await post(port, '/admin/action/agent-api-token-revoke', { id: 1, confirmed: true }, headers);
+    assert.strictEqual(revoked.statusCode, 200);
+    assert.deepStrictEqual(JSON.parse(revoked.body), { ok: true });
+    assert.ok(state.audits.some(a => a.action === 'dashboard_agent_api_token_revoked'), 'revocation is audited');
+
+    const again = await post(port, '/admin/action/agent-api-token-revoke', { id: 1, confirmed: true }, headers);
+    assert.strictEqual(again.statusCode, 404, 'revoking an already-revoked id 404s');
+    assert.strictEqual((await post(port, '/admin/action/agent-api-token-revoke', { id: 99, confirmed: true }, headers)).statusCode, 404);
+    assert.strictEqual((await post(port, '/admin/action/agent-api-token-revoke', { id: 99, confirmed: true })).statusCode, 401);
+  } finally { await close(server); }
+});

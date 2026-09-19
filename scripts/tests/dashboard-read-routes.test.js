@@ -326,3 +326,58 @@ test('#189: a page render reports staleness when a refresh fails after the TTL e
     await close(server);
   }
 });
+
+test('overview shows the passkey setup banner only for nudged sessions without passkeys', async () => {
+  const headers = { 'x-admin-token': 'secret' };
+  const nudged = { 'x-admin-token': 'secret', cookie: 'dm_setup_nudge=1' };
+
+  // Nudged session, no passkeys: banner renders.
+  {
+    const { app } = fixture({ renderPasskeySetupBanner: () => 'SETUP-BANNER-MARKER' });
+    const server = await listen(app, 0);
+    try {
+      const res = await request(server.address().port, '/admin', nudged);
+      assert.strictEqual(res.statusCode, 200);
+      assert.ok(res.body.includes('SETUP-BANNER-MARKER'), 'banner shows for nudged session without passkeys');
+    } finally { await close(server); }
+  }
+
+  // Same session shape, but a passkey already exists: no banner.
+  {
+    const { app } = fixture({
+      listPasskeys: () => [{ credential_id: 'abc' }],
+      renderPasskeySetupBanner: () => 'SETUP-BANNER-MARKER',
+    });
+    const server = await listen(app, 0);
+    try {
+      const res = await request(server.address().port, '/admin', nudged);
+      assert.strictEqual(res.statusCode, 200);
+      assert.ok(!res.body.includes('SETUP-BANNER-MARKER'), 'no banner once a passkey exists');
+    } finally { await close(server); }
+  }
+
+  // No nudge cookie at all: no banner, even with zero passkeys.
+  {
+    const { app } = fixture({ renderPasskeySetupBanner: () => 'SETUP-BANNER-MARKER' });
+    const server = await listen(app, 0);
+    try {
+      const res = await request(server.address().port, '/admin', headers);
+      assert.strictEqual(res.statusCode, 200);
+      assert.ok(!res.body.includes('SETUP-BANNER-MARKER'), 'no banner without the nudge cookie');
+    } finally { await close(server); }
+  }
+});
+
+test('overview renders the agent API token card', async () => {
+  const headers = { 'x-admin-token': 'secret' };
+  const { app } = fixture({
+    listAgentApiTokens: () => [{ id: 7, label: 'Edith', createdAt: 1700000000000, lastUsedAt: null, revoked: false }],
+    renderAgentApiTokens: tokens => `AGENT-TOKENS:${tokens.map(t => t.label).join(',')}`,
+  });
+  const server = await listen(app, 0);
+  try {
+    const res = await request(server.address().port, '/admin', headers);
+    assert.strictEqual(res.statusCode, 200);
+    assert.ok(res.body.includes('AGENT-TOKENS:Edith'), 'token card renders with the token list');
+  } finally { await close(server); }
+});

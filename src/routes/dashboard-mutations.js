@@ -35,6 +35,7 @@ function registerDashboardMutationRoutes(app, deps) {
     assessApplyImpact,
     buildTierPlans,
     computeTierActionPreview,
+    createAgentApiToken,
     fmtSpace,
     grabConfigured,
     grabDailyAllowance,
@@ -52,6 +53,7 @@ function registerDashboardMutationRoutes(app, deps) {
     removeTierNodeFolder,
     removeTierNodeMember,
     replaceTierNodeFolders,
+    revokeAgentApiToken,
     revokeAllDownloadLinks,
     runEscalation,
     runSeasonDirectGrab,
@@ -147,6 +149,32 @@ function registerDashboardMutationRoutes(app, deps) {
     audit('dashboard_tier_agent_token_rotated', { ...dashboardActor(req), node, folderCount: folders.length });
     res.setHeader('Cache-Control', 'no-store');
     return res.json({ ok: true, command });
+  });
+  // Dashboard-minted Agent API tokens: the operator's replacement for hand-generating
+  // AGENT_API_TOKEN and editing the container environment. The raw token is returned exactly
+  // once — only its hash is stored, so it must be copied now.
+  router.post('/admin/action/agent-api-token', dashboardAuth, (req, res) => {
+    const label = String(req.body?.label || '').trim();
+    if (!label || label.length > 64) {
+      return res.status(400).json({ ok: false, error: 'Give the token a label of 1 to 64 characters, e.g. "Edith".' });
+    }
+    let created;
+    try {
+      created = createAgentApiToken(label);
+    } catch (err) {
+      return res.status(400).json({ ok: false, error: err.message });
+    }
+    audit('dashboard_agent_api_token_created', { ...dashboardActor(req), tokenId: created.id, label: created.label });
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({ ok: true, id: created.id, label: created.label, token: created.token });
+  });
+  router.post('/admin/action/agent-api-token-revoke', dashboardAuth, (req, res) => {
+    const id = Number(req.body?.id);
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ ok: false, error: 'Token id is required.' });
+    if (req.body?.confirmed !== true) return res.status(400).json({ ok: false, error: 'Token revocation confirmation is required.' });
+    if (!revokeAgentApiToken(id)) return res.status(404).json({ ok: false, error: 'Token not found or already revoked.' });
+    audit('dashboard_agent_api_token_revoked', { ...dashboardActor(req), tokenId: id });
+    return res.json({ ok: true });
   });
   router.post('/admin/action/search', dashboardAuth, async (req, res) => {
     const kind = req.body?.kind;

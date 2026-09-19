@@ -48,6 +48,19 @@ function dashboardActor(req) {
   return { actor: 'dashboard', actorIp: req.ip || req.socket.remoteAddress || 'unknown' };
 }
 
+// First-run nudge: after a password login with no passkey enrolled, the dashboard shows a
+// prominent "finish securing your account" banner. The cookie only records that this browser
+// session authenticated with the password fallback — it grants nothing and is never consulted
+// for authorization, so a forged value can at most show a banner.
+const SETUP_NUDGE_COOKIE = 'dm_setup_nudge';
+function setSetupNudgeCookie(req, res, on) {
+  const secure = req.secure || (req.headers['x-forwarded-proto'] || '').includes('https');
+  const attrs = `HttpOnly; SameSite=Strict; Path=/admin${secure ? '; Secure' : ''}`;
+  res.append('Set-Cookie', on
+    ? `${SETUP_NUDGE_COOKIE}=1; ${attrs}; Max-Age=43200`
+    : `${SETUP_NUDGE_COOKIE}=; ${attrs}; Max-Age=0`);
+}
+
 function createDashboardGateActor({ sha256 }) {
   return function dashboardGateActor(req) {
     const session = readCookie(req, 'dm_session');
@@ -159,6 +172,7 @@ function registerDashboardAuthRoutes(app, {
     try {
       await passkeyService.finishAuthentication(session.readCookie(req, 'dm_webauthn'), req.body);
       session.setCookie(req, res);
+      setSetupNudgeCookie(req, res, false);
       res.append('Set-Cookie', 'dm_webauthn=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0');
       audit('dashboard_login_success', { ip, method: 'passkey' });
       return res.json({ verified: true });
@@ -189,6 +203,9 @@ function registerDashboardAuthRoutes(app, {
       return res.redirect('/admin/login?error=1');
     }
     session.setCookie(req, res);
+    // Password login with no passkey enrolled yet: nudge this session to finish setup with a
+    // passkey. The banner clears itself once a passkey exists or the next passkey login happens.
+    setSetupNudgeCookie(req, res, true);
     audit('dashboard_login_success', { ip, method: 'password' });
     return res.redirect('/admin');
   });
@@ -201,6 +218,7 @@ function registerDashboardAuthRoutes(app, {
     legacyHeaders: false,
   }), (_req, res) => {
     res.setHeader('Set-Cookie', 'dm_session=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0');
+    res.append('Set-Cookie', `${SETUP_NUDGE_COOKIE}=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0`);
     return res.redirect('/admin/login');
   });
 
@@ -273,4 +291,6 @@ module.exports = {
   dashboardActor,
   readCookie,
   registerDashboardAuthRoutes,
+  setSetupNudgeCookie,
+  SETUP_NUDGE_COOKIE,
 };

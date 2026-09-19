@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const { readCookie, SETUP_NUDGE_COOKIE } = require('./dashboard-auth');
 const { parseScriptConfig } = require('../europe-sync');
 const { HEALTH_KEYS, healthLabel } = require('../health');
 
@@ -34,6 +35,7 @@ function registerDashboardReadRoutes(app, deps) {
     httpRateLimitKey,
     listActiveGrabJobs,
     listActiveStageJobs,
+    listAgentApiTokens = () => [],
     listMediaPriority,
     listPasskeys,
     listPendingRequests,
@@ -51,10 +53,12 @@ function registerDashboardReadRoutes(app, deps) {
     quotaBlockReason,
     rateLimit,
     renderAutomationRegistry = () => '',
+    renderAgentApiTokens = () => '',
     renderHealthBadges,
     renderItemList,
     renderPage,
     renderPasskeyManagement,
+    renderPasskeySetupBanner = () => '',
     renderSettingsGroup,
     renderStat,
     renderTable,
@@ -78,10 +82,14 @@ function registerDashboardReadRoutes(app, deps) {
     standardHeaders: 'draft-8',
     legacyHeaders: false,
     handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many dashboard requests. Wait a moment and try again.' }),
-  }), dashboardAuth, async (_req, res) => {
+  }), dashboardAuth, async (req, res) => {
     const now = Date.now();
     const pendingApprovals = listPendingRequests();
     const passkeys = listPasskeys();
+    const agentApiTokens = listAgentApiTokens();
+    // First-run nudge: this browser session authenticated with the password fallback. If no
+    // passkey is enrolled yet, banner the one-click enrollment path at the top of Overview.
+    const showPasskeySetupBanner = readCookie(req, SETUP_NUDGE_COOKIE) === '1' && passkeys.length === 0;
     const tierNodesEarly = listTierNodes();
     // Live activity, cached with a bounded per-source TTL (#189): every GET /admin render used to
     // hit every integration fresh, so a 60s auto-refresh with any number of open admin tabs
@@ -419,7 +427,9 @@ function registerDashboardReadRoutes(app, deps) {
       </section>
 
       <section class="panel" data-panel="overview">
+        ${showPasskeySetupBanner ? renderPasskeySetupBanner() : ''}
         ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID, PASSKEY_RP.origin)}
+        ${renderAgentApiTokens(agentApiTokens, { legacyConfigured: !!CONFIG.AGENT_API_TOKEN_HASH })}
         <div class="card">
           <h2>Integrations</h2>
           <div class="badges">${renderHealthBadges(health)}</div>
@@ -687,6 +697,73 @@ function registerDashboardReadRoutes(app, deps) {
               var row = button.closest('[data-passkey]');
               try { await post('/admin/passkey/revoke', { credentialId: row.dataset.passkey }); location.reload(); }
               catch (error) { note.textContent = error.message || String(error); note.className = 'save-note bad'; }
+            });
+          });
+        })();
+        (function () {
+          // First-run banner: jump straight to the enrollment card and focus the label field.
+          var go = document.getElementById('passkey-setup-go');
+          if (go) go.addEventListener('click', function () {
+            var card = document.getElementById('passkeys');
+            if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            var label = document.getElementById('passkey-label');
+            if (label) setTimeout(function () { label.focus({ preventScroll: true }); }, 450);
+          });
+        })();
+        (function () {
+          // Dashboard-minted Agent API tokens: create (show-once), copy, revoke.
+          var createBtn = document.getElementById('agent-token-create');
+          if (!createBtn) return;
+          var labelInput = document.getElementById('agent-token-label');
+          var note = document.getElementById('agent-token-note');
+          var once = document.getElementById('agent-token-once');
+          var onceValue = document.getElementById('agent-token-value');
+          var copyBtn = document.getElementById('agent-token-copy');
+          var actionPost = async function (url, body) {
+            var response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            var result = await response.json().catch(function () { return {}; });
+            if (!response.ok || result.ok === false) throw new Error(result.error || 'Request failed: ' + response.status);
+            return result;
+          };
+          var say = function (message, bad) {
+            note.textContent = message;
+            note.className = 'save-note' + (bad ? ' bad' : '');
+          };
+          createBtn.addEventListener('click', async function () {
+            var label = labelInput.value.trim();
+            if (!label) { say('Give the token a label first.', true); return; }
+            createBtn.disabled = true;
+            try {
+              var result = await actionPost('/admin/action/agent-api-token', { label: label });
+              onceValue.textContent = result.token;
+              once.hidden = false;
+              say('Token created for "' + label + '".');
+              if (copyBtn) copyBtn.focus();
+            } catch (error) {
+              say(error.message || String(error), true);
+              createBtn.disabled = false;
+            }
+          });
+          if (copyBtn) copyBtn.addEventListener('click', async function () {
+            try {
+              await navigator.clipboard.writeText(onceValue.textContent);
+              say('Copied. It will not be shown again.');
+            } catch (_err) {
+              var range = document.createRange();
+              range.selectNodeContents(onceValue);
+              var selection = window.getSelection();
+              selection.removeAllRanges();
+              selection.addRange(range);
+              say('Copy it now — it will not be shown again.');
+            }
+          });
+          document.querySelectorAll('[data-agent-token-revoke]').forEach(function (button) {
+            button.addEventListener('click', async function () {
+              var row = button.closest('[data-agent-token]');
+              var name = row ? row.querySelector('.setting-name').textContent : 'this token';
+              if (!confirm('Revoke ' + name + '? Clients using it will lose API access immediately.')) return;
+              try { await actionPost('/admin/action/agent-api-token-revoke', { id: Number(row.dataset.agentToken), confirmed: true }); location.reload(); }
+              catch (error) { say(error.message || String(error), true); }
             });
           });
         })();
