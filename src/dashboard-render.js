@@ -15,6 +15,7 @@ function escapeHtml(str) {
 // touch-friendly item rows with progress bars, and tables that collapse into labeled cards on
 // narrow screens. All inline, no build step, dark Plex/Overseerr look.
 const DASHBOARD_CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
   :root { --bg:#131316; --panel:#1d1e23; --panel2:#26272e; --accent:#e5a00d; --text:#ececf0; --muted:#9aa0a6; --border:#33343c; --ok:#22c55e; --warn:#f59e0b; --down:#ef4444; --skip:#6b7280; }
   * { box-sizing: border-box; }
   html { -webkit-text-size-adjust:100%; }
@@ -159,6 +160,46 @@ const DASHBOARD_CSS = `
     td { border:none; padding:3px 0; white-space:normal; max-width:none; display:flex; gap:10px; overflow:visible; }
     td::before { content:attr(data-label); flex:0 0 84px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; padding-top:2px; }
   }
+  /* Director tab — prototype design language (page lead, metric strip, node rows).
+     Scoped to .d-panel so the rest of the dashboard is untouched. */
+  .d-panel { font-family:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  .d-page-lead { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:end; gap:18px; margin:2px 0 16px; }
+  .d-eyebrow { color:var(--accent); font:600 12px/1.2 "IBM Plex Mono",ui-monospace,SFMono-Regular,monospace; letter-spacing:.02em; margin-bottom:8px; }
+  .d-h1 { margin:0 0 6px; font-size:clamp(26px,4vw,36px); letter-spacing:-.03em; line-height:1.08; color:var(--text); }
+  .d-lead-copy { margin:0; color:var(--muted); font-style:normal; font-size:14px; max-width:64ch; }
+  .d-status { display:inline-flex; align-items:center; gap:6px; padding:6px 11px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; background:var(--panel2); color:var(--muted); border:1px solid var(--border); }
+  .d-status::before { content:""; width:7px; height:7px; border-radius:50%; background:currentColor; }
+  .d-status.ok { color:var(--ok); background:rgba(34,197,94,.10); border-color:rgba(34,197,94,.45); }
+  .d-status.warn { color:var(--warn); background:rgba(245,158,11,.10); border-color:rgba(245,158,11,.45); }
+  .d-status.bad { color:var(--down); background:rgba(239,68,68,.12); border-color:rgba(239,68,68,.5); }
+  .d-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:0 0 14px; }
+  .d-metric { padding:14px; border:1px solid var(--border); background:var(--panel); border-radius:12px; }
+  .d-metric strong { display:block; color:var(--accent); font:600 22px/1.1 "IBM Plex Mono",ui-monospace,SFMono-Regular,monospace; }
+  .d-metric span { display:block; margin-top:6px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.035em; }
+  .d-callout { display:flex; align-items:flex-start; gap:10px; padding:12px 14px; border:1px solid rgba(229,160,13,.5); border-radius:10px; background:rgba(229,160,13,.08); color:var(--text); font-size:13px; margin:0 0 14px; }
+  .d-callout svg { flex:0 0 auto; width:17px; height:17px; color:var(--accent); margin-top:1px; }
+  .d-card { padding:0; overflow:hidden; }
+  .card.d-card .d-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:16px 16px 13px; border-bottom:1px solid var(--border); }
+  .card.d-card .d-card-head h2 { margin:0; font-size:16px; font-weight:600; color:var(--text); text-transform:none; letter-spacing:0; }
+  .card.d-card .d-card-head p { margin:4px 0 0; color:var(--muted); font-size:13px; font-style:normal; }
+  .d-card-body { padding:4px 16px 12px; }
+  .d-node-row { display:grid; grid-template-columns:12px minmax(0,1fr) auto; align-items:center; gap:12px; padding:12px 0; border-top:1px solid var(--border); }
+  .d-node-row:first-child { border-top:0; }
+  .d-node-dot { width:9px; height:9px; border-radius:50%; background:var(--ok); }
+  .d-node-dot.warn { background:var(--warn); }
+  .d-node-dot.down { background:var(--down); }
+  .d-node-dot.skip { background:#6b7280; }
+  .d-node-name { font-weight:600; font-size:14px; overflow-wrap:anywhere; }
+  .d-node-meta { color:var(--muted); font-size:12px; margin-top:2px; overflow-wrap:anywhere; }
+  .d-node-right { font:500 12px "IBM Plex Mono",ui-monospace,SFMono-Regular,monospace; color:var(--muted); text-align:right; white-space:nowrap; }
+  .d-progress { height:5px; overflow:hidden; margin-top:8px; border-radius:999px; background:var(--panel2); }
+  .d-progress > span { display:block; height:100%; border-radius:inherit; background:var(--accent); }
+  @media (max-width:640px) {
+    .d-page-lead { grid-template-columns:1fr; align-items:start; gap:10px; }
+    .d-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .d-node-row { grid-template-columns:12px minmax(0,1fr); }
+    .d-node-right { grid-column:2; text-align:left; }
+  }
 `;
 
 // `tabs: true` turns the nav into panel switches rather than scroll anchors. The panels are all
@@ -298,6 +339,73 @@ function renderItemList(items, emptyText = 'Nothing right now.') {
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+}
+
+// Director tab: the prototype's design language — page lead with eyebrow, metric
+// strip, node rows with status dots, and a callout when something is down.
+// `services`: [{ state: 'ok'|'down'|'skip', title, sub, right }]
+// `disks`:    [{ state: 'ok'|'warn', title, sub, right, pct }] (or null when the *arr diskspace call failed)
+// `totalFreeLabel`: preformatted free-space total, or null.
+function renderDirectorPanel({ overall, services, disks, totalFreeLabel }) {
+  const list = Array.isArray(services) ? services : [];
+  const counts = { ok: 0, down: 0, skip: 0 };
+  for (const s of list) counts[['ok', 'down', 'skip'].includes(s.state) ? s.state : 'skip']++;
+  const status = counts.down > 0 ? 'bad' : overall === 'ok' ? 'ok' : 'warn';
+  const statusText = counts.down > 0
+    ? `${counts.down} down`
+    : overall === 'ok' ? 'All systems go' : String(overall || 'unknown').toUpperCase();
+  const dotClass = state => (state === 'down' ? 'down' : state === 'warn' ? 'warn' : state === 'skip' ? 'skip' : '');
+  const downServices = list.filter(s => s.state === 'down');
+  const callout = downServices.length ? `
+      <div class="d-callout" role="alert">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 9v4m0 4h.01"/><path d="M10.3 3.7 2.2 17.8A2 2 0 0 0 4 21h16a2 2 0 0 0 1.8-3.2L13.7 3.7a2 2 0 0 0-3.4 0Z"/></svg>
+        <div><strong>${downServices.length === 1 ? 'One service needs attention' : `${downServices.length} services need attention`}.</strong>
+        ${downServices.map(s => `${escapeHtml(s.title)}${s.sub ? ` — ${escapeHtml(s.sub)}` : ''}`).join(' · ')}</div>
+      </div>` : '';
+  const serviceRows = list.length ? list.map(s => `
+        <div class="d-node-row">
+          <span class="d-node-dot ${dotClass(s.state)}" aria-hidden="true"></span>
+          <div><div class="d-node-name">${escapeHtml(s.title || '')}</div>${s.sub ? `<div class="d-node-meta">${escapeHtml(s.sub)}</div>` : ''}</div>
+          <div class="d-node-right">${escapeHtml(s.right || '')}</div>
+        </div>`).join('') : '<p class="d-lead-copy" style="padding:12px 0">No health data yet.</p>';
+  const diskRows = disks === null
+    ? '<p class="d-lead-copy" style="padding:12px 0">*arr diskspace unreachable or not configured.</p>'
+    : (Array.isArray(disks) && disks.length ? disks.map(d => `
+        <div class="d-node-row">
+          <span class="d-node-dot ${dotClass(d.state)}" aria-hidden="true"></span>
+          <div><div class="d-node-name">${escapeHtml(d.title || '')}</div>${d.sub ? `<div class="d-node-meta">${escapeHtml(d.sub)}</div>` : ''}
+            ${typeof d.pct === 'number' ? `<div class="d-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.max(0, Math.min(100, d.pct))}" aria-label="${escapeHtml(d.title || 'disk')} usage"><span style="width:${Math.max(0, Math.min(100, d.pct))}%"></span></div>` : ''}</div>
+          <div class="d-node-right">${escapeHtml(d.right || '')}</div>
+        </div>`).join('') : '<p class="d-lead-copy" style="padding:12px 0">No disks reported.</p>');
+  return `
+      <div class="d-page-lead">
+        <div>
+          <div class="d-eyebrow">FLEET / LIVE</div>
+          <h1 class="d-h1">The whole stack, one glance.</h1>
+          <p class="d-lead-copy">Every service the media server runs — health and disk in one place. Auto-refreshes with the page. “Not configured” means the URL or API key isn’t set; nothing is alarming.</p>
+        </div>
+        <span class="d-status ${status}">${escapeHtml(statusText)}</span>
+      </div>
+      <div class="d-metrics">
+        <div class="d-metric"><strong>${counts.ok}</strong><span>Services healthy</span></div>
+        <div class="d-metric"><strong>${counts.down}</strong><span>Down</span></div>
+        <div class="d-metric"><strong>${counts.skip}</strong><span>Not configured</span></div>
+        <div class="d-metric"><strong>${totalFreeLabel ? escapeHtml(totalFreeLabel) : '—'}</strong><span>Disk free · all volumes</span></div>
+      </div>
+      ${callout}
+      <div class="card d-card">
+        <div class="d-card-head">
+          <div><h2>Fleet status</h2><p>Plex, the *arrs, downloaders, and the bot’s own vitals.</p></div>
+          <span class="d-status ${status}">${escapeHtml(statusText)}</span>
+        </div>
+        <div class="d-card-body">${serviceRows}</div>
+      </div>
+      <div class="card d-card">
+        <div class="d-card-head">
+          <div><h2>Disk space</h2><p>Free space and usage per volume.</p></div>
+        </div>
+        <div class="d-card-body">${diskRows}</div>
+      </div>`;
 }
 
 function tierInstallCommand({ botUrl, node, token, folders, folderRoot, syncthingApiKey, syncthingFolderId, mountRoot, mountMarker }) {
@@ -626,4 +734,5 @@ module.exports = {
   renderPasskeyManagement,
   renderPasskeySetupBanner,
   renderAgentApiTokens,
+  renderDirectorPanel,
 };
