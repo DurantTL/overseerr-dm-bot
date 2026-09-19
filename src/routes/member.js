@@ -106,6 +106,12 @@ function registerMemberRoutes(app, deps) {
   const json = express.json();
   const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30 });
   const apiLimiter = rateLimit({ windowMs: 60 * 1000, limit: 40 });
+  // Blanket limiter for the whole member surface: every /member route does
+  // session auth or DB work, so all of them sit behind a rate limiter. The
+  // login/verify POSTs and the search API keep their stricter per-route
+  // limiters layered on top.
+  const memberLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 300 });
+  app.use('/member', memberLimiter);
 
   function setMemberCookie(req, res, discordId) {
     const secure = req.secure || String(req.headers['x-forwarded-proto'] || '').includes('https');

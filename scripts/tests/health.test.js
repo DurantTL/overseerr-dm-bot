@@ -15,6 +15,14 @@ const {
 } = require('../../src/request-reconcile');
 const { loadSandbox } = require('./extract');
 
+// Exact-hostname match for the premiumize mock below: a substring check like
+// url.startsWith('https://www.premiumize.me') would also match
+// https://www.premiumize.me.evil.example/ (CodeQL flags that pattern), so the
+// mock pins the hostname instead.
+function isPremiumizeUrl(url) {
+  try { return new URL(url).hostname === 'www.premiumize.me'; } catch (_e) { return false; }
+}
+
 function baseConfig(overrides = {}) {
   return {
     BACKUP_INTERVAL_HOURS: 0,
@@ -215,7 +223,7 @@ test('health: director board services report reachability, skip when unconfigure
       PREMIUMIZE_API_KEY: 'pk',
     }),
     axiosGet: async url => {
-      if (url.startsWith('https://www.premiumize.me')) return { status: 200, data: { status: 'success' } };
+      if (isPremiumizeUrl(url)) return { status: 200, data: { status: 'success' } };
       if (url === 'http://syncthing:8384') return { status: 404, data: {} };
       return { status: 200, data: {} };
     },
@@ -243,7 +251,7 @@ test('health: director board services go down on 5xx or connection failure', asy
     }),
     axiosGet: async url => {
       if (url === 'http://huntarr:1234') return { status: 502, data: {} };
-      if (url.startsWith('https://www.premiumize.me')) {
+      if (isPremiumizeUrl(url)) {
         const error = new Error('connect failed');
         error.code = 'ECONNREFUSED';
         throw error;
