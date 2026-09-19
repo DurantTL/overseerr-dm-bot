@@ -187,3 +187,51 @@ test('europe-sync run executes for real and audits the result', async () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('estimateSizes measures would-add folders and dest disk context', async () => {
+  const { estimateSizes } = require('../../src/europe-sync');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'europe-estimate-test-'));
+  try {
+    const source = path.join(root, 'Movies');
+    const dest = path.join(root, 'latest-movies');
+    fs.mkdirSync(path.join(source, 'Dune Part Two (2024)'), { recursive: true });
+    fs.mkdirSync(path.join(source, 'The Wild Robot (2024)'), { recursive: true });
+    fs.mkdirSync(dest, { recursive: true });
+    fs.writeFileSync(path.join(source, 'Dune Part Two (2024)', 'movie.mkv'), Buffer.alloc(1024 * 1024));
+    fs.writeFileSync(path.join(source, 'The Wild Robot (2024)', 'movie.mkv'), Buffer.alloc(2 * 1024 * 1024));
+    fs.writeFileSync(path.join(dest, 'old.mkv'), Buffer.alloc(512 * 1024));
+    const estimate = await estimateSizes({
+      source,
+      dest,
+      adds: [{ name: 'Dune Part Two (2024)' }, { name: 'The Wild Robot (2024)' }],
+    });
+    assert.strictEqual(estimate.totalFolders, 2);
+    assert.strictEqual(estimate.measuredFolders, 2);
+    assert.ok(estimate.estimatedNewBytes >= 3 * 1024 * 1024, `expected >= 3MB, got ${estimate.estimatedNewBytes}`);
+    assert.ok(estimate.destBytes >= 512 * 1024, `expected dest >= 512KB, got ${estimate.destBytes}`);
+    assert.ok(Number.isFinite(estimate.destFreeBytes) && estimate.destFreeBytes > 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('estimateSizes rejects path traversal and degrades on missing dirs', async () => {
+  const { estimateSizes } = require('../../src/europe-sync');
+  const estimate = await estimateSizes({
+    source: '/nonexistent-source-xyz',
+    dest: '/nonexistent-dest-xyz',
+    adds: [{ name: '../../etc' }, { name: 'Nope (2024)' }],
+  });
+  assert.strictEqual(estimate.estimatedNewBytes, null);
+  assert.strictEqual(estimate.measuredFolders, 0);
+  assert.strictEqual(estimate.totalFolders, 2);
+  assert.strictEqual(estimate.destBytes, null);
+  assert.strictEqual(estimate.destFreeBytes, null);
+});
+
+test('estimateSizes returns nulls without source/dest', async () => {
+  const { estimateSizes } = require('../../src/europe-sync');
+  const estimate = await estimateSizes({ adds: [{ name: 'X (2024)' }] });
+  assert.strictEqual(estimate.estimatedNewBytes, null);
+  assert.strictEqual(estimate.totalFolders, 1);
+});

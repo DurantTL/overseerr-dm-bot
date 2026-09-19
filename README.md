@@ -39,7 +39,15 @@ advanced-infrastructure layer lives in `docs/`:
 - Seerr/Overseerr request approvals from Discord.
 - Secure download links (hashed tokens, expiry, optional one-time-use, access logs, rate limits).
 - Audit logging for admin/user/system actions.
-- Admin dashboard (`/admin`) with health, pending items, and safe action endpoints.
+- Admin dashboard (`/admin`) with health, pending items, and safe action endpoints. The
+  **Director** tab is the fleet health board: every service the media server runs
+  (Plex, *arrs, Prowlarr, Byparr, Huntarr, Recyclarr, Cleanuparr, rTorrent, Syncthing,
+  Premiumize, seedbox staging, backups) with per-service status and error detail, plus disk
+  space. "Not Watchable Yet" rows for movies carry a **🔍 Search now** button that fires a
+  Radarr (or Radarr 4K) MoviesSearch for that title — the movie equivalent of the season/episode
+  search buttons shows already had. The Europe sync card's preview also shows a **space
+  estimate**: how many bytes the would-add movies need on Europe's 1TB disk, what the sync
+  folder currently holds, and free space on that disk.
 - Production topology and rollout gate: [`docs/production-readiness.md`](docs/production-readiness.md).
 - Safe sync (`/sync mode:preview|apply`) and cleanup preview/apply.
 - Full-chain linking: `/link` (and the one-click `/sync-fix links` buttons) merges any matching `plex_` synthetic row, sends a Plex invite if the person doesn't already have access, and links or creates the Seerr user including its Discord notification ID. The `email` fields on `/link`, `/reinvite`, and `/invite` autocomplete against every linked user — searchable by Discord name, Plex username, or email (the native user picker only suggests members your client has cached).

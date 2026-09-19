@@ -47,6 +47,7 @@ function fixture(overrides = {}) {
   const state = {
     audits: [],
     clearedAlerts: [],
+    movieSearches: [],
     priorities: [],
     revoked: [],
     settings: new Map(),
@@ -118,6 +119,7 @@ function fixture(overrides = {}) {
     sonarrSeriesAliases: () => [],
     tierInstallCommand: () => 'install',
     triggerEpisodeSearch: async () => {},
+    triggerMovieSearch: async (movieId, options) => state.movieSearches.push({ movieId, options }),
     triggerSeasonSearch: async () => ({ id: 1 }),
     tunable: () => false,
     upsertTierNode: value => ({ created: true, node: value }),
@@ -164,6 +166,16 @@ test('gate, tier, search, and priority routes preserve validation and audit cont
     }, headers);
     assert.strictEqual(rearm.statusCode, 200);
     assert.deepStrictEqual(state.clearedAlerts, [{ seriesId: 12, seasonNumber: 1 }]);
+
+    assert.strictEqual((await post(port, '/admin/action/search', { kind: 'movie' }, headers)).statusCode, 400);
+    assert.strictEqual((await post(port, '/admin/action/search', { kind: 'movie', movieId: 0 }, headers)).statusCode, 400);
+    const movieSearch = await post(port, '/admin/action/search', { kind: 'movie', movieId: 42 }, headers);
+    assert.strictEqual(movieSearch.statusCode, 200);
+    assert.deepStrictEqual(state.movieSearches, [{ movieId: 42, options: { is4k: false } }]);
+    assert.ok(state.audits.some(row => row.action === 'dashboard_search' && row.metadata.ok && row.metadata.kind === 'movie'));
+    const movieSearch4k = await post(port, '/admin/action/search', { kind: 'movie', movieId: 7, is4k: true }, headers);
+    assert.strictEqual(movieSearch4k.statusCode, 200);
+    assert.deepStrictEqual(state.movieSearches[1], { movieId: 7, options: { is4k: true } });
 
     const pin = await post(port, '/admin/action/priority', {
       operation: 'pin', key: 'tvdb:12', mediaType: 'tv', title: 'Example',

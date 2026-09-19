@@ -283,9 +283,12 @@ async function addTagToSeries(seriesId, tagId) {
     { headers: { 'X-Api-Key': CONFIG.SONARR_API_KEY }, timeout: 15000 });
 }
 
-async function triggerMovieSearch(movieId) {
-  await axios.post(`${CONFIG.RADARR_URL}/api/v3/command`, { name: 'MoviesSearch', movieIds: [movieId] },
-    { headers: { 'X-Api-Key': CONFIG.RADARR_API_KEY }, timeout: 15000 });
+async function triggerMovieSearch(movieId, { is4k = false } = {}) {
+  const url = is4k ? CONFIG.RADARR_4K_URL : CONFIG.RADARR_URL;
+  const key = is4k ? CONFIG.RADARR_4K_API_KEY : CONFIG.RADARR_API_KEY;
+  if (!url) throw new Error(is4k ? 'Radarr 4K is not configured' : 'Radarr is not configured');
+  await axios.post(`${url}/api/v3/command`, { name: 'MoviesSearch', movieIds: [movieId] },
+    { headers: { 'X-Api-Key': key }, timeout: 15000 });
 }
 
 async function triggerSeriesSearch(seriesId) {

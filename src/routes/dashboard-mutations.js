@@ -66,6 +66,7 @@ function registerDashboardMutationRoutes(app, deps) {
     tierApplyConfirmCode,
     tierInstallCommand,
     triggerEpisodeSearch,
+    triggerMovieSearch,
     triggerSeasonSearch,
     tunable,
     upsertTierNode,
@@ -149,6 +150,22 @@ function registerDashboardMutationRoutes(app, deps) {
   });
   router.post('/admin/action/search', dashboardAuth, async (req, res) => {
     const kind = req.body?.kind;
+    if (kind === 'movie') {
+      const movieId = Number(req.body?.movieId);
+      const is4k = req.body?.is4k === true;
+      if (!Number.isInteger(movieId) || movieId < 1) {
+        audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'invalid_request' });
+        return res.status(400).json({ ok: false, error: 'Valid Radarr movie ID is required.' });
+      }
+      try {
+        await triggerMovieSearch(movieId, { is4k });
+        audit('dashboard_search', { ...dashboardActor(req), ok: true, kind: 'movie', movieId, is4k });
+        return res.json({ ok: true, message: `Movie search triggered in Radarr${is4k ? ' 4K' : ''}.` });
+      } catch (err) {
+        audit('dashboard_search', { ...dashboardActor(req), ok: false, kind: 'movie', movieId, error: err.message });
+        return res.status(502).json({ ok: false, error: `Radarr search failed: ${err.message}` });
+      }
+    }
     const seriesId = Number(req.body?.seriesId);
     const seasonNumber = Number(req.body?.seasonNumber);
     const episodeId = Number(req.body?.episodeId);

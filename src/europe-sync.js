@@ -101,6 +101,76 @@ function defaultRunScript(scriptPath, dryRun, { timeoutMs = 5 * 60 * 1000 } = {}
   });
 }
 
+// ---- Space estimates ----
+// The preview tells Caleb *which* movies would sync; the estimate tells him how
+// much room Europe needs for them. Hardlinks cost nothing extra on the master,
+// but the 1TB Europe disk holds the actual bytes. Sizes come from du against the
+// script's own SOURCE/DEST dirs (parsed from its config) — never from a
+// reimplementation of its filtering. Bounded by folder count and a timeout; any
+// failure degrades to nulls so the preview still works.
+
+const ESTIMATE_MAX_FOLDERS = 200;
+const ESTIMATE_TIMEOUT_MS = 60 * 1000;
+
+function runCmd(cmd, args, timeoutMs) {
+  return new Promise(resolve => {
+    let stdout = '';
+    let settled = false;
+    const child = spawn(cmd, args, { timeout: timeoutMs });
+    child.stdout.on('data', d => { stdout += d; });
+    child.on('error', () => { if (!settled) { settled = true; resolve(null); } });
+    child.on('close', code => { if (!settled) { settled = true; resolve(code === 0 ? stdout : null); } });
+  });
+}
+
+function safeJoin(base, name) {
+  const root = path.resolve(base) + path.sep;
+  const resolved = path.resolve(base, name);
+  return resolved.startsWith(root) ? resolved : null;
+}
+
+async function estimateSizes({ source, dest, adds }) {
+  const out = {
+    estimatedNewBytes: null,
+    measuredFolders: 0,
+    totalFolders: (adds || []).length,
+    destBytes: null,
+    destFreeBytes: null,
+  };
+  if (!source || !dest) return out;
+  try {
+    const dirs = (adds || [])
+      .slice(0, ESTIMATE_MAX_FOLDERS)
+      .map(a => a && a.name)
+      .filter(Boolean)
+      .map(name => safeJoin(source, name))
+      .filter(Boolean);
+    if (dirs.length) {
+      const du = await runCmd('du', ['-sb', '--', ...dirs], ESTIMATE_TIMEOUT_MS);
+      if (du) {
+        let total = 0;
+        let count = 0;
+        for (const line of du.split('\n')) {
+          const m = /^(\d+)\t/.exec(line);
+          if (m) { total += Number(m[1]); count++; }
+        }
+        if (count) { out.estimatedNewBytes = total; out.measuredFolders = count; }
+      }
+    }
+    const destDu = await runCmd('du', ['-sb', '--', dest], ESTIMATE_TIMEOUT_MS);
+    if (destDu) {
+      const m = /^(\d+)\t/.exec(destDu);
+      if (m) out.destBytes = Number(m[1]);
+    }
+    const df = await runCmd('df', ['-B1', '--output=avail', '--', dest], ESTIMATE_TIMEOUT_MS);
+    if (df) {
+      const avail = Number(df.trim().split('\n').pop());
+      if (Number.isFinite(avail)) out.destFreeBytes = avail;
+    }
+  } catch (_e) { /* degrade to nulls */ }
+  return out;
+}
+
 function createEuropeSync({ scriptPath, runScript = defaultRunScript } = {}) {
   if (!scriptPath) throw new Error('createEuropeSync requires scriptPath');
 
@@ -130,7 +200,7 @@ function createEuropeSync({ scriptPath, runScript = defaultRunScript } = {}) {
     return { ...parseScriptOutput(stdout), raw: stdout };
   }
 
-  return { getStatus, preview, run, parseScriptConfig, parseScriptOutput };
+  return { getStatus, preview, run, estimateSizes, parseScriptConfig, parseScriptOutput };
 }
 
-module.exports = { createEuropeSync, parseScriptConfig, parseScriptOutput, defaultRunScript };
+module.exports = { createEuropeSync, parseScriptConfig, parseScriptOutput, estimateSizes, defaultRunScript };

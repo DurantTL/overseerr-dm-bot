@@ -26,6 +26,15 @@ function registerEuropeSyncRoutes(app, deps) {
     return { ...status, lastRun };
   }
 
+  function formatBytes(bytes) {
+    if (bytes == null || !Number.isFinite(bytes)) return null;
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+    return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+  }
+
   function resultToHtml(result, { live }) {
     const section = (title, items, emptyText) => {
       if (!items.length) return `<p class="muted">${escapeHtml(emptyText)}</p>`;
@@ -37,7 +46,21 @@ function registerEuropeSyncRoutes(app, deps) {
     const summary = live
       ? `Sync complete: ${result.adds.length} added, ${result.removes.length} removed from the Europe folder, ${result.skips.length} skipped.`
       : `Dry run — nothing changed. This ${verb} add ${result.adds.length}, remove ${result.removes.length}, skip ${result.skips.length}.`;
-    return `<div class="europe-sync-result"><p><strong>${escapeHtml(summary)}</strong></p>`
+    let estimateHtml = '';
+    if (!live && result.estimate) {
+      const e = result.estimate;
+      const newBytes = formatBytes(e.estimatedNewBytes);
+      const destBytes = formatBytes(e.destBytes);
+      const destFree = formatBytes(e.destFreeBytes);
+      const lines = [];
+      if (newBytes) lines.push(`<strong>${escapeHtml(newBytes)}</strong> of new movies to send to Europe${e.measuredFolders < e.totalFolders ? ` (measured ${e.measuredFolders} of ${e.totalFolders})` : ''}`);
+      if (destBytes) lines.push(`sync folder currently holds <strong>${escapeHtml(destBytes)}</strong>`);
+      if (destFree) lines.push(`<strong>${escapeHtml(destFree)}</strong> free on that disk`);
+      estimateHtml = lines.length
+        ? `<p>📦 Space estimate: ${lines.join(' · ')}. Hardlinks cost nothing extra on the master — Europe's 1TB disk needs the real bytes.</p>`
+        : '<p class="muted">📦 Space estimate unavailable on this host.</p>';
+    }
+    return `<div class="europe-sync-result"><p><strong>${escapeHtml(summary)}</strong></p>${estimateHtml}`
       + section(live ? 'Added' : 'Would add', result.adds, 'Nothing to add.')
       + section(live ? 'Removed' : 'Would remove', result.removes, 'Nothing to remove.')
       + section('Skipped (no video file — likely unreleased placeholders)', result.skips, 'Nothing skipped.')
@@ -55,6 +78,15 @@ function registerEuropeSyncRoutes(app, deps) {
     }
     try {
       const result = await sync.preview();
+      // Space estimate: how much room Europe needs for the would-add movies.
+      // Purely informational — never blocks or alters the preview.
+      try {
+        result.estimate = await sync.estimateSizes({
+          source: status.config?.source,
+          dest: status.config?.dest,
+          adds: result.adds,
+        });
+      } catch (_e) { result.estimate = null; }
       res.json({ ok: true, html: resultToHtml(result, { live: false }) });
     } catch (err) {
       audit('dashboard_europe_sync_failed', { ...dashboardActor(req), mode: 'preview', error: err.message });

@@ -44,7 +44,7 @@ const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPl
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvSeasonInfo, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
 const { ALL_SEASONS, parseSeasonSelection, formatSeasonsLabel, splitCoveredSeasons, seasonsToStorageKey, seasonsFromStorageKey } = require('./src/season-select');
-const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases,
+const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerMovieSearch, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases,
   getArrTagId, addTagToSeries, listSonarrCustomFormats, createSonarrCustomFormat, scoreSonarrCustomFormatInAllProfiles,
   listSonarrQualityDefinitions, setSonarrQualityDefinitionMinSize } = require('./src/arr');
 const { decideEscalationAction, escalationEligible, autoEscalateAllowed, usesDirectGrabEscalation } = require('./src/escalation');
@@ -9531,11 +9531,34 @@ async function gatherIncompleteRequests({ queue = [], grabJobs = [], escalations
     });
   }
 
+  // Movie "find it": resolve each open movie request to its Radarr movie id so the row
+  // can offer a one-click MoviesSearch, the way series rows already offer season/episode
+  // searches. A request whose movie isn't in either Radarr simply gets no button.
+  let radarrMovieByTmdb = new Map();
+  if (CONFIG.RADARR_URL || CONFIG.RADARR_4K_URL) {
+    try {
+      const movies = await listRadarrMovies().catch(() => []);
+      for (const m of movies || []) {
+        if (m?.tmdbId && Number.isInteger(m.id)) radarrMovieByTmdb.set(`${Number(m.tmdbId)}:${m.is4k ? 1 : 0}`, m.id);
+      }
+    } catch (_e) { /* search buttons simply won't render */ }
+  }
+
   for (const request of openRequests) {
     const tvdbId = /^tvdb:(\d+)$/.exec(request.media_id || '')?.[1];
     // A series already covered by the Sonarr pass above would otherwise appear twice.
     if (tvdbId && seenTvdb.has(Number(tvdbId))) continue;
     const tmdbId = /^tmdb:(\d+)$/.exec(request.media_id || '')?.[1];
+    const isMovie = request.media_type === 'movie';
+    const radarrId = tmdbId && isMovie ? radarrMovieByTmdb.get(`${Number(tmdbId)}:${request.is_4k ? 1 : 0}`) : null;
+    const searchAction = radarrId
+      ? [{
+          label: `🔍 Search${request.is_4k ? ' 4K' : ''} now`,
+          url: '/admin/action/search',
+          body: { kind: 'movie', movieId: radarrId, is4k: !!request.is_4k },
+          title: `Trigger a Radarr${request.is_4k ? ' 4K' : ''} MoviesSearch for "${request.title}" right now.`,
+        }]
+      : [];
     const activity = describeActivity(ctx, { tvdbId: tvdbId ? Number(tvdbId) : null, tmdbId: tmdbId ? Number(tmdbId) : null, title: request.title });
     const age = fmtAgo(sqliteUtcMs(request.created_at));
     rows.push({
@@ -9544,7 +9567,7 @@ async function gatherIncompleteRequests({ queue = [], grabJobs = [], escalations
       sub: `${requestStatusBadge(request.status)} · requested ${age} · ${activity.note}`,
       right: request.requested_by_discord_id ? `by ${request.requested_by_discord_id}` : '',
       missing: 0,
-      actions: request.media_id ? [{ label: priority.has(request.media_id) ? 'Unpin' : 'Pin', url: '/admin/action/priority', body: { operation: priority.has(request.media_id) ? 'unpin' : 'pin', key: request.media_id, mediaType: request.media_type, title: request.title } }] : [],
+      actions: [...searchAction, ...(request.media_id ? [{ label: priority.has(request.media_id) ? 'Unpin' : 'Pin', url: '/admin/action/priority', body: { operation: priority.has(request.media_id) ? 'unpin' : 'pin', key: request.media_id, mediaType: request.media_type, title: request.title } }] : [])],
     });
   }
   return rankIncomplete(rows);
@@ -9832,6 +9855,7 @@ function startExpressServer() {
       tierApplyConfirmCode,
       tierInstallCommand,
       triggerEpisodeSearch,
+      triggerMovieSearch,
       triggerSeasonSearch,
       tunable,
       upsertTierNode,
