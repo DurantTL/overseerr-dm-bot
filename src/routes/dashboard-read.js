@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const { parseScriptConfig } = require('../europe-sync');
+const { HEALTH_KEYS, healthLabel } = require('../health');
 
 function registerDashboardReadRoutes(app, deps) {
   const {
@@ -381,7 +382,21 @@ function registerDashboardReadRoutes(app, deps) {
     const auditTableRows = auditRows.map(a => ({ when: fmtAgo(sqliteUtcMs(a.created_at)), action: a.action, details: String(a.metadata_json || '').slice(0, 160) }));
 
     const unavailable = which => `<p class="muted">${escapeHtml(which)} unreachable or not configured.</p>`;
-    const nav = [['overview', 'Overview'], ['operations', 'Operations'], ['automation', 'Automation'], ['edge', 'Edge'], ['people', 'People'], ['logs', 'Logs']];
+
+    // Director tab: every service the media server runs, one glance. Skipped means
+    // the URL/API key isn't configured — the board degrades to "not configured"
+    // rather than alarming.
+    const directorItems = HEALTH_KEYS.filter(k => health[k] !== undefined).map(k => {
+      const value = health[k];
+      const state = value === 'ok' || value === 'configured' ? 'ok' : value === 'down' || value === 'missing' ? 'down' : 'skip';
+      let sub = null;
+      if (value === 'down' || value === 'missing') sub = (health.errors || {})[k] || 'check failed';
+      else if (value === 'skipped' || value === 'disabled') sub = 'not configured';
+      else if (k === 'backup' && health.backupLastSuccessfulAt) sub = `last success ${fmtAgo(health.backupLastSuccessfulAt)}`;
+      return { state, title: healthLabel(k), sub, right: String(value) };
+    });
+
+    const nav = [['director', 'Director'], ['overview', 'Overview'], ['operations', 'Operations'], ['automation', 'Automation'], ['edge', 'Edge'], ['people', 'People'], ['logs', 'Logs']];
     const settingsGroups = runtimeSettings.describeRuntimeSettings({ config: CONFIG, store: settingsStore });
     const overriddenCount = settingsGroups.reduce((n, g) => n + g.settings.filter(x => x.overridden).length, 0);
 
@@ -391,6 +406,17 @@ function registerDashboardReadRoutes(app, deps) {
         <span class="updated">rendered ${new Date(now).toISOString().slice(11, 19)} UTC${dataAsOf < now ? ` · data as of ${fmtAgo(dataAsOf)}` : ''}${dataStale ? ' · <strong>stale</strong> (an integration refresh failed; showing the last good value)' : ''} · auto-refreshes</span>
       </div>
       <div class="stats">${stats}</div>
+
+      <section class="panel" data-panel="director">
+        <div class="card">
+          <h2>🖥️ Fleet Status<span class="sub">Everything the media server is running. Auto-refreshes with the page.</span></h2>
+          ${renderItemList(directorItems, 'No health data yet.')}
+        </div>
+        <div class="card">
+          <h2>💾 Disk Space</h2>
+          ${disks === null ? unavailable('*arr diskspace') : renderItemList(diskItems, 'No disks reported.')}
+        </div>
+      </section>
 
       <section class="panel" data-panel="overview">
         ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID, PASSKEY_RP.origin)}
@@ -406,10 +432,6 @@ function registerDashboardReadRoutes(app, deps) {
         <div class="card">
           <h2>⬇️ Downloading</h2>
           ${queue === null ? unavailable('Radarr/Sonarr') : renderItemList(queueItems, 'Nothing in the download queues.')}
-        </div>
-        <div class="card">
-          <h2>💾 Disk Space</h2>
-          ${disks === null ? unavailable('*arr diskspace') : renderItemList(diskItems, 'No disks reported.')}
         </div>
       </section>
 

@@ -116,6 +116,13 @@ const CONFIG = (() => {
   PROWLARR_URL: process.env.PROWLARR_URL || '',
   PROWLARR_API_KEY: process.env.PROWLARR_API_KEY || '',
   BYPARR_URL: process.env.BYPARR_URL || '',
+  // ---- Director health board: optional service base URLs for liveness checks ----
+  // Base URLs only (e.g. http://huntarr:1234); the board treats any HTTP response
+  // under 500 as "up". Empty = skipped.
+  HUNTARR_URL: (process.env.HUNTARR_URL || '').replace(/\/$/, ''),
+  RECYCLARR_URL: (process.env.RECYCLARR_URL || '').replace(/\/$/, ''),
+  CLEANUPARR_URL: (process.env.CLEANUPARR_URL || '').replace(/\/$/, ''),
+  SYNCTHING_URL: (process.env.SYNCTHING_URL || '').replace(/\/$/, ''),
   TAUTULLI_URL: (process.env.TAUTULLI_URL || '').replace(/\/$/, ''),
   TAUTULLI_API_KEY: process.env.TAUTULLI_API_KEY || '',
   PLAYBACK_CHECK_MINUTES: Number.parseInt(process.env.PLAYBACK_CHECK_MINUTES || '5', 10),

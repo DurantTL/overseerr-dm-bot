@@ -16,6 +16,12 @@ const HEALTH_KEYS = Object.freeze([
   'sonarr',
   'prowlarr',
   'byparr',
+  'huntarr',
+  'recyclarr',
+  'cleanuparr',
+  'rtorrent',
+  'syncthing',
+  'premiumize',
   'raidPath',
   'grabStaging',
   'tunnelDomain',
@@ -34,6 +40,12 @@ const HEALTH_LABELS = Object.freeze({
   sonarr: 'sonarr',
   prowlarr: 'prowlarr',
   byparr: 'byparr liveness',
+  huntarr: 'huntarr',
+  recyclarr: 'recyclarr',
+  cleanuparr: 'cleanuparr',
+  rtorrent: 'rtorrent',
+  syncthing: 'syncthing',
+  premiumize: 'premiumize',
   raidPath: 'media mount',
   grabStaging: 'seedbox staging',
   tunnelDomain: 'tunnel domain',
@@ -167,6 +179,28 @@ function createHealthChecker({ config, client, db, fs, axios, audit, getSetting,
       apiCheck('byparr', async () => {
         if (!config.BYPARR_URL) return 'skipped';
         return axios.get(`${config.BYPARR_URL}/openapi.json`, { timeout: 5000 });
+      }),
+      // Director board liveness: the service answers HTTP at all. Any status under 500
+      // counts as up — a 404/405 from the app itself still proves the process is alive.
+      ...[
+        ['huntarr', config.HUNTARR_URL],
+        ['recyclarr', config.RECYCLARR_URL],
+        ['cleanuparr', config.CLEANUPARR_URL],
+        ['syncthing', config.SYNCTHING_URL],
+        ['rtorrent', config.RTORRENT_URL],
+      ].map(([name, url]) => apiCheck(name, async () => {
+        if (!url) return 'skipped';
+        const res = await axios.get(url, { timeout: 5000, validateStatus: () => true });
+        if (res.status >= 500) throw new Error(`HTTP ${res.status}`);
+      })),
+      apiCheck('premiumize', async () => {
+        if (!config.PREMIUMIZE_API_KEY) return 'skipped';
+        const res = await axios.get('https://www.premiumize.me/api/account/info', {
+          params: { apikey: config.PREMIUMIZE_API_KEY },
+          timeout: 8000,
+          validateStatus: () => true,
+        });
+        if (res.data?.status !== 'success') throw new Error(res.data?.message || `HTTP ${res.status}`);
       }),
     ]);
 
