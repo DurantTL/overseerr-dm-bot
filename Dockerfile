@@ -8,10 +8,12 @@ FROM node:24-slim
 
 # rclone drives the Plex Home staging copies/evictions (see README "Plex Home staging").
 # ca-certificates lets it talk TLS to remotes like SFTP-over-VPS or cloud backends.
+# smartmontools lets the bot read its own box's drive health (MASTER_SMART_DEVICES) —
+# the tier agent does this on edge nodes; nothing else on the master runs smartctl.
 # The upgrade picks up Debian security point-releases (e.g. libpcre2-8-0) between node:24-slim
 # base image refreshes, without waiting on a new upstream base image tag.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends rclone ca-certificates \
+  && apt-get install -y --no-install-recommends rclone ca-certificates smartmontools \
   && apt-get upgrade -y \
   && rm -rf /var/lib/apt/lists/*
 

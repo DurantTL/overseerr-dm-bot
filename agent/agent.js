@@ -26,6 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
+const childProcess = require('child_process');
 
 // A short hash of THIS FILE'S OWN bytes, reported alongside every heartbeat/report so the bot (and
 // an admin reading /tier-node list or the dashboard) can tell what a node is actually running
@@ -45,7 +46,77 @@ function agentVersion({ fsImpl = fs } = {}) {
   return agentVersionCache;
 }
 
-function collectSystemTelemetry(ctx, { fsImpl = fs, osImpl = os } = {}) {
+// SMART drive health, compact per-drive ok/failing for the bot's alerting. Devices come
+// from TIER_SMART_DEVICES (comma/space-separated), falling back to the parent disk of the
+// watched filesystem's block device (best effort via `df`). smartctl exits NON-ZERO when
+// health fails — that throw carries the parseable output, so it is caught and read, not
+// treated as an error. smartctl missing or a device unreadable yields no entry: a missing
+// reading is null, never a failed report.
+function defaultExecFile(cmd, args, opts) {
+  return childProcess.execFileSync(cmd, args, {
+    encoding: 'utf8',
+    timeout: (opts && opts.timeout) || 15000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+function parentDiskDevice(device) {
+  const dev = String(device || '').trim();
+  if (!dev) return null;
+  let m = /^(.*)p\d+$/.exec(dev); // nvme0n1p1 → nvme0n1, mmcblk0p1 → mmcblk0
+  if (m) return m[1];
+  m = /^(\/dev\/[a-zA-Z]+)\d+$/.exec(dev); // sda1 → sda, vda2 → vda
+  if (m) return m[1];
+  return dev; // already a whole disk
+}
+
+function parseSmartHealthOutput(output) {
+  const text = String(output || '');
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    const passed = parsed?.smart_status?.passed;
+    if (passed === true) return 'ok';
+    if (passed === false) return 'failing';
+  } catch (_e) { /* not JSON — try the text form below */ }
+  const m = /SMART overall-health self-assessment test result:\s*(PASSED|FAILED)/i.exec(text);
+  if (m) return m[1].toUpperCase() === 'PASSED' ? 'ok' : 'failing';
+  return null;
+}
+
+function smartHealthForDevice(device, execImpl) {
+  let output;
+  try {
+    output = String(execImpl('smartctl', ['-H', '-j', device], { timeout: 15000 }) || '');
+  } catch (err) {
+    output = String((err && err.stdout) || '');
+  }
+  return parseSmartHealthOutput(output);
+}
+
+function collectSmartHealth(ctx, statPath, { execImpl = defaultExecFile } = {}) {
+  const results = [];
+  const seen = new Set();
+  let devices = String(ctx.smartDevices || '').split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+  if (!devices.length && statPath) {
+    try {
+      const dfOut = String(execImpl('df', ['--output=source', statPath], { timeout: 10000 }) || '');
+      const lines = dfOut.trim().split('\n');
+      const parent = parentDiskDevice(lines[lines.length - 1]);
+      if (parent) devices = [parent];
+    } catch (_e) { /* no derivation — no SMART readings this run */ }
+  }
+  for (const raw of devices.slice(0, 8)) {
+    const device = String(raw).slice(0, 80);
+    if (!device || seen.has(device)) continue;
+    seen.add(device);
+    const health = smartHealthForDevice(device, execImpl);
+    if (health) results.push({ device, health });
+  }
+  return results.length ? results : null;
+}
+
+function collectSystemTelemetry(ctx, { fsImpl = fs, osImpl = os, execImpl = defaultExecFile } = {}) {
   const sensors = [];
   const safeRead = file => {
     try {
@@ -88,11 +159,18 @@ function collectSystemTelemetry(ctx, { fsImpl = fs, osImpl = os } = {}) {
 
   let filesystemTotalBytes = null;
   let filesystemFreeBytes = null;
+  const statPath = ctx.mount?.root || ctx.folderRoot;
   try {
-    const stat = fsImpl.statfsSync(ctx.mount?.root || ctx.folderRoot);
+    const stat = fsImpl.statfsSync(statPath);
     filesystemTotalBytes = Number(stat.blocks) * Number(stat.bsize);
     filesystemFreeBytes = Number(stat.bavail) * Number(stat.bsize);
   } catch (_e) { /* filesystem telemetry is optional */ }
+  // SMART is best-effort and independent of the statfs result: even when the watched path
+  // is unreachable, a drive health reading is still useful. Never throws.
+  let smartHealth = null;
+  try {
+    smartHealth = collectSmartHealth(ctx, statPath, { execImpl });
+  } catch (_e) { /* SMART is optional */ }
   const load = osImpl.loadavg();
   return {
     collectedAt: Date.now(),
@@ -106,6 +184,7 @@ function collectSystemTelemetry(ctx, { fsImpl = fs, osImpl = os } = {}) {
     uptimeSeconds: osImpl.uptime(),
     filesystemTotalBytes,
     filesystemFreeBytes,
+    smartHealth,
   };
 }
 
@@ -197,6 +276,14 @@ function buildCtx(env = process.env) {
     // Report the local file inventory (the atime demand signal). Default on — harmless for
     // Tautulli nodes, essential for atime nodes.
     reportInventory: (env.TIER_REPORT_INVENTORY ?? '1') !== '0',
+    // Monitor-only mode (backup boxes, non-Plex servers): report telemetry + disk + SMART
+    // on the schedule and skip everything tier-plan-related (manifest, mount guard,
+    // inventory, pruning). The watched filesystem is TIER_FOLDER_ROOT.
+    monitorOnly: env.TIER_MONITOR_ONLY === '1',
+    // SMART devices to health-check, comma/space-separated (e.g. "/dev/sda, /dev/nvme0n1").
+    // Unset = best-effort derivation from the watched filesystem's block device. smartctl
+    // missing or a device unreadable simply yields no reading — never a failed report.
+    smartDevices: env.TIER_SMART_DEVICES || '',
     dryRun: env.TIER_DRY_RUN === '1',
     timeoutMs: Number(env.TIER_HTTP_TIMEOUT_MS || 30000),
     agentVersion: agentVersion(),
@@ -704,6 +791,25 @@ function checkMergedMount(ctx, { fsImpl = fs } = {}) {
 async function runOnce(ctx) {
   const state = loadState(ctx);
   const telemetry = collectSystemTelemetry(ctx);
+  // Monitor-only nodes (backup boxes, non-Plex servers — TIER_MONITOR_ONLY=1): report
+  // telemetry + disk + SMART and stop. There is no tier plan for these nodes, so the
+  // manifest fetch, mount guard, inventory walk, and pruning are all skipped.
+  if (ctx.monitorOnly) {
+    ctx.log('monitor-only mode — reporting telemetry, skipping tier-plan work');
+    try {
+      await botApi(ctx, 'POST', `/agent/report/${encodeURIComponent(ctx.node)}`, {
+        heartbeat: true,
+        monitorOnly: true,
+        telemetry,
+        agentVersion: ctx.agentVersion,
+      });
+      return { skipped: true, heartbeat: true, monitorOnly: true };
+    } catch (err) {
+      ctx.log(`monitor-only heartbeat failed: ${err.message}`);
+      process.exitCode = 1;
+      return { skipped: true, heartbeat: false, monitorOnly: true, error: err.message };
+    }
+  }
   // §181 read-only, opt-in (checks.configured is false when EDGE_MERGED_ROOT isn't set) — cheap
   // enough to run every cycle and attach to every report path below so /doctor never has to SSH in.
   const mountDiag = checkMergedMount(ctx);
@@ -886,4 +992,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, checkMergedMount, readMountOptions, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, collectSystemTelemetry, escapeStignore, loadState, saveState, writeStignore, agentVersion, readLegacyIgnoreLines, mergeLegacyIgnores, renderMergedStignore, applyLegacyIgnoreOverlay };
+module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, checkMergedMount, readMountOptions, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, collectSystemTelemetry, collectSmartHealth, parentDiskDevice, parseSmartHealthOutput, escapeStignore, loadState, saveState, writeStignore, agentVersion, readLegacyIgnoreLines, mergeLegacyIgnores, renderMergedStignore, applyLegacyIgnoreOverlay };

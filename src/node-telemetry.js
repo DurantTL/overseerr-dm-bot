@@ -13,6 +13,23 @@ function temperatureKind(value, source) {
     : 'unclassified';
 }
 
+// Compact per-drive SMART health as reported by the agent: at most 8 drives, each a
+// {device, health} pair where health is strictly 'ok' or 'failing'. Anything else
+// (absent smartctl, unreadable device, unexpected shape) is dropped — a missing
+// reading is null, never a guess.
+function sanitizeSmartHealth(raw) {
+  if (!Array.isArray(raw)) return null;
+  const out = [];
+  for (const entry of raw.slice(0, 8)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const device = String(entry.device || '').slice(0, 80);
+    const health = entry.health === 'ok' || entry.health === 'failing' ? entry.health : null;
+    if (!device || !health) continue;
+    out.push({ device, health });
+  }
+  return out.length ? out : null;
+}
+
 function sanitizeNodeTelemetry(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const value = {
@@ -29,6 +46,7 @@ function sanitizeNodeTelemetry(raw) {
     uptimeSeconds: boundedNumber(raw.uptimeSeconds),
     filesystemTotalBytes: boundedNumber(raw.filesystemTotalBytes),
     filesystemFreeBytes: boundedNumber(raw.filesystemFreeBytes),
+    smartHealth: sanitizeSmartHealth(raw.smartHealth),
   };
   value.temperatureKind = value.temperatureC == null ? null : temperatureKind(raw.temperatureKind, value.temperatureSource);
   return Object.values(value).some(item => item !== null) ? value : null;
@@ -86,6 +104,37 @@ function formatTelemetryAge(ageMs) {
   return `${(ageMs / 86400000).toFixed(1)}d`;
 }
 
+// Free-space assessment, mirroring assessNodeTelemetry's Schmitt-trigger hysteresis but
+// inverted: lower free % is worse. Thresholds are free-space percentages (warn when at or
+// below warnFreePct, urgent at or below urgentFreePct). Once a level is entered, leaving
+// it requires rising clearMarginPct above its line, so a disk riding the boundary doesn't
+// flap alerts on every sweep.
+function assessDiskLevel({ freeBytes, totalBytes }, {
+  warnFreePct = 15,
+  urgentFreePct = 8,
+  clearMarginPct = 3,
+  previousLevel = 'unknown',
+} = {}) {
+  const total = Number(totalBytes);
+  // null/undefined free space means "unreadable" — it must not coerce to 0 (Number(null))
+  // and page as urgent; only a real reading of 0 is an emergency.
+  const free = freeBytes == null ? NaN : Number(freeBytes);
+  if (!(total > 0) || !(free >= 0) || free > total) return { level: 'unknown', reason: 'disk size unavailable', freePct: null };
+  const freePct = (free / total) * 100;
+  const label = `${freePct.toFixed(1)}% free`;
+  if (freePct <= urgentFreePct) return { level: 'urgent', reason: `only ${label} — at or below the ${urgentFreePct}% urgent line`, freePct };
+  const urgentClearPct = urgentFreePct + clearMarginPct;
+  if (previousLevel === 'urgent' && freePct <= urgentClearPct) {
+    return { level: 'urgent', reason: `still only ${label} (below the ${urgentClearPct}% clear point)`, freePct };
+  }
+  if (freePct <= warnFreePct) return { level: 'warn', reason: `only ${label} — at or below the ${warnFreePct}% warning line`, freePct };
+  const warnClearPct = warnFreePct + clearMarginPct;
+  if ((previousLevel === 'warn' || previousLevel === 'urgent') && freePct <= warnClearPct) {
+    return { level: 'warn', reason: `still only ${label} (below the ${warnClearPct}% clear point)`, freePct };
+  }
+  return { level: 'ok', reason: `${label} free`, freePct };
+}
+
 function telemetrySummary(telemetry, fmtSpace = value => `${value} B`, { now = Date.now(), staleAfterMs = TELEMETRY_STALE_AFTER_MS } = {}) {
   if (!telemetry) return 'hardware telemetry unavailable';
   const memoryUsed = telemetry.memoryTotalBytes != null && telemetry.memoryFreeBytes != null
@@ -123,7 +172,9 @@ function nodeUptimeHint(telemetry) {
 module.exports = {
   TELEMETRY_STALE_AFTER_MS,
   sanitizeNodeTelemetry,
+  sanitizeSmartHealth,
   assessNodeTelemetry,
+  assessDiskLevel,
   telemetrySummary,
   telemetryAge,
   nodeUptimeHint,

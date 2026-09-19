@@ -547,11 +547,28 @@ const CONFIG = (() => {
   AGENT_REPORT_MAX_PER_MINUTE: Number.parseInt(process.env.AGENT_REPORT_MAX_PER_MINUTE || '12', 10),
   AGENT_READ_MAX_PER_MINUTE: Number.parseInt(process.env.AGENT_READ_MAX_PER_MINUTE || '60', 10),
   AGENT_API_READ_MAX_PER_MINUTE: Number.parseInt(process.env.AGENT_API_READ_MAX_PER_MINUTE || '60', 10),
+  // v1.1 fix endpoints are mutations: a much tighter budget than reads. Repairs are
+  // human-scale operations — a handful per minute is plenty, and a runaway client
+  // can't hammer the arrs through this surface.
+  AGENT_API_WRITE_MAX_PER_MINUTE: Number.parseInt(process.env.AGENT_API_WRITE_MAX_PER_MINUTE || '10', 10),
   // Full reports may carry 25 MB / 200k rows. Count admission above limits frequency; this
   // separately bounds simultaneous authenticated parses and report processing.
   AGENT_REPORT_MAX_CONCURRENT: Number.parseInt(process.env.AGENT_REPORT_MAX_CONCURRENT || '2', 10),
   NODE_TEMP_WARN_C: Number.parseFloat(process.env.NODE_TEMP_WARN_C || '80'),
   NODE_TEMP_CRITICAL_C: Number.parseFloat(process.env.NODE_TEMP_CRITICAL_C || '90'),
+  // Fleet disk-space alerting (free-space percentages; lower is worse). Warn when a volume
+  // drops to DISK_WARN_FREE_PCT % free, urgent at DISK_URGENT_FREE_PCT %. Clearing a level
+  // requires rising DISK_CLEAR_MARGIN_PCT above its line (Schmitt-trigger hysteresis, same
+  // idea as the temperature alerts) so a disk riding the boundary doesn't flap.
+  DISK_CHECK_MINUTES: Number.parseInt(process.env.DISK_CHECK_MINUTES || '30', 10),
+  DISK_WARN_FREE_PCT: Number.parseFloat(process.env.DISK_WARN_FREE_PCT || '15'),
+  DISK_URGENT_FREE_PCT: Number.parseFloat(process.env.DISK_URGENT_FREE_PCT || '8'),
+  DISK_CLEAR_MARGIN_PCT: Number.parseFloat(process.env.DISK_CLEAR_MARGIN_PCT || '3'),
+  // SMART for durant-server itself (the bot's own box — no tier agent runs there):
+  // comma/space-separated devices for `smartctl -H -j` (e.g. "/dev/sda, /dev/sdb").
+  // The bot runs in Docker, so this needs smartmontools in the image (Dockerfile) plus
+  // the devices mapped into the container. Unset = no master SMART readings (never an error).
+  MASTER_SMART_DEVICES: String(process.env.MASTER_SMART_DEVICES || ''),
   DELETION_GRACE_HOURS: Number.parseInt(process.env.DELETION_GRACE_HOURS || '24', 10),
   DELETION_REMINDER_COOLDOWN_HOURS: Number.parseInt(process.env.DELETION_REMINDER_COOLDOWN_HOURS || '12', 10),
   KEEP_LIST_DEFAULT_DAYS: Number.parseInt(process.env.KEEP_LIST_DEFAULT_DAYS || '90', 10),
@@ -640,6 +657,13 @@ function validateConfig() {
   if (!Number.isFinite(CONFIG.NODE_TEMP_WARN_C) || !Number.isFinite(CONFIG.NODE_TEMP_CRITICAL_C)
     || CONFIG.NODE_TEMP_WARN_C < 0 || CONFIG.NODE_TEMP_CRITICAL_C <= CONFIG.NODE_TEMP_WARN_C) {
     throw new Error('NODE_TEMP_WARN_C and NODE_TEMP_CRITICAL_C must be valid temperatures, with the critical threshold greater than the warning threshold');
+  }
+  if (!Number.isFinite(CONFIG.DISK_WARN_FREE_PCT) || !Number.isFinite(CONFIG.DISK_URGENT_FREE_PCT)
+    || !Number.isFinite(CONFIG.DISK_CLEAR_MARGIN_PCT) || !Number.isFinite(CONFIG.DISK_CHECK_MINUTES)
+    || !(CONFIG.DISK_CHECK_MINUTES > 0) || !(CONFIG.DISK_URGENT_FREE_PCT > 0)
+    || !(CONFIG.DISK_URGENT_FREE_PCT < CONFIG.DISK_WARN_FREE_PCT) || !(CONFIG.DISK_WARN_FREE_PCT <= 100)
+    || CONFIG.DISK_CLEAR_MARGIN_PCT < 0) {
+    throw new Error('DISK_WARN_FREE_PCT / DISK_URGENT_FREE_PCT must satisfy 0 < urgent < warn <= 100, DISK_CLEAR_MARGIN_PCT must be >= 0, DISK_CHECK_MINUTES must be > 0');
   }
 }
 

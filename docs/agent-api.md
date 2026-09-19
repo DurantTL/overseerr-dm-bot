@@ -1,8 +1,43 @@
 # Agent API access
 
-The bot exposes a read-only machine API (`GET /api/v1/*`) for the Plex Director agent
-(now Edith's standing role). Endpoints: health, library search, requests, and queues —
-never mutations, never raw errors, and downstream secrets stay in outbound headers.
+The bot exposes a machine API (`/api/v1/*`) for the Plex Director agent
+(now Edith's standing role). v1 was read-only; v1.1 adds a small allowlist of **fix
+endpoints** so the agent can run checks and trigger repairs, not just observe.
+Responses are small typed projections — never mutations beyond the allowlist, never raw
+errors, and downstream secrets stay in outbound headers.
+
+## Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/v1/health` | Bot + downstream service status. v1.1 adds `backupLastSuccessfulAt` and `backupAgeHours` (additive — the v1 shape is unchanged). |
+| GET | `/api/v1/disks` | Fleet disk space (v1.1): `[{ name, freeBytes, totalBytes, percentUsed, source, node, telemetryAgeMs, smartHealth }]`. `source` is `arr` (durant-server's *arr-reported volumes, `node: "durant-server"`) or `tier-agent` (a tier node's watched filesystem from its latest telemetry). `telemetryAgeMs` is null for *arr entries and the sample age in ms for tier-agent entries — stale telemetry is still listed, flagged by its age. `smartHealth` is null unless SMART data exists: tier-agent entries carry what the agent reported (`[{ device, health }]` where health is `ok`/`failing`), and `durant-server` entries carry the bot's own `smartctl` readings when `MASTER_SMART_DEVICES` is set. |
+| GET | `/api/v1/library/search` | "Do I have this" across Plex servers (`?title=`, `&type=movie\|tv`). |
+| GET | `/api/v1/queue` | Download queue, projected safe shape. |
+| GET | `/api/v1/requests` | Seerr requests with resolved titles (`?status=pending\|approved\|available\|declined\|failed`). |
+| POST | `/api/v1/automation/sweep` | Preview or run an automation sweep: `{ sweep, mode: "preview"\|"run" }`. Names validated against the registry. |
+| POST | `/api/v1/requests/:id/retry` | Re-run the direct-add repair for a **failed** Seerr request (adds to the arr bypassing Seerr, starts a search). 404 unless the request is currently failed. |
+| POST | `/api/v1/search/season` | Force a season search: `{ series, season, force? }`. `series` is a Sonarr id or an unambiguous title; same missing-episode/cooldown gates and AvistaZ-vs-Sonarr routing as the dashboard's Search Now button. |
+| POST | `/api/v1/import-scan` | Trigger an arr import scan: `{ target: "sonarr"\|"radarr", source?: "premiumize"\|"seedbox", folder?, mode?: "move"\|"copy" }`. Same safety logic as the Discord `import` subcommands — path traversal guard, `.incoming` guard, existence check. In Move mode a partial-match preview **refuses** (409) instead of asking an interactive confirm button; nothing destructive is ever clicked through silently. |
+
+## Safety model for the fix endpoints
+
+The agent token is now **privileged, not read-only**. What keeps that sane:
+
+- **Allowlist only.** The four POST endpoints above are the entire mutation surface. No
+  deletes, no container/service restarts, no config changes, no user invite/link/unlink,
+  no token management, no Plex shares, no direct database writes. Anything not listed
+  does not exist.
+- **No new repair logic.** Each fix endpoint calls an existing bot function — the same
+  code the Discord commands and dashboard buttons already run. The API invents nothing.
+- **Audit with actor.** Every mutation is audited as `agent:<token label>` (or
+  `agent:legacy-env-token`), so the audit log shows exactly which agent client acted.
+- **Tight write budget.** POST routes share a 10/min rate limiter
+  (`AGENT_API_WRITE_MAX_PER_MINUTE`), separate from the read limiter (60/min).
+- **Per-label revocable tokens.** Mint one token per client; revoke any one of them at
+  any time from the dashboard without touching the others.
+- **Upstream failures are 502s.** Like the read routes, fix endpoints never leak raw
+  error text (which can carry sensitive detail).
 
 ## Mint tokens from the dashboard
 
@@ -26,6 +61,36 @@ fallback so existing clients keep working while you migrate them. To retire it:
 
 With no `AGENT_API_TOKEN` and the dashboard disabled, the API routes are not mounted and
 every request returns 401.
+
+## Fleet disk & drive-health monitoring
+
+The `disk-space` automation sweep runs on a cadence (`DISK_CHECK_MINUTES`, default 30)
+over the same fleet `/api/v1/disks` reports, and pages the system channel only on
+**transitions** — ok → warn → urgent and recoveries — so a disk riding a threshold
+alerts once, not every sweep.
+
+- **Thresholds** (env-overridable): `DISK_WARN_FREE_PCT` (default 15), `DISK_URGENT_FREE_PCT`
+  (default 8), `DISK_CLEAR_MARGIN_PCT` (default 3, hysteresis — a warn clears only when
+  free space climbs past warn + margin). Config validation rejects `urgent >= warn`.
+- **Stale telemetry is never paged as disk-full.** A tier node whose telemetry is older
+  than 12 hours is assessed as `unknown` (its liveness is covered by the existing
+  node-heartbeat alerts); its disk still appears in `/api/v1/disks` with its age.
+- **SMART health.** Tier agents report per-drive health (`ok`/`failing`) when
+  `smartctl` is available. The sweep pages on newly failing drives and on recovery,
+  and persists the failing-device set per node. Every transition is audited
+  (`disk_space_transition`, `smart_health_transition`).
+- **Master SMART.** durant-server itself runs no tier agent, so the bot reads its own
+  drives: set `MASTER_SMART_DEVICES` (e.g. `/dev/sda, /dev/sdb`) and the disk sweep
+  runs `smartctl -H -j` per device, evaluates transitions as node `durant-server`,
+  and attaches the readings to the *arr entries in `/api/v1/disks`. The image ships
+  `smartmontools`; the drives must also be mapped into the container (Portainer stack):
+  ```yaml
+  devices:
+    - /dev/sda:/dev/sda   # repeat for each drive in MASTER_SMART_DEVICES
+  group_add:
+    - disk                # lets the non-root bot user read SMART data
+  ```
+  Unset, or unreadable devices, simply yield no readings — never an error or an alert.
 
 ## Admin sign-in hardening
 

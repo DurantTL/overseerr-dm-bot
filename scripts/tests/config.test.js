@@ -296,3 +296,28 @@ test('config: a request that skips the approval gate does not pre-authorize Avis
   assert.strictEqual(runtimeSettings.baseValue(setting, { config: { ESCALATION_SELF_REQUEST_PREAUTH: true } }), true,
     'and the old behavior is one setting away');
 });
+
+test('config: disk alert thresholds default sanely and validate the urgent < warn ordering', () => {
+  const { spawnSync } = require('child_process');
+  const base = {
+    DISCORD_BOT_TOKEN: 'x', DISCORD_CLIENT_ID: 'x', DISCORD_GUILD_ID: 'x', ADMIN_CHANNEL_ID: 'x',
+    ADMIN_USER_ID: 'x', OVERSEERR_URL: 'http://x', OVERSEERR_API_KEY: 'x', TUNNEL_DOMAIN: 'x',
+    RAID_PATH: '/x', PLEX_TOKEN: 'x', DASHBOARD_ADMIN_PASSWORD: 'x', SESSION_SECRET: 'x',
+    DASHBOARD_PUBLIC_URL: 'https://bot.example.com', WEBHOOK_SECRET: 'x', TAUTULLI_WEBHOOK_SECRET: 'x',
+  };
+  const configPath = path.join(__dirname, '..', '..', 'src', 'config');
+  const run = env => spawnSync(process.execPath, ['-e', `require(${JSON.stringify(configPath)}).validateConfig(); console.log("VALID")`], {
+    encoding: 'utf8', env: { ...process.env, ...base, ...env },
+  });
+  const defaults = run({});
+  assert.match(defaults.stdout, /VALID/, 'defaults pass validation');
+  const bad = run({ DISK_WARN_FREE_PCT: '8', DISK_URGENT_FREE_PCT: '8' });
+  assert.notStrictEqual(bad.status, 0);
+  assert.match(bad.stderr, /DISK_WARN_FREE_PCT/);
+  const negative = run({ DISK_CLEAR_MARGIN_PCT: '-1' });
+  assert.notStrictEqual(negative.status, 0);
+  const zeroInterval = run({ DISK_CHECK_MINUTES: '0' });
+  assert.notStrictEqual(zeroInterval.status, 0);
+  const custom = run({ DISK_WARN_FREE_PCT: '20', DISK_URGENT_FREE_PCT: '10', DISK_CLEAR_MARGIN_PCT: '5', DISK_CHECK_MINUTES: '15' });
+  assert.match(custom.stdout, /VALID/, 'sane overrides pass');
+});

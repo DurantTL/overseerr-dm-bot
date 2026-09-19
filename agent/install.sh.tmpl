@@ -6,6 +6,8 @@
 #   curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" __BOT_URL__/agent/install/__NODE__ \
 #     | sudo -E env SYNCTHING_API_KEY=... TIER_FOLDERS='[{"id":"movies","path":"/mnt/media/Movies"}]' sh
 #
+# Monitor-only nodes (backup boxes — TIER_MONITOR_ONLY=1) need only the token and the
+# watched path; the /tier-node token command for a monitor-only node generates that form.
 # Config comes from the environment, never from prompts: stdin is the script itself when piped,
 # so an interactive `read` would silently consume the rest of this file instead of waiting.
 set -eu
@@ -22,6 +24,12 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root (pipe to 'sudo -E sh', and keep -E so your env vars survive)"
 
 missing=''
+if [ "${TIER_MONITOR_ONLY:-0}" = "1" ]; then
+  # Monitor-only (backup boxes, non-Plex servers): no Syncthing, no tier plan — just a
+  # token and the path whose filesystem to watch (TIER_FOLDER_ROOT, e.g. /mnt/backup).
+  [ -n "${TIER_AGENT_TOKEN:-}" ] || missing="$missing TIER_AGENT_TOKEN"
+  [ -n "${TIER_FOLDER_ROOT:-}" ] || missing="$missing TIER_FOLDER_ROOT (path to watch, e.g. /mnt/backup)"
+else
 for var in TIER_AGENT_TOKEN SYNCTHING_API_KEY; do
   eval "val=\${$var:-}"
   [ -n "$val" ] || missing="$missing $var"
@@ -30,9 +38,17 @@ done
   [ -n "${TIER_FOLDER_ROOT:-}" ] || missing="$missing TIER_FOLDER_ROOT-or-TIER_FOLDERS"
   [ -n "${SYNCTHING_FOLDER_ID:-}" ] || missing="$missing SYNCTHING_FOLDER_ID-or-TIER_FOLDERS"
 }
-[ -z "$missing" ] || die "missing required environment:$missing
+fi
+if [ -n "$missing" ]; then
+  if [ "${TIER_MONITOR_ONLY:-0}" = "1" ]; then
+    die "missing required environment:$missing
+Generate a fresh install command for this monitor-only node with /tier-node token name:$NODE_NAME"
+  fi
+  die "missing required environment:$missing
 Re-run with them set, e.g.
   sudo -E env SYNCTHING_API_KEY=abc TIER_FOLDERS='[{\"id\":\"movies\",\"path\":\"/mnt/media/Movies\"}]' sh"
+
+fi
 
 command -v curl >/dev/null 2>&1 || die "curl not found"
 
@@ -77,6 +93,22 @@ fi
 
 # Parse the same JSON/compact multi-folder format as agent.js, validate every root before changing
 # the host, and pre-render systemd's write allowlist with correct quoting for paths containing spaces.
+# Monitor-only nodes skip the Syncthing folder machinery: the watched path just needs to exist,
+# and it gets a read-only unit entry (the agent only stats the filesystem; it never writes there)
+# so statfs works under ProtectSystem=strict.
+if [ "${TIER_MONITOR_ONLY:-0}" = "1" ]; then
+FOLDER_UNIT_LINES=$(node -e '
+const fs = require("fs");
+const root = String(process.env.TIER_FOLDER_ROOT || "").replace(/\/+$/, "") || "/";
+try {
+  if (!fs.statSync(root).isDirectory()) throw new Error("not a directory: " + root);
+} catch (error) {
+  console.error("watched path problem:\n  - " + (error && error.message || error));
+  process.exit(1);
+}
+process.stdout.write(`ReadOnlyPaths=${JSON.stringify(root)}\n`);
+') || die "TIER_FOLDER_ROOT is not a usable directory: $TIER_FOLDER_ROOT"
+else
 FOLDER_UNIT_LINES=$(node -e '
 try {
 const fs = require("fs");
@@ -113,6 +145,7 @@ for (const folder of folders) {
   process.exit(1);
 }
 ') || die "correct the folder paths to their exact local Syncthing paths in the dashboard, then generate a new command"
+fi
 
 say "Installing the tier agent for node '$NODE_NAME' from $BOT_URL"
 
@@ -154,6 +187,8 @@ ENVEOF
 [ -z "${TIER_MOUNT_MARKER:-}" ] || printf 'TIER_MOUNT_MARKER=%s\n' "$TIER_MOUNT_MARKER" >> "$ENV_FILE.new"
 [ -z "${TIER_EXPECTED_UUID:-}" ] || printf 'TIER_EXPECTED_UUID=%s\n' "$TIER_EXPECTED_UUID" >> "$ENV_FILE.new"
 [ -z "${TIER_REPORT_INVENTORY:-}" ] || printf 'TIER_REPORT_INVENTORY=%s\n' "$TIER_REPORT_INVENTORY" >> "$ENV_FILE.new"
+[ "${TIER_MONITOR_ONLY:-0}" = "1" ] && printf 'TIER_MONITOR_ONLY=1\n' >> "$ENV_FILE.new"
+[ -z "${TIER_SMART_DEVICES:-}" ] || printf 'TIER_SMART_DEVICES=%s\n' "$TIER_SMART_DEVICES" >> "$ENV_FILE.new"
 chmod 600 "$ENV_FILE.new"
 mv "$ENV_FILE.new" "$ENV_FILE"
 umask 022
@@ -202,7 +237,12 @@ systemctl enable --now tier-agent.timer >/dev/null
 say "→ first run"
 if systemctl start tier-agent.service; then
   say ""
-  say "Installed. The node should now show a recent check-in in /tier-node list and on the dashboard."
+  if [ "$TIER_MONITOR_ONLY" = "1" ]; then
+    say "Installed (monitor-only). First heartbeat reported successfully — the node should now"
+    say "show a recent check-in in /tier-node list and on the dashboard."
+  else
+    say "Installed. The node should now show a recent check-in in /tier-node list and on the dashboard."
+  fi
 else
   say ""
   say "Installed, but the first run failed. Logs:"

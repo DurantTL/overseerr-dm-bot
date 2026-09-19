@@ -16,24 +16,25 @@ function escapeHtml(str) {
 // narrow screens. All inline, no build step, dark Plex/Overseerr look.
 const DASHBOARD_CSS = `
   @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
-  :root { --bg:#131316; --panel:#1d1e23; --panel2:#26272e; --accent:#e5a00d; --text:#ececf0; --muted:#9aa0a6; --border:#33343c; --ok:#22c55e; --warn:#f59e0b; --down:#ef4444; --skip:#6b7280; }
+  :root { --bg:#101114; --panel:#1b1d22; --panel2:#24262d; --panel3:#2d3038; --accent:#f2a617; --accent-strong:#ffc04b; --text:#f4f4f2; --muted:#a9b1bf; --border:#363942; --ok:#36d284; --warn:#f59e0b; --down:#ff6969; --skip:#818996; --focus:#79b9ff; }
   * { box-sizing: border-box; }
   html { -webkit-text-size-adjust:100%; }
-  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); padding-bottom:env(safe-area-inset-bottom); }
-  header.hdr { position:sticky; top:0; z-index:20; background:rgba(19,19,22,.94); backdrop-filter:blur(10px); border-bottom:1px solid var(--border); padding-top:env(safe-area-inset-top); }
+  body { margin:0; font-family:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); line-height:1.45; padding-bottom:env(safe-area-inset-bottom); }
+  button, input, select, textarea { font:inherit; }
+  header.hdr { position:sticky; top:0; z-index:20; background:color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px); border-bottom:1px solid var(--border); padding-top:env(safe-area-inset-top); }
   .topbar { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 16px 8px; }
   .topbar h1 { margin:0; font-size:16px; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .topbar .brand { color:var(--accent); }
   .topbar-search { flex:1 1 280px; max-width:480px; display:flex; gap:8px; }
   .topbar-search input { width:100%; min-width:100px; padding:9px 11px; border-radius:9px; border:1px solid var(--border); background:var(--panel); color:var(--text); font-size:14px; }
-  .nav { display:flex; gap:8px; overflow-x:auto; padding:4px 16px 10px; scrollbar-width:none; }
+  .nav { display:flex; gap:6px; overflow-x:auto; margin:0 16px 10px; padding:4px; scrollbar-width:none; border:1px solid var(--border); background:var(--panel); border-radius:12px; }
   .nav::-webkit-scrollbar { display:none; }
-  .chip { flex:0 0 auto; min-height:44px; display:inline-flex; align-items:center; padding:7px 14px; border-radius:999px; background:var(--panel2); border:1px solid var(--border); color:var(--text); font-size:13px; text-decoration:none; }
-  .chip:hover, .chip:active { border-color:var(--accent); }
-  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .chip { flex:0 0 auto; min-height:39px; display:inline-flex; align-items:center; gap:8px; padding:0 14px; border:0; border-radius:8px; background:transparent; color:var(--muted); font-size:13px; font-weight:600; text-decoration:none; white-space:nowrap; }
+  .chip:hover, .chip:active { color:var(--text); }
+  :focus-visible { outline:3px solid color-mix(in srgb, var(--focus) 65%, transparent); outline-offset:2px; }
   .chip:focus-visible { outline-offset:0; }
   .container { max-width:1100px; margin:0 auto; padding:16px; }
-  .card { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:14px 16px; margin-bottom:14px; scroll-margin-top:110px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:13px; box-shadow:0 1px 0 color-mix(in srgb, var(--text) 4%, transparent); padding:16px 18px; margin-bottom:14px; scroll-margin-top:110px; }
   .card h2 { margin:0 0 10px; font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
   .overall { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:baseline; justify-content:space-between; padding:12px 16px; border-radius:14px; margin-bottom:14px; font-size:14px; }
   .overall.ok { background:rgba(34,197,94,.10); border:1px solid rgba(34,197,94,.5); }
@@ -41,8 +42,8 @@ const DASHBOARD_CSS = `
   .card.banner-warn { background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.55); }
   .overall .updated { color:var(--muted); font-size:12px; }
   .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:10px; margin-bottom:14px; }
-  .stat { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:12px 14px; }
-  .stat .n { font-size:22px; font-weight:700; color:var(--accent); line-height:1.2; }
+  .stat { background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:14px; }
+  .stat .n { display:block; font-size:22px; font-weight:600; color:var(--accent-strong); font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,monospace; line-height:1.1; }
   .stat .l { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin-top:2px; }
   .badges { display:flex; flex-wrap:wrap; gap:8px; }
   .badge { display:inline-flex; align-items:center; gap:6px; padding:7px 11px; border-radius:999px; font-size:12.5px; background:var(--panel2); border:1px solid var(--border); }
@@ -58,7 +59,7 @@ const DASHBOARD_CSS = `
   .item-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
   .item-actions .btn { min-height:34px; padding:7px 10px; font-size:12px; }
   .action-result { display:block; min-height:16px; margin-top:6px; font-size:12.5px; color:var(--muted); }
-  .action-result.ok { color:var(--ok); } .action-result.bad { color:#fca5a5; }
+  .action-result.ok { color:var(--ok); } .action-result.bad { color:var(--down); }
   .item-right { flex:0 0 auto; font-size:12px; color:var(--muted); text-align:right; max-width:42%; overflow-wrap:anywhere; }
   .bar { height:6px; background:var(--panel2); border-radius:999px; margin-top:7px; overflow:hidden; }
   .bar-fill { height:100%; background:var(--accent); border-radius:999px; }
@@ -70,10 +71,11 @@ const DASHBOARD_CSS = `
   .table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
   .muted { color:var(--muted); font-style:italic; font-size:13px; }
   .actions { display:flex; flex-wrap:wrap; gap:10px; }
-  .btn { display:inline-flex; align-items:center; justify-content:center; min-height:42px; padding:10px 16px; border-radius:10px; background:var(--panel2); color:var(--text); border:1px solid var(--border); text-decoration:none; font-size:13px; cursor:pointer; }
-  .btn:hover { border-color:var(--accent); }
-  .btn.danger { border-color:var(--down); color:#fca5a5; }
-  .btn.primary { background:var(--accent); color:#131316; border-color:var(--accent); font-weight:600; }
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-height:42px; padding:9px 14px; border-radius:8px; background:var(--panel2); color:var(--text); border:1px solid var(--border); text-decoration:none; font-size:13px; font-weight:600; cursor:pointer; }
+  .btn:hover { background:var(--panel3); }
+  .btn.danger { border-color:color-mix(in srgb, var(--down) 56%, var(--border)); color:var(--down); background:transparent; }
+  .btn.primary { background:var(--accent); color:#191303; border-color:var(--accent); font-weight:600; }
+  .btn.primary:hover { background:var(--accent-strong); border-color:var(--accent-strong); }
   form.logout { margin:0; }
   .login-wrap { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:16px; }
   .login-card { width:100%; max-width:360px; background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:28px; }
@@ -81,14 +83,14 @@ const DASHBOARD_CSS = `
   .login-card h1 .brand { color:var(--accent); }
   .login-card p { margin:0 0 20px; color:var(--muted); font-size:13px; }
   .login-card label { display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
-  .login-card input { width:100%; padding:12px; border-radius:10px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:16px; margin-bottom:16px; }
+  .login-card input { width:100%; padding:12px; border-radius:10px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:16px; margin-bottom:16px; }
   .login-card .btn.primary { width:100%; text-align:center; }
   .login-card .btn.passkey { width:100%; margin-bottom:14px; }
   .login-divider { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:11px; margin:0 0 14px; }
   .login-divider::before, .login-divider::after { content:''; flex:1; border-top:1px solid var(--border); }
-  .error { background:rgba(239,68,68,.12); border:1px solid var(--down); color:#fca5a5; padding:10px 12px; border-radius:10px; font-size:13px; margin-bottom:16px; }
+  .error { background:rgba(239,68,68,.12); border:1px solid var(--down); color:var(--down); padding:10px 12px; border-radius:10px; font-size:13px; margin-bottom:16px; }
   .chip.tab { cursor:pointer; font:inherit; font-size:13px; }
-  .chip.tab[aria-selected="true"] { background:var(--accent); color:#131316; border-color:var(--accent); font-weight:650; }
+  .chip.tab[aria-selected="true"] { background:var(--accent); color:#191303; font-weight:600; }
   .panel[hidden] { display:none; }
   .panel-intro { color:var(--muted); font-size:13px; margin:0 0 14px; }
   .card h2 .sub { display:block; text-transform:none; letter-spacing:0; font-weight:400; color:var(--muted); font-size:12px; margin-top:4px; }
@@ -98,8 +100,8 @@ const DASHBOARD_CSS = `
   .setting-name { font-size:14px; }
   .setting-help { font-size:12px; color:var(--muted); margin-top:3px; }
   .setting-ctl { flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
-  .setting-ctl input[type=number] { width:96px; padding:9px 10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:15px; }
-  .setting-ctl input[type=text], .setting-foot input[type=text] { min-width:180px; padding:9px 10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:14px; }
+  .setting-ctl input[type=number] { width:96px; padding:9px 10px; border-radius:9px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:15px; }
+  .setting-ctl input[type=text], .setting-foot input[type=text] { min-width:180px; padding:9px 10px; border-radius:9px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:14px; }
   .setting-ctl .unit { font-size:12px; color:var(--muted); min-width:34px; }
   /* Below the 44x44 CSS px target size guideline by design: this toggle sits inline in a settings
      row directly beside its own text label (.setting-name) with normal paragraph spacing around
@@ -115,10 +117,10 @@ const DASHBOARD_CSS = `
   .tag.on { border-color:var(--accent); color:var(--accent); }
   .setting-foot { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:14px; }
   .save-note { font-size:12.5px; color:var(--muted); }
-  .save-note.ok { color:var(--ok); } .save-note.bad { color:#fca5a5; }
+  .save-note.ok { color:var(--ok); } .save-note.bad { color:var(--down); }
   .setup-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:10px; }
   .setup-grid label { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:12px; }
-  .setup-grid input, .setup-grid select { width:100%; padding:10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:14px; }
+  .setup-grid input, .setup-grid select { width:100%; padding:10px; border-radius:9px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:14px; }
   .setup-subheading { margin:16px 0 4px; font-size:14px; }
   .user-actions { white-space:nowrap; }
   .user-actions .btn { margin:2px 4px 2px 0; font-size:12.5px; padding:6px 10px; }
@@ -126,11 +128,11 @@ const DASHBOARD_CSS = `
   #tier-folder-list { display:flex; flex-direction:column; gap:8px; margin:10px 0; }
   .tier-folder-row { display:grid; grid-template-columns:minmax(150px,.7fr) minmax(240px,1.3fr) auto; gap:8px; align-items:end; }
   .tier-folder-row label { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:12px; }
-  .tier-folder-row input { width:100%; padding:10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:14px; }
+  .tier-folder-row input { width:100%; padding:10px; border-radius:9px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:14px; }
   .tier-folder-remove { min-height:39px; padding:8px 11px; }
   .tier-plan-controls { display:flex; align-items:end; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
   .tier-plan-controls label { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:12px; }
-  .tier-plan-controls select { padding:10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:14px; }
+  .tier-plan-controls select { padding:10px; border-radius:9px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:14px; }
   .tier-plan-node { border:1px solid var(--border); border-radius:12px; padding:12px 14px; margin:10px 0; background:var(--panel2); }
   .tier-plan-node h3 { margin:0 0 6px; font-size:15px; }
   .tier-plan-node p { margin:6px 0; font-size:13px; }
@@ -141,8 +143,8 @@ const DASHBOARD_CSS = `
   .tier-manage-list li { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
   .tier-manage-list code { font-size:12px; }
   .setup-check { display:flex; align-items:center; gap:8px; color:var(--text); font-size:13px; margin:12px 0; }
-  .setup-output { white-space:pre-wrap; overflow-wrap:anywhere; background:#131316; border:1px solid var(--border); border-radius:10px; padding:12px; font-size:12px; }
-  .setup-warning { color:#fca5a5; font-size:12.5px; }
+  .setup-output { white-space:pre-wrap; overflow-wrap:anywhere; background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:12px; font-size:12px; }
+  .setup-warning { color:var(--down); font-size:12.5px; }
   @media (max-width:560px) {
     .topbar { flex-wrap:wrap; }
     .topbar-search { order:3; flex-basis:100%; max-width:none; }
@@ -164,7 +166,7 @@ const DASHBOARD_CSS = `
      Scoped to .d-panel so the rest of the dashboard is untouched. */
   .d-panel { font-family:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
   .d-page-lead { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:end; gap:18px; margin:2px 0 16px; }
-  .d-eyebrow { color:var(--accent); font:600 12px/1.2 "IBM Plex Mono",ui-monospace,SFMono-Regular,monospace; letter-spacing:.02em; margin-bottom:8px; }
+  .d-eyebrow { color:var(--accent-strong); font:600 12px/1.2 "IBM Plex Mono",ui-monospace,SFMono-Regular,monospace; letter-spacing:.02em; margin-bottom:8px; }
   .d-h1 { margin:0 0 6px; font-size:clamp(26px,4vw,36px); letter-spacing:-.03em; line-height:1.08; color:var(--text); }
   .d-lead-copy { margin:0; color:var(--muted); font-style:normal; font-size:14px; max-width:64ch; }
   .d-status { display:inline-flex; align-items:center; gap:6px; padding:6px 11px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; background:var(--panel2); color:var(--muted); border:1px solid var(--border); }
@@ -174,7 +176,7 @@ const DASHBOARD_CSS = `
   .d-status.bad { color:var(--down); background:rgba(239,68,68,.12); border-color:rgba(239,68,68,.5); }
   .d-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:0 0 14px; }
   .d-metric { padding:14px; border:1px solid var(--border); background:var(--panel); border-radius:12px; }
-  .d-metric strong { display:block; color:var(--accent); font:600 22px/1.1 "IBM Plex Mono",ui-monospace,SFMono-Regular,monospace; }
+  .d-metric strong { display:block; color:var(--accent-strong); font:600 22px/1.1 "IBM Plex Mono",ui-monospace,SFMono-Regular,monospace; }
   .d-metric span { display:block; margin-top:6px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.035em; }
   .d-callout { display:flex; align-items:flex-start; gap:10px; padding:12px 14px; border:1px solid rgba(229,160,13,.5); border-radius:10px; background:rgba(229,160,13,.08); color:var(--text); font-size:13px; margin:0 0 14px; }
   .d-callout svg { flex:0 0 auto; width:17px; height:17px; color:var(--accent); margin-top:1px; }
@@ -280,7 +282,7 @@ function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, s
   </script>` : '';
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#131316">
+  <meta name="theme-color" content="#101114">
   <title>${escapeHtml(title)} — Durant Media Server</title>
   <style>${DASHBOARD_CSS}</style></head><body>
   <header class="hdr">
@@ -408,7 +410,22 @@ function renderDirectorPanel({ overall, services, disks, totalFreeLabel }) {
       </div>`;
 }
 
-function tierInstallCommand({ botUrl, node, token, folders, folderRoot, syncthingApiKey, syncthingFolderId, mountRoot, mountMarker }) {
+function tierInstallCommand({ botUrl, node, token, folders, folderRoot, syncthingApiKey, syncthingFolderId, mountRoot, mountMarker, monitorOnly = false, monitorPath }) {
+  // Monitor-only nodes (backup boxes): no Syncthing, no tier plan — the installer only needs
+  // the token, TIER_MONITOR_ONLY=1, and the watched path (TIER_FOLDER_ROOT).
+  if (monitorOnly) {
+    const env = [
+      `TIER_AGENT_TOKEN="$TIER_AGENT_TOKEN"`,
+      `TIER_MONITOR_ONLY=1`,
+      `TIER_FOLDER_ROOT=${shellQuote(monitorPath || folderRoot || '/mnt/backup')}`,
+    ];
+    return [
+      `export TIER_AGENT_TOKEN="$TIER_AGENT_TOKEN"`,
+      `curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" ${shellQuote(`${botUrl}/agent/install/${node}`)} \\`,
+      `  | sudo -E env ${env.join(' ')} sh`,
+      'unset TIER_AGENT_TOKEN',
+    ].join('\n');
+  }
   const normalizedFolders = normalizeTierFolders(folders || [{ id: syncthingFolderId, path: folderRoot }]);
   const env = [
     `TIER_AGENT_TOKEN="$TIER_AGENT_TOKEN"`,
