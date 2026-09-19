@@ -7,7 +7,7 @@ const http = require('node:http');
 const vm = require('node:vm');
 const { rateLimit } = require('express-rate-limit');
 const { createApp, listen, close } = require('../../src/app');
-const { escapeHtml, sqliteUtcMs, fmtAgo, renderItemList } = require('../../src/dashboard-render');
+const { escapeHtml, sqliteUtcMs, fmtAgo, renderItemList, renderDirectorPanel, renderPasskeySetupBanner } = require('../../src/dashboard-render');
 const { normalizeSearchQuery } = require('../../src/search');
 const { registerDashboardReadRoutes } = require('../../src/routes/dashboard-read');
 const { createTtlCache } = require('../../src/dashboard-cache');
@@ -379,5 +379,22 @@ test('overview renders the agent API token card', async () => {
     const res = await request(server.address().port, '/admin', headers);
     assert.strictEqual(res.statusCode, 200);
     assert.ok(res.body.includes('AGENT-TOKENS:Edith'), 'token card renders with the token list');
+  } finally { await close(server); }
+});
+
+test('director tab renders the prototype panel through the real render wiring', async () => {
+  // Regression: Sep 19, 2026 — index.js never passed renderDirectorPanel into
+  // registerDashboardReadRoutes, so the route's () => '' default silently rendered
+  // an empty Director panel on the live server. Render with the real functions
+  // (the same ones index.js now passes) and assert the prototype markers land.
+  const headers = { 'x-admin-token': 'secret' };
+  const { app } = fixture({ renderDirectorPanel, renderPasskeySetupBanner });
+  const server = await listen(app, 0);
+  try {
+    const res = await request(server.address().port, '/admin', headers);
+    assert.strictEqual(res.statusCode, 200);
+    assert.match(res.body, /FLEET \/ LIVE/);
+    assert.match(res.body, /The whole stack, one glance\./);
+    assert.match(res.body, /d-panel/);
   } finally { await close(server); }
 });
