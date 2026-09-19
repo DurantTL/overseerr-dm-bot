@@ -172,7 +172,9 @@ async function searchPlexLibrary({ title, type }, { getPlexToken, getPlexServers
 function registerAgentApiRoutes(app, deps) {
   const {
     config,
-    getAgentApiTokenHash,
+    getAgentApiTokenHashes,
+    legacyTokenHash = '',
+    touchAgentApiTokenUse = () => {},
     sha256,
     safeEqual,
     audit,
@@ -183,7 +185,7 @@ function registerAgentApiRoutes(app, deps) {
     getPlexServers,
     httpRateLimitKey,
     httpClient = axios,
-    auth = createAgentApiAuth({ getAgentApiTokenHash, sha256, safeEqual, audit }),
+    auth = createAgentApiAuth({ getAgentApiTokenHashes, legacyTokenHash, touchAgentApiTokenUse, sha256, safeEqual, audit }),
     readLimiter = createAgentApiReadLimiter({ limit: config.AGENT_API_READ_MAX_PER_MINUTE, keyGenerator: httpRateLimitKey }),
   } = deps;
 
