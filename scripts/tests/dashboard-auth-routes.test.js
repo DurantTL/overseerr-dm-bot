@@ -166,6 +166,22 @@ test('passkey login preserves no-store options, binding cookie, verification, an
   }
 });
 
+test('passkey challenge cookie omits Secure when the request is not forwarded as https', async () => {
+  // Companion to the login test above: without X-Forwarded-Proto (and without direct TLS),
+  // the challenge cookie must NOT carry `; Secure` — the flag is the signal, so it has to be
+  // differential. (The with-header case asserting `; Secure` is covered in the login test.)
+  const { app } = createFixture({ passkeys: [{ credential_id: 'one' }] });
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const plain = await request(port, { path: '/admin/passkey/authentication-options' });
+    assert.strictEqual(plain.statusCode, 200);
+    assert.match(plain.headers['set-cookie'][0], /^dm_webauthn=[^;]+; HttpOnly; SameSite=Strict; Path=\/admin; Max-Age=300$/);
+  } finally {
+    await close(server);
+  }
+});
+
 test('authenticated passkey management preserves validation and last-credential protection', async () => {
   const { app, session } = createFixture({
     config: { DASHBOARD_ADMIN_PASSWORD: '', DASHBOARD_ADMIN_TOKEN: '' },

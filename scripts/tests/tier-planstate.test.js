@@ -6,7 +6,7 @@ const assert = require('node:assert');
 const { loadSandbox } = require('./extract');
 
 test('tier-planstate: normalizeTierPlan migrates legacy shapes and defaults report metadata', () => {
-  const sb = loadSandbox(['normalizeTierPlan'], {});
+  const sb = loadSandbox(['normalizeTierPlan', 'normalizeFolderCompletion'], {});
   // Round-trip through JSON so the returned value carries this realm's prototypes (a vm-realm array
   // would fail deepStrictEqual's prototype check).
   const norm = raw => JSON.parse(JSON.stringify(sb.run(`normalizeTierPlan(${JSON.stringify(raw)}) ?? null`)));

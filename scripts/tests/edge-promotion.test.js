@@ -7,6 +7,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const {
   resolveEdgeTierNode, parseEdgeTierNodeMap, buildEdgeTierNodeMap, decideCaLocality,
+  promotionFitsBudget, tvPromotionSizeCapped, GB_BYTES,
   planCaPlayPromotion, computePlayPin, activePlayPins, computeFinalIgnoreLines,
 } = require('../../src/edge-promotion');
 
@@ -103,4 +104,58 @@ test('edge-promotion: computeFinalIgnoreLines — planner∪legacy−pins, activ
     ['/Movies/Boku', '/Movies/Cold Title', '/Movies/Lizzie'],
     'once a pin is no longer active, the legacy ignore reappears with no separate restore step',
   );
+});
+
+test('edge-promotion: promotionFitsBudget — opt-in node byte budget, fail-closed on unknown size', () => {
+  // No budget configured (0/missing/negative) → passes open; the planner's eviction math stays
+  // the real capacity guard.
+  assert.deepStrictEqual(promotionFitsBudget({ nodeBudgetBytes: 0, pinBytes: 10 * GB_BYTES }), { fits: true, reason: 'budget_not_configured' });
+  assert.deepStrictEqual(promotionFitsBudget({ pinBytes: 10 * GB_BYTES }), { fits: true, reason: 'budget_not_configured' });
+  assert.deepStrictEqual(promotionFitsBudget({ nodeBudgetBytes: -5, pinBytes: 10 * GB_BYTES }), { fits: true, reason: 'budget_not_configured' });
+  // A pin that fits, and one that doesn't.
+  assert.deepStrictEqual(promotionFitsBudget({ nodeBudgetBytes: 100 * GB_BYTES, pinBytes: 40 * GB_BYTES }), { fits: true, reason: 'fits_budget' });
+  assert.deepStrictEqual(promotionFitsBudget({ nodeBudgetBytes: 100 * GB_BYTES, pinBytes: 100 * GB_BYTES }), { fits: true, reason: 'fits_budget' }, 'exactly the budget still fits');
+  assert.deepStrictEqual(promotionFitsBudget({ nodeBudgetBytes: 100 * GB_BYTES, pinBytes: 101 * GB_BYTES }), { fits: false, reason: 'over_budget' });
+  // Unknown pin size fails closed — pinning unmeasured bytes is the blast radius this bounds.
+  assert.deepStrictEqual(promotionFitsBudget({ nodeBudgetBytes: 100 * GB_BYTES, pinBytes: 0 }), { fits: false, reason: 'pin_size_unknown' });
+  assert.deepStrictEqual(promotionFitsBudget({ nodeBudgetBytes: 100 * GB_BYTES }), { fits: false, reason: 'pin_size_unknown' });
+});
+
+test('edge-promotion: tvPromotionSizeCapped — interim whole-series cap until #183', () => {
+  // Movies are single-unit and never capped.
+  assert.deepStrictEqual(tvPromotionSizeCapped({ mediaType: 'movie', sizeBytes: 500 * GB_BYTES, maxSeriesGb: 60 }), { capped: false, reason: 'not_tv' });
+  // A disabled cap passes everything open.
+  assert.deepStrictEqual(tvPromotionSizeCapped({ mediaType: 'tv', sizeBytes: 500 * GB_BYTES, maxSeriesGb: 0 }), { capped: false, reason: 'cap_disabled' });
+  // A modest series passes; a prestige 4K box set does not.
+  assert.deepStrictEqual(tvPromotionSizeCapped({ mediaType: 'tv', sizeBytes: 25 * GB_BYTES, maxSeriesGb: 60 }), { capped: false, reason: 'tv_series_under_cap' });
+  assert.deepStrictEqual(tvPromotionSizeCapped({ mediaType: 'tv', sizeBytes: 120 * GB_BYTES, maxSeriesGb: 60 }), { capped: true, reason: 'tv_series_over_cap' });
+  // Unknown series size fails closed — promoting an unmeasured whole series is skipped.
+  assert.deepStrictEqual(tvPromotionSizeCapped({ mediaType: 'tv', sizeBytes: 0, maxSeriesGb: 60 }), { capped: true, reason: 'tv_size_unknown' });
+});
+
+test('edge-promotion: planCaPlayPromotion — capacity and TV-cap skip reasons compose with the existing gates', () => {
+  const base = { enabled: true, hasFullCopy: true, alreadyLocal: false, auditOnly: false };
+  // Defaults are inert: existing callers that never pass the new params behave exactly as before.
+  assert.deepStrictEqual(planCaPlayPromotion(base), { action: 'pin', reason: 'promote' });
+  assert.deepStrictEqual(planCaPlayPromotion({ ...base, auditOnly: true }), { action: 'audit', reason: 'audit_only' });
+  // Over budget → skip, with the caller's reason in the audit trail.
+  assert.deepStrictEqual(
+    planCaPlayPromotion({ ...base, fitsBudget: false, budgetReason: 'over_budget' }),
+    { action: 'skip', reason: 'over_budget' },
+  );
+  assert.deepStrictEqual(
+    planCaPlayPromotion({ ...base, fitsBudget: false }),
+    { action: 'skip', reason: 'over_budget' },
+    'defaults the reason when the caller passes none',
+  );
+  // Interim TV cap → skip.
+  assert.deepStrictEqual(
+    planCaPlayPromotion({ ...base, tvSizeCapped: true, tvCapReason: 'tv_series_over_cap' }),
+    { action: 'skip', reason: 'tv_series_over_cap' },
+  );
+  // Ordering: capacity/TV-cap skips sit with the other title-level preconditions — after
+  // already_local (a local title never needs a budget check) and before cooldown/rate/pin-cap.
+  assert.strictEqual(planCaPlayPromotion({ ...base, alreadyLocal: true, fitsBudget: false }).reason, 'already_local');
+  assert.strictEqual(planCaPlayPromotion({ ...base, fitsBudget: false, tvSizeCapped: true }).reason, 'over_budget');
+  assert.strictEqual(planCaPlayPromotion({ ...base, tvSizeCapped: true, rateLimitOk: false }).reason, 'tv_series_over_cap');
 });

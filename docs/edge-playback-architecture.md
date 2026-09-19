@@ -16,12 +16,21 @@ decision, the durable expiring play-promotion pin (with a per-viewer bounded-act
 per-title cooldown), the pin-aware legacy-ignore overlay merge (agent-side, opt-in), and the
 immediate plan-publish step are all implemented and unit-tested (`scripts/tests/edge-promotion.
 test.js`, `scripts/tests/tier-play-pins.test.js`, `scripts/tests/tier-agent-legacy-ignore.test.js`,
-plus the §182 cases in `scripts/tests/tier.test.js`). Two things are **not** in this PR:
-* **A real Syncthing per-folder completion signal.** No agent endpoint reports `GET /rest/db/
-  completion?folder=...` yet, so `decideCaLocality` runs on presence-byte-fraction alone
-  (`completionPct: null`) — the field is ready for a real percentage the moment that agent
-  capability lands, but until then this is a conservative proxy, not the exact check §2.2b
-  describes.
+plus the §182 cases in `scripts/tests/tier.test.js`). Follow-up safety work (same issue):
+* **A real Syncthing per-folder completion signal — LANDED.** The agent reports
+  `GET /rest/db/completion?folder=...&device=<self>` per folder on every full report
+  (`collectFolderCompletion` in `agent/agent.js`); the report route sanitizes and stores it on
+  the node's tier plan (`recordTierFolderCompletion`), and `handleCaPlayStart` feeds it to
+  `decideCaLocality`. A missing or stale (>6h) snapshot falls back to presence-byte-fraction —
+  the exact check §2.2b describes, with the conservative proxy as the floor, not the ceiling.
+* **Capacity pre-check** (`promotionFitsBudget`, opt-in `CA_PLAY_PROMOTE_NODE_BUDGET_GB`; 0 =
+  unconfigured → passes open) and an **interim whole-series TV cap** (`tvPromotionSizeCapped`,
+  `TIER_TV_PROMOTE_MAX_SERIES_GB`, default 60 GB) — both pure skip reasons in
+  `planCaPlayPromotion`, audited like every other gate, inert while the double gate is on.
+* **Promotion telemetry** in the edge diagnostics: a read-only 24h rollup of the
+  `edge_playback_observed` / `edge_promote_*` audit trail, so `/doctor` shows what the
+  double-gated path has been deciding.
+One thing is still **not** implemented:
 * **An agent pull-now/kick transport.** The bot republishes the node's plan immediately on a real
   promotion, but nothing pushes the agent to run right away — it still picks the new plan up on its
   own next scheduled poll. `TIER_AGENT_KICK_ENABLED` is a reserved, currently-inert flag for when

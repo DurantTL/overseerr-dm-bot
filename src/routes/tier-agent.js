@@ -7,10 +7,33 @@ const { createTierAgentReportLimiter, createTierAgentReadLimiter } = require('./
 const { sanitizeNodeTelemetry, assessNodeTelemetry } = require('../node-telemetry');
 const { nextRepeatAlert } = require('../repeat-alert');
 
+// §182 follow-up: validate the agent's per-folder Syncthing completion snapshot before it is
+// stored on the tier plan. Pure — capped at 25 folders, numeric fields only, completion clamped
+// to 0–100, every entry must name a folder. Returns null when there is nothing usable, so the
+// caller can distinguish "no snapshot" from "snapshot stored".
+function sanitizeFolderCompletion(raw) {
+  if (!Array.isArray(raw)) return null;
+  const num = v => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0; };
+  const folders = raw.slice(0, 25).map(f => {
+    if (!f || typeof f !== 'object') return null;
+    const folderId = String(f.folderId || '').slice(0, 120);
+    const completion = Number(f.completion);
+    if (!folderId || !Number.isFinite(completion)) return null;
+    return {
+      folderId,
+      completion: Math.min(100, Math.max(0, completion)),
+      globalBytes: num(f.globalBytes),
+      needBytes: num(f.needBytes),
+      needItems: num(f.needItems),
+    };
+  }).filter(Boolean);
+  return folders.length ? folders : null;
+}
+
 function registerTierAgentRoutes(app, deps) {
   const {
     config, getTierAgentTokenHash, sha256, safeEqual, audit, getSetting, setSetting,
-    getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, recordTierErrorAlertState, recordTierMergedMountDiagnostics, markTierPlanConverged,
+    getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, recordTierErrorAlertState, recordTierMergedMountDiagnostics, recordTierFolderCompletion, markTierPlanConverged,
     getTierNode, listTierNodeFiles, replaceTierNodeFiles, parseAtimeMask, maskSuspectAtimes,
     notifyTelemetryTransition, notifyDriveMissing, notifyDriveRecovered, notifyAgentReport,
     fileSystem = fs, projectRoot = path.join(__dirname, '..', '..'),
@@ -63,6 +86,14 @@ function registerTierAgentRoutes(app, deps) {
         audit('tier_agent_merged_mount_unhealthy', { node, failing: checks.filter(c => c.status === 'fail').map(c => c.name).join('; ') || undefined });
       }
     }
+
+    // §182 follow-up: the agent's per-folder Syncthing completion snapshot (agent/agent.js's
+    // collectFolderCompletion). Sanitized here, stored on the tier plan like the §181
+    // diagnostics above; handleCaPlayStart consumes it for decideCaLocality. The snapshot is
+    // only ever an interim signal — a missing or stale one falls back to byte-fraction
+    // presence, so this is recorded on every report shape without failing anything.
+    const folderCompletion = sanitizeFolderCompletion(body.folderCompletion);
+    if (folderCompletion) recordTierFolderCompletion(node, { at: Date.now(), folders: folderCompletion });
 
     if (body.heartbeat && !body.driveMissing) {
       recordTierAgentHeartbeat(node, { errors: [], telemetry, telemetryLevel: telemetryHealth.level, agentVersion });
@@ -128,4 +159,4 @@ function registerTierAgentRoutes(app, deps) {
   });
 }
 
-module.exports = { registerTierAgentRoutes };
+module.exports = { registerTierAgentRoutes, sanitizeFolderCompletion };

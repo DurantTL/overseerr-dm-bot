@@ -277,6 +277,21 @@ through the proxy (not through `http://<host>:3000` directly) and checking the b
 cookie inspector — a proxy that terminates TLS but drops the forwarded-proto header will still
 result in `req.secure` reading `false` and cookies not being marked `Secure`.
 
+### Redirects and canonical host: the terminator's job
+The Node app only speaks plain HTTP on its internal port, so it never issues
+`http://` → `https://` redirects, never enforces a canonical hostname, and never sets HSTS —
+it cannot, from behind the tunnel/proxy. All of that belongs to the TLS terminator:
+Cloudflare Tunnel / the Cloudflare edge, or your Caddy/Nginx/Traefik config. If you want
+`http://dashboard.example.com` to redirect to its `https://` equivalent, configure the
+redirect on the terminator, not in the app.
+
+After any proxy change, re-run the deployment smoke check from the repo root
+(`DASHBOARD_PUBLIC_URL=https://<your-dashboard-hostname> npm run smoke`; add
+`SMOKE_ADMIN_PASSWORD=...` to also verify Secure session cookies through the public
+origin). It checks internal liveness, the public HTTPS round trip, certificate validity,
+forwarded-proto handling, Secure cookies, and passkey preconditions, and skips cleanly when
+no public origin is configured.
+
 ## Webhook Setup
 - Seerr: `POST /webhook/overseerr` — header `x-webhook-secret: $WEBHOOK_SECRET`
 - Plex: `POST /webhook/plex` — header `x-webhook-secret`, **or** `?secret=$WEBHOOK_SECRET`
