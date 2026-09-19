@@ -398,3 +398,24 @@ test('director tab renders the prototype panel through the real render wiring', 
     assert.match(res.body, /d-panel/);
   } finally { await close(server); }
 });
+
+test('director tab shows an em dash, not "0", for disk free when no disks report', async () => {
+  // Regression: Sep 19, 2026 — the live Director tab showed "0 MB DISK FREE"
+  // because the *arr diskspace call yielded [] (not null) and the route summed
+  // the empty list. An empty/unknown disk list must render "—", never zero.
+  const headers = { 'x-admin-token': 'secret' };
+  const { app } = fixture({
+    renderDirectorPanel,
+    renderPasskeySetupBanner,
+    // An *arr is configured but its diskspace call yields nothing: disks is []
+    // (not null) on this path.
+    arrSources: () => [{ label: 'radarr', url: 'http://radarr.test', key: 'k' }],
+  });
+  const server = await listen(app, 0);
+  try {
+    const res = await request(server.address().port, '/admin', headers);
+    assert.strictEqual(res.statusCode, 200);
+    assert.match(res.body, /<strong>—<\/strong><span>Disk free/);
+    assert.ok(!/<strong>0<\/strong><span>Disk free/.test(res.body), 'disk-free metric must not render zero when disks are unknown');
+  } finally { await close(server); }
+});

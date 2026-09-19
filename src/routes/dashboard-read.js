@@ -421,7 +421,7 @@ function registerDashboardReadRoutes(app, deps) {
           overall: health.overall,
           services: directorItems,
           disks: disks === null ? null : diskItems,
-          totalFreeLabel: disks === null ? null : fmtSpace((disks || []).reduce((n, d) => n + (d.freeSpace || 0), 0)),
+          totalFreeLabel: (disks === null || (disks || []).length === 0) ? null : fmtSpace(disks.reduce((n, d) => n + (d.freeSpace || 0), 0)),
         })}
       </section>
 
