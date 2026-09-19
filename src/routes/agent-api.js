@@ -538,7 +538,9 @@ function registerAgentApiRoutes(app, deps) {
       audit('agent_api_import_scan', { ...agentActor(req), ok: false, reason: 'arr_not_configured', target });
       return res.status(409).json({ error: `${arr.label} isn't configured` });
     }
-    const clean = String(req.body?.folder || '').trim().replace(/^["']+|["']+$/g, '').replace(/^\/+|\/+$/g, '');
+    let clean = String(req.body?.folder || '').trim();
+    clean = clean.replace(/^["']+/, '').replace(/["']+$/, '');
+    clean = clean.replace(/^\/+/, '').replace(/\/+$/, '');
     if (clean && clean.split('/').some(p => !p || p === '.' || p === '..')) {
       audit('agent_api_import_scan', { ...agentActor(req), ok: false, reason: 'unsafe_path', target, source });
       return res.status(400).json({ error: 'Unsafe folder path' });

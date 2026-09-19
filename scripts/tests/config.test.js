@@ -305,7 +305,8 @@ test('config: disk alert thresholds default sanely and validate the urgent < war
     RAID_PATH: '/x', PLEX_TOKEN: 'x', DASHBOARD_ADMIN_PASSWORD: 'x', SESSION_SECRET: 'x',
     DASHBOARD_PUBLIC_URL: 'https://bot.example.com', WEBHOOK_SECRET: 'x', TAUTULLI_WEBHOOK_SECRET: 'x',
   };
-  const run = env => spawnSync(process.execPath, ['-e', 'require("/home/hatch/workspace/durant-server/bot-dashboard-build/src/config").validateConfig(); console.log("VALID")'], {
+  const configPath = path.join(__dirname, '..', '..', 'src', 'config');
+  const run = env => spawnSync(process.execPath, ['-e', `require(${JSON.stringify(configPath)}).validateConfig(); console.log("VALID")`], {
     encoding: 'utf8', env: { ...process.env, ...base, ...env },
   });
   const defaults = run({});
