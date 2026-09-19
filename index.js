@@ -33,7 +33,7 @@ const { createSetupRequestUiFeature, requestModal } = require('./src/setup-reque
 const { CONFIG, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, countRecentPromotions, recordPromotion, recordTierPlayPin, listActiveTierPlayPins, countActiveTierPlayPinsForViewer, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, createSupportCase, getSupportCaseById, listSupportCases, listSupportCasesForRequester, listSupportCasesNeedingNotifyRetry, recordSupportCaseNotifyResult, recordSupportCaseMemberNotifyResult, assignSupportCase, acknowledgeSupportCase, resolveSupportCase, reopenSupportCase, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, recordPackRejections, getPackRejectionSighting, markPackRejectionSuggested, dismissPackRejectionSuggestion, resetPackRejectionSightings, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, createAgentApiToken, listAgentApiTokens, revokeAgentApiToken, getAgentApiTokenHashes, touchAgentApiTokenUse, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, countRecentPromotions, recordPromotion, recordTierPlayPin, listActiveTierPlayPins, countActiveTierPlayPinsForViewer, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, createSupportCase, getSupportCaseById, listSupportCases, listSupportCasesForRequester, listSupportCasesNeedingNotifyRetry, recordSupportCaseNotifyResult, recordSupportCaseMemberNotifyResult, assignSupportCase, acknowledgeSupportCase, resolveSupportCase, reopenSupportCase, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, recordPackRejections, getPackRejectionSighting, markPackRejectionSuggested, dismissPackRejectionSuggestion, resetPackRejectionSightings, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, createAgentApiToken, listAgentApiTokens, revokeAgentApiToken, getAgentApiTokenHashes, getAgentApiTokenLabel, touchAgentApiTokenUse, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeasonEpisodeFallbacks,
@@ -9698,6 +9698,7 @@ function startExpressServer() {
     registerAgentApiRoutes(app, {
       config: CONFIG,
       getAgentApiTokenHashes,
+      getAgentApiTokenLabel,
       legacyTokenHash: CONFIG.AGENT_API_TOKEN_HASH,
       touchAgentApiTokenUse,
       sha256,
@@ -9706,9 +9707,31 @@ function startExpressServer() {
       gatherHealth,
       fetchArrQueues,
       fetchSeerrRequests,
+      fetchDiskSpace,
       getPlexToken,
       getPlexServers,
       httpRateLimitKey,
+      // v1.1 fix endpoints: existing repair functions, no new logic invented here.
+      automationRegistry,
+      addMediaToArr,
+      fetchSeerrTvdbId,
+      listSonarrSeries,
+      getSeriesEpisodes,
+      getArrTagId,
+      triggerSeasonSearch,
+      runSeasonDirectGrab,
+      findAvistazIndexer,
+      grabDailyAllowance,
+      grabConfigured,
+      tunable,
+      clearSeasonAlertState,
+      recordSeasonSearch,
+      getSeasonSearchTimes,
+      seasonSearchCooldown,
+      getSeasonEpisodeFallback,
+      monitorSeasonSearch,
+      sonarrSeriesAliases,
+      summarizeManualImportPreview,
     });
   } else {
     log.info('Agent API disabled: AGENT_API_TOKEN is not set and the dashboard is disabled.');

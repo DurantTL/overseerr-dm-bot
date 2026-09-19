@@ -547,6 +547,10 @@ const CONFIG = (() => {
   AGENT_REPORT_MAX_PER_MINUTE: Number.parseInt(process.env.AGENT_REPORT_MAX_PER_MINUTE || '12', 10),
   AGENT_READ_MAX_PER_MINUTE: Number.parseInt(process.env.AGENT_READ_MAX_PER_MINUTE || '60', 10),
   AGENT_API_READ_MAX_PER_MINUTE: Number.parseInt(process.env.AGENT_API_READ_MAX_PER_MINUTE || '60', 10),
+  // v1.1 fix endpoints are mutations: a much tighter budget than reads. Repairs are
+  // human-scale operations — a handful per minute is plenty, and a runaway client
+  // can't hammer the arrs through this surface.
+  AGENT_API_WRITE_MAX_PER_MINUTE: Number.parseInt(process.env.AGENT_API_WRITE_MAX_PER_MINUTE || '10', 10),
   // Full reports may carry 25 MB / 200k rows. Count admission above limits frequency; this
   // separately bounds simultaneous authenticated parses and report processing.
   AGENT_REPORT_MAX_CONCURRENT: Number.parseInt(process.env.AGENT_REPORT_MAX_CONCURRENT || '2', 10),

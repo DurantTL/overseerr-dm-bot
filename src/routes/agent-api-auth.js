@@ -7,7 +7,7 @@
 // is hashed and compared in constant time against every live hash, and failures are audited. This
 // is a cheap header check, so it belongs ahead of any downstream work: an unauthenticated caller
 // shouldn't be able to spend Plex/*arr/Seerr API calls.
-function createAgentApiAuth({ getAgentApiTokenHashes, legacyTokenHash = '', sha256, safeEqual, audit, touchAgentApiTokenUse = () => {} }) {
+function createAgentApiAuth({ getAgentApiTokenHashes, getAgentApiTokenLabel = () => null, legacyTokenHash = '', sha256, safeEqual, audit, touchAgentApiTokenUse = () => {} }) {
   return (req, res, next) => {
     const m = /^Bearer\s+(\S+)$/.exec(String(req.headers.authorization || ''));
     const presentedHash = m ? sha256(m[1]) : '';
@@ -21,6 +21,11 @@ function createAgentApiAuth({ getAgentApiTokenHashes, legacyTokenHash = '', sha2
       audit('agent_api_auth_failed', { ip: req.ip || req.socket?.remoteAddress || 'unknown', path: req.path });
       return res.status(401).json({ error: 'Unauthorized' });
     }
+    // Attach the token's label so audited mutations can say which client acted. The legacy env
+    // token has no row; label it as legacy.
+    req.agentTokenLabel = matched === legacyTokenHash
+      ? 'legacy-env-token'
+      : (getAgentApiTokenLabel(matched) || 'unknown');
     // The legacy env token has no row to track; dashboard tokens record throttled last-use so an
     // operator can see which client is actually calling.
     if (matched !== legacyTokenHash) touchAgentApiTokenUse(matched);
