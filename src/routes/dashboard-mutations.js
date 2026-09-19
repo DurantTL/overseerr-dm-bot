@@ -30,17 +30,27 @@ function registerDashboardMutationRoutes(app, deps) {
     getSeasonSearchTimes,
     getSeriesEpisodes,
     getTierNode,
+    addTierNodeFolder,
+    addTierNodeMember,
+    assessApplyImpact,
+    buildTierPlans,
+    computeTierActionPreview,
+    fmtSpace,
     grabConfigured,
     grabDailyAllowance,
     httpRateLimitKey,
     listMediaPriority,
     listSonarrSeries,
+    listTierNodeFiles,
     monitorSeasonSearch,
     nextRank,
     pad,
     prepareTierNodeInstall,
+    publishTierNodePlan,
     rateLimit,
     recordSeasonSearch,
+    removeTierNodeFolder,
+    removeTierNodeMember,
     replaceTierNodeFolders,
     revokeAllDownloadLinks,
     runEscalation,
@@ -49,8 +59,11 @@ function registerDashboardMutationRoutes(app, deps) {
     seasonSearchCooldown,
     setMediaPriority,
     setTierAgentToken,
+    setTierNodeEnabled,
     settingsStore,
     sonarrSeriesAliases,
+    tierApplyCaps,
+    tierApplyConfirmCode,
     tierInstallCommand,
     triggerEpisodeSearch,
     triggerSeasonSearch,
@@ -373,6 +386,263 @@ function registerDashboardMutationRoutes(app, deps) {
 
   router.post('/admin/action/revoke-all', dashboardAuth, (_req, res) => { revokeAllDownloadLinks(); res.json({ ok: true }); });
   router.post('/admin/action/revoke-user/:discordId', dashboardAuth, (req, res) => { revokeAllDownloadLinks(req.params.discordId); res.json({ ok: true, discordId: req.params.discordId }); });
+
+  // Tier planning UI (dashboard parity slice 1). Preview is expensive — it walks the full
+  // Sonarr/Radarr inventory — so it gets its own tight rate limit, mirroring the
+  // sweep-preview comment about held-down Enter hammering the arrs.
+  app.post('/admin/action/tier-preview', rateLimit({
+    windowMs: 5 * 60000,
+    limit: 10,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many tier previews. Wait a moment and try again.' }),
+  }), dashboardAuth, discordReadyGuard, async (req, res) => {
+    const only = String(req.body?.node || '').trim().toLowerCase() || null;
+    let plans;
+    try {
+      plans = await buildTierPlans();
+    } catch (err) {
+      return res.status(502).json({ ok: false, error: dashboardActionError(err) });
+    }
+    let names = Object.keys(plans.manifests || {});
+    if (only) names = names.filter(n => n === only);
+    if (!names.length) {
+      return res.status(404).json({ ok: false, error: only ? `No plan for node "${only}" — is it registered and enabled?` : 'Nothing to plan.' });
+    }
+    const caps = tierApplyCaps();
+    const summarizeEntry = e => ({
+      title: (e.title || e.mediaId || '').slice(0, 80),
+      sizeBytes: e.sizeBytes || 0,
+      size: fmtSpace(e.sizeBytes || 0),
+      folderId: e.folderId || null,
+      score: typeof e.value === 'number' ? Number(e.value.toFixed(3)) : null,
+    });
+    const nodes = names.map(name => {
+      const m = plans.manifests[name];
+      const node = (plans.nodes || []).find(n => n.name === name) || {};
+      const rec = plans.planRecords?.[name] || null;
+      const base = {
+        name,
+        full: !!node.full || !!m.full,
+        access: node.access || m.access || null,
+        planHash: m.planHash,
+        keepCount: m.stats.keepCount,
+        keepBytes: fmtSpace(m.stats.keepBytes),
+        dropCount: m.stats.dropCount,
+        dropBytes: fmtSpace(m.stats.dropBytes),
+        budgetBytes: fmtSpace(m.stats.budgetBytes),
+        publishedHash: rec?.published?.planHash || null,
+        convergedHash: rec?.converged?.planHash || null,
+      };
+      if (base.full) return { ...base, impact: null, actions: null, topChanges: [] };
+      const files = listTierNodeFiles(name);
+      const impact = assessApplyImpact({ manifest: m, files, caps });
+      impact.confirmCode = tierApplyConfirmCode(name, m.planHash);
+      const actions = computeTierActionPreview({ manifest: m, files });
+      const t = actions.totals;
+      return {
+        ...base,
+        impact: {
+          requiresConfirm: impact.requiresConfirm,
+          confirmCode: impact.confirmCode,
+          realRemovalBytes: impact.realRemovalBytes,
+          realRemoval: fmtSpace(impact.realRemovalBytes),
+          removedTitles: impact.removedTitles,
+          newDownloadBytes: impact.newDownloadBytes,
+          newDownload: fmtSpace(impact.newDownloadBytes),
+          newDownloadTitles: impact.newDownloadTitles,
+          hasReport: impact.hasReport,
+          exceeds: impact.exceeds,
+        },
+        actions: {
+          download: { count: t.downloadLocally.count, bytes: fmtSpace(t.downloadLocally.bytes) },
+          remove: { count: t.removeLocal.count, bytes: fmtSpace(t.removeLocal.bytes) },
+          syncing: { count: t.keptDownloading.count, bytes: fmtSpace(t.keptDownloading.bytes) },
+          alreadyGone: { count: t.alreadyAbsent.count },
+          synced: { count: t.keptSynced.count, bytes: fmtSpace(t.keptSynced.bytes) },
+          hasReport: actions.hasReport,
+        },
+        topChanges: [
+          ...actions.downloadLocally.slice(0, 10).map(e => ({ ...summarizeEntry(e), action: 'download' })),
+          ...actions.removeLocal.slice(0, 10).map(e => ({ ...summarizeEntry(e), action: 'remove' })),
+        ],
+      };
+    });
+    return res.json({
+      ok: true,
+      nodes,
+      warnings: plans.warnings || [],
+      routingErrors: (plans.routingErrors || []).filter(i => names.includes(i.node)).map(i => ({
+        node: i.node, count: i.count, examples: (i.examples || []).slice(0, 3),
+      })),
+      failedSources: (plans.failedSources || []).map(f => ({ label: f.label, error: String(f.error).slice(0, 200) })),
+    });
+  });
+
+  router.post('/admin/action/tier-apply', rateLimit({
+    windowMs: 60000,
+    limit: 10,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many tier applies. Wait a moment and try again.' }),
+  }), dashboardAuth, discordReadyGuard, async (req, res) => {
+    const only = String(req.body?.node || '').trim().toLowerCase() || null;
+    const confirm = String(req.body?.confirm || '').trim().toUpperCase() || null;
+    let plans;
+    try {
+      plans = await buildTierPlans();
+    } catch (err) {
+      return res.status(502).json({ ok: false, error: dashboardActionError(err) });
+    }
+    let names = Object.keys(plans.manifests || {});
+    if (only) names = names.filter(n => n === only);
+    if (!names.length) {
+      return res.status(404).json({ ok: false, error: only ? `No plan for node "${only}".` : 'Nothing to apply.' });
+    }
+    const routingErrors = (plans.routingErrors || []).filter(i => names.includes(i.node));
+    if (routingErrors.length) {
+      audit('tier_apply_blocked_routing', { ...dashboardActor(req), nodes: names, routingErrors: routingErrors.map(i => ({ node: i.node, count: i.count })) });
+      return res.status(409).json({
+        ok: false,
+        error: 'Apply blocked — folder routing mismatch. Fix the node folders and re-run preview.',
+        routingErrors: routingErrors.map(i => ({ node: i.node, count: i.count, examples: (i.examples || []).slice(0, 3) })),
+      });
+    }
+    if (plans.failedSources?.length) {
+      audit('tier_apply_blocked_incomplete_inventory', {
+        ...dashboardActor(req), nodes: names, failedSources: plans.failedSources.map(f => f.label),
+      });
+      return res.status(409).json({
+        ok: false,
+        error: 'Apply blocked — incomplete inventory. Publishing now would blank .stignore for the missing source and trigger a full re-sync.',
+        failedSources: plans.failedSources.map(f => ({ label: f.label, error: String(f.error).slice(0, 200) })),
+      });
+    }
+    const caps = tierApplyCaps();
+    const applied = [];
+    const held = [];
+    for (const name of names) {
+      const m = plans.manifests[name];
+      const node = (plans.nodes || []).find(n => n.name === name);
+      if (node?.full || m.full) {
+        plans.planRecords[name] = publishTierNodePlan(name, m);
+        audit('tier_plan_published', { ...dashboardActor(req), node: name, planHash: m.planHash, full: true });
+        applied.push(name);
+        continue;
+      }
+      const files = listTierNodeFiles(name);
+      const impact = assessApplyImpact({ manifest: m, files, caps });
+      const code = tierApplyConfirmCode(name, m.planHash);
+      if (impact.requiresConfirm && confirm !== code) {
+        held.push({ node: name, confirmCode: code });
+        audit('tier_apply_blocked', {
+          ...dashboardActor(req), node: name, planHash: m.planHash,
+          realRemovalBytes: impact.realRemovalBytes, removedTitles: impact.removedTitles,
+          newDownloadBytes: impact.newDownloadBytes,
+        });
+        continue;
+      }
+      plans.planRecords[name] = publishTierNodePlan(name, m);
+      audit('tier_plan_published', {
+        ...dashboardActor(req), node: name, planHash: m.planHash,
+        keepCount: m.stats.keepCount, dropCount: m.stats.dropCount, dropBytes: m.stats.dropBytes,
+        confirmed: !!impact.requiresConfirm,
+      });
+      applied.push(name);
+    }
+    return res.json({ ok: true, applied, held });
+  });
+
+  const tierNodeName = req => String(req.body?.name || '').trim().toLowerCase();
+  router.post('/admin/action/tier-node/enable', dashboardAuth, (req, res) => {
+    const name = tierNodeName(req);
+    if (!getTierNode(name)) {
+      audit('dashboard_tier_node_enabled', { ...dashboardActor(req), ok: false, node: name || null, reason: 'not_found' });
+      return res.status(404).json({ ok: false, error: 'Node not found.' });
+    }
+    setTierNodeEnabled(name, true);
+    audit('dashboard_tier_node_enabled', { ...dashboardActor(req), ok: true, node: name });
+    return res.json({ ok: true, message: `Node "${name}" enabled — it rejoins planning on the next preview.` });
+  });
+  router.post('/admin/action/tier-node/disable', dashboardAuth, (req, res) => {
+    const name = tierNodeName(req);
+    if (!getTierNode(name)) {
+      audit('dashboard_tier_node_disabled', { ...dashboardActor(req), ok: false, node: name || null, reason: 'not_found' });
+      return res.status(404).json({ ok: false, error: 'Node not found.' });
+    }
+    setTierNodeEnabled(name, false);
+    audit('dashboard_tier_node_disabled', { ...dashboardActor(req), ok: true, node: name });
+    return res.json({ ok: true, message: `Node "${name}" disabled — the planner skips it entirely.` });
+  });
+  router.post('/admin/action/tier-node/folder-add', dashboardAuth, (req, res) => {
+    const name = tierNodeName(req);
+    const folderId = String(req.body?.folderId || '').trim();
+    const folderRoot = String(req.body?.folderRoot || '').trim();
+    if (!getTierNode(name)) {
+      audit('dashboard_tier_node_folder_added', { ...dashboardActor(req), ok: false, node: name || null, reason: 'not_found' });
+      return res.status(404).json({ ok: false, error: 'Node not found.' });
+    }
+    if (!folderId || !folderRoot) {
+      audit('dashboard_tier_node_folder_added', { ...dashboardActor(req), ok: false, node: name, reason: 'invalid_request' });
+      return res.status(400).json({ ok: false, error: 'Folder ID and local path are both required.' });
+    }
+    addTierNodeFolder(name, folderId, folderRoot);
+    audit('dashboard_tier_node_folder_added', { ...dashboardActor(req), ok: true, node: name, folderId });
+    return res.json({ ok: true, message: `Folder "${folderId}" added to "${name}". Re-run preview to see the per-folder split.` });
+  });
+  router.post('/admin/action/tier-node/folder-remove', dashboardAuth, (req, res) => {
+    const name = tierNodeName(req);
+    const folderId = String(req.body?.folderId || '').trim();
+    if (!getTierNode(name)) {
+      audit('dashboard_tier_node_folder_removed', { ...dashboardActor(req), ok: false, node: name || null, reason: 'not_found' });
+      return res.status(404).json({ ok: false, error: 'Node not found.' });
+    }
+    if (!folderId) {
+      audit('dashboard_tier_node_folder_removed', { ...dashboardActor(req), ok: false, node: name, reason: 'invalid_request' });
+      return res.status(400).json({ ok: false, error: 'Folder ID is required.' });
+    }
+    const removed = removeTierNodeFolder(name, folderId);
+    audit('dashboard_tier_node_folder_removed', { ...dashboardActor(req), ok: removed, node: name, folderId });
+    return res.json({ ok: true, message: removed ? `Folder "${folderId}" removed from "${name}".` : `Folder "${folderId}" was not on "${name}".` });
+  });
+  router.post('/admin/action/tier-member/add', dashboardAuth, (req, res) => {
+    const name = tierNodeName(req);
+    const node = getTierNode(name);
+    if (!node) {
+      audit('dashboard_tier_member_added', { ...dashboardActor(req), ok: false, node: name || null, reason: 'not_found' });
+      return res.status(404).json({ ok: false, error: 'Node not found.' });
+    }
+    if (node.access !== 'restricted') {
+      audit('dashboard_tier_member_added', { ...dashboardActor(req), ok: false, node: name, reason: 'not_restricted' });
+      return res.status(400).json({ ok: false, error: `Node "${name}" is not restricted — only restricted nodes have a member set.` });
+    }
+    const discordId = String(req.body?.discordId || '').trim();
+    if (!/^\d{5,25}$/.test(discordId)) {
+      audit('dashboard_tier_member_added', { ...dashboardActor(req), ok: false, node: name, reason: 'invalid_request' });
+      return res.status(400).json({ ok: false, error: 'Enter a valid Discord user ID (digits).' });
+    }
+    addTierNodeMember(name, discordId);
+    audit('dashboard_tier_member_added', { ...dashboardActor(req), ok: true, node: name, discordId });
+    return res.json({ ok: true, message: `Member added to "${name}".` });
+  });
+  router.post('/admin/action/tier-member/remove', dashboardAuth, (req, res) => {
+    const name = tierNodeName(req);
+    const node = getTierNode(name);
+    if (!node) {
+      audit('dashboard_tier_member_removed', { ...dashboardActor(req), ok: false, node: name || null, reason: 'not_found' });
+      return res.status(404).json({ ok: false, error: 'Node not found.' });
+    }
+    const discordId = String(req.body?.discordId || '').trim();
+    if (!/^\d{5,25}$/.test(discordId)) {
+      audit('dashboard_tier_member_removed', { ...dashboardActor(req), ok: false, node: name, reason: 'invalid_request' });
+      return res.status(400).json({ ok: false, error: 'Enter a valid Discord user ID (digits).' });
+    }
+    const removed = removeTierNodeMember(name, discordId);
+    audit('dashboard_tier_member_removed', { ...dashboardActor(req), ok: removed, node: name, discordId });
+    return res.json({ ok: true, message: removed ? `Member removed from "${name}".` : `That user was not a member of "${name}".` });
+  });
 
   app.use(router);
 }

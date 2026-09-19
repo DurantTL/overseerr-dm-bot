@@ -123,6 +123,18 @@ const DASHBOARD_CSS = `
   .tier-folder-row label { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:12px; }
   .tier-folder-row input { width:100%; padding:10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:14px; }
   .tier-folder-remove { min-height:39px; padding:8px 11px; }
+  .tier-plan-controls { display:flex; align-items:end; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+  .tier-plan-controls label { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:12px; }
+  .tier-plan-controls select { padding:10px; border-radius:9px; border:1px solid var(--border); background:#131316; color:var(--text); font-size:14px; }
+  .tier-plan-node { border:1px solid var(--border); border-radius:12px; padding:12px 14px; margin:10px 0; background:var(--panel2); }
+  .tier-plan-node h3 { margin:0 0 6px; font-size:15px; }
+  .tier-plan-node p { margin:6px 0; font-size:13px; }
+  .tier-plan-node details { margin-top:8px; font-size:13px; }
+  .tier-plan-node summary { cursor:pointer; color:var(--muted); }
+  .tier-manage-row { margin:10px 0; font-size:13px; }
+  .tier-manage-list { list-style:none; padding:0; margin:8px 0; display:flex; flex-direction:column; gap:6px; }
+  .tier-manage-list li { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .tier-manage-list code { font-size:12px; }
   .setup-check { display:flex; align-items:center; gap:8px; color:var(--text); font-size:13px; margin:12px 0; }
   .setup-output { white-space:pre-wrap; overflow-wrap:anywhere; background:#131316; border:1px solid var(--border); border-radius:10px; padding:12px; font-size:12px; }
   .setup-warning { color:#fca5a5; font-size:12.5px; }

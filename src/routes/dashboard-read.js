@@ -38,6 +38,7 @@ function registerDashboardReadRoutes(app, deps) {
     listSonarrMissingEpisodes,
     listSonarrSeries,
     listTierNodeFolders,
+    listTierNodeMembers,
     listTierNodes,
     mediaTypeLabel,
     normalizeSearchQuery,
@@ -77,6 +78,7 @@ function registerDashboardReadRoutes(app, deps) {
     const now = Date.now();
     const pendingApprovals = listPendingRequests();
     const passkeys = listPasskeys();
+    const tierNodesEarly = listTierNodes();
     // Live activity, cached with a bounded per-source TTL (#189): every GET /admin render used to
     // hit every integration fresh, so a 60s auto-refresh with any number of open admin tabs
     // multiplied real upstream traffic by however many viewers happened to be watching. Each
@@ -96,9 +98,9 @@ function registerDashboardReadRoutes(app, deps) {
         ? dashboardCache.get('disk-space', 60000, fetchDiskSpace).catch(() => ({ value: null, fetchedAt: now, stale: true }))
         : Promise.resolve(notFetched),
       dashboardCache.get('edge-diagnostics', 60000, () => runEdgeDiagnostics({ live: false })).catch(() => ({ value: [], fetchedAt: now, stale: true })),
-      pendingApprovals.length
+      (pendingApprovals.length || tierNodesEarly.some(n => n.access === 'restricted')
         ? dashboardCache.get('guild-members', 60000, getGuildMembers).catch(() => ({ value: [], fetchedAt: now, stale: true }))
-        : Promise.resolve(notFetchedEmpty),
+        : Promise.resolve(notFetchedEmpty)),
       Promise.all(pendingApprovals.map(pending => quotaBlockReason(pending.seerrUserId, pending.discordId, pending.mediaType, { tmdbId: pending.tmdbId, is4k: pending.is4k }, true)
         .then(warning => ({ warning, error: null }))
         .catch(err => ({ warning: null, error: dashboardActionError(err) })))),
@@ -127,7 +129,7 @@ function registerDashboardReadRoutes(app, deps) {
     // failure (Sonarr unreachable) so the card says so instead of claiming everything is fine.
     const incomplete = await gatherIncompleteRequests({ queue: queue || [], grabJobs, escalations, now }).catch(() => null);
     const pendingDeletions = db.prepare("SELECT * FROM pending_deletions WHERE status = 'pending' ORDER BY delete_after LIMIT 25").all();
-    const tierNodes = listTierNodes();
+    const tierNodes = tierNodesEarly;
     // Latest agent report per tier node, from the audit log.
     const lastReportByNode = {};
     for (const r of db.prepare("SELECT * FROM audit_log WHERE action = 'tier_agent_report' ORDER BY id DESC LIMIT 100").all()) {
@@ -261,9 +263,37 @@ function registerDashboardReadRoutes(app, deps) {
         title: `${n.name}${n.full ? ' · full master' : ''}${n.sticky ? ' · sticky' : ''}`,
         sub: `${n.access} · ${n.demand_source}${n.demand_source === 'atime' && n.atime_mask ? ` (mask ${n.atime_mask})` : ''} · ${n.transport} · ${fmtSpace(n.usable_bytes || 0)} @ ${n.headroom_pct}% headroom · ${status.details}`,
         right: status.status,
-        actions: status.setup ? [{ label: 'Set up this node', setupNode: n.name }] : [],
+        actions: [
+          ...(status.setup ? [{ label: 'Set up this node', setupNode: n.name }] : []),
+          n.enabled
+            ? { label: 'Disable', url: '/admin/action/tier-node/disable', body: { name: n.name }, inline: true, danger: true, confirm: `Disable node "${n.name}"? The planner will skip it entirely until re-enabled.` }
+            : { label: 'Enable', url: '/admin/action/tier-node/enable', body: { name: n.name }, inline: true },
+        ],
       };
     });
+
+    // Tier planning + node management cards (dashboard parity slice 1). The folder/member
+    // lists render server-side with inline remove buttons; the preview results load on demand
+    // via JS because planning walks the full library.
+    const tierPlanNodeOptions = tierNodes.map(n => `<option value="${escapeHtml(n.name)}">${escapeHtml(n.name)}${n.full ? ' (full master)' : ''}</option>`).join('');
+    const tierFolderManageHtml = tierNodes.map(n => {
+      const folders = listTierNodeFolders(n.name);
+      if (!folders.length) return `<div class="tier-manage-row"><strong>${escapeHtml(n.name)}</strong><p class="muted">No folders registered.</p></div>`;
+      return `<div class="tier-manage-row"><strong>${escapeHtml(n.name)}</strong><ul class="tier-manage-list">${folders.map(f => {
+        const fid = f.folderId || '(default)';
+        return `<li><code>${escapeHtml(fid)}</code> → ${escapeHtml(f.folderRoot || '')} <button class="btn danger" type="button" data-post="/admin/action/tier-node/folder-remove" data-body="${escapeHtml(JSON.stringify({ name: n.name, folderId: f.folderId || '' }))}" data-inline="true" data-confirm="Remove folder ${escapeHtml(fid)} from ${escapeHtml(n.name)}?">Remove</button><span class="action-result" aria-live="polite"></span></li>`;
+      }).join('')}</ul></div>`;
+    }).join('');
+    const restrictedTierNodes = tierNodes.filter(n => n.access === 'restricted');
+    const tierMemberManageHtml = restrictedTierNodes.length ? restrictedTierNodes.map(n => {
+      const memberIds = listTierNodeMembers(n.name);
+      const rows = memberIds.length ? `<ul class="tier-manage-list">${memberIds.map(id => {
+        const label = memberNames.get(id);
+        return `<li>${escapeHtml(label || id)}${label ? ` <span class="muted">(${escapeHtml(id)})</span>` : ''} <button class="btn danger" type="button" data-post="/admin/action/tier-member/remove" data-body="${escapeHtml(JSON.stringify({ name: n.name, discordId: id }))}" data-inline="true" data-confirm="Remove ${escapeHtml(label || id)} from ${escapeHtml(n.name)}?">Remove</button><span class="action-result" aria-live="polite"></span></li>`;
+      }).join('')}</ul>` : '<p class="muted">No members yet.</p>';
+      return `<div class="tier-manage-row"><strong>${escapeHtml(n.name)}</strong>${rows}</div>`;
+    }).join('') : '<p class="muted">No restricted nodes — member sets only apply to restricted-access nodes.</p>';
+    const restrictedNodeOptions = restrictedTierNodes.map(n => `<option value="${escapeHtml(n.name)}">${escapeHtml(n.name)}</option>`).join('');
 
     const diskItems = forecastDisks(db, disks || [], now).map(d => {
       const used = (d.totalSpace || 0) - (d.freeSpace || 0);
@@ -372,7 +402,40 @@ function registerDashboardReadRoutes(app, deps) {
           <h2>📦 Tier Nodes</h2>
           ${renderItemList(tierItems, 'No tier nodes registered yet.')}
         </div>
+        <div class="card" id="tier-planning">
+          <h2>🗺️ Tier Planning<span class="sub">Dry-run the planner — shows keep/drop per node, writes nothing until you apply.</span></h2>
+          <div class="tier-plan-controls">
+            <label>Node <select id="tier-plan-node"><option value="">All nodes</option>${tierPlanNodeOptions}</select></label>
+            <button class="btn primary" type="button" id="tier-plan-preview">Preview plans</button>
+            <span class="save-note" id="tier-plan-note"></span>
+          </div>
+          <div id="tier-plan-results"></div>
+        </div>
         ${renderTierNodeSetup(tierNodes.map(node => ({ ...node, folders: listTierNodeFolders(node.name) })))}
+        <div class="card" id="tier-node-manage">
+          <h2>🔧 Tier Node Management<span class="sub">Folders and restricted-node members. Changes apply immediately and are audited.</span></h2>
+          <h3 class="setup-subheading">Syncthing folders</h3>
+          <form id="tier-folder-add-form">
+            <div class="setup-grid">
+              <label>Node<select name="name">${tierPlanNodeOptions}</select></label>
+              <label>Folder ID<input name="folderId" placeholder="e.g. movies" required></label>
+              <label>Local path<input name="folderRoot" placeholder="/mnt/media/Media/Movies" required></label>
+            </div>
+            <button class="btn" type="submit">Add folder</button>
+            <span class="save-note" id="tier-folder-add-note"></span>
+          </form>
+          ${tierFolderManageHtml}
+          <h3 class="setup-subheading">Restricted-node members</h3>
+          ${restrictedNodeOptions ? `<form id="tier-member-add-form">
+            <div class="setup-grid">
+              <label>Node<select name="name">${restrictedNodeOptions}</select></label>
+              <label>Discord user ID<input name="discordId" inputmode="numeric" pattern="\\d{5,25}" placeholder="e.g. 123456789012345678" required></label>
+            </div>
+            <button class="btn" type="submit">Add member</button>
+            <span class="save-note" id="tier-member-add-note"></span>
+          </form>` : ''}
+          ${tierMemberManageHtml}
+        </div>
         <div class="card">
           <h2>🩺 Edge Readiness</h2>
           ${renderItemList(edgeChecks.map(c => ({ state: c.status === 'fail' ? 'down' : c.status, title: c.name, sub: c.detail })), 'No edge checks available.')}
@@ -419,7 +482,12 @@ function registerDashboardReadRoutes(app, deps) {
             var item = btn.closest('.item-main');
             var buttons = btn.dataset.inline && item ? [].slice.call(item.querySelectorAll('[data-post]')) : [btn];
             var buttonStates = buttons.map(function (button) { return { button: button, disabled: button.disabled }; });
-            var note = btn.dataset.inline && item ? item.querySelector('.action-result') : null;
+            // Inline notes normally live under .item-main (renderItemList); management rows outside
+            // item lists keep their own sibling .action-result, so fall back to the button's parent.
+            var note = btn.dataset.inline
+              ? (item ? item.querySelector('.action-result')
+                : (btn.parentElement ? btn.parentElement.querySelector('.action-result') : null))
+              : null;
             buttons.forEach(function (button) { button.disabled = true; });
             if (note) { note.textContent = 'Working…'; note.className = 'action-result'; }
             window.__actionsInFlight = (window.__actionsInFlight || 0) + 1;
@@ -609,6 +677,136 @@ function registerDashboardReadRoutes(app, deps) {
             await navigator.clipboard.writeText(document.getElementById('tier-install-command').textContent);
             copy.textContent = 'Copied';
           });
+        })();
+        (function () {
+          // Tier planning UI (dashboard parity slice 1): preview on demand — planning walks the
+          // whole library — then apply per node with the same confirm-code guardrail /tier apply
+          // enforces for large rebalances.
+          var previewBtn = document.getElementById('tier-plan-preview');
+          if (!previewBtn) return;
+          var nodeSel = document.getElementById('tier-plan-node');
+          var note = document.getElementById('tier-plan-note');
+          var resultsEl = document.getElementById('tier-plan-results');
+          var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+          var lastPreview = {};
+          var setNote = function (text, cls) { note.textContent = text; note.className = 'save-note' + (cls ? ' ' + cls : ''); };
+
+          var renderNode = function (n) {
+            var html = '<div class="tier-plan-node"><h3>' + (n.full ? '🏠 ' : '📦 ') + esc(n.name) + '</h3>';
+            html += '<p>Keep <strong>' + n.keepCount + '</strong> (' + esc(n.keepBytes) + ') · Drop <strong>' + n.dropCount + '</strong> (' + esc(n.dropBytes) + ') · Budget ' + esc(n.budgetBytes) + '</p>';
+            if (n.publishedHash) {
+              html += '<p class="muted">' + (n.convergedHash && n.convergedHash === n.publishedHash
+                ? '✅ Published <code>' + esc(n.publishedHash) + '</code> — agent converged'
+                : '📤 Published <code>' + esc(n.publishedHash) + '</code> — agent has not confirmed yet') + '</p>';
+            } else {
+              html += '<p class="muted">No plan published yet.</p>';
+            }
+            if (n.full) {
+              html += '<p class="muted">🔒 Full master — never pruned.</p>';
+            } else {
+              var a = n.actions, im = n.impact;
+              var bits = [];
+              if (a.download.count) bits.push('⬇️ download ' + a.download.count + ' (' + esc(a.download.bytes) + ')');
+              if (a.remove.count) bits.push('🗑️ remove ' + a.remove.count + ' (' + esc(a.remove.bytes) + ')');
+              if (a.syncing.count) bits.push('⏳ syncing ' + a.syncing.count);
+              if (a.synced.count) bits.push('✓ synced ' + a.synced.count + ' (' + esc(a.synced.bytes) + ')');
+              html += '<p>' + (bits.length ? bits.join(' · ') : '✓ fully in sync — no disk actions') + (!a.hasReport ? ' <span class="muted">(no agent report yet)</span>' : '') + '</p>';
+              if (im.requiresConfirm) {
+                html += '<p class="setup-warning">⚠️ Large rebalance — real removals ' + esc(im.realRemoval) + ' (' + im.removedTitles + ' titles), new downloads ' + esc(im.newDownload) + '. Applying needs confirm code <strong>' + esc(im.confirmCode) + '</strong>.</p>';
+              } else if (im.realRemovalBytes > 0 || im.newDownloadBytes > 0) {
+                html += '<p class="muted">Real impact: remove ' + esc(im.realRemoval) + ' (' + im.removedTitles + ' titles), download ' + esc(im.newDownload) + ' (' + im.newDownloadTitles + ' titles).</p>';
+              }
+            }
+            html += '<button class="btn primary" type="button" data-tier-apply="' + esc(n.name) + '">Apply this plan</button> ';
+            html += '<span class="action-result" aria-live="polite" data-tier-apply-note="' + esc(n.name) + '"></span>';
+            if (n.topChanges && n.topChanges.length) {
+              html += '<details><summary>Top changes (' + n.topChanges.length + ')</summary><ul class="tier-manage-list">' + n.topChanges.map(function (c) {
+                return '<li>' + (c.action === 'download' ? '⬇️' : '🗑️') + ' <strong>' + esc(c.title) + '</strong> · ' + esc(c.size) + (c.folderId ? ' · <code>' + esc(c.folderId) + '</code>' : '') + (c.score != null ? ' · score ' + c.score : '') + '</li>';
+              }).join('') + '</ul></details>';
+            }
+            return html + '</div>';
+          };
+
+          var renderPreview = function (body) {
+            lastPreview = {};
+            var html = '';
+            if (body.failedSources && body.failedSources.length) {
+              html += '<div class="error">🛑 Apply is blocked — incomplete inventory: ' + body.failedSources.map(function (f) { return esc(f.label) + ' — ' + esc(f.error); }).join('; ') + '</div>';
+            }
+            if (body.routingErrors && body.routingErrors.length) {
+              html += '<div class="error">🛑 Apply is blocked — folder routing mismatch: ' + body.routingErrors.map(function (e) { return esc(e.node) + ' (' + e.count + ' unmatched)'; }).join('; ') + '</div>';
+            }
+            if (body.warnings && body.warnings.length) {
+              html += '<div class="setup-warning">' + body.warnings.slice(0, 8).map(function (w) { return esc(w); }).join('<br>') + '</div>';
+            }
+            body.nodes.forEach(function (n) { lastPreview[n.name] = n; html += renderNode(n); });
+            resultsEl.innerHTML = html;
+            resultsEl.querySelectorAll('[data-tier-apply]').forEach(function (btn) {
+              btn.addEventListener('click', function () { applyPlan(btn.dataset.tierApply, null); });
+            });
+          };
+
+          var applyPlan = async function (name, confirmCode) {
+            var n = lastPreview[name];
+            var noteEl = resultsEl.querySelector('[data-tier-apply-note="' + name + '"]');
+            var say = function (t, cls) { if (noteEl) { noteEl.textContent = t; noteEl.className = 'action-result' + (cls ? ' ' + cls : ''); } };
+            var code = confirmCode;
+            if (n && n.impact && n.impact.requiresConfirm && !code) {
+              code = prompt('Large rebalance on "' + name + '" — enter confirm code ' + n.impact.confirmCode + ' to publish:');
+              if (code == null) { say('Apply cancelled.'); return; }
+              code = code.trim();
+            }
+            say('Applying…');
+            try {
+              var r = await fetch('/admin/action/tier-apply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node: name, confirm: code || undefined }) });
+              var body = await r.json().catch(function () { return {}; });
+              if (!r.ok || body.ok === false) { say(body.error || 'Apply failed: ' + r.status); return; }
+              var held = (body.held || []).find(function (h) { return h.node === name; });
+              if (held) {
+                say('Held — confirm code: ' + held.confirmCode + '. Click Apply again and enter it.');
+                if (n && n.impact) n.impact.confirmCode = held.confirmCode;
+                return;
+              }
+              say('Published. The agent converges on its next run.', 'ok');
+              window.__dirtySettings = true;
+            } catch (err) { say(String(err && err.message || err)); }
+          };
+
+          previewBtn.addEventListener('click', async function () {
+            previewBtn.disabled = true;
+            setNote('Planning… this walks the full library and can take a minute.');
+            resultsEl.replaceChildren();
+            try {
+              var r = await fetch('/admin/action/tier-preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node: nodeSel.value || undefined }) });
+              var body = await r.json().catch(function () { return {}; });
+              if (!r.ok || body.ok === false) { setNote(body.error || 'Preview failed: ' + r.status, 'bad'); return; }
+              setNote('Preview ready — nothing was written.', 'ok');
+              renderPreview(body);
+            } catch (err) { setNote(String(err && err.message || err), 'bad'); }
+            finally { previewBtn.disabled = false; }
+          });
+
+          // Folder + member add forms: POST, then reload so the server-rendered lists refresh.
+          var wireSimpleForm = function (formId, url, noteId) {
+            var form = document.getElementById(formId);
+            if (!form) return;
+            form.addEventListener('submit', async function (event) {
+              event.preventDefault();
+              var values = Object.fromEntries(new FormData(form));
+              var noteEl = document.getElementById(noteId);
+              var say = function (t, cls) { noteEl.textContent = t; noteEl.className = 'save-note' + (cls ? ' ' + cls : ''); };
+              say('Saving…');
+              try {
+                var r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+                var body = await r.json().catch(function () { return {}; });
+                if (!r.ok || body.ok === false) { say(body.error || 'Failed: ' + r.status, 'bad'); return; }
+                say(body.message || 'Saved.', 'ok');
+                setTimeout(function () { location.hash = 'edge'; location.reload(); }, 800);
+              } catch (err) { say(String(err && err.message || err), 'bad'); }
+            });
+          };
+          wireSimpleForm('tier-folder-add-form', '/admin/action/tier-node/folder-add', 'tier-folder-add-note');
+          wireSimpleForm('tier-member-add-form', '/admin/action/tier-member/add', 'tier-member-add-note');
         })();
         (function () {
           var note = function (group, text, cls) {

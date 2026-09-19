@@ -7,7 +7,7 @@ const http = require('node:http');
 const vm = require('node:vm');
 const { rateLimit } = require('express-rate-limit');
 const { createApp, listen, close } = require('../../src/app');
-const { escapeHtml, sqliteUtcMs, fmtAgo } = require('../../src/dashboard-render');
+const { escapeHtml, sqliteUtcMs, fmtAgo, renderItemList } = require('../../src/dashboard-render');
 const { normalizeSearchQuery } = require('../../src/search');
 const { registerDashboardReadRoutes } = require('../../src/routes/dashboard-read');
 const { createTtlCache } = require('../../src/dashboard-cache');
@@ -69,6 +69,7 @@ function fixture(overrides = {}) {
     listSonarrMissingEpisodes: async () => [],
     listSonarrSeries: async () => [],
     listTierNodeFolders: () => [],
+    listTierNodeMembers: () => [],
     listTierNodes: () => [{ name: 'ph', enabled: 1, full: 0, usable_bytes: 42 }],
     mediaTypeLabel: type => type || 'unknown',
     normalizeSearchQuery,
@@ -192,8 +193,47 @@ test('dashboard page and search routes render over a real ephemeral HTTP server'
   }
 });
 
-test('#189: repeated /admin renders within the TTL do not refetch every integration', async () => {
-  const { app, calls } = fixture();
+test('tier planning and node management cards render with enable/disable, folders, and members', async () => {
+  const { app } = fixture({
+    renderItemList,
+    listTierNodes: () => [
+      { name: 'california', enabled: 1, full: 0, access: 'restricted', usable_bytes: 42 },
+      { name: 'durant-server', enabled: 0, full: 1, access: 'open', usable_bytes: 43 },
+    ],
+    listTierNodeFolders: node => (node === 'california' ? [{ folderId: 'movies', folderRoot: '/m' }] : []),
+    listTierNodeMembers: node => (node === 'california' ? ['123'] : []),
+    getGuildMembers: async () => [{ user: { id: '123', username: 'caleb' }, displayName: 'Caleb' }],
+  });
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const headers = { 'x-admin-token': 'secret' };
+    const dashboard = await request(port, '/admin', headers);
+    assert.strictEqual(dashboard.statusCode, 200);
+    // Tier planning card.
+    assert.match(dashboard.body, /Tier Planning/);
+    assert.match(dashboard.body, /tier-plan-preview/);
+    // Node management card: folders + restricted members with remove buttons.
+    assert.match(dashboard.body, /Tier Node Management/);
+    assert.match(dashboard.body, /tier-node\/folder-remove/);
+    assert.match(dashboard.body, /tier-member\/remove/);
+    assert.match(dashboard.body, /Caleb/);
+    // Enable/disable actions on the node list.
+    assert.match(dashboard.body, /tier-node\/disable/);
+    assert.match(dashboard.body, /tier-node\/enable/);
+    // The new inline scripts parse.
+    const inlineScripts = dashboard.body.split('<script>').slice(1)
+      .map(block => block.split('</script>', 1)[0])
+      .filter(Boolean);
+    for (const script of inlineScripts) {
+      assert.doesNotThrow(() => new vm.Script(script, { filename: 'dashboard-inline.js' }));
+    }
+  } finally {
+    await close(server);
+  }
+});
+
+test('#189: repeated /admin renders within the TTL do not refetch every integration', async () => {  const { app, calls } = fixture();
   const server = await listen(app, 0);
   try {
     const port = server.address().port;
