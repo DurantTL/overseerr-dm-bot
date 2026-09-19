@@ -54,6 +54,7 @@ function registerDashboardReadRoutes(app, deps) {
     rateLimit,
     renderAutomationRegistry = () => '',
     renderAgentApiTokens = () => '',
+    renderDirectorPanel = () => '',
     renderHealthBadges,
     renderItemList,
     renderPage,
@@ -415,15 +416,13 @@ function registerDashboardReadRoutes(app, deps) {
       </div>
       <div class="stats">${stats}</div>
 
-      <section class="panel" data-panel="director">
-        <div class="card">
-          <h2>🖥️ Fleet Status<span class="sub">Everything the media server is running. Auto-refreshes with the page.</span></h2>
-          ${renderItemList(directorItems, 'No health data yet.')}
-        </div>
-        <div class="card">
-          <h2>💾 Disk Space</h2>
-          ${disks === null ? unavailable('*arr diskspace') : renderItemList(diskItems, 'No disks reported.')}
-        </div>
+      <section class="panel d-panel" data-panel="director">
+        ${renderDirectorPanel({
+          overall: health.overall,
+          services: directorItems,
+          disks: disks === null ? null : diskItems,
+          totalFreeLabel: disks === null ? null : fmtSpace((disks || []).reduce((n, d) => n + (d.freeSpace || 0), 0)),
+        })}
       </section>
 
       <section class="panel" data-panel="overview">

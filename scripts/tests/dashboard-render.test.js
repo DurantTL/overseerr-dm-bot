@@ -22,6 +22,7 @@ const {
   renderPasskeyManagement,
   renderSettingsGroup,
   renderAutomationRegistry,
+  renderDirectorPanel,
 } = require('../../src/dashboard-render');
 
 test('dashboard-render: escapeHtml', () => {
@@ -324,4 +325,49 @@ test('dashboard actions: arr response details are returned', () => {
   const sandbox = loadSandbox(['dashboardActionError']);
   assert.strictEqual(sandbox.dashboardActionError({ response: { data: { message: 'Sonarr rejected the command' } } }), 'Sonarr rejected the command');
   assert.strictEqual(sandbox.dashboardActionError(new Error('socket closed')), 'socket closed');
+});
+
+test('dashboard-render: renderDirectorPanel uses prototype language and counts services', () => {
+  const html = renderDirectorPanel({
+    overall: 'ok',
+    services: [
+      { state: 'ok', title: 'Plex', sub: 'reachable', right: 'ok' },
+      { state: 'down', title: 'Radarr <b>', sub: 'check failed', right: 'down' },
+      { state: 'skip', title: 'Sonarr', sub: 'not configured', right: 'skipped' },
+    ],
+    disks: [{ state: 'ok', title: '/mnt/media', sub: '1 TB free of 8 TB', right: '88% used', pct: 88 }],
+    totalFreeLabel: '1.0 TB',
+  });
+  assert.match(html, /d-eyebrow">FLEET \/ LIVE/);
+  assert.match(html, /d-h1">The whole stack, one glance/);
+  assert.match(html, /d-status bad">1 down/);
+  assert.match(html, /<strong>1<\/strong><span>Services healthy<\/span>/);
+  assert.match(html, /<strong>1<\/strong><span>Down<\/span>/);
+  assert.match(html, /<strong>1<\/strong><span>Not configured<\/span>/);
+  assert.match(html, /1\.0 TB<\/strong><span>Disk free/);
+  assert.match(html, /One service needs attention/);
+  assert.match(html, /Radarr &lt;b&gt; — check failed/);
+  assert.doesNotMatch(html, /<b>/);
+  assert.match(html, /role="progressbar"/);
+  assert.match(html, /aria-valuenow="88"/);
+});
+
+test('dashboard-render: renderDirectorPanel is calm when everything is healthy', () => {
+  const html = renderDirectorPanel({
+    overall: 'ok',
+    services: [{ state: 'ok', title: 'Plex', right: 'ok' }],
+    disks: null,
+    totalFreeLabel: null,
+  });
+  assert.match(html, /d-status ok">All systems go/);
+  assert.doesNotMatch(html, /needs attention/);
+  assert.match(html, /\*arr diskspace unreachable/);
+  assert.match(html, /—<\/strong><span>Disk free/);
+});
+
+test('dashboard-render: renderDirectorPanel handles no health data', () => {
+  const html = renderDirectorPanel({ overall: 'unknown', services: [], disks: [], totalFreeLabel: null });
+  assert.match(html, /No health data yet/);
+  assert.match(html, /No disks reported/);
+  assert.match(html, /d-status warn">UNKNOWN/);
 });
