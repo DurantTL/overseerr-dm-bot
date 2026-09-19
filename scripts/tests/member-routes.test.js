@@ -44,7 +44,7 @@ function fakeDb() {
   };
 }
 
-function fixture() {
+function fixture({ adminUserId = null } = {}) {
   const app = createApp();
   const db = fakeDb();
   const dms = [];
@@ -69,7 +69,7 @@ function fixture() {
   };
   const linkedUsers = { '123456789012345678': { discord_id: '123456789012345678', email: 'caleb@example.com', plex_username: 'caleb' } };
   registerMemberRoutes(app, {
-    CONFIG: { SESSION_SECRET: 'test-secret' },
+    CONFIG: { SESSION_SECRET: 'test-secret', ADMIN_USER_ID: adminUserId },
     db,
     audit: () => {},
     escapeHtml,
@@ -264,6 +264,54 @@ test('member dispatch: download form coerces ints, request-status passes media_i
 
     const badStatus = await request(port, 'GET', '/member/requests/status?media_id=nope', { headers: { Cookie: cookie } });
     assert.strictEqual(badStatus.statusCode, 302, 'non-media_id status lookups bounce back to the list');
+  } finally {
+    await close(server);
+  }
+});
+
+async function loginAs(port, dms, handle = '123456789012345678') {
+  const loginBody = form({ handle });
+  await request(port, 'POST', '/member/login', { headers: formHeaders(loginBody), body: loginBody });
+  const code = dms[dms.length - 1].text.match(/\b(\d{6})\b/)[1];
+  const verifyBody = form({ handle, code });
+  const verified = await request(port, 'POST', '/member/verify', { headers: formHeaders(verifyBody), body: verifyBody });
+  return sessionCookieFrom(verified);
+}
+
+test('member admin: ADMIN_USER_ID sees the Admin nav link and all requests', async () => {
+  const { app, dms } = fixture({ adminUserId: '123456789012345678' });
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const cookie = await loginAs(port, dms);
+
+    const home = await request(port, 'GET', '/member', { headers: { Cookie: cookie } });
+    assert.strictEqual(home.statusCode, 200);
+    assert.match(home.body, /\/member\/admin/, 'admin nav link is present');
+
+    const admin = await request(port, 'GET', '/member/admin', { headers: { Cookie: cookie } });
+    assert.strictEqual(admin.statusCode, 200);
+    assert.match(admin.body, /All requests/);
+    assert.match(admin.body, /status=pending/);
+  } finally {
+    await close(server);
+  }
+});
+
+test('member admin: non-admin gets 403 and no Admin nav link', async () => {
+  const { app, dms } = fixture();
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const cookie = await loginAs(port, dms);
+
+    const home = await request(port, 'GET', '/member', { headers: { Cookie: cookie } });
+    assert.strictEqual(home.statusCode, 200);
+    assert.doesNotMatch(home.body, /\/member\/admin/, 'no admin nav link for regular members');
+
+    const admin = await request(port, 'GET', '/member/admin', { headers: { Cookie: cookie } });
+    assert.strictEqual(admin.statusCode, 403);
+    assert.match(admin.body, /Admins only/);
   } finally {
     await close(server);
   }

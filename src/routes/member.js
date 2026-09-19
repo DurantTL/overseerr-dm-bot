@@ -117,18 +117,47 @@ function registerMemberRoutes(app, deps) {
     res.setHeader('Set-Cookie', `${MEMBER_COOKIE}=; HttpOnly; SameSite=Lax; Path=/member; Max-Age=0`);
   }
 
-  function requireMember(req, res, next) {
-    const discordId = verifyMemberSession(sessionSecret, readCookie(req, MEMBER_COOKIE));
-    const user = discordId ? getUserByDiscordId(discordId) : null;
-    if (!user) {
-      clearMemberCookie(res);
-      return res.redirect('/member/login');
+  // PermissionFlagsBits.Administrator as a raw bigint so this route module
+  // doesn't need discord.js.
+  const ADMINISTRATOR_BIT = 8n;
+
+  // Global admin (ADMIN_USER_ID or the Discord Administrator permission) sees
+  // everything in the member surface — including an all-requests admin view.
+  async function isMemberAdmin(discordId) {
+    if (CONFIG.ADMIN_USER_ID && discordId === String(CONFIG.ADMIN_USER_ID)) return true;
+    try {
+      const members = await getGuildMembers();
+      const me = (members || []).find(m => m?.user?.id === discordId);
+      return !!(me?.permissions?.has && me.permissions.has(ADMINISTRATOR_BIT));
+    } catch (_e) {
+      return false;
     }
-    req.member = { discordId, user };
-    next();
   }
 
-  function layout({ title, body, active }) {
+  async function requireMember(req, res, next) {
+    try {
+      const discordId = verifyMemberSession(sessionSecret, readCookie(req, MEMBER_COOKIE));
+      const user = discordId ? getUserByDiscordId(discordId) : null;
+      if (!user) {
+        clearMemberCookie(res);
+        return res.redirect('/member/login');
+      }
+      req.member = { discordId, user, isAdmin: await isMemberAdmin(discordId) };
+      next();
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  function requireAdminPage(req, res, next) {
+    if (req.member?.isAdmin) return next();
+    return res.status(403).send(layout({
+      title: 'Admins only', active: '/member', isAdmin: false,
+      body: '<h1>🔒 Admins only</h1><p class="muted">This area is for the server admin.</p>',
+    }));
+  }
+
+  function layout({ title, body, active, isAdmin = false }) {
     const links = [
       ['/member', '🏠', 'Home'],
       ['/member/request', '🎬', 'Request'],
@@ -137,6 +166,7 @@ function registerMemberRoutes(app, deps) {
       ['/member/report', '🛠️', 'Report'],
       ['/member/me', '👤', 'Me'],
     ];
+    if (isAdmin) links.push(['/member/admin', '🛡️', 'Admin']);
     const nav = links.map(([href, icon, label]) =>
       `<a href="${href}" class="${active === href ? 'active' : ''}">${icon} ${label}</a>`).join('');
     return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)} — Durant Media</title><style>${css}</style><style>${MEMBER_CSS}</style></head><body>`
@@ -146,7 +176,11 @@ function registerMemberRoutes(app, deps) {
       + `</main></body></html>`;
   }
 
-  const resultPage = (req, title, active, html, backHref, backLabel) => layout({
+  // Shorthand: every member page renders through this so the admin nav link and
+  // any other per-member chrome stay in one place.
+  const page = (req, opts) => layout({ ...opts, isAdmin: req.member?.isAdmin === true });
+
+  const resultPage = (req, title, active, html, backHref, backLabel) => page(req, {
     title,
     active,
     body: `<h1>${escapeHtml(title)}</h1>${html}<p style="margin-top:16px"><a class="btn" href="${backHref}">${escapeHtml(backLabel)}</a></p>`,
@@ -266,7 +300,7 @@ function registerMemberRoutes(app, deps) {
       ['/member/keep', '📌', 'Keep List', 'Titles safe from cleanup.'],
     ].map(([href, icon, label, desc]) =>
       `<a class="member-nav-card" href="${href}"><div class="icon">${icon}</div><div class="label">${label}</div><div class="desc">${desc}</div></a>`).join('');
-    res.send(layout({
+    res.send(page(req, {
       title: 'Home', active: '/member',
       body: `<h1>Hey, ${escapeHtml(name)} 👋</h1><div class="member-nav-cards">${cards}</div><h2>Your recent requests</h2>${recentHtml}`,
     }));
@@ -274,7 +308,7 @@ function registerMemberRoutes(app, deps) {
 
   // Request a title: search Seerr, pick a result, set options, submit.
   app.get('/member/request', requireMember, (_req, res) => {
-    res.send(layout({
+    res.send(page(_req, {
       title: 'Request', active: '/member/request',
       body: `<h1>🎬 Request a movie or show</h1>
       <form class="member-form" id="request-form" method="POST" action="/member/request">
@@ -369,7 +403,7 @@ function registerMemberRoutes(app, deps) {
         + `<a class="btn" href="/member/requests/status?media_id=${encodeURIComponent(r.media_id)}">Status</a>`
         + `<form method="POST" action="/member/requests/cancel" onsubmit="return confirm('Withdraw your request for ${escapeHtml(r.title).replace(/'/g, '&#39;')}?')"><input type="hidden" name="media_id" value="${escapeHtml(r.media_id)}"><button class="btn danger" type="submit">Cancel</button></form></div>`).join('')
       : '';
-    res.send(layout({ title: 'My Requests', active: '/member/requests', body: `<h1>🧾 My requests</h1>${listHtml}${cancelHtml}` }));
+    res.send(page(req, { title: 'My Requests', active: '/member/requests', body: `<h1>🧾 My requests</h1>${listHtml}${cancelHtml}` }));
   });
 
   app.get('/member/requests/status', requireMember, async (req, res) => {
@@ -386,10 +420,47 @@ function registerMemberRoutes(app, deps) {
     res.send(resultPage(req, 'Request withdrawn', '/member/requests', html, '/member/requests', 'Back to my requests'));
   });
 
+  // Admin: every member's requests in one place, with a status filter. Read-only —
+  // approvals still happen from the main dashboard or Discord.
+  app.get('/member/admin', requireMember, requireAdminPage, async (req, res) => {
+    const statuses = ['pending', 'approved', 'available', 'denied'];
+    const filter = statuses.includes(String(req.query?.status || '')) ? String(req.query.status) : '';
+    const rows = filter
+      ? db.prepare('SELECT title, media_id, media_type, is_4k, status, requested_by_discord_id, created_at FROM requests WHERE status = ? ORDER BY id DESC LIMIT 100').all(filter)
+      : db.prepare('SELECT title, media_id, media_type, is_4k, status, requested_by_discord_id, created_at FROM requests ORDER BY id DESC LIMIT 100').all();
+    let nameFor = () => null;
+    try {
+      const members = await getGuildMembers();
+      const map = new Map((members || []).map(m => [m?.user?.id, m?.user?.username || m?.displayName || null]));
+      nameFor = id => map.get(id) || null;
+    } catch (_e) { /* names are best-effort */ }
+    const filterLinks = [`<a class="btn${filter ? '' : ' primary'}" href="/member/admin">All</a>`]
+      .concat(statuses.map(s => `<a class="btn${filter === s ? ' primary' : ''}" href="/member/admin?status=${s}">${s[0].toUpperCase()}${s.slice(1)}</a>`))
+      .join(' ');
+    const rowsHtml = rows.length ? `<div class="table-wrap"><table><thead><tr><th>Title</th><th>Type</th><th>Requester</th><th>Status</th><th>When</th></tr></thead><tbody>${
+      rows.map(r => {
+        const who = nameFor(r.requested_by_discord_id)
+          || getUserByDiscordId(r.requested_by_discord_id)?.email
+          || r.requested_by_discord_id || '—';
+        const when = String(r.created_at || '').slice(0, 16).replace('T', ' ');
+        return `<tr><td data-label="Title"><strong>${escapeHtml(r.title)}</strong>${r.is_4k ? ' (4K)' : ''}</td>`
+          + `<td data-label="Type">${escapeHtml(r.media_type || '—')}</td>`
+          + `<td data-label="Requester">${escapeHtml(who)}</td>`
+          + `<td data-label="Status">${escapeHtml(r.status || '—')}</td>`
+          + `<td data-label="When">${escapeHtml(when)}</td></tr>`;
+      }).join('')
+    }</tbody></table></div>` : '<p class="muted">No requests yet.</p>';
+    res.send(page(req, {
+      title: 'Admin — All Requests', active: '/member/admin',
+      body: `<h1>🛡️ All requests</h1><p class="muted">Every member's requests, newest first.</p>`
+        + `<p style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0">${filterLinks}</p>${rowsHtml}`,
+    }));
+  });
+
   // Downloads: active links plus a form to mint a new one.
   app.get('/member/downloads', requireMember, async (req, res) => {
     const listHtml = await runAsMember(req, handlers.downloads, {}).catch(err => `<div class="error">${escapeHtml(err.message)}</div>`);
-    res.send(layout({
+    res.send(page(req, {
       title: 'Downloads', active: '/member/downloads',
       body: `<h1>📥 Downloads</h1>${listHtml}
       <h2>New download link</h2>
@@ -427,7 +498,7 @@ function registerMemberRoutes(app, deps) {
     const available = db.prepare("SELECT DISTINCT title FROM requests WHERE status = 'available' ORDER BY title LIMIT 200").all();
     const dataList = available.length
       ? `<datalist id="available-titles">${available.map(r => `<option value="${escapeHtml(r.title)}">`).join('')}</datalist>` : '';
-    res.send(layout({
+    res.send(page(_req, {
       title: 'Report a Problem', active: '/member/report',
       body: `<h1>🛠️ Report a problem</h1>
       <p class="muted">Wrong audio, missing subtitles, mislabeled file — tell us what's wrong and we'll take a look.</p>
@@ -454,7 +525,7 @@ function registerMemberRoutes(app, deps) {
   // Notification preferences.
   app.get('/member/notifications', requireMember, (req, res) => {
     const muted = getSetting(`request_progress_dm:${req.member.discordId}`) === '0';
-    res.send(layout({
+    res.send(page(req, {
       title: 'Notifications', active: '/member/me',
       body: `<h1>🔔 Notifications</h1>
       <p class="muted">Approval and availability DMs always come through. This only controls the in-progress chatter.</p>
@@ -475,17 +546,17 @@ function registerMemberRoutes(app, deps) {
   // Profile, stats, keep list — straight through the handlers.
   app.get('/member/me', requireMember, async (req, res) => {
     const html = await runAsMember(req, handlers.me, {}).catch(err => `<div class="error">${escapeHtml(err.message)}</div>`);
-    res.send(layout({ title: 'Me', active: '/member/me', body: `<h1>👤 Me</h1>${html}<p style="margin-top:12px"><a class="btn" href="/member/notifications">🔔 Notification settings</a></p>` }));
+    res.send(page(req, { title: 'Me', active: '/member/me', body: `<h1>👤 Me</h1>${html}<p style="margin-top:12px"><a class="btn" href="/member/notifications">🔔 Notification settings</a></p>` }));
   });
 
   app.get('/member/stats', requireMember, async (req, res) => {
     const html = await runAsMember(req, handlers.stats, {}).catch(err => `<div class="error">${escapeHtml(err.message)}</div>`);
-    res.send(layout({ title: 'My Stats', active: '/member/me', body: `<h1>📊 My stats</h1>${html}` }));
+    res.send(page(req, { title: 'My Stats', active: '/member/me', body: `<h1>📊 My stats</h1>${html}` }));
   });
 
   app.get('/member/keep', requireMember, async (req, res) => {
     const html = await runAsMember(req, handlers.keep, {}).catch(err => `<div class="error">${escapeHtml(err.message)}</div>`);
-    res.send(layout({ title: 'Keep List', active: '/member/me', body: `<h1>📌 Keep list</h1><p class="muted">Titles you chose to keep — protected from cleanup.</p>${html}` }));
+    res.send(page(req, { title: 'Keep List', active: '/member/me', body: `<h1>📌 Keep list</h1><p class="muted">Titles you chose to keep — protected from cleanup.</p>${html}` }));
   });
 
   // The member home links here, so it belongs in the nav's active set.
