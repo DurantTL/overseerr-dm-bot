@@ -30,24 +30,24 @@ const { log } = require('./src/log');
 const { createMediaPanelFeature, mediaPanelCommand } = require('./src/media-panel');
 const { createSupportCaseFeature, casesCommand, myCasesCommand } = require('./src/support-cases');
 const { createSetupRequestUiFeature, requestModal } = require('./src/setup-request-ui');
-const { parseBool, CONFIG, REQUIRED_ENV, validateConfig, configWarnings } = require('./src/config');
+const { CONFIG, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, ensureColumn, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, countRecentPromotions, recordPromotion, recordTierPlayPin, listActiveTierPlayPins, countActiveTierPlayPinsForViewer, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, createSupportCase, getSupportCaseById, listSupportCases, listSupportCasesForRequester, listSupportCasesNeedingNotifyRetry, recordSupportCaseNotifyResult, recordSupportCaseMemberNotifyResult, assignSupportCase, acknowledgeSupportCase, resolveSupportCase, reopenSupportCase, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, recordPackRejections, getPackRejectionSighting, markPackRejectionSuggested, dismissPackRejectionSuggestion, resetPackRejectionSightings, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, countRecentPromotions, recordPromotion, recordTierPlayPin, listActiveTierPlayPins, countActiveTierPlayPinsForViewer, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, createSupportCase, getSupportCaseById, listSupportCases, listSupportCasesForRequester, listSupportCasesNeedingNotifyRetry, recordSupportCaseNotifyResult, recordSupportCaseMemberNotifyResult, assignSupportCase, acknowledgeSupportCase, resolveSupportCase, reopenSupportCase, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, recordPackRejections, getPackRejectionSighting, markPackRejectionSuggested, dismissPackRejectionSuggestion, resetPackRejectionSightings, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeasonEpisodeFallbacks,
   markSeasonEpisodeFallbackSubmitted, attachSeasonEpisodeFallbackCommand, finishSeasonEpisodeFallback, deferSubmittedSeasonEpisodeFallback,
   clearSeasonEpisodeFallback } = require('./src/db');
 const { recordDeadReleaseGroupSighting, getReleaseGroupSighting, markReleaseGroupSuggested, markReleaseGroupBlocklisted, dismissReleaseGroupSuggestion } = require('./src/db');
-const { PLEX_CLIENT_ID, getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess, fetchPlexFriends, createPlexShareRefreshContext, refreshPlexShare } = require('./src/plex');
+const { getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess, fetchPlexFriends, createPlexShareRefreshContext, refreshPlexShare } = require('./src/plex');
 const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvSeasonInfo, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
 const { ALL_SEASONS, parseSeasonSelection, formatSeasonsLabel, splitCoveredSeasons, seasonsToStorageKey, seasonsFromStorageKey } = require('./src/season-select');
-const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases,
+const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerMovieSearch, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases,
   getArrTagId, addTagToSeries, listSonarrCustomFormats, createSonarrCustomFormat, scoreSonarrCustomFormatInAllProfiles,
   listSonarrQualityDefinitions, setSonarrQualityDefinitionMinSize } = require('./src/arr');
-const { decideEscalationAction, escalationEligible, autoEscalateAllowed, usesDirectGrabEscalation } = require('./src/escalation');
+const { decideEscalationAction, escalationEligible, usesDirectGrabEscalation } = require('./src/escalation');
 const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSeasonFillActivity, SEASON_FILL_EVENTS, SEASON_FAILURE_EVENTS } = require('./src/season-pack');
 const { rankSeasonReleases, chooseSeasonPack, describeRejections, summarizePackRejections, rejectedOnlyForSizeFloor } = require('./src/season-release');
 const { classifyEpisodeFallbackEvidence, planEpisodeFallback, orderPendingFallbacks } = require('./src/season-episode-fallback');
@@ -58,7 +58,7 @@ const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromo
 const { resolveEdgeTierNode, decideCaLocality, planCaPlayPromotion, computePlayPin } = require('./src/edge-promotion');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { checkPublicOriginReadiness } = require('./src/public-origin-diagnostics');
-const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement } = require('./src/dashboard-render');
+const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement, DASHBOARD_CSS } = require('./src/dashboard-render');
 const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, eraseTorrent, getRtorrentVersion, getRtorrentPaths } = require('./src/rtorrent');
 const { decideRatioRemoval, describeDeletionSafety } = require('./src/ratio-cleanup');
@@ -71,6 +71,9 @@ const { registerAgentApiRoutes } = require('./src/routes/agent-api');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
 const { registerDashboardReadRoutes } = require('./src/routes/dashboard-read');
 const { registerDashboardMutationRoutes } = require('./src/routes/dashboard-mutations');
+const { registerUserAdminRoutes } = require('./src/routes/dashboard-users');
+const { registerEuropeSyncRoutes } = require('./src/routes/dashboard-europe');
+const { registerMemberRoutes } = require('./src/routes/member');
 const { createTtlCache } = require('./src/dashboard-cache');
 const { createDashboardSession, createDashboardAuth, createDashboardGateActor, dashboardActor, registerDashboardAuthRoutes } = require('./src/routes/dashboard-auth');
 const { createApp } = require('./src/app');
@@ -267,10 +270,6 @@ function describeChannelError(err) {
   if (code === 50001) return 'Missing Access (50001) — the bot can\'t see that channel; give its role View Channel';
   if (code === 50013) return 'Missing Permissions (50013) — the bot can see the channel but lacks Send Messages / Embed Links';
   return `${err?.message || err}${code ? ` (code ${code})` : ''}`;
-}
-
-function notifyAdmin(msg) {
-  notifyChannel('admin', msg);
 }
 
 // request_subscribers is always keyed tmdb:<id>, with a :4k suffix — a standard and a 4K
@@ -5309,12 +5308,15 @@ async function handleRequestCommand(interaction) {
   const asianHint = interaction.options.getBoolean('asian_content');
   const raw = String(interaction.options.getString('title') || '').trim();
   // Autocomplete picks arrive as "movie:<tmdbId>:<title>"; free-typed text falls back to search.
+  // Parsed with a flat head-match plus a manual tail split (no nested quantifiers).
   let mediaType, tmdbId, label;
-  const picked = raw.match(/^(movie|tv):(\d+)(?::(.*))?$/);
+  const head = raw.match(/^(movie|tv):(\d+)/);
+  const picked = head && (raw.length === head[0].length || raw[head[0].length] === ':') ? head : null;
   if (picked) {
     mediaType = picked[1];
     tmdbId = Number(picked[2]);
-    label = (picked[3] || '').trim() || raw;
+    const rest = raw.length === picked[0].length ? '' : raw.slice(picked[0].length + 1);
+    label = rest.trim() || raw;
   } else {
     let hit = null;
     try { hit = (await searchSeerr(raw))[0]; } catch (_e) {}
@@ -9528,11 +9530,34 @@ async function gatherIncompleteRequests({ queue = [], grabJobs = [], escalations
     });
   }
 
+  // Movie "find it": resolve each open movie request to its Radarr movie id so the row
+  // can offer a one-click MoviesSearch, the way series rows already offer season/episode
+  // searches. A request whose movie isn't in either Radarr simply gets no button.
+  let radarrMovieByTmdb = new Map();
+  if (CONFIG.RADARR_URL || CONFIG.RADARR_4K_URL) {
+    try {
+      const movies = await listRadarrMovies().catch(() => []);
+      for (const m of movies || []) {
+        if (m?.tmdbId && Number.isInteger(m.id)) radarrMovieByTmdb.set(`${Number(m.tmdbId)}:${m.is4k ? 1 : 0}`, m.id);
+      }
+    } catch (_e) { /* search buttons simply won't render */ }
+  }
+
   for (const request of openRequests) {
     const tvdbId = /^tvdb:(\d+)$/.exec(request.media_id || '')?.[1];
     // A series already covered by the Sonarr pass above would otherwise appear twice.
     if (tvdbId && seenTvdb.has(Number(tvdbId))) continue;
     const tmdbId = /^tmdb:(\d+)$/.exec(request.media_id || '')?.[1];
+    const isMovie = request.media_type === 'movie';
+    const radarrId = tmdbId && isMovie ? radarrMovieByTmdb.get(`${Number(tmdbId)}:${request.is_4k ? 1 : 0}`) : null;
+    const searchAction = radarrId
+      ? [{
+          label: `🔍 Search${request.is_4k ? ' 4K' : ''} now`,
+          url: '/admin/action/search',
+          body: { kind: 'movie', movieId: radarrId, is4k: !!request.is_4k },
+          title: `Trigger a Radarr${request.is_4k ? ' 4K' : ''} MoviesSearch for "${request.title}" right now.`,
+        }]
+      : [];
     const activity = describeActivity(ctx, { tvdbId: tvdbId ? Number(tvdbId) : null, tmdbId: tmdbId ? Number(tmdbId) : null, title: request.title });
     const age = fmtAgo(sqliteUtcMs(request.created_at));
     rows.push({
@@ -9541,7 +9566,7 @@ async function gatherIncompleteRequests({ queue = [], grabJobs = [], escalations
       sub: `${requestStatusBadge(request.status)} · requested ${age} · ${activity.note}`,
       right: request.requested_by_discord_id ? `by ${request.requested_by_discord_id}` : '',
       missing: 0,
-      actions: request.media_id ? [{ label: priority.has(request.media_id) ? 'Unpin' : 'Pin', url: '/admin/action/priority', body: { operation: priority.has(request.media_id) ? 'unpin' : 'pin', key: request.media_id, mediaType: request.media_type, title: request.title } }] : [],
+      actions: [...searchAction, ...(request.media_id ? [{ label: priority.has(request.media_id) ? 'Unpin' : 'Pin', url: '/admin/action/priority', body: { operation: priority.has(request.media_id) ? 'unpin' : 'pin', key: request.media_id, mediaType: request.media_type, title: request.title } }] : [])],
     });
   }
   return rankIncomplete(rows);
@@ -9742,6 +9767,7 @@ function startExpressServer() {
       listSonarrMissingEpisodes,
       listSonarrSeries,
       listTierNodeFolders,
+      listTierNodeMembers,
       listTierNodes,
       mediaTypeLabel,
       normalizeSearchQuery,
@@ -9792,17 +9818,27 @@ function startExpressServer() {
       getSeasonSearchTimes,
       getSeriesEpisodes,
       getTierNode,
+      addTierNodeFolder,
+      addTierNodeMember,
+      assessApplyImpact,
+      buildTierPlans,
+      computeTierActionPreview,
+      fmtSpace,
       grabConfigured,
       grabDailyAllowance,
       httpRateLimitKey,
       listMediaPriority,
       listSonarrSeries,
+      listTierNodeFiles,
       monitorSeasonSearch,
       nextRank,
       pad,
       prepareTierNodeInstall,
+      publishTierNodePlan,
       rateLimit,
       recordSeasonSearch,
+      removeTierNodeFolder,
+      removeTierNodeMember,
       replaceTierNodeFolders,
       revokeAllDownloadLinks,
       runEscalation,
@@ -9811,15 +9847,73 @@ function startExpressServer() {
       seasonSearchCooldown,
       setMediaPriority,
       setTierAgentToken,
+      setTierNodeEnabled,
       settingsStore,
       sonarrSeriesAliases,
+      tierApplyCaps,
+      tierApplyConfirmCode,
       tierInstallCommand,
       triggerEpisodeSearch,
+      triggerMovieSearch,
       triggerSeasonSearch,
       tunable,
       upsertTierNode,
       usesDirectGrabEscalation,
       getAutomationRegistry: () => automationRegistry,
+    });
+
+    registerMemberRoutes(app, {
+      CONFIG,
+      db,
+      audit,
+      escapeHtml,
+      css: DASHBOARD_CSS,
+      sessionSecret: CONFIG.SESSION_SECRET,
+      handlers: {
+        request: handleRequestCommand,
+        myRequests: handleMyRequestsCommand,
+        requestStatus: handleRequestStatusCommand,
+        requestCancel: handleRequestCancelCommand,
+        download: handleDownloadCommand,
+        downloads: handleDownloadsCommand,
+        report: handleReportCommand,
+        notifications: handleNotificationsCommand,
+        me: handleMeCommand,
+        stats: handleStatsCommand,
+        keep: handleKeepCommand,
+      },
+      searchSeerr,
+      getGuildMembers,
+      getUserByDiscordId,
+      getSetting,
+      sendMemberDm: (discordId, text) => client.users.fetch(discordId).then(u => u.send(text)),
+    });
+
+    registerUserAdminRoutes(app, {
+      audit,
+      dashboardAuth,
+      rateLimit,
+      escapeHtml,
+      getGuildMembers,
+      fetchDiscordUser: id => client.users.fetch(id),
+      handlers: {
+        link: handleLinkCommand,
+        unlink: handleUnlinkCommand,
+        invite: handleInviteCommand,
+        reinvite: handleReinviteCommand,
+        assignServer: handleAssignServerCommand,
+        reshareAll: handleReshareAllCommand,
+      },
+    });
+
+    registerEuropeSyncRoutes(app, {
+      audit,
+      dashboardAuth,
+      dashboardActor,
+      db,
+      rateLimit,
+      escapeHtml,
+      scriptPath: CONFIG.EUROPE_SYNC_SCRIPT_PATH,
     });
   }
 

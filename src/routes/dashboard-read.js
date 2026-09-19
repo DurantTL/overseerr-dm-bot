@@ -1,5 +1,9 @@
 'use strict';
 
+const fs = require('fs');
+const { parseScriptConfig } = require('../europe-sync');
+const { HEALTH_KEYS, healthLabel } = require('../health');
+
 function registerDashboardReadRoutes(app, deps) {
   const {
     CONFIG,
@@ -38,6 +42,7 @@ function registerDashboardReadRoutes(app, deps) {
     listSonarrMissingEpisodes,
     listSonarrSeries,
     listTierNodeFolders,
+    listTierNodeMembers,
     listTierNodes,
     mediaTypeLabel,
     normalizeSearchQuery,
@@ -77,6 +82,7 @@ function registerDashboardReadRoutes(app, deps) {
     const now = Date.now();
     const pendingApprovals = listPendingRequests();
     const passkeys = listPasskeys();
+    const tierNodesEarly = listTierNodes();
     // Live activity, cached with a bounded per-source TTL (#189): every GET /admin render used to
     // hit every integration fresh, so a 60s auto-refresh with any number of open admin tabs
     // multiplied real upstream traffic by however many viewers happened to be watching. Each
@@ -96,9 +102,9 @@ function registerDashboardReadRoutes(app, deps) {
         ? dashboardCache.get('disk-space', 60000, fetchDiskSpace).catch(() => ({ value: null, fetchedAt: now, stale: true }))
         : Promise.resolve(notFetched),
       dashboardCache.get('edge-diagnostics', 60000, () => runEdgeDiagnostics({ live: false })).catch(() => ({ value: [], fetchedAt: now, stale: true })),
-      pendingApprovals.length
+      (pendingApprovals.length || tierNodesEarly.some(n => n.access === 'restricted')
         ? dashboardCache.get('guild-members', 60000, getGuildMembers).catch(() => ({ value: [], fetchedAt: now, stale: true }))
-        : Promise.resolve(notFetchedEmpty),
+        : Promise.resolve(notFetchedEmpty)),
       Promise.all(pendingApprovals.map(pending => quotaBlockReason(pending.seerrUserId, pending.discordId, pending.mediaType, { tmdbId: pending.tmdbId, is4k: pending.is4k }, true)
         .then(warning => ({ warning, error: null }))
         .catch(err => ({ warning: null, error: dashboardActionError(err) })))),
@@ -127,7 +133,7 @@ function registerDashboardReadRoutes(app, deps) {
     // failure (Sonarr unreachable) so the card says so instead of claiming everything is fine.
     const incomplete = await gatherIncompleteRequests({ queue: queue || [], grabJobs, escalations, now }).catch(() => null);
     const pendingDeletions = db.prepare("SELECT * FROM pending_deletions WHERE status = 'pending' ORDER BY delete_after LIMIT 25").all();
-    const tierNodes = listTierNodes();
+    const tierNodes = tierNodesEarly;
     // Latest agent report per tier node, from the audit log.
     const lastReportByNode = {};
     for (const r of db.prepare("SELECT * FROM audit_log WHERE action = 'tier_agent_report' ORDER BY id DESC LIMIT 100").all()) {
@@ -141,6 +147,38 @@ function registerDashboardReadRoutes(app, deps) {
     const pendingRequestCount = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get().c;
     const recentRequests = db.prepare('SELECT * FROM requests ORDER BY id DESC LIMIT 50').all();
     const linkedUsers = db.prepare('SELECT discord_id, email, invited, requested_at, home_server FROM users ORDER BY requested_at DESC LIMIT 100').all();
+
+    // People tab: user administration. Per-row buttons reuse the page's inline
+    // data-post mechanism; the routes return { ok, html } rendered from the real
+    // slash-command handlers.
+    const userBtn = (label, url, body, extra) =>
+      `<button class="btn${extra && extra.danger ? ' danger' : ''}" type="button" data-post="${url}" data-body="${escapeHtml(JSON.stringify(body))}" data-inline="true"${extra && extra.confirm ? ` data-confirm="${escapeHtml(extra.confirm)}"` : ''}>${escapeHtml(label)}</button>`;
+    const pendingUsersHtml = pendingPlex.length ? `<div class="table-wrap"><table><thead><tr><th>Email</th><th>Discord</th><th>Requested</th><th></th></tr></thead><tbody>${
+      pendingPlex.map(u => {
+        const did = u.discord_id || '';
+        return `<tr><td data-label="Email">${escapeHtml(u.email || '—')}</td>`
+          + `<td data-label="Discord"><code>${escapeHtml(did)}</code></td>`
+          + `<td data-label="Requested">${escapeHtml(fmtAgo(u.requested_at))}</td>`
+          + `<td>${did ? userBtn('Invite', '/admin/action/user/invite', { discordId: did, email: u.email || undefined }) : ''}<span class="action-result" aria-live="polite"></span></td></tr>`;
+      }).join('')
+    }</tbody></table></div>` : '<p class="muted">No pending users.</p>';
+    const linkedUsersHtml = linkedUsers.length ? `<div class="table-wrap"><table><thead><tr><th>Email</th><th>Discord</th><th>Server</th><th>Invited</th><th>Since</th><th>Actions</th></tr></thead><tbody>${
+      linkedUsers.map(u => {
+        const did = u.discord_id || '';
+        const isPh = u.home_server === 'ph';
+        const actions = did ? [
+          userBtn('Reinvite', '/admin/action/user/reinvite', { discordId: did }),
+          userBtn(isPh ? '→ Main' : '→ PH', '/admin/action/user/assign-server', { discordId: did, server: isPh ? 'primary' : 'ph' }),
+          userBtn('Unlink', '/admin/action/user/unlink', { discordId: did }, { danger: true, confirm: `Unlink ${u.email || did}? Removes them from the DB (Plex/Seerr access untouched).` }),
+        ].join(' ') : '';
+        return `<tr><td data-label="Email">${escapeHtml(u.email || '—')}</td>`
+          + `<td data-label="Discord"><code>${escapeHtml(did)}</code></td>`
+          + `<td data-label="Server">${isPh ? 'Philippines' : 'Main'}</td>`
+          + `<td data-label="Invited">${u.invited ? '✅' : '⏳'}</td>`
+          + `<td data-label="Since">${escapeHtml(fmtAgo(u.requested_at))}</td>`
+          + `<td class="user-actions">${actions}<span class="action-result" aria-live="polite"></span></td></tr>`;
+      }).join('')
+    }</tbody></table></div>` : '<p class="muted">No linked users yet.</p>';
     const recentDownloads = db.prepare('SELECT * FROM download_access_log ORDER BY id DESC LIMIT 25').all();
     const auditRows = db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 50').all();
     const linkedTotal = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
@@ -261,9 +299,70 @@ function registerDashboardReadRoutes(app, deps) {
         title: `${n.name}${n.full ? ' · full master' : ''}${n.sticky ? ' · sticky' : ''}`,
         sub: `${n.access} · ${n.demand_source}${n.demand_source === 'atime' && n.atime_mask ? ` (mask ${n.atime_mask})` : ''} · ${n.transport} · ${fmtSpace(n.usable_bytes || 0)} @ ${n.headroom_pct}% headroom · ${status.details}`,
         right: status.status,
-        actions: status.setup ? [{ label: 'Set up this node', setupNode: n.name }] : [],
+        actions: [
+          ...(status.setup ? [{ label: 'Set up this node', setupNode: n.name }] : []),
+          n.enabled
+            ? { label: 'Disable', url: '/admin/action/tier-node/disable', body: { name: n.name }, inline: true, danger: true, confirm: `Disable node "${n.name}"? The planner will skip it entirely until re-enabled.` }
+            : { label: 'Enable', url: '/admin/action/tier-node/enable', body: { name: n.name }, inline: true },
+        ],
       };
     });
+
+    // Tier planning + node management cards (dashboard parity slice 1). The folder/member
+    // lists render server-side with inline remove buttons; the preview results load on demand
+    // via JS because planning walks the full library.
+    const tierPlanNodeOptions = tierNodes.map(n => `<option value="${escapeHtml(n.name)}">${escapeHtml(n.name)}${n.full ? ' (full master)' : ''}</option>`).join('');
+    const tierFolderManageHtml = tierNodes.map(n => {
+      const folders = listTierNodeFolders(n.name);
+      if (!folders.length) return `<div class="tier-manage-row"><strong>${escapeHtml(n.name)}</strong><p class="muted">No folders registered.</p></div>`;
+      return `<div class="tier-manage-row"><strong>${escapeHtml(n.name)}</strong><ul class="tier-manage-list">${folders.map(f => {
+        const fid = f.folderId || '(default)';
+        return `<li><code>${escapeHtml(fid)}</code> → ${escapeHtml(f.folderRoot || '')} <button class="btn danger" type="button" data-post="/admin/action/tier-node/folder-remove" data-body="${escapeHtml(JSON.stringify({ name: n.name, folderId: f.folderId || '' }))}" data-inline="true" data-confirm="Remove folder ${escapeHtml(fid)} from ${escapeHtml(n.name)}?">Remove</button><span class="action-result" aria-live="polite"></span></li>`;
+      }).join('')}</ul></div>`;
+    }).join('');
+    const restrictedTierNodes = tierNodes.filter(n => n.access === 'restricted');
+    const tierMemberManageHtml = restrictedTierNodes.length ? restrictedTierNodes.map(n => {
+      const memberIds = listTierNodeMembers(n.name);
+      const rows = memberIds.length ? `<ul class="tier-manage-list">${memberIds.map(id => {
+        const label = memberNames.get(id);
+        return `<li>${escapeHtml(label || id)}${label ? ` <span class="muted">(${escapeHtml(id)})</span>` : ''} <button class="btn danger" type="button" data-post="/admin/action/tier-member/remove" data-body="${escapeHtml(JSON.stringify({ name: n.name, discordId: id }))}" data-inline="true" data-confirm="Remove ${escapeHtml(label || id)} from ${escapeHtml(n.name)}?">Remove</button><span class="action-result" aria-live="polite"></span></li>`;
+      }).join('')}</ul>` : '<p class="muted">No members yet.</p>';
+      return `<div class="tier-manage-row"><strong>${escapeHtml(n.name)}</strong>${rows}</div>`;
+    }).join('') : '<p class="muted">No restricted nodes — member sets only apply to restricted-access nodes.</p>';
+    const restrictedNodeOptions = restrictedTierNodes.map(n => `<option value="${escapeHtml(n.name)}">${escapeHtml(n.name)}</option>`).join('');
+
+    // Europe node card: the 1TB Europe Plex box is curated by sync-latest-movies.sh
+    // (hardlinks recent movies into a Syncthing folder). Rendered server-side so the
+    // card shows script/config/last-run state with zero extra round trips; the
+    // preview/run buttons reuse the page's inline data-post mechanism.
+    const europeScriptPath = CONFIG.EUROPE_SYNC_SCRIPT_PATH || '';
+    let europeScriptText = null;
+    try {
+      if (europeScriptPath) europeScriptText = fs.readFileSync(europeScriptPath, 'utf8');
+    } catch (_e) { /* script not present on this host */ }
+    const europeConfig = europeScriptText ? parseScriptConfig(europeScriptText) : null;
+    let europeLastRun = null;
+    try {
+      const row = db.prepare("SELECT created_at, details FROM audit_log WHERE action = 'dashboard_europe_sync_run' ORDER BY id DESC LIMIT 1").get();
+      if (row) europeLastRun = row;
+    } catch (_e) { /* audit table may not exist in every context */ }
+    const europeStatusLine = !europeScriptText
+      ? `<p class="muted">Sync script not found at <code>${escapeHtml(europeScriptPath || '(not configured)')}</code> on this host — preview and run are unavailable.</p>`
+      : !europeConfig
+        ? `<p class="muted">Script found at <code>${escapeHtml(europeScriptPath)}</code>, but its SOURCE / DEST / YEARS_BACK lines couldn't be parsed — preview and run are disabled.</p>`
+        : `<p>Syncing <code>${escapeHtml(europeConfig.source)}</code> → <code>${escapeHtml(europeConfig.dest)}</code> · `
+          + `movies ${escapeHtml(String(europeConfig.yearMin))}–${escapeHtml(String(europeConfig.yearMax))} with a real video file. `
+          + `Hardlinks only — no extra disk on the master; aged-out titles leave the Europe library.</p>`
+          + (europeLastRun ? `<p class="muted">Last sync ${escapeHtml(fmtAgo(europeLastRun.created_at))}.</p>` : '<p class="muted">No sync has run from the dashboard yet.</p>');
+    const europeButtonsDisabled = (!europeScriptText || !europeConfig) ? ' disabled' : '';
+    const europeSyncHtml = `
+        <div class="card" id="europe-sync">
+          <h2>🇪🇺 Europe Node — Latest-Movies Sync<span class="sub">1TB curated box: full 4K + family films, no TV. Also the private-download seedbox.</span></h2>
+          ${europeStatusLine}
+          <button class="btn primary" type="button" data-post="/admin/action/europe-sync/preview" data-body="{}" data-inline="true"${europeButtonsDisabled}>Preview sync</button>
+          <button class="btn danger" type="button" data-post="/admin/action/europe-sync/run" data-body="{}" data-inline="true"${europeButtonsDisabled} data-confirm="Run the Europe sync for real? New movies get hardlinked (no extra disk); aged-out titles leave the Europe library.">Run sync</button>
+          <span class="action-result" aria-live="polite"></span>
+        </div>`;
 
     const diskItems = forecastDisks(db, disks || [], now).map(d => {
       const used = (d.totalSpace || 0) - (d.freeSpace || 0);
@@ -278,14 +377,26 @@ function registerDashboardReadRoutes(app, deps) {
       };
     });
 
-    const plexUserRows = pendingPlex.map(u => ({ email: u.email, discord: u.discord_id, requested: fmtAgo(u.requested_at) }));
     const requestRows = recentRequests.map(r => ({ title: r.title, status: r.status, type: mediaTypeLabel(r.media_type, r.is_4k), seerr: r.overseerr_request_id || 'provisional', requester: r.requested_by_discord_id || '—', when: fmtAgo(sqliteUtcMs(r.created_at)) }));
-    const linkedRows = linkedUsers.map(u => ({ email: u.email, discord: u.discord_id, group: u.home_server === 'ph' ? 'Philippines' : 'Main', invited: u.invited ? '✅' : '⏳', since: fmtAgo(u.requested_at) }));
     const downloadRows = recentDownloads.map(d => ({ when: fmtAgo(sqliteUtcMs(d.created_at)), file: (d.file_path || '').split('/').pop() || '—', status: d.status, sent: d.bytes_sent ? fmtSpace(d.bytes_sent) : '', ip: d.ip || '' }));
     const auditTableRows = auditRows.map(a => ({ when: fmtAgo(sqliteUtcMs(a.created_at)), action: a.action, details: String(a.metadata_json || '').slice(0, 160) }));
 
     const unavailable = which => `<p class="muted">${escapeHtml(which)} unreachable or not configured.</p>`;
-    const nav = [['overview', 'Overview'], ['operations', 'Operations'], ['automation', 'Automation'], ['edge', 'Edge'], ['people', 'People'], ['logs', 'Logs']];
+
+    // Director tab: every service the media server runs, one glance. Skipped means
+    // the URL/API key isn't configured — the board degrades to "not configured"
+    // rather than alarming.
+    const directorItems = HEALTH_KEYS.filter(k => health[k] !== undefined).map(k => {
+      const value = health[k];
+      const state = value === 'ok' || value === 'configured' ? 'ok' : value === 'down' || value === 'missing' ? 'down' : 'skip';
+      let sub = null;
+      if (value === 'down' || value === 'missing') sub = (health.errors || {})[k] || 'check failed';
+      else if (value === 'skipped' || value === 'disabled') sub = 'not configured';
+      else if (k === 'backup' && health.backupLastSuccessfulAt) sub = `last success ${fmtAgo(health.backupLastSuccessfulAt)}`;
+      return { state, title: healthLabel(k), sub, right: String(value) };
+    });
+
+    const nav = [['director', 'Director'], ['overview', 'Overview'], ['operations', 'Operations'], ['automation', 'Automation'], ['edge', 'Edge'], ['people', 'People'], ['logs', 'Logs']];
     const settingsGroups = runtimeSettings.describeRuntimeSettings({ config: CONFIG, store: settingsStore });
     const overriddenCount = settingsGroups.reduce((n, g) => n + g.settings.filter(x => x.overridden).length, 0);
 
@@ -295,6 +406,17 @@ function registerDashboardReadRoutes(app, deps) {
         <span class="updated">rendered ${new Date(now).toISOString().slice(11, 19)} UTC${dataAsOf < now ? ` · data as of ${fmtAgo(dataAsOf)}` : ''}${dataStale ? ' · <strong>stale</strong> (an integration refresh failed; showing the last good value)' : ''} · auto-refreshes</span>
       </div>
       <div class="stats">${stats}</div>
+
+      <section class="panel" data-panel="director">
+        <div class="card">
+          <h2>🖥️ Fleet Status<span class="sub">Everything the media server is running. Auto-refreshes with the page.</span></h2>
+          ${renderItemList(directorItems, 'No health data yet.')}
+        </div>
+        <div class="card">
+          <h2>💾 Disk Space</h2>
+          ${disks === null ? unavailable('*arr diskspace') : renderItemList(diskItems, 'No disks reported.')}
+        </div>
+      </section>
 
       <section class="panel" data-panel="overview">
         ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID, PASSKEY_RP.origin)}
@@ -310,10 +432,6 @@ function registerDashboardReadRoutes(app, deps) {
         <div class="card">
           <h2>⬇️ Downloading</h2>
           ${queue === null ? unavailable('Radarr/Sonarr') : renderItemList(queueItems, 'Nothing in the download queues.')}
-        </div>
-        <div class="card">
-          <h2>💾 Disk Space</h2>
-          ${disks === null ? unavailable('*arr diskspace') : renderItemList(diskItems, 'No disks reported.')}
         </div>
       </section>
 
@@ -372,7 +490,41 @@ function registerDashboardReadRoutes(app, deps) {
           <h2>📦 Tier Nodes</h2>
           ${renderItemList(tierItems, 'No tier nodes registered yet.')}
         </div>
+        <div class="card" id="tier-planning">
+          <h2>🗺️ Tier Planning<span class="sub">Dry-run the planner — shows keep/drop per node, writes nothing until you apply.</span></h2>
+          <div class="tier-plan-controls">
+            <label>Node <select id="tier-plan-node"><option value="">All nodes</option>${tierPlanNodeOptions}</select></label>
+            <button class="btn primary" type="button" id="tier-plan-preview">Preview plans</button>
+            <span class="save-note" id="tier-plan-note"></span>
+          </div>
+          <div id="tier-plan-results"></div>
+        </div>
         ${renderTierNodeSetup(tierNodes.map(node => ({ ...node, folders: listTierNodeFolders(node.name) })))}
+        <div class="card" id="tier-node-manage">
+          <h2>🔧 Tier Node Management<span class="sub">Folders and restricted-node members. Changes apply immediately and are audited.</span></h2>
+          <h3 class="setup-subheading">Syncthing folders</h3>
+          <form id="tier-folder-add-form">
+            <div class="setup-grid">
+              <label>Node<select name="name">${tierPlanNodeOptions}</select></label>
+              <label>Folder ID<input name="folderId" placeholder="e.g. movies" required></label>
+              <label>Local path<input name="folderRoot" placeholder="/mnt/media/Media/Movies" required></label>
+            </div>
+            <button class="btn" type="submit">Add folder</button>
+            <span class="save-note" id="tier-folder-add-note"></span>
+          </form>
+          ${tierFolderManageHtml}
+          <h3 class="setup-subheading">Restricted-node members</h3>
+          ${restrictedNodeOptions ? `<form id="tier-member-add-form">
+            <div class="setup-grid">
+              <label>Node<select name="name">${restrictedNodeOptions}</select></label>
+              <label>Discord user ID<input name="discordId" inputmode="numeric" pattern="\\d{5,25}" placeholder="e.g. 123456789012345678" required></label>
+            </div>
+            <button class="btn" type="submit">Add member</button>
+            <span class="save-note" id="tier-member-add-note"></span>
+          </form>` : ''}
+          ${tierMemberManageHtml}
+        </div>
+        ${europeSyncHtml}
         <div class="card">
           <h2>🩺 Edge Readiness</h2>
           ${renderItemList(edgeChecks.map(c => ({ state: c.status === 'fail' ? 'down' : c.status, title: c.name, sub: c.detail })), 'No edge checks available.')}
@@ -381,12 +533,40 @@ function registerDashboardReadRoutes(app, deps) {
 
       <section class="panel" data-panel="people">
         <div class="card">
+          <h2>👥 Add User<span class="sub">Runs the real /link and /invite commands — same Plex + Seerr chain, same audits.</span></h2>
+          <div class="setup-grid">
+            <form id="user-link-form">
+              <h3 class="setup-subheading">Link</h3>
+              <label>Discord user ID<input name="discordId" inputmode="numeric" pattern="\\d{5,25}" placeholder="123456789012345678" required></label>
+              <label>Plex email<input name="email" type="email" placeholder="them@example.com" required></label>
+              <button class="btn primary" type="submit">Link user</button>
+              <span class="save-note" id="user-link-note"></span>
+              <div id="user-link-result"></div>
+            </form>
+            <form id="user-invite-form">
+              <h3 class="setup-subheading">Invite</h3>
+              <label>Discord user ID<input name="discordId" inputmode="numeric" pattern="\\d{5,25}" placeholder="123456789012345678" required></label>
+              <label>Plex email <span class="muted">(optional — leave blank and the bot DMs them for it)</span><input name="email" type="email" placeholder="them@example.com"></label>
+              <label>Home server<select name="server"><option value="primary">Main (USA)</option><option value="ph">Philippines</option></select></label>
+              <button class="btn primary" type="submit">Invite user</button>
+              <span class="save-note" id="user-invite-note"></span>
+              <div id="user-invite-result"></div>
+            </form>
+          </div>
+        </div>
+        <div class="card">
           <h2>Pending Plex Users</h2>
-          ${renderTable(plexUserRows)}
+          ${pendingUsersHtml}
         </div>
         <div class="card">
           <h2>Linked Users</h2>
-          ${renderTable(linkedRows)}
+          ${linkedUsersHtml}
+        </div>
+        <div class="card">
+          <h2>🔁 Reshare All<span class="sub">Re-push the Plex share to every invited user — e.g. after a server rebuild.</span></h2>
+          <button class="btn" type="button" data-post="/admin/action/reshare-all" data-body='{"mode":"preview"}' data-inline="true">Preview</button>
+          <button class="btn danger" type="button" data-post="/admin/action/reshare-all" data-body='{"mode":"apply"}' data-inline="true" data-confirm="Re-push the Plex share to EVERY invited user?">Apply</button>
+          <span class="action-result" aria-live="polite"></span>
         </div>
       </section>
 
@@ -419,7 +599,12 @@ function registerDashboardReadRoutes(app, deps) {
             var item = btn.closest('.item-main');
             var buttons = btn.dataset.inline && item ? [].slice.call(item.querySelectorAll('[data-post]')) : [btn];
             var buttonStates = buttons.map(function (button) { return { button: button, disabled: button.disabled }; });
-            var note = btn.dataset.inline && item ? item.querySelector('.action-result') : null;
+            // Inline notes normally live under .item-main (renderItemList); management rows outside
+            // item lists keep their own sibling .action-result, so fall back to the button's parent.
+            var note = btn.dataset.inline
+              ? (item ? item.querySelector('.action-result')
+                : (btn.parentElement ? btn.parentElement.querySelector('.action-result') : null))
+              : null;
             buttons.forEach(function (button) { button.disabled = true; });
             if (note) { note.textContent = 'Working…'; note.className = 'action-result'; }
             window.__actionsInFlight = (window.__actionsInFlight || 0) + 1;
@@ -428,8 +613,19 @@ function registerDashboardReadRoutes(app, deps) {
               var result = await r.json().catch(function () { return {}; });
               var ok = r.ok && result.ok !== false;
               var message = ok ? (result.message || 'Action completed.') : (result.error || 'Request failed: ' + r.status);
+              // Successful tier folder/member removals drop their list row so the UI matches the new state.
+              var postUrl = btn.dataset.post || '';
+              if (ok && (postUrl.endsWith('/tier-node/folder-remove') || postUrl.endsWith('/tier-member/remove'))) {
+                var row = btn.closest('li');
+                if (row) row.remove();
+              } else if (ok && postUrl.endsWith('/user/unlink')) {
+                var userRow = btn.closest('tr');
+                if (userRow) userRow.remove();
+              }
               if (note) {
-                note.textContent = message;
+                // User-admin routes return rendered handler output (embeds etc.) as HTML.
+                if (ok && result.html) { note.innerHTML = result.html; }
+                else { note.textContent = message; }
                 note.className = 'action-result ' + (ok ? 'ok' : 'bad');
                 if (!ok && result.retryable) buttonStates.forEach(function (state) { state.button.disabled = state.disabled; });
               } else {
@@ -609,6 +805,159 @@ function registerDashboardReadRoutes(app, deps) {
             await navigator.clipboard.writeText(document.getElementById('tier-install-command').textContent);
             copy.textContent = 'Copied';
           });
+        })();
+        (function () {
+          // Tier planning UI (dashboard parity slice 1): preview on demand — planning walks the
+          // whole library — then apply per node with the same confirm-code guardrail /tier apply
+          // enforces for large rebalances.
+          var previewBtn = document.getElementById('tier-plan-preview');
+          if (!previewBtn) return;
+          var nodeSel = document.getElementById('tier-plan-node');
+          var note = document.getElementById('tier-plan-note');
+          var resultsEl = document.getElementById('tier-plan-results');
+          var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+          var lastPreview = {};
+          var setNote = function (text, cls) { note.textContent = text; note.className = 'save-note' + (cls ? ' ' + cls : ''); };
+
+          var renderNode = function (n) {
+            var html = '<div class="tier-plan-node"><h3>' + (n.full ? '🏠 ' : '📦 ') + esc(n.name) + '</h3>';
+            html += '<p>Keep <strong>' + n.keepCount + '</strong> (' + esc(n.keepBytes) + ') · Drop <strong>' + n.dropCount + '</strong> (' + esc(n.dropBytes) + ') · Budget ' + esc(n.budgetBytes) + '</p>';
+            if (n.publishedHash) {
+              html += '<p class="muted">' + (n.convergedHash && n.convergedHash === n.publishedHash
+                ? '✅ Published <code>' + esc(n.publishedHash) + '</code> — agent converged'
+                : '📤 Published <code>' + esc(n.publishedHash) + '</code> — agent has not confirmed yet') + '</p>';
+            } else {
+              html += '<p class="muted">No plan published yet.</p>';
+            }
+            if (n.full) {
+              html += '<p class="muted">🔒 Full master — never pruned.</p>';
+            } else {
+              var a = n.actions, im = n.impact;
+              var bits = [];
+              if (a.download.count) bits.push('⬇️ download ' + a.download.count + ' (' + esc(a.download.bytes) + ')');
+              if (a.remove.count) bits.push('🗑️ remove ' + a.remove.count + ' (' + esc(a.remove.bytes) + ')');
+              if (a.syncing.count) bits.push('⏳ syncing ' + a.syncing.count);
+              if (a.synced.count) bits.push('✓ synced ' + a.synced.count + ' (' + esc(a.synced.bytes) + ')');
+              html += '<p>' + (bits.length ? bits.join(' · ') : '✓ fully in sync — no disk actions') + (!a.hasReport ? ' <span class="muted">(no agent report yet)</span>' : '') + '</p>';
+              if (im.requiresConfirm) {
+                html += '<p class="setup-warning">⚠️ Large rebalance — real removals ' + esc(im.realRemoval) + ' (' + im.removedTitles + ' titles), new downloads ' + esc(im.newDownload) + '. Applying needs confirm code <strong>' + esc(im.confirmCode) + '</strong>.</p>';
+              } else if (im.realRemovalBytes > 0 || im.newDownloadBytes > 0) {
+                html += '<p class="muted">Real impact: remove ' + esc(im.realRemoval) + ' (' + im.removedTitles + ' titles), download ' + esc(im.newDownload) + ' (' + im.newDownloadTitles + ' titles).</p>';
+              }
+            }
+            html += '<button class="btn primary" type="button" data-tier-apply="' + esc(n.name) + '">Apply this plan</button> ';
+            html += '<span class="action-result" aria-live="polite" data-tier-apply-note="' + esc(n.name) + '"></span>';
+            if (n.topChanges && n.topChanges.length) {
+              html += '<details><summary>Top changes (' + n.topChanges.length + ')</summary><ul class="tier-manage-list">' + n.topChanges.map(function (c) {
+                return '<li>' + (c.action === 'download' ? '⬇️' : '🗑️') + ' <strong>' + esc(c.title) + '</strong> · ' + esc(c.size) + (c.folderId ? ' · <code>' + esc(c.folderId) + '</code>' : '') + (c.score != null ? ' · score ' + c.score : '') + '</li>';
+              }).join('') + '</ul></details>';
+            }
+            return html + '</div>';
+          };
+
+          var renderPreview = function (body) {
+            lastPreview = {};
+            var html = '';
+            if (body.failedSources && body.failedSources.length) {
+              html += '<div class="error">🛑 Apply is blocked — incomplete inventory: ' + body.failedSources.map(function (f) { return esc(f.label) + ' — ' + esc(f.error); }).join('; ') + '</div>';
+            }
+            if (body.routingErrors && body.routingErrors.length) {
+              html += '<div class="error">🛑 Apply is blocked — folder routing mismatch: ' + body.routingErrors.map(function (e) { return esc(e.node) + ' (' + e.count + ' unmatched)'; }).join('; ') + '</div>';
+            }
+            if (body.warnings && body.warnings.length) {
+              html += '<div class="setup-warning">' + body.warnings.slice(0, 8).map(function (w) { return esc(w); }).join('<br>') + '</div>';
+            }
+            body.nodes.forEach(function (n) { lastPreview[n.name] = n; html += renderNode(n); });
+            resultsEl.innerHTML = html;
+            resultsEl.querySelectorAll('[data-tier-apply]').forEach(function (btn) {
+              btn.addEventListener('click', function () { applyPlan(btn.dataset.tierApply, null); });
+            });
+          };
+
+          var applyPlan = async function (name, confirmCode) {
+            var n = lastPreview[name];
+            var noteEl = resultsEl.querySelector('[data-tier-apply-note="' + name + '"]');
+            var say = function (t, cls) { if (noteEl) { noteEl.textContent = t; noteEl.className = 'action-result' + (cls ? ' ' + cls : ''); } };
+            var code = confirmCode;
+            if (n && n.impact && n.impact.requiresConfirm && !code) {
+              code = prompt('Large rebalance on "' + name + '" — enter confirm code ' + n.impact.confirmCode + ' to publish:');
+              if (code == null) { say('Apply cancelled.'); return; }
+              code = code.trim();
+            }
+            say('Applying…');
+            try {
+              var r = await fetch('/admin/action/tier-apply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node: name, confirm: code || undefined }) });
+              var body = await r.json().catch(function () { return {}; });
+              if (!r.ok || body.ok === false) { say(body.error || 'Apply failed: ' + r.status); return; }
+              var held = (body.held || []).find(function (h) { return h.node === name; });
+              if (held) {
+                say('Held — confirm code: ' + held.confirmCode + '. Click Apply again and enter it.');
+                if (n && n.impact) n.impact.confirmCode = held.confirmCode;
+                return;
+              }
+              say('Published. The agent converges on its next run.', 'ok');
+              window.__dirtySettings = true;
+            } catch (err) { say(String(err && err.message || err)); }
+          };
+
+          previewBtn.addEventListener('click', async function () {
+            previewBtn.disabled = true;
+            setNote('Planning… this walks the full library and can take a minute.');
+            resultsEl.replaceChildren();
+            try {
+              var r = await fetch('/admin/action/tier-preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node: nodeSel.value || undefined }) });
+              var body = await r.json().catch(function () { return {}; });
+              if (!r.ok || body.ok === false) { setNote(body.error || 'Preview failed: ' + r.status, 'bad'); return; }
+              setNote('Preview ready — nothing was written.', 'ok');
+              renderPreview(body);
+            } catch (err) { setNote(String(err && err.message || err), 'bad'); }
+            finally { previewBtn.disabled = false; }
+          });
+
+          // Folder + member add forms: POST, then reload so the server-rendered lists refresh.
+          var wireSimpleForm = function (formId, url, noteId) {
+            var form = document.getElementById(formId);
+            if (!form) return;
+            form.addEventListener('submit', async function (event) {
+              event.preventDefault();
+              var values = Object.fromEntries(new FormData(form));
+              var noteEl = document.getElementById(noteId);
+              var say = function (t, cls) { noteEl.textContent = t; noteEl.className = 'save-note' + (cls ? ' ' + cls : ''); };
+              say('Saving…');
+              try {
+                var r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+                var body = await r.json().catch(function () { return {}; });
+                if (!r.ok || body.ok === false) { say(body.error || 'Failed: ' + r.status, 'bad'); return; }
+                say(body.message || 'Saved.', 'ok');
+                setTimeout(function () { location.hash = 'edge'; location.reload(); }, 800);
+              } catch (err) { say(String(err && err.message || err), 'bad'); }
+            });
+          };
+          wireSimpleForm('tier-folder-add-form', '/admin/action/tier-node/folder-add', 'tier-folder-add-note');
+          wireSimpleForm('tier-member-add-form', '/admin/action/tier-member/add', 'tier-member-add-note');
+          // User-admin forms render the handler's HTML result inline instead of reloading.
+          var wireUserForm = function (formId, url, noteId, resultId) {
+            var form = document.getElementById(formId);
+            if (!form) return;
+            form.addEventListener('submit', async function (event) {
+              event.preventDefault();
+              var values = Object.fromEntries(new FormData(form));
+              var noteEl = document.getElementById(noteId);
+              var resultEl = document.getElementById(resultId);
+              var say = function (t, cls) { noteEl.textContent = t; noteEl.className = 'save-note' + (cls ? ' ' + cls : ''); };
+              say('Working…');
+              resultEl.innerHTML = '';
+              try {
+                var r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+                var body = await r.json().catch(function () { return {}; });
+                if (!r.ok || body.ok === false) { say(body.error || 'Failed: ' + r.status, 'bad'); return; }
+                say('Done.', 'ok');
+                resultEl.innerHTML = body.html || '';
+              } catch (err) { say(String(err && err.message || err), 'bad'); }
+            });
+          };
+          wireUserForm('user-link-form', '/admin/action/user/link', 'user-link-note', 'user-link-result');
+          wireUserForm('user-invite-form', '/admin/action/user/invite', 'user-invite-note', 'user-invite-result');
         })();
         (function () {
           var note = function (group, text, cls) {

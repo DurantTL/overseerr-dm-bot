@@ -29,7 +29,7 @@ test('normalizePlexFriendsResponse: handles every response shape plex.tv has use
 });
 
 test('normalizePlexFriendsXml: preserves users and their server-share IDs', () => {
-  const { normalizePlexFriendsXml, parsePlexXmlAttributes, decodePlexXml } = loadSandbox([
+  const { normalizePlexFriendsXml } = loadSandbox([
     'decodePlexXml', 'parsePlexXmlAttributes', 'normalizePlexFriendsXml',
   ]);
   const users = JSON.parse(JSON.stringify(normalizePlexFriendsXml(`

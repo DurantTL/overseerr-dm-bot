@@ -116,6 +116,13 @@ const CONFIG = (() => {
   PROWLARR_URL: process.env.PROWLARR_URL || '',
   PROWLARR_API_KEY: process.env.PROWLARR_API_KEY || '',
   BYPARR_URL: process.env.BYPARR_URL || '',
+  // ---- Director health board: optional service base URLs for liveness checks ----
+  // Base URLs only (e.g. http://huntarr:1234); the board treats any HTTP response
+  // under 500 as "up". Empty = skipped.
+  HUNTARR_URL: (process.env.HUNTARR_URL || '').replace(/\/$/, ''),
+  RECYCLARR_URL: (process.env.RECYCLARR_URL || '').replace(/\/$/, ''),
+  CLEANUPARR_URL: (process.env.CLEANUPARR_URL || '').replace(/\/$/, ''),
+  SYNCTHING_URL: (process.env.SYNCTHING_URL || '').replace(/\/$/, ''),
   TAUTULLI_URL: (process.env.TAUTULLI_URL || '').replace(/\/$/, ''),
   TAUTULLI_API_KEY: process.env.TAUTULLI_API_KEY || '',
   PLAYBACK_CHECK_MINUTES: Number.parseInt(process.env.PLAYBACK_CHECK_MINUTES || '5', 10),
@@ -324,6 +331,10 @@ const CONFIG = (() => {
   // default; set it when that default is relative and .rtorrent.rc is not editable (#238).
   RTORRENT_DOWNLOAD_DIR: (process.env.RTORRENT_DOWNLOAD_DIR || '').replace(/\/+$/, ''),
   RTORRENT_PATH_GUARD: parseBool(process.env.RTORRENT_PATH_GUARD, true),
+  // Path to sync-latest-movies.sh, the script that curates the 1TB Europe node's
+  // library by hardlinking recent movies into a Syncthing folder. The dashboard's
+  // Europe card previews and runs it; empty disables the card's actions.
+  EUROPE_SYNC_SCRIPT_PATH: (process.env.EUROPE_SYNC_SCRIPT_PATH || '/opt/docker/plex-stack/overseerr-dm-bot/sync-latest-movies.sh').replace(/\/+$/, ''),
   // ---- rTorrent ratio-based cleanup: remove finished torrents that have seeded enough ----
   // Two independent triggers (src/ratio-cleanup.js): a torrent whose ratio has been sitting at
   // or above RTORRENT_RATIO_MIN_PERMILLE without moving for RTORRENT_RATIO_STALL_DAYS gets

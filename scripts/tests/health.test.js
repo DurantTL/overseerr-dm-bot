@@ -15,6 +15,14 @@ const {
 } = require('../../src/request-reconcile');
 const { loadSandbox } = require('./extract');
 
+// Exact-hostname match for the premiumize mock below: a substring check like
+// url.startsWith('https://www.premiumize.me') would also match
+// https://www.premiumize.me.evil.example/ (CodeQL flags that pattern), so the
+// mock pins the hostname instead.
+function isPremiumizeUrl(url) {
+  try { return new URL(url).hostname === 'www.premiumize.me'; } catch (_e) { return false; }
+}
+
 function baseConfig(overrides = {}) {
   return {
     BACKUP_INTERVAL_HOURS: 0,
@@ -202,4 +210,63 @@ test('disk-space report: preserves partial failures and explains allowlist filte
   assert.strictEqual(report.errors.sonarr, 'ETIMEDOUT');
   assert.strictEqual(auditRows.length, 1);
   assert.deepStrictEqual([...(await bed.run('fetchDiskSpace()'))], []);
+});
+
+test('health: director board services report reachability, skip when unconfigured', async () => {
+  const bed = checkerBed({
+    config: baseConfig({
+      HUNTARR_URL: 'http://huntarr:1234',
+      RECYCLARR_URL: 'http://recyclarr:7878',
+      CLEANUPARR_URL: '',
+      SYNCTHING_URL: 'http://syncthing:8384',
+      RTORRENT_URL: 'http://rtorrent:8080/RPC2',
+      PREMIUMIZE_API_KEY: 'pk',
+    }),
+    axiosGet: async url => {
+      if (isPremiumizeUrl(url)) return { status: 200, data: { status: 'success' } };
+      if (url === 'http://syncthing:8384') return { status: 404, data: {} };
+      return { status: 200, data: {} };
+    },
+  });
+  const health = await bed.gatherHealth();
+  assert.strictEqual(health.huntarr, 'ok');
+  assert.strictEqual(health.recyclarr, 'ok');
+  assert.strictEqual(health.cleanuparr, 'skipped');
+  assert.strictEqual(health.syncthing, 'ok', 'a 404 from the app itself still proves the process is up');
+  assert.strictEqual(health.rtorrent, 'ok');
+  assert.strictEqual(health.premiumize, 'ok');
+  assert.strictEqual(health.overall, 'ok');
+  for (const key of ['huntarr', 'recyclarr', 'cleanuparr', 'rtorrent', 'syncthing', 'premiumize']) {
+    assert.ok(HEALTH_KEYS.includes(key), `${key} is a first-class health key`);
+  }
+  assert.strictEqual(healthLabel('huntarr'), 'huntarr');
+  assert.strictEqual(healthLabel('premiumize'), 'premiumize');
+});
+
+test('health: director board services go down on 5xx or connection failure', async () => {
+  const bed = checkerBed({
+    config: baseConfig({
+      HUNTARR_URL: 'http://huntarr:1234',
+      PREMIUMIZE_API_KEY: 'pk',
+    }),
+    axiosGet: async url => {
+      if (url === 'http://huntarr:1234') return { status: 502, data: {} };
+      if (isPremiumizeUrl(url)) {
+        const error = new Error('connect failed');
+        error.code = 'ECONNREFUSED';
+        throw error;
+      }
+      return { status: 200, data: {} };
+    },
+  });
+  const health = await bed.gatherHealth();
+  assert.strictEqual(health.huntarr, 'down');
+  assert.strictEqual(health.errors.huntarr, 'HTTP 502');
+  assert.strictEqual(health.premiumize, 'down');
+  assert.strictEqual(health.overall, 'degraded');
+});
+
+test('health: premiumize is skipped without an API key', async () => {
+  const health = await checkerBed({ config: baseConfig({ PREMIUMIZE_API_KEY: '' }) }).gatherHealth();
+  assert.strictEqual(health.premiumize, 'skipped');
 });
