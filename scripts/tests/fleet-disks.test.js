@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { mergeFleetDisks, evaluateFleetDiskAlerts, evaluateSmartTransitions } = require('../../src/fleet-disks');
+const { mergeFleetDisks, evaluateFleetDiskAlerts, evaluateSmartTransitions, parseSmartHealthOutput, collectSmartHealth } = require('../../src/fleet-disks');
 const { assessDiskLevel, sanitizeSmartHealth } = require('../../src/node-telemetry');
 
 const GB = 1024 ** 3;
@@ -133,4 +133,62 @@ test('sanitizeSmartHealth: caps entries, device length, and accepted statuses', 
   assert.strictEqual(odd, null, 'invalid statuses are dropped');
   assert.strictEqual(sanitizeSmartHealth('nope'), null);
   assert.strictEqual(sanitizeSmartHealth([]), null);
+});
+
+test('fleet disks: masterSmartHealth attaches to *arr entries, sanitized', () => {
+  const disks = mergeFleetDisks({
+    arrDisks: [{ path: '/share/media', totalSpace: 8 * GB, freeSpace: 2 * GB }],
+    masterSmartHealth: [
+      { device: '/dev/sda', health: 'ok' },
+      { device: '/dev/sdb', health: 'failing' },
+      { device: '', health: 'ok' },
+      { device: '/dev/sdc', health: 'weird' },
+    ],
+  });
+  assert.deepStrictEqual(disks[0].smartHealth, [
+    { device: '/dev/sda', health: 'ok' },
+    { device: '/dev/sdb', health: 'failing' },
+  ]);
+});
+
+test('fleet disks: masterSmartHealth absent keeps *arr entries at null', () => {
+  const disks = mergeFleetDisks({ arrDisks: [{ path: '/x', totalSpace: 8 * GB, freeSpace: 2 * GB }] });
+  assert.strictEqual(disks[0].smartHealth, null);
+});
+
+test('fleet disks: parseSmartHealthOutput handles JSON, text, and garbage', () => {
+  assert.strictEqual(parseSmartHealthOutput(JSON.stringify({ smart_status: { passed: true } })), 'ok');
+  assert.strictEqual(parseSmartHealthOutput(JSON.stringify({ smart_status: { passed: false } })), 'failing');
+  assert.strictEqual(parseSmartHealthOutput('SMART overall-health self-assessment test result: PASSED'), 'ok');
+  assert.strictEqual(parseSmartHealthOutput('smart overall-health self-assessment test result: FAILED\n'), 'failing');
+  assert.strictEqual(parseSmartHealthOutput(''), null);
+  assert.strictEqual(parseSmartHealthOutput('not json at all'), null);
+  assert.strictEqual(parseSmartHealthOutput(JSON.stringify({ smart_status: {} })), null);
+});
+
+test('fleet disks: collectSmartHealth never throws; missing binary yields null', () => {
+  const enoent = () => { const e = new Error('spawn smartctl ENOENT'); e.code = 'ENOENT'; throw e; };
+  assert.strictEqual(collectSmartHealth(['/dev/sda', '/dev/sdb'], { execImpl: enoent }), null);
+  assert.strictEqual(collectSmartHealth('', { execImpl: enoent }), null);
+});
+
+test('fleet disks: collectSmartHealth parses per-device output, dedupes, caps', () => {
+  const calls = [];
+  const execImpl = (bin, args) => {
+    calls.push(args[2]);
+    if (args[2] === '/dev/bad') { const e = new Error('exit 1'); e.stdout = JSON.stringify({ smart_status: { passed: false } }); throw e; }
+    return JSON.stringify({ smart_status: { passed: true } });
+  };
+  const out = collectSmartHealth('/dev/sda, /dev/bad /dev/sdb /dev/sdc /dev/sdd /dev/sde /dev/sdf /dev/sdg /dev/sdh /dev/sdi', { execImpl });
+  assert.strictEqual(out.length, 8);
+  assert.deepStrictEqual(out[0], { device: '/dev/sda', health: 'ok' });
+  assert.deepStrictEqual(out[1], { device: '/dev/bad', health: 'failing' });
+  assert.ok(!out.some(d => d.device === '/dev/sdi'), 'capped at 8 devices');
+  const dup = collectSmartHealth(['/dev/sda', '/dev/sda'], { execImpl });
+  assert.strictEqual(dup.length, 1, 'deduplicated');
+});
+
+test('fleet disks: collectSmartHealth treats unparseable output as no reading', () => {
+  const execImpl = () => 'garbage';
+  assert.strictEqual(collectSmartHealth(['/dev/sda'], { execImpl }), null);
 });

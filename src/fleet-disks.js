@@ -5,9 +5,11 @@
 // SMART-health transitions with hysteresis. Pure functions — the sweep in index.js supplies
 // data and applies the returned events (notify + audit + persist state).
 
+const { execFileSync } = require('child_process');
 const {
   TELEMETRY_STALE_AFTER_MS,
   assessDiskLevel,
+  sanitizeSmartHealth,
   telemetryAge,
 } = require('./node-telemetry');
 
@@ -18,10 +20,13 @@ function percentUsed(total, free) {
 
 // Merge *arr diskspace entries with tier-node telemetry disks into one fleet list.
 // Shape per entry: { name, freeBytes, totalBytes, percentUsed, source: 'arr'|'tier-agent',
-// node, telemetryAgeMs, smartHealth }. Tier nodes with no usable telemetry are skipped;
-// stale telemetry is included but flagged via telemetryAgeMs so callers can see it.
-function mergeFleetDisks({ arrDisks = [], tierNodes = [], now = Date.now() } = {}) {
+// node, telemetryAgeMs, smartHealth }. masterSmartHealth (the bot's own smartctl
+// readings for durant-server, via MASTER_SMART_DEVICES) is attached to the *arr
+// entries. Tier nodes with no usable telemetry are skipped; stale telemetry is
+// included but flagged via telemetryAgeMs so callers can see it.
+function mergeFleetDisks({ arrDisks = [], tierNodes = [], masterSmartHealth = null, now = Date.now() } = {}) {
   const disks = [];
+  const masterSmart = sanitizeSmartHealth(masterSmartHealth);
   for (const d of arrDisks) {
     const total = Number(d.totalSpace) || 0;
     const free = Number(d.freeSpace) || 0;
@@ -33,7 +38,7 @@ function mergeFleetDisks({ arrDisks = [], tierNodes = [], now = Date.now() } = {
       source: 'arr',
       node: 'durant-server',
       telemetryAgeMs: null,
-      smartHealth: null,
+      smartHealth: masterSmart,
     });
   }
   for (const { name, telemetry } of tierNodes) {
@@ -124,8 +129,54 @@ function evaluateSmartTransitions({ tierNodes = [], getPreviousFailing }) {
   return { events, failingByNode };
 }
 
+// Parse `smartctl -H -j` output (JSON) with a fallback to the classic text form.
+// Returns 'ok' | 'failing' | null (unparseable/empty). Mirrors the tier agent's parser
+// (agent/agent.js) — the agent is shipped standalone, so the logic is duplicated here
+// rather than shared.
+function parseSmartHealthOutput(output) {
+  const text = String(output || '');
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    const passed = parsed?.smart_status?.passed;
+    if (passed === true) return 'ok';
+    if (passed === false) return 'failing';
+  } catch (_e) { /* not JSON — try the text form below */ }
+  const m = /SMART overall-health self-assessment test result:\s*(PASSED|FAILED)/i.exec(text);
+  if (m) return m[1].toUpperCase() === 'PASSED' ? 'ok' : 'failing';
+  return null;
+}
+
+// Run `smartctl -H -j` for each device (array or comma/space-separated string).
+// Never throws: a missing smartctl binary or an unreadable device simply yields no
+// reading. Returns a sanitized [{device, health}] array, or null when nothing was
+// readable. execImpl is injectable for tests.
+function collectSmartHealth(devices, { execImpl = execFileSync } = {}) {
+  const list = (Array.isArray(devices) ? devices : String(devices || '').split(/[\s,]+/))
+    .map(s => String(s).trim()).filter(Boolean);
+  const results = [];
+  const seen = new Set();
+  for (const raw of list.slice(0, 8)) {
+    const device = raw.slice(0, 80);
+    if (!device || seen.has(device)) continue;
+    seen.add(device);
+    let output;
+    try {
+      output = String(execImpl('smartctl', ['-H', '-j', device], { timeout: 15000 }) || '');
+    } catch (err) {
+      // smartctl exits non-zero when health FAILS — the JSON is on stdout of the error.
+      output = String((err && err.stdout) || '');
+    }
+    const health = parseSmartHealthOutput(output);
+    if (health) results.push({ device, health });
+  }
+  return sanitizeSmartHealth(results);
+}
+
 module.exports = {
   mergeFleetDisks,
   evaluateFleetDiskAlerts,
   evaluateSmartTransitions,
+  parseSmartHealthOutput,
+  collectSmartHealth,
 };

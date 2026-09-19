@@ -215,6 +215,8 @@ function registerAgentApiRoutes(app, deps) {
     // empty so the route still works in tests that don't wire the tier registry.
     listTierNodes = () => [],
     getTierPlan = () => null,
+    // Master SMART readings persisted by the disk-space sweep (MASTER_SMART_DEVICES).
+    getMasterSmartHealth = () => null,
     getPlexToken,
     getPlexServers,
     httpRateLimitKey,
@@ -300,7 +302,7 @@ function registerAgentApiRoutes(app, deps) {
   app.get('/api/v1/disks', auth, readLimiter, guarded(async (_req, res) => {
     const raw = (await fetchDiskSpace()) || [];
     const tierNodes = listTierNodes().map(n => ({ name: n.name, telemetry: getTierPlan(n.name)?.lastTelemetry || null }));
-    const disks = mergeFleetDisks({ arrDisks: raw, tierNodes });
+    const disks = mergeFleetDisks({ arrDisks: raw, tierNodes, masterSmartHealth: getMasterSmartHealth() });
     res.json({ ok: true, count: disks.length, disks });
   }));
 

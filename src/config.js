@@ -564,6 +564,11 @@ const CONFIG = (() => {
   DISK_WARN_FREE_PCT: Number.parseFloat(process.env.DISK_WARN_FREE_PCT || '15'),
   DISK_URGENT_FREE_PCT: Number.parseFloat(process.env.DISK_URGENT_FREE_PCT || '8'),
   DISK_CLEAR_MARGIN_PCT: Number.parseFloat(process.env.DISK_CLEAR_MARGIN_PCT || '3'),
+  // SMART for durant-server itself (the bot's own box — no tier agent runs there):
+  // comma/space-separated devices for `smartctl -H -j` (e.g. "/dev/sda, /dev/sdb").
+  // The bot runs in Docker, so this needs smartmontools in the image (Dockerfile) plus
+  // the devices mapped into the container. Unset = no master SMART readings (never an error).
+  MASTER_SMART_DEVICES: String(process.env.MASTER_SMART_DEVICES || ''),
   DELETION_GRACE_HOURS: Number.parseInt(process.env.DELETION_GRACE_HOURS || '24', 10),
   DELETION_REMINDER_COOLDOWN_HOURS: Number.parseInt(process.env.DELETION_REMINDER_COOLDOWN_HOURS || '12', 10),
   KEEP_LIST_DEFAULT_DAYS: Number.parseInt(process.env.KEEP_LIST_DEFAULT_DAYS || '90', 10),

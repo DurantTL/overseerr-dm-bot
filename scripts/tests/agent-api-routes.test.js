@@ -285,7 +285,7 @@ const os = require('node:os');
 const fs = require('node:fs');
 const nodePath = require('node:path');
 
-function setupV11() {
+function setupV11(overrides = {}) {
   const tokenHash = sha256('valid-agent-token');
   const auditCalls = [];
   const tmpStaging = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'agent-api-staging-'));
@@ -339,6 +339,7 @@ function setupV11() {
     ],
     // Fleet disks: tier-agent telemetry merges with the *arr volumes.
     listTierNodes: () => [{ name: 'california' }, { name: 'europe' }],
+    getMasterSmartHealth: overrides.getMasterSmartHealth || (() => null),
     getTierPlan: name => {
       if (name === 'california') {
         return { lastTelemetry: { agentVersion: 'x', at: Date.now(), collectedAt: Date.now(), node: 'california', host: 'california', filesystemTotalBytes: 8e12, filesystemFreeBytes: 1e12, smartHealth: [{ device: '/dev/sda', health: 'failing' }] } };
@@ -553,4 +554,23 @@ test('agent API v1.1: import scan enforces every safety guard from the Discord f
     await close(server);
     fs.rmSync(tmpStaging, { recursive: true, force: true });
   }
+});
+
+test('agent API v1.1: disks attach master SMART readings to *arr entries', async () => {
+  const { app } = setupV11({
+    getMasterSmartHealth: () => [{ device: '/dev/sda', health: 'ok' }, { device: '/dev/sdb', health: 'failing' }],
+  });
+  const server = await listen(app, 0);
+  try {
+    const res = await request(server.address().port, { path: '/api/v1/disks', token: 'valid-agent-token' });
+    assert.strictEqual(res.statusCode, 200);
+    const body = JSON.parse(res.body);
+    assert.deepStrictEqual(body.disks[0].smartHealth, [
+      { device: '/dev/sda', health: 'ok' },
+      { device: '/dev/sdb', health: 'failing' },
+    ]);
+    assert.strictEqual(body.disks[0].node, 'durant-server');
+    // Tier-agent entries are untouched by the master readings.
+    assert.deepStrictEqual(body.disks[2].smartHealth, [{ device: '/dev/sda', health: 'failing' }]);
+  } finally { await close(server); }
 });

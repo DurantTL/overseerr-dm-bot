@@ -80,7 +80,7 @@ const { createApp } = require('./src/app');
 const { createRuntimeLifecycle, createDiscordReadyGuard } = require('./src/runtime-lifecycle');
 const { createAutomationRegistry } = require('./src/automation-registry');
 const { evaluateTierPlanStaleness } = require('./src/tier-plan-staleness');
-const { mergeFleetDisks, evaluateFleetDiskAlerts, evaluateSmartTransitions } = require('./src/fleet-disks');
+const { mergeFleetDisks, evaluateFleetDiskAlerts, evaluateSmartTransitions, collectSmartHealth } = require('./src/fleet-disks');
 const { assessDiskLevel } = require('./src/node-telemetry');
 const { findUnprocessableTorrents, unacknowledgedTorrents, pruneAcknowledged, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate, planStuckTransferActions } = require('./src/premiumize');
@@ -231,6 +231,15 @@ function readJsonSetting(key) {
   try { return JSON.parse(raw); } catch (_err) { return null; }
 }
 
+// Latest master (durant-server) SMART readings, persisted by the disk-space sweep.
+// Null when MASTER_SMART_DEVICES is unset or nothing was readable — never an error.
+function readMasterSmartHealth() {
+  try {
+    const parsed = JSON.parse(getSetting('disk_smart_master') || 'null');
+    return Array.isArray(parsed) ? parsed : null;
+  } catch (_e) { return null; }
+}
+
 async function sweepFleetDiskAlerts() {
   const arrReport = await fetchDiskSpaceReport().catch(error => ({ disks: [], errors: { unknown: error.message } }));
   const arrDisks = arrReport.disks || [];
@@ -250,6 +259,26 @@ async function sweepFleetDiskAlerts() {
     tierNodes,
     getPreviousFailing: node => readJsonSetting(smartAlertStateKey(node))?.failing || null,
   });
+  // Master SMART: durant-server runs no tier agent, so the bot reads its own drives
+  // directly (MASTER_SMART_DEVICES). Evaluated as a pseudo-node so the same
+  // transition/audit path covers it; a missing smartctl or unreadable device simply
+  // yields no reading and never a transition.
+  const masterSmartDevices = String(CONFIG.MASTER_SMART_DEVICES || '').split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+  if (masterSmartDevices.length) {
+    const masterSmart = collectSmartHealth(masterSmartDevices);
+    if (masterSmart) {
+      setSetting('disk_smart_master', JSON.stringify(masterSmart));
+      const masterSmartEval = evaluateSmartTransitions({
+        tierNodes: [{ name: 'durant-server', telemetry: { smartHealth: masterSmart } }],
+        getPreviousFailing: node => readJsonSetting(smartAlertStateKey(node))?.failing || null,
+      });
+      for (const [node, failing] of Object.entries(masterSmartEval.failingByNode)) {
+        setSetting(smartAlertStateKey(node), JSON.stringify({ failing, at: Date.now() }));
+      }
+      Object.assign(smart.failingByNode, masterSmartEval.failingByNode);
+      smart.events.push(...masterSmartEval.events);
+    }
+  }
 
   for (const [key, level] of Object.entries(levels)) {
     setSetting(diskAlertStateKey(key), JSON.stringify({ level, at: Date.now() }));
@@ -293,7 +322,7 @@ async function sweepFleetDiskAlerts() {
 async function previewFleetDiskAlerts() {
   const arrReport = await fetchDiskSpaceReport().catch(() => ({ disks: [] }));
   const tierNodes = listTierNodes().map(n => ({ name: n.name, telemetry: getTierPlan(n.name)?.lastTelemetry || null }));
-  const disks = mergeFleetDisks({ arrDisks: arrReport.disks || [], tierNodes });
+  const disks = mergeFleetDisks({ arrDisks: arrReport.disks || [], tierNodes, masterSmartHealth: readMasterSmartHealth() });
   const items = disks.map(d => {
     const assessed = assessDiskLevel(
       { freeBytes: d.freeBytes, totalBytes: d.totalBytes },
@@ -9825,6 +9854,7 @@ function startExpressServer() {
       // Fleet disks: tier-node telemetry disks merge with the *arr volumes.
       listTierNodes,
       getTierPlan,
+      getMasterSmartHealth: readMasterSmartHealth,
       getPlexToken,
       getPlexServers,
       httpRateLimitKey,

@@ -11,7 +11,7 @@ errors, and downstream secrets stay in outbound headers.
 | Method | Path | Description |
 |---|---|---|
 | GET | `/api/v1/health` | Bot + downstream service status. v1.1 adds `backupLastSuccessfulAt` and `backupAgeHours` (additive — the v1 shape is unchanged). |
-| GET | `/api/v1/disks` | Fleet disk space (v1.1): `[{ name, freeBytes, totalBytes, percentUsed, source, node, telemetryAgeMs, smartHealth }]`. `source` is `arr` (durant-server's *arr-reported volumes, `node: "durant-server"`) or `tier-agent` (a tier node's watched filesystem from its latest telemetry). `telemetryAgeMs` is null for *arr entries and the sample age in ms for tier-agent entries — stale telemetry is still listed, flagged by its age. `smartHealth` is null unless the agent reported SMART data (`[{ device, health }]` where health is `ok`/`failing`). |
+| GET | `/api/v1/disks` | Fleet disk space (v1.1): `[{ name, freeBytes, totalBytes, percentUsed, source, node, telemetryAgeMs, smartHealth }]`. `source` is `arr` (durant-server's *arr-reported volumes, `node: "durant-server"`) or `tier-agent` (a tier node's watched filesystem from its latest telemetry). `telemetryAgeMs` is null for *arr entries and the sample age in ms for tier-agent entries — stale telemetry is still listed, flagged by its age. `smartHealth` is null unless SMART data exists: tier-agent entries carry what the agent reported (`[{ device, health }]` where health is `ok`/`failing`), and `durant-server` entries carry the bot's own `smartctl` readings when `MASTER_SMART_DEVICES` is set. |
 | GET | `/api/v1/library/search` | "Do I have this" across Plex servers (`?title=`, `&type=movie\|tv`). |
 | GET | `/api/v1/queue` | Download queue, projected safe shape. |
 | GET | `/api/v1/requests` | Seerr requests with resolved titles (`?status=pending\|approved\|available\|declined\|failed`). |
@@ -79,6 +79,18 @@ alerts once, not every sweep.
   `smartctl` is available. The sweep pages on newly failing drives and on recovery,
   and persists the failing-device set per node. Every transition is audited
   (`disk_space_transition`, `smart_health_transition`).
+- **Master SMART.** durant-server itself runs no tier agent, so the bot reads its own
+  drives: set `MASTER_SMART_DEVICES` (e.g. `/dev/sda, /dev/sdb`) and the disk sweep
+  runs `smartctl -H -j` per device, evaluates transitions as node `durant-server`,
+  and attaches the readings to the *arr entries in `/api/v1/disks`. The image ships
+  `smartmontools`; the drives must also be mapped into the container (Portainer stack):
+  ```yaml
+  devices:
+    - /dev/sda:/dev/sda   # repeat for each drive in MASTER_SMART_DEVICES
+  group_add:
+    - disk                # lets the non-root bot user read SMART data
+  ```
+  Unset, or unreadable devices, simply yield no readings — never an error or an alert.
 
 ## Admin sign-in hardening
 
