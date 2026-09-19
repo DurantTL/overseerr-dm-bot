@@ -157,8 +157,8 @@ Regression tests cover the code-path cases above; deployment documentation now d
 
 ## Remaining cleanup
 
-The feature is intentionally layered around the current large `index.js` composition root. The Media Center is now the first migrated feature: `index.js` registers its command and dispatches its command/button/modal interactions through an injected handler in `src/media-panel.js`.
+The feature is intentionally layered around the current large `index.js` composition root. The Media Center was the first migrated feature: `index.js` registers its command and dispatches its command/button/modal interactions through an injected handler in `src/media-panel.js`.
 
-Guided setup still uses wrapper hooks in `src/setup-discord-extension.js`, `src/setup-discord-enhancements.js`, `src/setup-device-state.js`, and `src/setup-request-ui.js`. Their existing source-extraction and wrapper-order regression tests remain until each setup component moves to the same explicit registration boundary.
+Guided setup has completed the same migration (#257): `src/setup-discord-extension.js`, `src/setup-discord-enhancements.js`, `src/setup-device-state.js`, and `src/setup-request-ui.js` no longer patch `Client.prototype.emit` or `REST.prototype.put`. Each exposes a `createXFeature(deps)` factory with `owns()`/`handleInteraction()`; `index.js` instantiates them with injected dependencies and calls them directly from its own `interactionCreate` listener, chained most-specific first (media-panel → support-case → request-ui → device-state → enhancements → extension), and registers `/setup` and `/send-setup` in its `slashCommands` array. Routing-order regression tests live in `scripts/tests/setup-routing-order.test.js`.
 
 Optional future work can correlate saved PH device state with live Tailscale device inventory, but the current UI deliberately does not claim that user-confirmed setup is a live VPN health check. The operator must still create/provide the tailnet invitation and keep the PH viewer user's grants restricted to the PH media service.

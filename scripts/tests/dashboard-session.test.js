@@ -62,3 +62,25 @@ test('dashboard session: readCookie extracts dm_session from a cookie header', (
   assert.strictEqual(readCookie(req, 'dm_session'), 'abc.def');
   assert.strictEqual(readCookie({ headers: {} }, 'dm_session'), undefined);
 });
+
+test('dashboard session: setCookie marks `; Secure` exactly when the request is secure', () => {
+  // #191: behind a TLS-terminating proxy the app only speaks plain HTTP itself, so the Secure
+  // flag hinges on secure-request detection (req.secure, or the X-Forwarded-Proto the proxy
+  // forwards). A missing flag here is how a proxy that drops the header gets caught.
+  const session = makeSession('s');
+  const cookieFor = req => {
+    let header;
+    session.setCookie(req, { setHeader: (_name, value) => { header = value; } });
+    return header;
+  };
+  assert.match(cookieFor({ secure: true, headers: {} }), /; Secure$/, 'req.secure (direct TLS)');
+  assert.match(cookieFor({ secure: false, headers: { 'x-forwarded-proto': 'https' } }), /; Secure$/, 'forwarded https behind a proxy');
+  assert.match(cookieFor({ secure: false, headers: { 'x-forwarded-proto': 'http, https' } }), /; Secure$/, 'forwarded list containing https');
+  assert.doesNotMatch(cookieFor({ secure: false, headers: {} }), /Secure/, 'plain local request sets no Secure flag');
+  assert.doesNotMatch(cookieFor({ secure: false, headers: { 'x-forwarded-proto': 'http' } }), /Secure/, 'forwarded plain http sets no Secure flag');
+  assert.match(
+    cookieFor({ secure: false, headers: {} }),
+    /^dm_session=[^;]+; HttpOnly; SameSite=Strict; Path=\/admin; Max-Age=3600$/,
+    'the insecure cookie keeps every other attribute',
+  );
+});

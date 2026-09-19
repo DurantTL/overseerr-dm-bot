@@ -112,3 +112,141 @@ test('public-origin-diagnostics: proxy trust is only checked when a public origi
   checks = await mod.checkPublicOriginReadiness({ timeoutMs: 500, publicPort: 1 });
   assert.strictEqual(checks.find(c => c.name === 'Proxy trust configuration').status, 'ok');
 });
+
+// --- Forwarded-proto behavior: live probe against the real cookie logic ---
+
+function authFixture({ trustProxy = false, passkeys = [] } = {}) {
+  const { createApp, listen: listenApp, close: closeApp } = require('../../src/app');
+  const { createDashboardSession, registerDashboardAuthRoutes } = require('../../src/routes/dashboard-auth');
+  const config = { DASHBOARD_ADMIN_PASSWORD: 'p', DASHBOARD_ADMIN_TOKEN: '', STRICT_DASHBOARD_POST_AUTH: false };
+  const session = createDashboardSession({ secret: 's'.repeat(32), ttlHours: 1 });
+  const app = createApp({ trustProxy });
+  registerDashboardAuthRoutes(app, {
+    config,
+    session,
+    dashboardAuth: (_req, _res, next) => next(),
+    httpRateLimitKey: () => 'forwarded-proto-probe-test',
+    renderLogin: () => 'login',
+    listPasskeys: () => passkeys,
+    passkeyService: { authenticationOptions: async () => ({ challenge: 'c' }) },
+    safeEqual: (a, b) => a === b,
+    audit: () => {},
+    renamePasskey: () => false,
+    revokePasskey: () => false,
+    passkeyClientPath: 'unused-for-this-probe',
+    webauthnBrowserPath: 'unused-for-this-probe',
+  });
+  return { app, listenApp, closeApp };
+}
+
+test('public-origin-diagnostics: forwarded-proto behavior is ok when the header earns `; Secure`', async () => {
+  // trustProxy:false proves the raw X-Forwarded-Proto fallback in the cookie logic — the exact
+  // production path when the proxy forwards the header but TRUST_PROXY was never set.
+  const { app, listenApp, closeApp } = authFixture({ trustProxy: false, passkeys: [{ credential_id: 'one' }] });
+  const server = await listenApp(app, 0);
+  try {
+    const port = server.address().port;
+    const { probeForwardedProtoBehavior } = freshModule({ ...BASE_ENV, TUNNEL_DOMAIN: '', PORT: String(port) });
+    const result = await probeForwardedProtoBehavior({ timeoutMs: 2000, port });
+    assert.strictEqual(result.status, 'ok');
+    assert.match(result.detail, /honored end-to-end/);
+  } finally {
+    await closeApp(server);
+  }
+});
+
+test('public-origin-diagnostics: forwarded-proto probe fails when the app ignores the header', async () => {
+  const server = http.createServer((_req, res) => {
+    // An app that drops X-Forwarded-Proto: sets the challenge cookie without `; Secure`.
+    res.writeHead(200, { 'set-cookie': 'dm_webauthn=binding; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=300' });
+    res.end('{}');
+  });
+  const port = await listen(server);
+  try {
+    const { probeForwardedProtoBehavior } = freshModule({ ...BASE_ENV, TUNNEL_DOMAIN: '', PORT: String(port) });
+    const result = await probeForwardedProtoBehavior({ timeoutMs: 2000, port });
+    assert.strictEqual(result.status, 'fail');
+    assert.match(result.detail, /did NOT mark/);
+  } finally {
+    await close(server);
+  }
+});
+
+test('public-origin-diagnostics: forwarded-proto probe is inconclusive (not failed) with no passkeys enrolled', async () => {
+  const { app, listenApp, closeApp } = authFixture({ trustProxy: false, passkeys: [] });
+  const server = await listenApp(app, 0);
+  try {
+    const port = server.address().port;
+    const { probeForwardedProtoBehavior } = freshModule({ ...BASE_ENV, TUNNEL_DOMAIN: '', PORT: String(port) });
+    const result = await probeForwardedProtoBehavior({ timeoutMs: 2000, port });
+    assert.strictEqual(result.status, 'warn');
+    assert.match(result.detail, /no passkeys enrolled/);
+  } finally {
+    await closeApp(server);
+  }
+});
+
+test('public-origin-diagnostics: forwarded-proto probe warns (not fails) when nothing listens', async () => {
+  const { probeForwardedProtoBehavior } = freshModule({ ...BASE_ENV, TUNNEL_DOMAIN: '', PORT: '1' });
+  const result = await probeForwardedProtoBehavior({ timeoutMs: 1000, port: 1 });
+  assert.strictEqual(result.status, 'warn');
+});
+
+// --- Listener-exposure guard ---
+
+const fakeExternalIface = address => () => ({ eth0: [{ family: 'IPv4', internal: false, address }] });
+
+test('public-origin-diagnostics: listener exposure warns when the port is reachable off-loopback with no public origin', async () => {
+  const server = http.createServer((_req, res) => { res.writeHead(200); res.end('ok'); });
+  await new Promise(resolve => server.listen(0, '0.0.0.0', resolve));
+  try {
+    const port = server.address().port;
+    const { checkListenerExposure } = freshModule({ ...BASE_ENV, TUNNEL_DOMAIN: '', PORT: String(port) });
+    const result = await checkListenerExposure({
+      port,
+      config: { DASHBOARD_PUBLIC_URL: '', TUNNEL_DOMAIN: '' },
+      networkInterfaces: fakeExternalIface('127.0.0.1'),
+    });
+    assert.strictEqual(result.status, 'warn');
+    assert.match(result.detail, /plain HTTP/);
+  } finally {
+    await close(server);
+  }
+});
+
+test('public-origin-diagnostics: listener exposure is ok when there is no off-loopback interface to probe', async () => {
+  const { checkListenerExposure } = freshModule({ ...BASE_ENV, TUNNEL_DOMAIN: '', PORT: '1' });
+  const result = await checkListenerExposure({
+    port: 1,
+    config: { DASHBOARD_PUBLIC_URL: '', TUNNEL_DOMAIN: '' },
+    networkInterfaces: () => ({ lo: [{ family: 'IPv4', internal: true, address: '127.0.0.1' }] }),
+  });
+  assert.strictEqual(result.status, 'ok');
+  assert.match(result.detail, /no non-loopback IPv4 interface/);
+});
+
+test('public-origin-diagnostics: listener exposure is not applicable with a public origin configured', async () => {
+  const { checkListenerExposure } = freshModule({ ...BASE_ENV, TUNNEL_DOMAIN: 'x.example', PORT: '1' });
+  const result = await checkListenerExposure({
+    port: 1,
+    config: { DASHBOARD_PUBLIC_URL: 'https://x.example', TUNNEL_DOMAIN: 'x.example' },
+  });
+  assert.strictEqual(result.status, 'ok');
+  assert.match(result.detail, /behind the tunnel\/proxy/);
+});
+
+test('public-origin-diagnostics: readiness includes the forwarded-proto and exposure checks', async () => {
+  const { app, listenApp, closeApp } = authFixture({ trustProxy: false, passkeys: [{ credential_id: 'one' }] });
+  const server = await listenApp(app, 0);
+  try {
+    const port = server.address().port;
+    const { checkPublicOriginReadiness } = freshModule({ ...BASE_ENV, TUNNEL_DOMAIN: '', PORT: String(port) });
+    const checks = await checkPublicOriginReadiness({ timeoutMs: 2000 });
+    const names = checks.map(c => c.name);
+    assert.ok(names.includes('Forwarded-proto behavior'), `got: ${names.join(', ')}`);
+    assert.ok(names.includes('Listener exposure'), `got: ${names.join(', ')}`);
+    assert.strictEqual(checks.find(c => c.name === 'Forwarded-proto behavior').status, 'ok');
+  } finally {
+    await closeApp(server);
+  }
+});

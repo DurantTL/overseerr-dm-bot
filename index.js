@@ -30,10 +30,14 @@ const { log } = require('./src/log');
 const { createMediaPanelFeature, mediaPanelCommand } = require('./src/media-panel');
 const { createSupportCaseFeature, casesCommand, myCasesCommand } = require('./src/support-cases');
 const { createSetupRequestUiFeature, requestModal } = require('./src/setup-request-ui');
+const { createSetupDeviceStateFeature } = require('./src/setup-device-state');
+const { createSetupEnhancementsFeature } = require('./src/setup-discord-enhancements');
+const { createSetupExtensionFeature } = require('./src/setup-discord-extension');
+const { createViewerAuthKey, configured: tailscaleApiConfigured, provisionConfig } = require('./src/tailscale-provision');
 const { CONFIG, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, countRecentPromotions, recordPromotion, recordTierPlayPin, listActiveTierPlayPins, countActiveTierPlayPinsForViewer, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, createSupportCase, getSupportCaseById, listSupportCases, listSupportCasesForRequester, listSupportCasesNeedingNotifyRetry, recordSupportCaseNotifyResult, recordSupportCaseMemberNotifyResult, assignSupportCase, acknowledgeSupportCase, resolveSupportCase, reopenSupportCase, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, recordPackRejections, getPackRejectionSighting, markPackRejectionSuggested, dismissPackRejectionSuggestion, resetPackRejectionSightings, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, recordTierFolderCompletion, countRecentPromotions, recordPromotion, recordTierPlayPin, listActiveTierPlayPins, countActiveTierPlayPinsForViewer, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, createSupportCase, getSupportCaseById, listSupportCases, listSupportCasesForRequester, listSupportCasesNeedingNotifyRetry, recordSupportCaseNotifyResult, recordSupportCaseMemberNotifyResult, assignSupportCase, acknowledgeSupportCase, resolveSupportCase, reopenSupportCase, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, recordPackRejections, getPackRejectionSighting, markPackRejectionSuggested, dismissPackRejectionSuggestion, resetPackRejectionSightings, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeasonEpisodeFallbacks,
@@ -55,8 +59,9 @@ const { assessAsianOrigin, describeAvistazFit, isAsianLanguageName } = require('
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone, nodeFolders, toRelPath, resolveTitleFolder, physicalTitleBytes } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
-const { resolveEdgeTierNode, decideCaLocality, planCaPlayPromotion, computePlayPin } = require('./src/edge-promotion');
+const { resolveEdgeTierNode, decideCaLocality, planCaPlayPromotion, computePlayPin, promotionFitsBudget, tvPromotionSizeCapped, GB_BYTES } = require('./src/edge-promotion');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
+const { normalizeGranularity, parseTvUnitId, resolvePromotableUnit, checkPromotionCap, previewTvGranularity, mapSonarrSeriesList, mapSonarrEpisodeFiles } = require('./src/tv-granularity');
 const { checkPublicOriginReadiness } = require('./src/public-origin-diagnostics');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement, DASHBOARD_CSS } = require('./src/dashboard-render');
 const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
@@ -4347,6 +4352,10 @@ const slashCommands = [
     .addUserOption(o => o.setName('user').setDescription('User').setRequired(true))
     .addStringOption(o => o.setName('server').setDescription('Home server').setRequired(true).addChoices({ name: 'Main', value: 'primary' }, { name: 'Philippines', value: 'ph' })),
   new SlashCommandBuilder().setName('me').setDescription('Show your linked profile'),
+  new SlashCommandBuilder().setName('setup').setDescription('Setup or troubleshoot your Plex access and server connection'),
+  new SlashCommandBuilder().setName('send-setup').setDescription('Send a member their personalized Plex/PH setup guide')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addUserOption(o => o.setName('user').setDescription('Member to send the guide to').setRequired(true)),
   new SlashCommandBuilder().setName('stats').setDescription('Your watch/request stats this month (admins can see the server-wide view)')
     .addBooleanOption(o => o.setName('server').setDescription('Admin only: server-wide stats instead of your own')),
   new SlashCommandBuilder().setName('myrequests').setDescription('Show your recent requests'),
@@ -4360,7 +4369,11 @@ const slashCommands = [
     .addSubcommand(s => s.setName('apply').setDescription('Publish manifests — agents converge on their next run')
       .addStringOption(o => o.setName('node').setDescription('Only this node'))
       .addBooleanOption(o => o.setName('details').setDescription('Per-title change list for a single node'))
-      .addStringOption(o => o.setName('confirm').setDescription('Confirmation code for a large rebalance (shown when apply is held)'))),
+      .addStringOption(o => o.setName('confirm').setDescription('Confirmation code for a large rebalance (shown when apply is held)')))
+    .addSubcommandGroup(g => g.setName('granularity').setDescription('TV cache granularity — read-only previews (issue #183)')
+      .addSubcommand(s => s.setName('preview').setDescription('Preview what season/episode-level TV units the library would split into — writes nothing')
+        .addStringOption(o => o.setName('granularity').setDescription('Unit size to preview').addChoices({ name: 'season', value: 'season' }, { name: 'episode', value: 'episode' }))
+        .addStringOption(o => o.setName('title').setDescription('Only include titles matching this text')))),
   new SlashCommandBuilder().setName('tier-node').setDescription('Manage the tiering node registry').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('add').setDescription('Add or update a node')
       .addStringOption(o => o.setName('name').setDescription('Node name, e.g. california').setRequired(true))
@@ -4743,16 +4756,63 @@ const setupRequestUiFeature = createSetupRequestUiFeature({
   forwardSlashCommand: handleSlashCommand,
 });
 
+// Guided-setup features, chained most-specific first to preserve the first-refusal order
+// the old Client.prototype.emit wrappers had by install order (device-state >
+// enhancements > extension). They run before the chat-command branch because the
+// device-state feature owns /setup, the enhancements feature owns /send-setup, and the
+// extension feature owns /me — none of which handleSlashCommand implements.
+const setupDeviceStateFeature = createSetupDeviceStateFeature({
+  getUserByDiscordId,
+  getSetting,
+  setSetting,
+  deleteSetting,
+  audit,
+  log,
+});
+
+const setupEnhancementsFeature = createSetupEnhancementsFeature({
+  getUserByDiscordId,
+  audit,
+  db,
+  getPlexToken,
+  fetchPlexFriends,
+  inviteUserToPlex,
+  createViewerAuthKey,
+  tailscaleApiConfigured,
+  provisionConfig,
+  deviceConfirmations: setupDeviceStateFeature.deviceConfirmations,
+  anyDeviceConfirmed: setupDeviceStateFeature.anyDeviceConfirmed,
+  log,
+});
+
+const setupExtensionFeature = createSetupExtensionFeature({
+  getUserByDiscordId,
+  getTrustScore,
+  audit,
+  db,
+  inviteUserToPlex,
+  fetchUserQuota,
+  log,
+});
+
 client.on('interactionCreate', async interaction => {
   try {
     if (interaction.isAutocomplete()) return handleAutocomplete(interaction);
+    // Explicit feature chain, most-specific first. This order preserves the first-refusal
+    // order the old Client.prototype.emit wrappers had by install order
+    // (mediaPanel > supportCase > setupRequestUi > setupDeviceState > setupEnhancements >
+    // setupExtension). The setup features own their slash commands (/setup, /send-setup,
+    // /me), so the chain runs before the generic chat-command branch.
+    if (await mediaPanelFeature.handleInteraction(interaction)) return;
+    if (await supportCaseFeature.handleInteraction(interaction)) return;
+    if (await setupRequestUiFeature.handleInteraction(interaction)) return;
+    if (await setupDeviceStateFeature.handleInteraction(interaction)) return;
+    if (await setupEnhancementsFeature.handleInteraction(interaction)) return;
+    if (await setupExtensionFeature.handleInteraction(interaction)) return;
     if (interaction.isChatInputCommand()) {
       await handleSlashCommand(interaction);
       return;
     }
-    if (await mediaPanelFeature.handleInteraction(interaction)) return;
-    if (await supportCaseFeature.handleInteraction(interaction)) return;
-    if (await setupRequestUiFeature.handleInteraction(interaction)) return;
     if (interaction.isButton()) {
       if (buttonActionsInFlight.has(interaction.customId)) {
         return interaction.reply({ content: '⏳ This action is already being processed.', ephemeral: true });
@@ -8110,7 +8170,7 @@ async function publishCaPromotionNow(node, { mediaId, title } = {}) {
 // yet, so a play on an uncached California title still cannot reliably produce the play-start
 // event this handler needs (see docs §1) — every code path here is exercised by tests, but is not
 // safe to trust in production until #181 lands and a human bounds a rollout on top of this PR.
-async function handleCaPlayStart({ mediaId, title, mediaType, serverName, machineId, watcherEmail, watcherKey }) {
+async function handleCaPlayStart({ mediaId, title, mediaType, serverName, machineId, watcherEmail, watcherKey, seasonNumber, episodeNumber }) {
   if (!CONFIG.CA_PLAY_PROMOTE_ENABLED) {
     audit('edge_playback_observed', { edge: 'california', mediaId, title, reason: 'promotion_disabled' });
     return;
@@ -8125,6 +8185,27 @@ async function handleCaPlayStart({ mediaId, title, mediaType, serverName, machin
     audit('edge_promote_node_unavailable', { node, mediaId });
     return;
   }
+  // #183: resolve the configured promotion unit, floored to units the planner actually knows
+  // about. At the default 'series' granularity this block is skipped and promotableId is just
+  // mediaId — byte-identical to before, no new reads. With finer granularity configured but a
+  // whole-series inventory, the season/episode id fails closed back to the whole-series id
+  // rather than pinning a unit no published plan contains (such a pin would resolve to nothing).
+  // Locality/source checks below stay series-level on purpose — the master-coverage question is
+  // about the title the master can serve.
+  let promotableId = mediaId;
+  const promoteGranularity = mediaType === 'tv' ? normalizeGranularity(CONFIG.TIER_TV_GRANULARITY) : 'series';
+  if (promoteGranularity !== 'series') {
+    const parsed = parseTvUnitId(mediaId);
+    const plan = getTierPlan(node);
+    const knownUnits = new Set([
+      ...(plan?.published?.keepMediaIds || []),
+      ...(plan?.converged?.keepMediaIds || []),
+    ]);
+    promotableId = resolvePromotableUnit({
+      tvdbId: parsed?.tvdbId, seasonNumber, episodeNumber,
+      granularity: promoteGranularity, inventoryMediaIds: knownUnits,
+    }) || mediaId;
+  }
   // Only promote titles the master can actually serve (mirrors planTier's noFullCopy guard) — and
   // resolveStageSource is a convenient existing arr lookup that already returns exactly the facts
   // needed here (found, sizeBytes, the remapped source path) without duplicating radarr/sonarr
@@ -8134,16 +8215,33 @@ async function handleCaPlayStart({ mediaId, title, mediaType, serverName, machin
     audit('edge_promote_no_full_copy', { node, mediaId, title });
     return;
   }
-  // Locality: presence bytes against the reported inventory, not the desired keep-set (§2.2b).
-  // completionPct stays null here — no agent endpoint reports per-folder Syncthing completion yet
-  // (see the PR notes); byte-fraction presence is the honest interim signal, and decideCaLocality
-  // already accepts a real completionPct the moment that agent capability exists.
+  // #183: promotion-cap verdict, recorded in the audit trail only. Log-only — it never changes
+  // the plan outcome; any enforcement stays a human decision.
+  const capGb = Number(CONFIG.TIER_TV_GRANULARITY_PROMOTION_CAP_GB) || 0;
+  const promotionCap = checkPromotionCap({ unitBytes: src.sizeBytes, capBytes: capGb > 0 ? capGb * 1024 ** 3 : 0 });
+  // Locality: presence bytes against the reported inventory, plus the node's own Syncthing
+  // per-folder completion when the agent has reported it (§182 follow-up — collectFolderCompletion
+  // in agent/agent.js, stored on the tier plan by the report route). A title can be
+  // presence-byte-close while Syncthing is still pulling it, and only the node's own completion
+  // signal can tell the difference. A missing or stale (>6h) snapshot falls back to the
+  // byte-fraction signal — never blocks on data we don't have.
   const folders = nodeFolders({ ...nodeRow, folders: listTierNodeFolders(node) });
   const relPath = toRelPath(src.srcPath, CONFIG.TIER_SOURCE_ROOT);
   const route = resolveTitleFolder({ path: src.srcPath, relPath, mediaId }, folders);
   const files = listTierNodeFiles(node);
   const presentBytes = physicalTitleBytes({ inventory: [{ mediaId, folderId: route.folderId, relPath: route.relPath }], files }).get(mediaId) || 0;
-  const locality = decideCaLocality({ presentBytes, expectedBytes: src.sizeBytes, completionPct: null });
+  const completionRec = getTierPlan(node)?.folderCompletion;
+  const completionFresh = completionRec && completionRec.at && (Date.now() - completionRec.at) < 6 * 3600000;
+  const completionInfo = completionFresh ? (completionRec.folders || []).find(f => f.folderId === route.folderId) : null;
+  const completionPct = completionInfo && Number.isFinite(completionInfo.completion) ? completionInfo.completion : null;
+  const locality = decideCaLocality({ presentBytes, expectedBytes: src.sizeBytes, completionPct });
+
+  // Capacity + interim whole-series TV cap (§182 follow-ups): pure pre-checks, audited as skip
+  // reasons like every other gate. Both are inert while the double gate is on (disabled /
+  // audit_only return before any pin is recorded), and the budget check passes open when no
+  // node budget is configured.
+  const fits = promotionFitsBudget({ nodeBudgetBytes: (CONFIG.CA_PLAY_PROMOTE_NODE_BUDGET_GB || 0) * GB_BYTES, pinBytes: src.sizeBytes });
+  const tvCap = tvPromotionSizeCapped({ mediaType, sizeBytes: src.sizeBytes, maxSeriesGb: CONFIG.TIER_TV_PROMOTE_MAX_SERIES_GB });
 
   const watcher = watcherEmail ? getUserByCanonicalEmail(watcherEmail) : null;
   const attributedId = [watcher?.discord_id, watcherEmail && `email:${watcherEmail}`, watcherKey, 'edge-anon'].find(Boolean);
@@ -8155,7 +8253,11 @@ async function handleCaPlayStart({ mediaId, title, mediaType, serverName, machin
     enabled: CONFIG.CA_PLAY_PROMOTE_ENABLED,
     hasFullCopy: true,
     alreadyLocal: locality.local,
-    lastPromoteAt: Number(getSetting(`ca_promote_last:${node}:${mediaId}`) || '0'),
+    fitsBudget: fits.fits,
+    budgetReason: fits.reason,
+    tvSizeCapped: tvCap.capped,
+    tvCapReason: tvCap.reason,
+    lastPromoteAt: Number(getSetting(`ca_promote_last:${node}:${promotableId}`) || '0'),
     now: Date.now(),
     cooldownMs: CONFIG.CA_PLAY_PROMOTE_COOLDOWN_HOURS * 3600000,
     viewerActivePins,
@@ -8170,22 +8272,128 @@ async function handleCaPlayStart({ mediaId, title, mediaType, serverName, machin
     return;
   }
   if (plan.action === 'audit') {
-    audit('edge_promote_would_pin', { node, mediaId, title, mediaType, attributedId, localityReason: locality.reason });
+    audit('edge_promote_would_pin', { node, mediaId, promotableMediaId: promotableId, title, mediaType, attributedId, localityReason: locality.reason, promotionGranularity: promoteGranularity, capGb, capExceeds: promotionCap.exceeds });
     return;
   }
   // pin: record the durable pin (consuming the daily counter — a skipped/audited event never
   // does), set the per-title cooldown, then attempt immediate publish (best-effort; see
   // publishCaPromotionNow). The scheduled tier cycle remains the fallback convergence path.
-  recordPromotion(`ca:${attributedId}`, mediaId, DAY_MS);
-  setSetting(`ca_promote_last:${node}:${mediaId}`, String(Date.now()));
-  const pin = computePlayPin({ mediaId, viewerId: attributedId, pinDays: CONFIG.TIER_PLAY_PIN_DAYS });
-  recordTierPlayPin(node, mediaId, attributedId, pin.expiresAt);
-  audit('edge_promote_pinned', { node, mediaId, title, mediaType, attributedId, expiresAt: pin.expiresAt });
-  await publishCaPromotionNow(node, { mediaId, title });
+  recordPromotion(`ca:${attributedId}`, promotableId, DAY_MS);
+  setSetting(`ca_promote_last:${node}:${promotableId}`, String(Date.now()));
+  const pin = computePlayPin({ mediaId: promotableId, viewerId: attributedId, pinDays: CONFIG.TIER_PLAY_PIN_DAYS });
+  recordTierPlayPin(node, promotableId, attributedId, pin.expiresAt);
+  audit('edge_promote_pinned', { node, mediaId, promotableMediaId: promotableId, title, mediaType, attributedId, expiresAt: pin.expiresAt, promotionGranularity: promoteGranularity, capGb, capExceeds: promotionCap.exceeds });
+  await publishCaPromotionNow(node, { mediaId: promotableId, title });
+}
+
+// #183 — `/tier granularity preview`: read-only report of what season/episode-level TV units the
+// Sonarr library would split into. Fetches live Sonarr data, shapes it with the pure tv-granularity
+// library, renders a bounded embed. Writes nothing — no plan is built, no manifest touched, no
+// migration run or scheduled.
+async function handleTierGranularityPreview(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const granularity = interaction.options.getString('granularity') || 'season';
+  const titleFilter = (interaction.options.getString('title') || '').trim().toLowerCase();
+
+  let rawSeries;
+  try {
+    rawSeries = await listSonarrSeries();
+  } catch (err) {
+    return interaction.editReply(`❌ Couldn't reach Sonarr (${err?.message || err}). The preview needs live Sonarr data — nothing was changed.`);
+  }
+  const allItems = mapSonarrSeriesList(rawSeries, { sourceRoot: CONFIG.TIER_SOURCE_ROOT });
+  const wanted = titleFilter
+    ? allItems.filter(t => t.title.toLowerCase().includes(titleFilter))
+    : allItems;
+
+  // Bounded: episode-file fetches are one Sonarr call per series, so cap the preview size to keep
+  // the command fast. The embed says when it truncated.
+  const MAX_SERIES = 50;
+  const truncated = wanted.length > MAX_SERIES;
+  const slice = wanted.slice(0, MAX_SERIES);
+
+  const episodeFilesBySeries = new Map();
+  const fetchFailures = [];
+  for (const t of slice) {
+    const parsed = parseTvUnitId(t.mediaId);
+    if (!parsed) continue;
+    let raw;
+    try {
+      raw = await getEpisodeFiles(t.sonarrId);
+    } catch (_err) {
+      fetchFailures.push(t.title);
+      continue;
+    }
+    episodeFilesBySeries.set(parsed.tvdbId, mapSonarrEpisodeFiles(raw));
+  }
+
+  const capGb = Number(CONFIG.TIER_TV_GRANULARITY_PROMOTION_CAP_GB) || 0;
+  const preview = previewTvGranularity({
+    seriesItems: slice,
+    episodeFilesBySeries,
+    granularity,
+    capBytes: capGb > 0 ? capGb * 1024 ** 3 : 0,
+    sourceRoot: CONFIG.TIER_SOURCE_ROOT,
+  });
+  audit('tier_granularity_preview', {
+    actorDiscordId: interaction.user.id, granularity: preview.granularity,
+    previewedSeries: preview.previewedSeries, unitCount: preview.totals.unitCount,
+    titleFilter: titleFilter || null,
+  });
+
+  const gb = b => (b / 1024 ** 3).toFixed(1);
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle('📺 TV Granularity Preview — read-only')
+    .setDescription([
+      `What **${preview.granularity}-level** TV cache planning WOULD look like for ${preview.previewedSeries} series from Sonarr.`,
+      '',
+      '⚠️ **Preview only — nothing was written.** The live planner still uses whole-series units; enabling season/episode planning needs its own human-reviewed step (#183).',
+    ].join('\n'));
+
+  const t = preview.totals;
+  embed.addFields({
+    name: '📊 Totals',
+    value: [
+      `Series: ${t.seriesCount} → **${t.unitCount} ${preview.granularity} units**`,
+      `Library bytes: ${gb(t.totalLegacyBytes)} GB → unit bytes: ${gb(t.totalUnitBytes)} GB (Δ ${t.totalByteDeltaBytes >= 0 ? '+' : ''}${gb(t.totalByteDeltaBytes)} GB)`,
+      t.seriesMissingChildData ? `⚠️ ${t.seriesMissingChildData} series had no episode-file data — kept whole` : 'Episode-file data found for every series',
+      t.oversizedUnitCount ? `🛑 ${t.oversizedUnitCount} unit(s) exceed the ${capGb} GB promotion cap and would need confirmation` : `No unit exceeds the ${capGb} GB promotion cap`,
+    ].join('\n'),
+    inline: false,
+  });
+
+  const top = [...preview.perSeries].sort((a, b) => b.units.length - a.units.length).slice(0, 8);
+  if (top.length) {
+    embed.addFields({
+      name: `🎞️ Largest splits${truncated ? ` (top 8 of ${preview.perSeries.length} shown)` : ''}`,
+      value: top.map(s => (s.missingChildData
+        ? `• **${s.title}** — no episode data, stays whole (${gb(s.legacyBytes)} GB)`
+        : `• **${s.title}** — ${s.units.length} ${preview.granularity} units, ${gb(s.unitBytes)} GB (series: ${gb(s.legacyBytes)} GB)`)).join('\n').slice(0, 1024),
+      inline: false,
+    });
+  }
+
+  const warnings = [...preview.buildWarnings, ...preview.warnings];
+  if (fetchFailures.length) warnings.unshift(`Couldn't fetch episode files for ${fetchFailures.length} series (${fetchFailures.slice(0, 3).join(', ')}${fetchFailures.length > 3 ? '…' : ''}) — those kept whole-series units.`);
+  if (warnings.length) {
+    embed.addFields({ name: '⚠️ Warnings', value: warnings.slice(0, 6).map(w => `• ${w}`).join('\n').slice(0, 1024), inline: false });
+  }
+  if (truncated) {
+    embed.addFields({ name: '✂️ Truncated', value: `Matched ${wanted.length} series — previewed the first ${MAX_SERIES}. Add \`title:\` to narrow it down.`, inline: false });
+  }
+  if (!wanted.length) {
+    embed.addFields({ name: '🔎 No matches', value: titleFilter ? `No Sonarr series matched \`${titleFilter}\`.` : 'Sonarr returned no series with a tvdbId.', inline: false });
+  }
+  return interaction.editReply({ embeds: [embed] });
 }
 
 async function handleTierCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
+  // #183: `/tier granularity preview` is a read-only report — it never builds plans or writes.
+  if (interaction.options.getSubcommandGroup(false) === 'granularity'
+    && interaction.options.getSubcommand() === 'preview') {
+    return handleTierGranularityPreview(interaction);
+  }
   const sub = interaction.options.getSubcommand();
   const only = interaction.options.getString('node')?.toLowerCase() || null;
   await interaction.deferReply({ ephemeral: true });
@@ -9638,7 +9846,7 @@ function startExpressServer() {
   registerTierAgentRoutes(app, {
     config: CONFIG,
     getTierAgentTokenHash, sha256, safeEqual, audit, getSetting, setSetting,
-    getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, recordTierErrorAlertState, recordTierMergedMountDiagnostics, markTierPlanConverged,
+    getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, recordTierErrorAlertState, recordTierMergedMountDiagnostics, recordTierFolderCompletion, markTierPlanConverged,
     getTierNode, listTierNodeFiles, replaceTierNodeFiles, parseAtimeMask, maskSuspectAtimes,
     notifyTelemetryTransition: ({ node, telemetry, telemetryHealth, previousTelemetryLevel }) => {
       if (!telemetry || telemetryHealth.level === previousTelemetryLevel) return;
@@ -10195,7 +10403,12 @@ async function handlePlexWebhook(payload) {
     // queue — that routing is unchanged. Play-start events go to §182's promotion path, which is
     // itself double-gated off by default (see handleCaPlayStart).
     if (isPlayStart) {
-      await handleCaPlayStart({ mediaId, title, mediaType: mediaType === 'episode' ? 'tv' : 'movie', serverName: Server?.title, machineId: Server?.uuid, watcherKey: Account?.id != null ? `plex:${Account.id}` : undefined });
+      // #183: Plex carries the played season/episode numbers on episode events
+      // (parentIndex/index) so the promotion path can resolve the configured unit; other webhook
+      // sources don't carry them and degrade to the whole series.
+      const seasonNumber = mediaType === 'episode' && Number.isFinite(Number(Metadata.parentIndex)) ? Number(Metadata.parentIndex) : null;
+      const episodeNumber = mediaType === 'episode' && Number.isFinite(Number(Metadata.index)) ? Number(Metadata.index) : null;
+      await handleCaPlayStart({ mediaId, title, mediaType: mediaType === 'episode' ? 'tv' : 'movie', serverName: Server?.title, machineId: Server?.uuid, watcherKey: Account?.id != null ? `plex:${Account.id}` : undefined, seasonNumber, episodeNumber });
     } else {
       audit('edge_playback_observed', { edge: 'california', source: 'plex', serverName: Server?.title || null, machineId: Server?.uuid || null, event });
     }
