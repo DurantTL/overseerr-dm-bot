@@ -3,6 +3,8 @@
 The bot exposes a machine API (`/api/v1/*`) for the Plex Director agent
 (now Edith's standing role). v1 was read-only; v1.1 adds a small allowlist of **fix
 endpoints** so the agent can run checks and trigger repairs, not just observe.
+v1.2 adds a headless **Discord command bridge** (`POST /api/v1/discord/exec`) that
+invokes slash commands through the same dispatch the Discord handler uses.
 Responses are small typed projections — never mutations beyond the allowlist, never raw
 errors, and downstream secrets stay in outbound headers.
 
@@ -19,15 +21,60 @@ errors, and downstream secrets stay in outbound headers.
 | POST | `/api/v1/requests/:id/retry` | Re-run the direct-add repair for a **failed** Seerr request (adds to the arr bypassing Seerr, starts a search). 404 unless the request is currently failed. |
 | POST | `/api/v1/search/season` | Force a season search: `{ series, season, force? }`. `series` is a Sonarr id or an unambiguous title; same missing-episode/cooldown gates and AvistaZ-vs-Sonarr routing as the dashboard's Search Now button. |
 | POST | `/api/v1/import-scan` | Trigger an arr import scan: `{ target: "sonarr"\|"radarr", source?: "premiumize"\|"seedbox", folder?, mode?: "move"\|"copy" }`. Same safety logic as the Discord `import` subcommands — path traversal guard, `.incoming` guard, existence check. In Move mode a partial-match preview **refuses** (409) instead of asking an interactive confirm button; nothing destructive is ever clicked through silently. |
+| POST | `/api/v1/discord/exec` | v1.2 — headless slash-command invocation. `{ command, subcommand?, options? }`; validated against the live slash-command definitions (unknown command/subcommand/option, wrong type, missing required option → 400). Routes through the same `handleSlashCommand` dispatch as Discord and returns `{ ok, replies }`. See "Discord command bridge" below. |
+
+## Discord command bridge (v1.2)
+
+`POST /api/v1/discord/exec` lets an authenticated agent client run any slash command
+without Discord. The request names the command the way Discord does:
+
+```json
+{ "command": "rtorrent", "subcommand": "adopt", "options": { "search": "...", "target": "radarr" } }
+```
+
+Commands without subcommands omit `subcommand` (e.g. `{ "command": "queue" }`). Options
+are validated against the command's live `SlashCommandBuilder` definition — the same
+metadata that defines the command in Discord — so typos, wrong types, invalid choices,
+and missing required options fail with a 400 before any handler runs.
+
+The executor builds a headless interaction and calls the real `handleSlashCommand`,
+so the handler code is identical to what a Discord user triggers — nothing is
+duplicated. The synthetic actor is admin-privileged (agent tokens already are; see
+"Allowlist only" below), identified as `agent:<token-label>` in the user object, and
+every invocation is audited as `agent:<token-label>` with the command and args.
+
+The response carries the handler's captured replies:
+
+```json
+{ "ok": true, "command": "rtorrent", "subcommand": "adopt", "replies": [ { "kind": "editReply", "content": "..." } ] }
+```
+
+Headless limitations (by design):
+
+- **No interactive follow-ups.** Buttons, select menus, and modals can't be clicked
+  through the API. The initial response is captured and returned (a `components` note
+  flags when one was attached), but anything that requires a button press stops there.
+  For example, `/rtorrent adopt` posts an Adopt offer with buttons — via the bridge you
+  get the matches/offer text, not an executed adoption. Commands that gate destructive
+  work behind a confirm button (like the import-scan's Move-mode confirm) refuse rather
+  than proceed silently.
+- **No DMs.** Handlers that DM a Discord user fail the same way they would for an
+  unreachable user; the error surfaces in the captured replies (`ok: false`).
+- **Channel/DM context is synthetic.** The interaction has no real guild or channel;
+  handlers that depend on them behave as they would in an unreachable channel.
 
 ## Safety model for the fix endpoints
 
 The agent token is now **privileged, not read-only**. What keeps that sane:
 
-- **Allowlist only.** The four POST endpoints above are the entire mutation surface. No
-  deletes, no container/service restarts, no config changes, no user invite/link/unlink,
-  no token management, no Plex shares, no direct database writes. Anything not listed
-  does not exist.
+- **Allowlist only.** The four v1.1 POST fix endpoints plus the v1.2 Discord bridge
+  (`/api/v1/discord/exec`) are the entire mutation surface. The bridge can only invoke
+  commands that exist in the bot's slash-command definitions — unknown commands,
+  subcommands, and options are rejected with a 400 — and it runs the same dispatch
+  code a Discord user triggers, so it can't do anything Discord itself can't. No
+  deletes outside what commands already do, no container/service restarts, no config
+  changes, no token management, no Plex shares, no direct database writes. Anything
+  not listed does not exist.
 - **No new repair logic.** Each fix endpoint calls an existing bot function — the same
   code the Discord commands and dashboard buttons already run. The API invents nothing.
 - **Audit with actor.** Every mutation is audited as `agent:<token label>` (or
