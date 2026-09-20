@@ -179,7 +179,7 @@ async function executeDownsizeSwap({ offer, deps }) {
   // Step 2: trigger the Radarr import scan, translating the bot's staging view to the arr's.
   const rel = path.relative(CONFIG.GRAB_STAGING_PATH, offer.newPath);
   const importPath = path.join(CONFIG.GRAB_IMPORT_PATH || CONFIG.GRAB_STAGING_PATH, rel);
-  let commandId = null;
+  let commandId;
   try {
     const cmd = await axios.post(`${offer.sourceUrl}/api/v3/command`,
       { name: 'DownloadedMoviesScan', path: importPath },
