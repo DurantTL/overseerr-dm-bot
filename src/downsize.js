@@ -180,8 +180,8 @@ async function executeDownsizeSwap({ offer, deps }) {
       resolvedReplacement = fs.realpathSync(offer.newPath);
     }
   } catch (_e) { /* statSync below gives the clearer replacement_gone result */ }
-  const rel = stagingRoot ? path.relative(resolvedRoot, resolvedReplacement) : '';
-  if (!stagingRoot || !rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel) || rel.split(path.sep).includes('.incoming')) {
+  const replacementRel = stagingRoot ? path.relative(resolvedRoot, resolvedReplacement) : '';
+  if (!stagingRoot || !replacementRel || replacementRel === '..' || replacementRel.startsWith(`..${path.sep}`) || path.isAbsolute(replacementRel) || replacementRel.split(path.sep).includes('.incoming')) {
     audit('downsize_aborted', { ...actor, reason: 'unsafe_replacement_path', newPath: offer.newPath });
     return { ok: false, reason: 'unsafe_replacement_path', newPath: offer.newPath };
   }

@@ -244,7 +244,7 @@ test('downsize: executeDownsizeSwap — delete failure aborts before the scan', 
 });
 
 test('downsize: executeDownsizeSwap — scan failure after delete reports oldDeleted', async () => {
-  const { calls, deps } = stubDeps({ files: { '/staging/Dune.Part.Two.2024.mkv': 2.9 * 1024 ** 3 } });
+  const { deps } = stubDeps({ files: { '/staging/Dune.Part.Two.2024.mkv': 2.9 * 1024 ** 3 } });
   deps.axios.post = async () => { throw new Error('connection refused'); };
   const result = await executeDownsizeSwap({ offer: baseOffer, deps });
   assert.strictEqual(result.ok, false);
