@@ -68,7 +68,7 @@ const { webhookEventKey } = require('./src/webhook-events');
 const { createWebhookHandlers, requireWebhookSecret } = require('./src/routes/webhooks');
 const { registerTierAgentRoutes } = require('./src/routes/tier-agent');
 const { registerAgentApiRoutes } = require('./src/routes/agent-api');
-const { createDiscordExec } = require('./src/discord-exec');
+const { createDiscordExec, createDiscordInteract } = require('./src/discord-exec');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
 const { registerDashboardReadRoutes } = require('./src/routes/dashboard-read');
 const { registerDashboardMutationRoutes } = require('./src/routes/dashboard-mutations');
@@ -9843,6 +9843,10 @@ function startExpressServer() {
     // handleSlashCommand dispatch the real interactionCreate handler uses. The synthetic
     // actor is admin-privileged (agent tokens already are) and audited as agent:<label>.
     const discordExec = createDiscordExec({ handleSlashCommand, getCommandDefs: () => slashCommands, audit });
+    // Headless button bridge: the Agent API can press buttons through the same
+    // handleButton dispatch the real interactionCreate handler uses. The synthetic
+    // actor is admin-privileged (agent tokens already are) and audited as agent:<label>.
+    const discordInteract = createDiscordInteract({ handleButton, audit });
     registerAgentApiRoutes(app, {
       config: CONFIG,
       getAgentApiTokenHashes,
@@ -9886,6 +9890,8 @@ function startExpressServer() {
       summarizeManualImportPreview,
       // v1.2 Discord bridge: headless slash-command executor (same dispatch as Discord).
       discordExec,
+      // v1.2 Discord button bridge: headless button presses (same dispatch as Discord).
+      discordInteract,
     });
   } else {
     log.info('Agent API disabled: AGENT_API_TOKEN is not set and the dashboard is disabled.');

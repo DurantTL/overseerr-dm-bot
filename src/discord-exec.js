@@ -9,14 +9,19 @@
 // against the SlashCommandBuilder definitions, captures the handler's replies, and
 // audits. The route layer (src/routes/agent-api.js) stays a thin HTTP shell.
 //
+// Companion: createDiscordInteract (below) presses buttons headlessly through the real
+// handleButton dispatch, so interactive follow-ups like the /rtorrent adopt Adopt
+// buttons are pushable via POST /api/v1/discord/interact. Replies that carry buttons
+// expose them as `buttons: [{ custom_id, label, style }]` for discovery.
+//
 // Headless limitations (documented in docs/agent-api.md):
-// - No buttons, select menus, or modals: the initial reply is captured, but interactive
-//   follow-ups (e.g. the Adopt buttons /rtorrent adopt posts) cannot be clicked via API.
+// - No select menus or modals: buttons are pressable via /discord/interact, but select
+//   menus and modals are not.
 // - No DMs: handlers that DM a Discord user will fail the same way they would for an
 //   unreachable user; the error surfaces in the captured replies.
 // - The synthetic user is an admin for permission checks: Agent API tokens are already
-//   privileged (see docs/agent-api.md "Safety model"), so admin-gated commands are
-//   invokable. The audit trail records `agent:<token-label>` as the actor.
+//   privileged (see docs/agent-api.md "Safety model"), so admin-gated commands and
+//   buttons are invokable. The audit trail records `agent:<token-label>` as the actor.
 
 const { ApplicationCommandOptionType } = require('discord.js');
 
@@ -40,6 +45,39 @@ const SUPPORTED_OPTION_TYPES = {
 
 const MAX_REPLY_TEXT = 4000;
 const MAX_AUDIT_VALUE = 120;
+const MAX_CUSTOM_ID = 100; // Discord's own custom_id length limit.
+const MAX_BUTTONS = 25; // Discovery cap per reply — bots post a handful, never hundreds.
+
+// Discord component types: 1 = ActionRow, 2 = Button, 3 = StringSelect.
+const BUTTON_STYLE_NAMES = { 1: 'primary', 2: 'secondary', 3: 'success', 4: 'danger', 5: 'link' };
+
+// Pull the pressable buttons out of a reply's components (discord.js builders or plain
+// JSON — both carry type/custom_id/label/style). Select menus are counted separately;
+// they are not pressable through the API.
+function extractButtons(components) {
+  const buttons = [];
+  let selects = 0;
+  for (const row of components || []) {
+    const r = row && typeof row.toJSON === 'function' ? row.toJSON() : row;
+    if (!r || r.type !== 1 || !Array.isArray(r.components)) continue;
+    for (const c of r.components) {
+      const b = c && typeof c.toJSON === 'function' ? c.toJSON() : c;
+      if (!b || typeof b.type !== 'number') continue;
+      if (b.type === 3) { selects += 1; continue; }
+      if (b.type !== 2 || buttons.length >= MAX_BUTTONS) continue;
+      const entry = { label: String(b.label || ''), style: BUTTON_STYLE_NAMES[b.style] || 'unknown' };
+      if (b.disabled) entry.disabled = true;
+      if (b.style === 5) {
+        // Link buttons navigate, they can't be "pressed" — surface the URL instead.
+        if (b.url) entry.url = String(b.url);
+      } else if (b.custom_id) {
+        entry.custom_id = String(b.custom_id);
+      }
+      buttons.push(entry);
+    }
+  }
+  return { buttons, selects };
+}
 
 function optionToMeta(o) {
   const meta = {
@@ -204,7 +242,10 @@ function normalizeReplyPayload(kind, payload) {
   }
   if (p.ephemeral || p.flags === 64) out.ephemeral = true;
   if (Array.isArray(p.components) && p.components.length) {
-    out.components = `${p.components.length} component row(s) — buttons/selects can't be used via the API`;
+    const { buttons, selects } = extractButtons(p.components);
+    if (buttons.length) out.buttons = buttons;
+    if (selects) out.selects = `${selects} select menu(s) — not pressable via the API`;
+    if (!buttons.length && !selects) out.components = `${p.components.length} component row(s) attached`;
   }
   if (Array.isArray(p.files) && p.files.length) {
     out.files = `${p.files.length} file attachment(s) omitted`;
@@ -397,10 +438,134 @@ function createDiscordExec({ handleSlashCommand, getCommandDefs, audit }) {
   };
 }
 
+// The headless button interaction: a plain object implementing the slice of the
+// discord.js button-interaction API the handlers actually use (surveyed from index.js's
+// handleButton: customId, user.id, isAdminInteraction via memberPermissions, update,
+// deferUpdate, editReply, followUp, reply, and interaction.message for a few handlers
+// that read the originating message's components/embeds).
+function buildHeadlessButtonInteraction({ customId, actorLabel }) {
+  const replies = [];
+  const userId = `agent:${actorLabel}`;
+  const capture = (kind, payload) => {
+    const normalized = normalizeReplyPayload(kind, payload);
+    replies.push(normalized);
+    return normalized;
+  };
+
+  const interaction = {
+    customId,
+    user: {
+      id: userId,
+      username: `agent-${actorLabel}`,
+      tag: `agent-${actorLabel}`,
+      bot: false,
+      displayAvatarURL: () => null,
+    },
+    // Same admin treatment as the slash-command shim: agent tokens are privileged, and
+    // the admin gate inside handleButton still runs against this interaction.
+    memberPermissions: { has: () => true },
+    member: null,
+    // A few handlers read interaction.message (e.g. stuck_* reusing the alert embed,
+    // plex_approve reusing the message components). Headless there is no originating
+    // message, so stub the shape they read.
+    message: { components: [], embeds: [] },
+    channelId: 'agent-api',
+    channel: {
+      id: 'agent-api',
+      send: async payload => {
+        capture('channelSend', payload);
+        return { id: 'headless-message' };
+      },
+    },
+    guild: null,
+    guildId: null,
+    client: { user: { id: 'agent-api-bridge', username: 'agent-api' } },
+    deferred: false,
+    replied: false,
+    isButton: () => true,
+    isChatInputCommand: () => false,
+    isStringSelectMenu: () => false,
+    isModalSubmit: () => false,
+    deferUpdate: async () => {
+      interaction.deferred = true;
+      capture('deferUpdate', {});
+    },
+    update: async payload => {
+      capture('update', payload);
+      return { id: 'headless-message' };
+    },
+    deferReply: async opts => {
+      interaction.deferred = true;
+      capture('defer', opts || {});
+    },
+    reply: async payload => {
+      interaction.replied = true;
+      capture('reply', payload);
+      return { id: 'headless-message' };
+    },
+    editReply: async payload => {
+      capture('editReply', payload);
+      return { id: 'headless-message' };
+    },
+    followUp: async payload => {
+      capture('followUp', payload);
+      return { id: 'headless-message' };
+    },
+    deleteReply: async () => {
+      capture('deleteReply', {});
+    },
+    showModal: async modal => {
+      capture('modal', modal && typeof modal.toJSON === 'function' ? modal.toJSON() : modal);
+      throw new Error('Modals require a Discord client — not supported via the Agent API');
+    },
+  };
+  return { interaction, replies };
+}
+
+// Creates the button-press executor. handleButton comes from index.js (the real button
+// dispatch); tests inject a fake.
+function createDiscordInteract({ handleButton, audit }) {
+  if (typeof handleButton !== 'function') throw new Error('createDiscordInteract requires handleButton');
+  const doAudit = typeof audit === 'function' ? audit : () => {};
+
+  return async function pressDiscordButton({ customId, actorLabel }) {
+    const label = String(actorLabel || 'unknown').slice(0, 80);
+    const actor = `agent:${label}`;
+    const id = typeof customId === 'string' ? customId.trim() : '';
+    const base = { actor, custom_id: id.slice(0, MAX_CUSTOM_ID) };
+    if (!id) {
+      doAudit('agent_api_discord_interact', { ...base, custom_id: '', ok: false, reason: 'missing_custom_id' });
+      throw new DiscordExecError(400, 'custom_id is required', 'missing_custom_id');
+    }
+    if (id.length > MAX_CUSTOM_ID) {
+      doAudit('agent_api_discord_interact', { ...base, ok: false, reason: 'custom_id_too_long' });
+      throw new DiscordExecError(400, `custom_id must be ${MAX_CUSTOM_ID} characters or fewer`, 'custom_id_too_long');
+    }
+
+    const { interaction, replies } = buildHeadlessButtonInteraction({ customId: id, actorLabel: label });
+
+    try {
+      await handleButton(interaction);
+    } catch (err) {
+      // Mirror the real interactionCreate catch block: surface a clean error reply rather
+      // than letting the exception escape the bridge.
+      doAudit('agent_api_discord_interact', { ...base, ok: false, reason: 'handler_error' });
+      replies.push({ kind: 'error', content: `❌ ${String(err && err.message || 'Button press failed')}`.slice(0, MAX_REPLY_TEXT) });
+      return { ok: false, replies };
+    }
+
+    doAudit('agent_api_discord_interact', { ...base, ok: true, replies: replies.length });
+    return { ok: true, replies };
+  };
+}
+
 module.exports = {
   createDiscordExec,
+  createDiscordInteract,
   DiscordExecError,
   commandDefsToMetadata,
   validateExecInput,
   buildHeadlessInteraction,
+  buildHeadlessButtonInteraction,
+  extractButtons,
 };

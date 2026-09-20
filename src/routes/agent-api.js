@@ -246,6 +246,9 @@ function registerAgentApiRoutes(app, deps) {
     // v1.2 Discord bridge: headless slash-command executor built in index.js around the
     // real handleSlashCommand dispatch. Null in tests that don't wire it (-> 503).
     discordExec = null,
+    // v1.2 Discord button bridge: headless button-press executor built in index.js
+    // around the real handleButton dispatch. Null in tests that don't wire it (-> 503).
+    discordInteract = null,
     auth = createAgentApiAuth({ getAgentApiTokenHashes, getAgentApiTokenLabel, legacyTokenHash, touchAgentApiTokenUse, sha256, safeEqual, audit }),
     readLimiter = createAgentApiReadLimiter({ limit: config.AGENT_API_READ_MAX_PER_MINUTE, keyGenerator: httpRateLimitKey }),
     writeLimiter = createAgentApiWriteLimiter({ limit: config.AGENT_API_WRITE_MAX_PER_MINUTE || 10, keyGenerator: httpRateLimitKey }),
@@ -628,6 +631,34 @@ function registerAgentApiRoutes(app, deps) {
         actorLabel: req.agentTokenLabel || 'unknown',
       });
       return res.json({ ok: result.ok, command: command.toLowerCase(), subcommand: subcommand ? subcommand.toLowerCase() : null, replies: result.replies });
+    } catch (err) {
+      if (err && typeof err.status === 'number') {
+        return res.status(err.status).json({ error: String(err.message).slice(0, 500) });
+      }
+      throw err;
+    }
+  }));
+
+  // v1.2 Discord button bridge: press a button headlessly through the same handleButton
+  // dispatch the Discord interactionCreate handler uses. custom_id is whatever the
+  // button carried — /discord/exec replies now list their buttons as
+  // `buttons: [{ custom_id, label, style }]` for discovery. The admin gate inside
+  // handleButton still runs (the synthetic actor is admin-privileged, same as the exec
+  // bridge), and every press is audited as agent:<token-label>, including failures.
+  app.post('/api/v1/discord/interact', auth, writeLimiter, guarded(async (req, res) => {
+    if (!discordInteract) return res.status(503).json({ error: 'Discord interaction bridge is unavailable' });
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const customId = typeof body.custom_id === 'string' ? body.custom_id.trim() : '';
+    if (!customId) {
+      audit('agent_api_discord_interact', { ...agentActor(req), custom_id: '', ok: false, reason: 'missing_custom_id' });
+      return res.status(400).json({ error: 'custom_id is required' });
+    }
+    try {
+      const result = await discordInteract({
+        customId,
+        actorLabel: req.agentTokenLabel || 'unknown',
+      });
+      return res.json({ ok: result.ok, custom_id: customId.slice(0, 100), replies: result.replies });
     } catch (err) {
       if (err && typeof err.status === 'number') {
         return res.status(err.status).json({ error: String(err.message).slice(0, 500) });
