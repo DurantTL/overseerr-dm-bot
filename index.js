@@ -68,6 +68,7 @@ const { webhookEventKey } = require('./src/webhook-events');
 const { createWebhookHandlers, requireWebhookSecret } = require('./src/routes/webhooks');
 const { registerTierAgentRoutes } = require('./src/routes/tier-agent');
 const { registerAgentApiRoutes } = require('./src/routes/agent-api');
+const { createDiscordExec } = require('./src/discord-exec');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
 const { registerDashboardReadRoutes } = require('./src/routes/dashboard-read');
 const { registerDashboardMutationRoutes } = require('./src/routes/dashboard-mutations');
@@ -9838,6 +9839,10 @@ function startExpressServer() {
   // tokens are created at runtime from /admin). With no token anywhere, every request 401s in the
   // auth middleware — no token, no access.
   if (CONFIG.AGENT_API_TOKEN_HASH || CONFIG.DASHBOARD_ENABLED) {
+    // Headless Discord bridge: the Agent API can invoke slash commands through the same
+    // handleSlashCommand dispatch the real interactionCreate handler uses. The synthetic
+    // actor is admin-privileged (agent tokens already are) and audited as agent:<label>.
+    const discordExec = createDiscordExec({ handleSlashCommand, getCommandDefs: () => slashCommands, audit });
     registerAgentApiRoutes(app, {
       config: CONFIG,
       getAgentApiTokenHashes,
@@ -9879,6 +9884,8 @@ function startExpressServer() {
       monitorSeasonSearch,
       sonarrSeriesAliases,
       summarizeManualImportPreview,
+      // v1.2 Discord bridge: headless slash-command executor (same dispatch as Discord).
+      discordExec,
     });
   } else {
     log.info('Agent API disabled: AGENT_API_TOKEN is not set and the dashboard is disabled.');
