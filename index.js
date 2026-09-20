@@ -9991,10 +9991,30 @@ async function handleButton(interaction) {
         .setTitle('❌ Downsize Aborted')
         .setDescription(`The staged replacement is gone (\`${result.newPath}\`) — the existing file was NOT touched. Re-stage the file and run \`/downsize\` again.`)], components: [] });
     }
+    if (result.reason === 'unsafe_replacement_path') {
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.DANGER)
+        .setTitle('❌ Downsize Aborted')
+        .setDescription('The staged replacement is outside the configured staging folder, under `.incoming`, or uses a symlink alias. The existing file was NOT touched. Move the replacement to a direct path under staging and run `/downsize` again.')], components: [] });
+    }
     if (result.reason === 'size_changed') {
       return interaction.editReply({ embeds: [brandedEmbed(COLORS.DANGER)
         .setTitle('❌ Downsize Aborted')
         .setDescription(`The staged file changed size since the preview (expected ${result.expectedSize}, found ${result.actualSize}) — it may be a different file. The existing file was NOT touched. Re-run \`/downsize\` to get a fresh preview.`)], components: [] });
+    }
+    if (result.reason === 'not_smaller') {
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.DANGER)
+        .setTitle('❌ Downsize Aborted')
+        .setDescription('The staged replacement is no longer smaller than the existing file. The existing file was NOT touched. Re-run `/downsize` after checking the replacement.')], components: [] });
+    }
+    if (result.reason === 'stale_old_file') {
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.DANGER)
+        .setTitle('❌ Downsize Aborted')
+        .setDescription(`The file currently attached to **${offer.movieTitle}** in ${offer.sourceLabel} no longer matches the preview. The existing file was NOT touched. Run \`/downsize\` again to review the current file before swapping.`)], components: [] });
+    }
+    if (result.reason === 'revalidation_failed') {
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.DANGER)
+        .setTitle('❌ Downsize Aborted')
+        .setDescription(`I couldn't re-check the current file in ${offer.sourceLabel}: ${result.error}\n\nThe existing file was NOT touched. Try again when Radarr is reachable.`)], components: [] });
     }
     if (result.reason === 'delete_failed') {
       return interaction.editReply({ embeds: [brandedEmbed(COLORS.DANGER)

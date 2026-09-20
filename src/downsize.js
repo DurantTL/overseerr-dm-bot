@@ -170,17 +170,11 @@ async function executeDownsizeSwap({ offer, deps }) {
   const actor = { actorDiscordId: offer.actorDiscordId, title: offer.movieTitle, arrId: offer.movieId, source: offer.sourceLabel };
 
   // Safety: the offer is valid only for the exact staged file previewed by the admin.
-  // Reject path traversal, .incoming, and symlinks escaping staging before touching Radarr.
+  // Reject path traversal, .incoming, and any symlink below the configured staging root
+  // before touching Radarr. Importing through a lexical alias is unsafe even when the
+  // symlink ultimately resolves inside staging: Radarr may not see the same alias.
   const stagingRoot = String(CONFIG.GRAB_STAGING_PATH || '');
-  let resolvedRoot = stagingRoot;
-  let resolvedReplacement = offer.newPath;
-  try {
-    if (typeof fs.realpathSync === 'function') {
-      resolvedRoot = fs.realpathSync(stagingRoot);
-      resolvedReplacement = fs.realpathSync(offer.newPath);
-    }
-  } catch (_e) { /* statSync below gives the clearer replacement_gone result */ }
-  const replacementRel = stagingRoot ? path.relative(resolvedRoot, resolvedReplacement) : '';
+  const replacementRel = stagingRoot ? path.relative(path.resolve(stagingRoot), path.resolve(offer.newPath)) : '';
   if (!stagingRoot || !replacementRel || replacementRel === '..' || replacementRel.startsWith(`..${path.sep}`) || path.isAbsolute(replacementRel) || replacementRel.split(path.sep).includes('.incoming')) {
     audit('downsize_aborted', { ...actor, reason: 'unsafe_replacement_path', newPath: offer.newPath });
     return { ok: false, reason: 'unsafe_replacement_path', newPath: offer.newPath };
@@ -191,6 +185,20 @@ async function executeDownsizeSwap({ offer, deps }) {
   if (!stagedStat?.isFile()) {
     audit('downsize_aborted', { ...actor, reason: 'replacement_gone', newPath: offer.newPath });
     return { ok: false, reason: 'replacement_gone', newPath: offer.newPath };
+  }
+  if (typeof fs.realpathSync === 'function') {
+    try {
+      const resolvedRoot = fs.realpathSync(stagingRoot);
+      const resolvedReplacement = fs.realpathSync(offer.newPath);
+      const expectedResolvedPath = path.resolve(resolvedRoot, replacementRel);
+      if (path.normalize(resolvedReplacement) !== path.normalize(expectedResolvedPath)) {
+        audit('downsize_aborted', { ...actor, reason: 'unsafe_replacement_path', newPath: offer.newPath });
+        return { ok: false, reason: 'unsafe_replacement_path', newPath: offer.newPath };
+      }
+    } catch (_e) {
+      audit('downsize_aborted', { ...actor, reason: 'replacement_gone', newPath: offer.newPath });
+      return { ok: false, reason: 'replacement_gone', newPath: offer.newPath };
+    }
   }
   // Exact byte equality is intentional: a one-byte change can be a different or incomplete
   // replacement. The preview's stat size is the consent boundary for this destructive swap.
@@ -205,6 +213,36 @@ async function executeDownsizeSwap({ offer, deps }) {
     return { ok: false, reason: 'not_smaller', newPath: offer.newPath, oldSize: offer.oldSize, actualSize: stagedStat.size };
   }
 
+  // Revalidate the destructive target immediately before deletion. A preview can remain open
+  // while Radarr upgrades or replaces the movie, so file id alone is not a sufficient consent
+  // boundary: id, path, and size must all still describe the exact file shown in the preview.
+  let currentFile;
+  try {
+    const movies = await radarrGetFrom(offer.sourceUrl, offer.sourceKey, '/movie');
+    const movie = (movies || []).find(x => Number(x.id) === Number(offer.movieId));
+    currentFile = movie?.movieFile || null;
+  } catch (err) {
+    audit('downsize_aborted', { ...actor, reason: 'revalidation_failed', error: err.message });
+    return { ok: false, reason: 'revalidation_failed', error: err.message };
+  }
+  const sameOldFile = currentFile
+    && Number(currentFile.id) === Number(offer.oldFileId)
+    && path.normalize(String(currentFile.path || '')) === path.normalize(String(offer.oldPath || ''))
+    && Number(currentFile.size) === Number(offer.oldSize);
+  if (!sameOldFile) {
+    audit('downsize_aborted', {
+      ...actor,
+      reason: 'stale_old_file',
+      expectedOldFileId: offer.oldFileId,
+      currentOldFileId: currentFile?.id ?? null,
+      expectedOldPath: offer.oldPath,
+      currentOldPath: currentFile?.path ?? null,
+      expectedOldSize: offer.oldSize,
+      currentOldSize: currentFile?.size ?? null,
+    });
+    return { ok: false, reason: 'stale_old_file' };
+  }
+
   // Step 1: delete the existing file via the Radarr API.
   try {
     await axios.delete(`${offer.sourceUrl}/api/v3/moviefile/${offer.oldFileId}`, {
@@ -217,8 +255,7 @@ async function executeDownsizeSwap({ offer, deps }) {
   audit('downsize_old_deleted', { ...actor, oldFileId: offer.oldFileId, oldPath: offer.oldPath, oldSize: offer.oldSize });
 
   // Step 2: trigger the Radarr import scan, translating the bot's staging view to the arr's.
-  const rel = path.relative(CONFIG.GRAB_STAGING_PATH, offer.newPath);
-  const importPath = path.join(CONFIG.GRAB_IMPORT_PATH || CONFIG.GRAB_STAGING_PATH, rel);
+  const importPath = path.join(CONFIG.GRAB_IMPORT_PATH || CONFIG.GRAB_STAGING_PATH, replacementRel);
   let commandId;
   try {
     const cmd = await axios.post(`${offer.sourceUrl}/api/v3/command`,

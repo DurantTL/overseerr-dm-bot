@@ -141,6 +141,7 @@ function stubDeps(overrides = {}) {
           return { isFile: () => true, size: files.get(p) };
         },
         existsSync: p => files.has(p),
+        realpathSync: p => overrides.realpaths?.[p] || p,
       },
       path,
       axios: {
@@ -178,6 +179,11 @@ const baseOffer = {
   bytesSaved: (15 - 2.9) * 1024 ** 3,
 };
 
+const currentOldMovie = {
+  id: baseOffer.movieId,
+  movieFile: { id: baseOffer.oldFileId, path: baseOffer.oldPath, size: baseOffer.oldSize },
+};
+
 test('downsize: executeDownsizeSwap — missing staged file aborts before any API call', async () => {
   const { calls, deps } = stubDeps({ files: {} }); // nothing staged
   const result = await executeDownsizeSwap({ offer: baseOffer, deps });
@@ -197,6 +203,19 @@ test('downsize: executeDownsizeSwap — unsafe staged path aborts before any API
   assert.strictEqual(calls.post.length, 0);
 });
 
+test('downsize: executeDownsizeSwap — internal symlink alias aborts before any API call', async () => {
+  const aliasPath = '/staging/alias/Dune.mkv';
+  const { calls, deps } = stubDeps({
+    files: { [aliasPath]: baseOffer.newSize },
+    realpaths: { '/staging': '/staging', [aliasPath]: '/staging/real/Dune.mkv' },
+  });
+  const result = await executeDownsizeSwap({ offer: { ...baseOffer, newPath: aliasPath }, deps });
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'unsafe_replacement_path');
+  assert.strictEqual(calls.delete.length, 0, 'no DELETE through a symlink alias');
+  assert.strictEqual(calls.post.length, 0, 'no import scan through a symlink alias');
+});
+
 test('downsize: executeDownsizeSwap — even one changed byte aborts before delete', async () => {
   const { calls, deps } = stubDeps({ files: { [baseOffer.newPath]: baseOffer.newSize + 1 } });
   const result = await executeDownsizeSwap({ offer: baseOffer, deps });
@@ -209,7 +228,10 @@ test('downsize: executeDownsizeSwap — even one changed byte aborts before dele
 test('downsize: executeDownsizeSwap — happy path deletes then scans then verifies', async () => {
   const { calls, deps } = stubDeps({
     files: { '/staging/Dune.Part.Two.2024.mkv': 2.9 * 1024 ** 3 },
-    movies: [{ id: 42, movieFile: { path: '/media/Movies/Dune Part Two (2024)/Dune.Part.Two.2024.mkv' } }],
+    movieResponses: [
+      [currentOldMovie],
+      [{ id: 42, movieFile: { id: 99, path: '/media/Movies/Dune Part Two (2024)/Dune.Part.Two.2024.mkv', size: baseOffer.newSize } }],
+    ],
   });
   const result = await executeDownsizeSwap({ offer: baseOffer, deps });
   assert.strictEqual(result.ok, true);
@@ -230,9 +252,38 @@ test('downsize: executeDownsizeSwap — happy path deletes then scans then verif
   assert.strictEqual(deleted.data.oldSize, 15 * 1024 ** 3);
 });
 
+test('downsize: executeDownsizeSwap — stale old Radarr file aborts before delete', async () => {
+  for (const movieFile of [
+    { ...currentOldMovie.movieFile, id: 8 },
+    { ...currentOldMovie.movieFile, path: '/media/Dune/replaced.mkv' },
+    { ...currentOldMovie.movieFile, size: baseOffer.oldSize - 1 },
+  ]) {
+    const { calls, deps } = stubDeps({
+      files: { [baseOffer.newPath]: baseOffer.newSize },
+      movies: [{ id: baseOffer.movieId, movieFile }],
+    });
+    const result = await executeDownsizeSwap({ offer: baseOffer, deps });
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.reason, 'stale_old_file');
+    assert.strictEqual(calls.delete.length, 0, 'the changed Radarr file is never deleted');
+    assert.strictEqual(calls.post.length, 0, 'no scan starts after a stale preview');
+  }
+});
+
+test('downsize: executeDownsizeSwap — failed Radarr revalidation aborts before delete', async () => {
+  const { calls, deps } = stubDeps({ files: { [baseOffer.newPath]: baseOffer.newSize } });
+  deps.radarrGetFrom = async () => { throw new Error('timeout'); };
+  const result = await executeDownsizeSwap({ offer: baseOffer, deps });
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'revalidation_failed');
+  assert.strictEqual(calls.delete.length, 0);
+  assert.strictEqual(calls.post.length, 0);
+});
+
 test('downsize: executeDownsizeSwap — delete failure aborts before the scan', async () => {
   const { calls, deps } = stubDeps({
     files: { '/staging/Dune.Part.Two.2024.mkv': 2.9 * 1024 ** 3 },
+    movies: [currentOldMovie],
     depOverrides: {},
   });
   deps.axios.delete = async () => { calls.delete.push({}); throw new Error('403 forbidden'); };
@@ -244,7 +295,10 @@ test('downsize: executeDownsizeSwap — delete failure aborts before the scan', 
 });
 
 test('downsize: executeDownsizeSwap — scan failure after delete reports oldDeleted', async () => {
-  const { deps } = stubDeps({ files: { '/staging/Dune.Part.Two.2024.mkv': 2.9 * 1024 ** 3 } });
+  const { deps } = stubDeps({
+    files: { '/staging/Dune.Part.Two.2024.mkv': 2.9 * 1024 ** 3 },
+    movies: [currentOldMovie],
+  });
   deps.axios.post = async () => { throw new Error('connection refused'); };
   const result = await executeDownsizeSwap({ offer: baseOffer, deps });
   assert.strictEqual(result.ok, false);
@@ -267,4 +321,16 @@ test('downsize: slash command is registered', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'index.js'), 'utf8');
   assert.ok(src.includes("setName('downsize')"), '/downsize command is registered');
   assert.ok(src.includes("if (n === 'downsize') return handleDownsizeCommand(interaction);"), '/downsize dispatch exists');
+});
+
+test('downsize: every pre-delete abort has an explicit safe Discord response', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'index.js'), 'utf8');
+  const start = src.indexOf("if (action === 'downsize_do' || action === 'downsize_cancel')");
+  const end = src.indexOf("if (action === 'downsize_reverify')", start);
+  const handler = src.slice(start, end);
+  for (const reason of ['replacement_gone', 'unsafe_replacement_path', 'size_changed', 'not_smaller', 'stale_old_file', 'revalidation_failed']) {
+    assert.ok(handler.includes(`result.reason === '${reason}'`), `${reason} has an explicit response before the destructive fallback`);
+  }
+  assert.ok((handler.match(/existing file was NOT touched/g) || []).length >= 5,
+    'safe abort responses clearly say the existing file was not touched');
 });

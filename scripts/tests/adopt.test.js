@@ -12,7 +12,12 @@ const path = require('path');
 const { pruneAcknowledged, unacknowledgedTorrents, findUnprocessableTorrents, matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('../../src/adopt');
 const { CONFIG } = require('../../src/config');
 
-const cfg = { RTORRENT_ADOPT_LABELS: ['sonarr', 'radarr', 'tv'], SONARR_URL: 'http://s', RADARR_URL: 'http://r' };
+const cfg = {
+  RTORRENT_ADOPT_LABELS: ['sonarr', 'radarr', 'radarr-4k', 'tv'],
+  SONARR_URL: 'http://s',
+  RADARR_URL: 'http://r',
+  RADARR_4K_URL: 'http://r4k',
+};
 const root = '/home/localclient/Downloads';
 
 test('adopt: matchTorrentsByName', () => {
@@ -30,6 +35,7 @@ test('adopt: matchTorrentsByName', () => {
 test('adopt: adoptTargetForLabel', () => {
   assert.strictEqual(adoptTargetForLabel('sonarr', cfg), 'sonarr', 'sonarr label maps to sonarr');
   assert.strictEqual(adoptTargetForLabel('  Radarr ', cfg), 'radarr', 'label is trimmed and lowercased');
+  assert.strictEqual(adoptTargetForLabel('radarr-4k', cfg), 'radarr-4k', '4K label maps to the configured 4K Radarr');
   assert.strictEqual(adoptTargetForLabel('', cfg), null, 'blank label needs an admin choice');
   assert.strictEqual(adoptTargetForLabel('music', cfg), null, 'label outside RTORRENT_ADOPT_LABELS is unknown');
   assert.strictEqual(adoptTargetForLabel('tv', cfg), null, 'adoptable label that names no arr still needs a choice');
@@ -122,10 +128,10 @@ test('adopt: bulkTargetChoices', () => {
   const sonarrish = [{ label: 'sonarr' }, { label: 'sonarr' }];
   assert.deepStrictEqual(bulkTargetChoices(sonarrish, null, cfg), ['sonarr'], 'uniform resolved labels pin one Adopt-all button');
   assert.deepStrictEqual(bulkTargetChoices(sonarrish, 'radarr', cfg), ['radarr'], 'explicit target overrides labels');
-  assert.deepStrictEqual(bulkTargetChoices([{ label: 'sonarr' }, { label: '' }], null, cfg), ['sonarr', 'radarr'], 'a blank label in the cohort forces an explicit choice');
-  assert.deepStrictEqual(bulkTargetChoices([{ label: 'sonarr' }, { label: 'radarr' }], null, cfg), ['sonarr', 'radarr'], 'mixed labels force an explicit choice');
-  assert.deepStrictEqual(bulkTargetChoices([{ label: '' }], null, { ...cfg, RADARR_URL: '' }), ['sonarr'], 'only configured arrs are offered');
-  assert.deepStrictEqual(bulkTargetChoices([], null, cfg), ['sonarr', 'radarr'], 'an empty cohort still never invents a target');
+  assert.deepStrictEqual(bulkTargetChoices([{ label: 'sonarr' }, { label: '' }], null, cfg), ['sonarr', 'radarr', 'radarr-4k'], 'a blank label in the cohort forces an explicit choice');
+  assert.deepStrictEqual(bulkTargetChoices([{ label: 'sonarr' }, { label: 'radarr' }], null, cfg), ['sonarr', 'radarr', 'radarr-4k'], 'mixed labels force an explicit choice');
+  assert.deepStrictEqual(bulkTargetChoices([{ label: '' }], null, { ...cfg, RADARR_URL: '', RADARR_4K_URL: '' }), ['sonarr'], 'only configured arrs are offered');
+  assert.deepStrictEqual(bulkTargetChoices([], null, cfg), ['sonarr', 'radarr', 'radarr-4k'], 'an empty cohort still never invents a target');
 });
 
 test('adopt: Discord target choices include Radarr 4K', () => {
@@ -136,6 +142,18 @@ test('adopt: Discord target choices include Radarr 4K', () => {
   const definition = source.slice(start, end);
   assert.match(definition, /\{ name: 'radarr-4k', value: 'radarr-4k' \}/,
     'manual Discord adoption can select the configured Radarr 4K target');
+});
+
+test('adopt: single and bulk button handlers both accept Radarr 4K', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'index.js'), 'utf8');
+  const singleStart = source.indexOf("if (action === 'adopt_do')");
+  const bulkStart = source.indexOf("if (action === 'adopt_bulk')", singleStart);
+  const cancelStart = source.indexOf("if (action === 'adopt_cancel')", bulkStart);
+  assert.ok(singleStart >= 0 && bulkStart > singleStart && cancelStart > bulkStart, 'adoption button handlers exist');
+  assert.match(source.slice(singleStart, bulkStart), /\['sonarr', 'radarr', 'radarr-4k'\]\.includes\(parts\[2\]\)/,
+    'adopt_do accepts radarr-4k');
+  assert.match(source.slice(bulkStart, cancelStart), /\['sonarr', 'radarr', 'radarr-4k'\]\.includes\(parts\[1\]\)/,
+    'adopt_bulk accepts radarr-4k');
 });
 
 test('adopt: d.multicall2 listing against a mock XML-RPC endpoint', async () => {
