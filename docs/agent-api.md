@@ -88,6 +88,47 @@ Headless limitations (by design):
   Channel posts the bot itself makes (e.g. adoption progress updates to #downloads)
   still go to the real channels, same as a Discord click would produce.
 
+### /downsize via the bridge
+
+`/downsize` swaps a movie's existing file for a smaller staged replacement — the
+downsize workflow (same quality, less space). Radarr only imports "upgrades," so a
+smaller replacement is rejected no matter how the scan is triggered; the swap deletes
+the old file via the Radarr API first, then imports the staged file.
+
+Drive it headlessly in two calls. First the preview (admin-only, always shows before
+anything destructive):
+
+```json
+// POST /api/v1/discord/exec
+{ "command": "downsize", "options": { "movie": "Dune Part Two" } }
+// -> reply embed: old file (size, quality, path) vs staged replacement (size, path),
+//    bytes saved, plus buttons:
+//    { "custom_id": "downsize_do:<nonce>", "label": "Swap (12.1 GB saved)", "style": "danger" },
+//    { "custom_id": "downsize_cancel:<nonce>", "label": "Cancel", "style": "secondary" }
+```
+
+The preview requires a staged replacement: the command looks in the seedbox staging
+share (`GRAB_STAGING_PATH`) for a file matching the movie — via adopted grab jobs
+first, then filename similarity — and only offers the swap when the replacement is
+smaller than the existing file. No replacement, or no existing file, is a clean error
+(no swap offered).
+
+Then press Swap:
+
+```json
+// POST /api/v1/discord/interact
+{ "custom_id": "downsize_do:<nonce>" }
+// -> deletes the old file via the Radarr API, triggers DownloadedMoviesScan on the
+//    staged file, polls up to 60s for the new file, replies with the result.
+```
+
+Safety: the preview is mandatory (no direct-to-delete). The button re-verifies the
+staged file still exists before deleting anything — if it vanished, the swap aborts
+and the old file is untouched. Every step is audited (`downsize_preview`,
+`downsize_old_deleted`, `downsize_swapped`, plus `downsize_aborted` /
+`downsize_delete_failed` / `downsize_scan_failed` / `downsize_unverified` on the
+failure paths).
+
 ## Safety model for the fix endpoints
 
 The agent token is now **privileged, not read-only**. What keeps that sane:

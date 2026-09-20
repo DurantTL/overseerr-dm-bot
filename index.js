@@ -84,6 +84,7 @@ const { evaluateTierPlanStaleness } = require('./src/tier-plan-staleness');
 const { mergeFleetDisks, evaluateFleetDiskAlerts, evaluateSmartTransitions, collectSmartHealth } = require('./src/fleet-disks');
 const { assessDiskLevel } = require('./src/node-telemetry');
 const { findUnprocessableTorrents, unacknowledgedTorrents, pruneAcknowledged, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
+const { formatBytes, findStagedReplacement, buildDownsizePreview, executeDownsizeSwap } = require('./src/downsize');
 const { premiumizeConfigured, accountInfo, listTransfers, deleteTransfer, retryTransfer, clearFinished, findStuckTransfers, isStuckCandidate, planStuckTransferActions } = require('./src/premiumize');
 const { detectStuckItems, stuckGroupKey, groupStuckItems, isSeasonGroup } = require('./src/stuck');
 const { summarizeSeriesGaps, describeGaps, describeActivity, rankIncomplete } = require('./src/incomplete');
@@ -4459,6 +4460,8 @@ const slashCommands = [
       .addStringOption(o => o.setName('mode').setDescription('move (default, cleans up staging) or copy (leaves the files in place)').addChoices({ name: 'move', value: 'move' }, { name: 'copy', value: 'copy' })))
     .addSubcommand(s => s.setName('staging').setDescription('Why-won\'t-it-import report: per-folder match/rejection summary of the staging share')
       .addStringOption(o => o.setName('target').setDescription('Which arr to ask (default sonarr)').addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }))),
+  new SlashCommandBuilder().setName('downsize').setDescription('Swap a movie file for a smaller staged replacement (same quality, less space)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption(o => o.setName('movie').setDescription('Movie title to downsize').setRequired(true)),
   new SlashCommandBuilder().setName('season').setDescription('Season-pack sweep: force a search now, or see why one hasn\'t happened').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('search').setDescription('Force a season search right now (Sonarr, or AvistaZ direct if the series is tagged)')
       .addStringOption(o => o.setName('title').setDescription('Sonarr series — start typing to search').setRequired(true).setAutocomplete(true))
@@ -5178,6 +5181,7 @@ async function handleSlashCommand(interaction) {
   if (n === 'debrid') return handleDebridCommand(interaction);
   if (n === 'avistaz') return handleAvistazCommand(interaction);
   if (n === 'rtorrent') return handleRtorrentCommand(interaction);
+  if (n === 'downsize') return handleDownsizeCommand(interaction);
   if (n === 'season') return handleSeasonCommand(interaction);
   if (n === 'cleanup-suggestions') return handleCleanupSuggestionsCommand(interaction);
   if (n === 'stage') return handleStageCommand(interaction);
@@ -7445,6 +7449,111 @@ async function handleRtorrentCommand(interaction) {
 // `status` never searches anything — it just explains the seasonSearchTargets gate for one series,
 // since the sweep itself stays silent about series it decides not to touch (untagged when
 // SEASON_PACK_SONARR_UNTAGGED is off, too young, on cooldown, etc.).
+
+// /downsize — swap an existing movie file for a smaller staged replacement.
+//
+// Caleb is downsizing the 4K library: same quality, smaller files. Radarr only imports
+// "upgrades," so a smaller replacement is rejected ("Not a quality revision upgrade") no
+// matter how the scan is triggered. The working swap is: delete the old file via the
+// Radarr API, then import the staged smaller one. This command does both behind one
+// preview + Swap/Cancel gate — the preview is mandatory, there is no direct-to-delete path.
+async function handleDownsizeCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  const title = String(interaction.options.getString('movie') || '').trim();
+  if (!title) return interaction.reply({ content: '❌ Give me a movie title.', ephemeral: true });
+
+  const sources = [
+    { url: CONFIG.RADARR_4K_URL, key: CONFIG.RADARR_4K_API_KEY, label: 'Radarr 4K' },
+    { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, label: 'Radarr' },
+  ].filter(s => s.url);
+  if (!sources.length) return interaction.reply({ content: '❌ No Radarr is configured.', ephemeral: true });
+
+  await interaction.deferReply({ ephemeral: true });
+
+  // Find the movie: Radarr 4K first (the downsize target), then HD Radarr.
+  let movie = null;
+  let source = null;
+  const want = title.toLowerCase();
+  for (const s of sources) {
+    try {
+      const all = await radarrGetFrom(s.url, s.key, '/movie');
+      const hit = (all || []).find(m => String(m.title || '').toLowerCase() === want)
+        || (all || []).find(m => String(m.title || '').toLowerCase().includes(want));
+      if (hit) { movie = hit; source = s; break; }
+    } catch (err) {
+      audit('external_api_error', { provider: s.label, error: err.message, action: 'downsize_lookup', title });
+    }
+  }
+  if (!movie) {
+    audit('downsize_no_movie', { actorDiscordId: interaction.user.id, title });
+    return interaction.editReply(`❌ No movie matching \`${title}\` in Radarr 4K or Radarr.`);
+  }
+
+  const oldFile = movie.movieFile || null;
+  if (!oldFile?.path) {
+    audit('downsize_no_existing_file', { actorDiscordId: interaction.user.id, title: movie.title, arrId: movie.id, source: source.label });
+    return interaction.editReply(
+      `ℹ️ **${movie.title}** (${movie.year || '?'}) has no file in ${source.label} yet — there's nothing to swap. ` +
+      `Use \`/rtorrent import\` to bring the staged file in as a normal import.`);
+  }
+
+  const stagingPath = CONFIG.GRAB_STAGING_PATH;
+  if (!stagingPath) {
+    return interaction.editReply('❌ Seedbox staging isn\'t configured (`GRAB_STAGING_PATH`).');
+  }
+  const adoptedJobs = listAdoptedGrabJobs(50);
+  const replacement = findStagedReplacement(stagingPath, movie, adoptedJobs);
+  if (!replacement) {
+    audit('downsize_no_replacement', { actorDiscordId: interaction.user.id, title: movie.title, arrId: movie.id, source: source.label, oldSize: oldFile.size });
+    return interaction.editReply(
+      `❌ No smaller staged replacement found for **${movie.title}** under \`${stagingPath}\`.\n` +
+      `Adopt the torrent first with \`/rtorrent adopt\` (or drop the file in staging), then run \`/downsize\` again.`);
+  }
+
+  const preview = buildDownsizePreview({ movie, oldFile, newFile: replacement });
+  if (!preview.ok) {
+    const why = preview.reason === 'not_smaller'
+      ? `the staged file (${formatBytes(preview.newSize)}) isn't smaller than the existing one (${formatBytes(preview.oldSize)})`
+      : preview.reason;
+    audit('downsize_preview_rejected', { actorDiscordId: interaction.user.id, title: movie.title, reason: preview.reason });
+    return interaction.editReply(`❌ Can't downsize **${movie.title}**: ${why}.`);
+  }
+
+  const nonce = stashGrabOffer({
+    kind: 'downsize-swap',
+    movieId: movie.id,
+    movieTitle: movie.title,
+    movieYear: movie.year,
+    sourceLabel: source.label,
+    sourceUrl: source.url,
+    sourceKey: source.key,
+    oldFileId: oldFile.id,
+    oldPath: preview.oldPath,
+    oldSize: preview.oldSize,
+    newPath: preview.newPath,
+    newSize: preview.newSize,
+    bytesSaved: preview.bytesSaved,
+  });
+  audit('downsize_preview', {
+    actorDiscordId: interaction.user.id, title: movie.title, arrId: movie.id, source: source.label,
+    oldPath: preview.oldPath, oldSize: preview.oldSize, newPath: preview.newPath, newSize: preview.newSize,
+  });
+
+  const saved = preview.bytesSaved != null ? `**${formatBytes(preview.bytesSaved)}** saved` : 'size unknown';
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`downsize_do:${nonce}`).setLabel(`Swap (${saved})`).setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId(`downsize_cancel:${nonce}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
+  );
+  return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
+    .setTitle(`📦 Downsize: ${preview.movieTitle}${preview.movieYear ? ` (${preview.movieYear})` : ''}`)
+    .setDescription(
+      `**Now** (${source.label}): \`${preview.oldPath}\`\n` +
+      `${formatBytes(preview.oldSize)} · ${preview.oldQuality}\n\n` +
+      `**Replacement** (staged): \`${preview.newPath}\`\n` +
+      `${formatBytes(preview.newSize)}\n\n` +
+      `Swapping deletes the current file via the Radarr API, then imports the staged file. ${saved}.`)], components: [row] });
+}
+
 async function handleSeasonCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
   if (!CONFIG.SONARR_URL) return interaction.reply({ content: '❌ Sonarr isn\'t configured.', ephemeral: true });
@@ -8725,7 +8834,7 @@ async function handleButton(interaction) {
     return interaction.showModal(requestAccessModal(server));
   }
 
-  if (['plex_approve', 'plex_approve_ts', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'trust_undo', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'season_grab', 'adopt_do', 'adopt_bulk', 'adopt_cancel', 'manual_import_confirm', 'manual_import_cancel'].includes(action) && !isAdminInteraction(interaction)) {
+  if (['plex_approve', 'plex_approve_ts', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'trust_undo', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'season_grab', 'adopt_do', 'adopt_bulk', 'adopt_cancel', 'manual_import_confirm', 'manual_import_cancel', 'downsize_do', 'downsize_cancel'].includes(action) && !isAdminInteraction(interaction)) {
     return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
   }
 
@@ -9442,6 +9551,61 @@ async function handleButton(interaction) {
     if (!arr.url) return interaction.editReply({ content: `❌ ${arr.label} isn't configured.`, embeds: [], components: [] });
     audit('manual_import_partial_confirmed', { actorDiscordId: interaction.user.id, path: offer.fullImportPath, target: offer.target });
     return executeManualImport(interaction, { arr, target: offer.target, fullImportPath: offer.fullImportPath, localPath: offer.localPath, clean: offer.clean, mode: 'Move', sourceLabel: offer.sourceLabel, auditAction: offer.auditAction });
+  }
+
+  // /downsize Swap/Cancel buttons. The offer was stashed by handleDownsizeCommand with the
+  // full swap plan: Radarr movie + file ids, old path/size, staged replacement path/size.
+  if (action === 'downsize_do' || action === 'downsize_cancel') {
+    const offer = takeGrabOffer(parts[0]);
+    if (!offer || offer.kind !== 'downsize-swap') {
+      return interaction.update({ content: 'ℹ️ Already handled (or expired).', embeds: [], components: [] });
+    }
+    if (action === 'downsize_cancel') {
+      audit('downsize_cancelled', { actorDiscordId: interaction.user.id, title: offer.movieTitle, arrId: offer.movieId });
+      return interaction.update({ embeds: [brandedEmbed(COLORS.INFO)
+        .setTitle('Downsize Cancelled')
+        .setDescription(`Dismissed by <@${interaction.user.id}> — \`${offer.oldPath}\` was left alone.`)], components: [] });
+    }
+    await interaction.deferUpdate();
+    offer.actorDiscordId = interaction.user.id;
+    const result = await executeDownsizeSwap({
+      offer,
+      deps: { fs, path, axios, CONFIG, radarrGetFrom, audit },
+    });
+
+    if (result.reason === 'replacement_gone') {
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.DANGER)
+        .setTitle('❌ Downsize Aborted')
+        .setDescription(`The staged replacement is gone (\`${result.newPath}\`) — the existing file was NOT touched. Re-stage the file and run \`/downsize\` again.`)], components: [] });
+    }
+    if (result.reason === 'delete_failed') {
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.DANGER)
+        .setTitle('❌ Downsize Failed')
+        .setDescription(`Couldn't delete the existing file via the ${offer.sourceLabel} API: ${result.error}\n\nNothing was changed — the old file is still in place and the staged replacement is untouched.`)], components: [] });
+    }
+    if (result.reason === 'scan_failed') {
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
+        .setTitle('⚠️ Old File Deleted, Import Not Triggered')
+        .setDescription(`The existing file was deleted, but the Radarr import scan failed to start: ${result.error}\n\n**The movie currently has no file.** Run \`/rtorrent import\` with target radarr and the staged folder to bring the file in, or re-add the movie in Radarr.`)], components: [] });
+    }
+    if (result.ok) {
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+        .setTitle(`✅ Downsized: ${offer.movieTitle}${offer.movieYear ? ` (${offer.movieYear})` : ''}`)
+        .setDescription(
+          `**Removed:** \`${offer.oldPath}\` (${formatBytes(offer.oldSize)})\n` +
+          `**Now:** \`${result.newMoviePath}\` (${formatBytes(offer.newSize)})\n\n` +
+          `**${formatBytes(offer.bytesSaved)} saved.**`)], components: [] });
+    }
+    // Unverified: the old file is gone and the scan was triggered, but the new file
+    // hasn't shown up yet.
+    return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle('⚠️ Swap Unverified')
+      .setDescription(
+        `The old file was deleted and the import scan was triggered (command #${result.commandId ?? '?'}), ` +
+        `but the new file hasn't appeared in ${offer.sourceLabel} after 60s.\n\n` +
+        (result.stagedGone
+          ? `The staged file is gone, so the import likely succeeded — check the movie in ${offer.sourceLabel}.`
+          : `The staged file is still there — Radarr may still be working, or it rejected the import. Check the queue in ${offer.sourceLabel}.`))], components: [] });
   }
 
   if (['stuck_retry', 'stuck_rm', 'stuck_ignore'].includes(action)) {
