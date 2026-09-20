@@ -11,6 +11,17 @@ function createApp({ trustProxy = false, jsonLimit = '1mb', skipJsonPaths = [] }
   // Trust exactly one reverse-proxy hop only when the operator opts in. Rate-limit identities use
   // req.ip, and directly trusting arbitrary X-Forwarded-For lets clients rotate spoofed IPs.
   app.set('trust proxy', trustProxy ? 1 : false);
+  // L3: baseline security headers. HSTS only matters behind TLS (the tunnel); the rest are
+  // cheap defense-in-depth on every response.
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'same-origin');
+    if ((req.headers['x-forwarded-proto'] || '').includes('https') || req.secure) {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+    next();
+  });
   app.use((req, res, next) => {
     if (req.is('multipart/form-data')) return next();
     if (skipJsonPaths.some(prefix => req.path.startsWith(prefix))) return next();

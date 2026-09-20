@@ -14,7 +14,9 @@
 //      never re-pulled; an un-ignored delete would just be re-downloaded). Traversal-confined
 //      to that folder's root.
 //   6. POST a report back (bytes freed, errors, and — for atime nodes — the local file
-//      inventory {folderId, relPath, sizeBytes, atime} that is the planner's demand signal).
+//      inventory {folderId, relPath, sizeBytes, atime} that is the planner's demand signal,
+//      plus a best-effort per-folder Syncthing completion snapshot {folderId, completion,
+//      globalBytes, needBytes} for the bot's §182 locality decision).
 //
 // On a no-op run (plan and inventory both unchanged) the agent still POSTs a lightweight
 // {heartbeat:true} so the bot can tell "healthy idle" from "stopped / net down / timer broken" —
@@ -605,6 +607,45 @@ function collectInventory(ctx, folderPlans = ctx.folders.map(f => ({ folderId: f
 
 const inventoryHash = inv => crypto.createHash('sha256').update(JSON.stringify(inv)).digest('hex').slice(0, 16);
 
+// Per-folder Syncthing completion (§182 follow-up): the bot's decideCaLocality accepts a
+// completionPct for the title's folder, and this is where that signal comes from —
+// GET /rest/db/completion?folder=<syncthing folder id>&device=<this node's own device id> for
+// each folder plan. Pure data plumbing: best-effort, never fatal. A folder whose lookup fails
+// is simply omitted (the bot falls back to byte-fraction presence), and a wholly unreachable
+// Syncthing yields null rather than aborting the run — convergence must not depend on a
+// diagnostic signal.
+async function collectFolderCompletion(ctx, folderPlans = []) {
+  let myId;
+  try {
+    const status = await syncthingApi(ctx, 'GET', '/rest/system/status');
+    myId = status && typeof status.myID === 'string' ? status.myID : null;
+  } catch (err) {
+    ctx.log(`folder completion skipped — Syncthing /rest/system/status failed (${err.message})`);
+    return null;
+  }
+  if (!myId) return null;
+  const out = [];
+  for (const fp of folderPlans) {
+    if (!fp || !fp.syncFolderId) continue;
+    try {
+      const c = await syncthingApi(ctx, 'GET', `/rest/db/completion?folder=${encodeURIComponent(fp.syncFolderId)}&device=${encodeURIComponent(myId)}`);
+      const completion = Number(c && c.completion);
+      const num = v => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0; };
+      out.push({
+        folderId: fp.folderId,
+        syncFolderId: fp.syncFolderId,
+        completion: Number.isFinite(completion) ? Math.min(100, Math.max(0, completion)) : null,
+        globalBytes: num(c && c.globalBytes),
+        needBytes: num(c && c.needBytes),
+        needItems: num(c && c.needItems),
+      });
+    } catch (err) {
+      ctx.log(`folder '${fp.syncFolderId}' — completion lookup failed (${err.message}) — omitting from report`);
+    }
+  }
+  return out;
+}
+
 function loadState(ctx) {
   try { return JSON.parse(fs.readFileSync(path.join(ctx.stateDir, `${ctx.node}.json`), 'utf8')); } catch (_e) { return {}; }
 }
@@ -943,6 +984,17 @@ async function runOnce(ctx) {
   // the local plan hash has already advanced above — reporting not-converged for a skip wedges the
   // node at "published but pending" with no retry that could ever clear it. Only a real failure —
   // a topology abort, unloaded ignores, or a delete that errored — blocks convergence.
+  // §182 follow-up: per-folder Syncthing completion for the bot's locality decision
+  // (handleCaPlayStart → decideCaLocality). Collected only on full reports — heartbeats stay
+  // cheap by design — and strictly best-effort: any failure omits the field rather than failing
+  // the run, and a folder that can't be measured falls back to byte-fraction presence.
+  let folderCompletion = null;
+  try {
+    folderCompletion = await collectFolderCompletion(ctx, folderPlans);
+  } catch (err) {
+    ctx.log(`folder completion collection failed (${err.message}) — omitting from report`);
+  }
+
   const report = {
     planHash: manifest.planHash,
     converged: planChanged && !hardError && !retryPending && !pruneResult.errors.length,
@@ -952,6 +1004,7 @@ async function runOnce(ctx) {
     skipped: pruneResult.skipped,
     telemetry,
     agentVersion: ctx.agentVersion,
+    ...(folderCompletion && folderCompletion.length ? { folderCompletion } : {}),
     ...mountDiagFields,
   };
   // Reconcile the snapshot against what actually got pruned THIS run instead of reporting the
@@ -992,4 +1045,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, checkMergedMount, readMountOptions, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, collectSystemTelemetry, collectSmartHealth, parentDiskDevice, parseSmartHealthOutput, escapeStignore, loadState, saveState, writeStignore, agentVersion, readLegacyIgnoreLines, mergeLegacyIgnores, renderMergedStignore, applyLegacyIgnoreOverlay };
+module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, checkMergedMount, readMountOptions, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, collectFolderCompletion, collectSystemTelemetry, collectSmartHealth, parentDiskDevice, parseSmartHealthOutput, escapeStignore, loadState, saveState, writeStignore, agentVersion, readLegacyIgnoreLines, mergeLegacyIgnores, renderMergedStignore, applyLegacyIgnoreOverlay };

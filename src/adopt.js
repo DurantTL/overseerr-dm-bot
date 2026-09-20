@@ -31,6 +31,8 @@ function adoptTargetForLabel(label, cfg = CONFIG) {
   const l = String(label || '').trim().toLowerCase();
   if (!l || !cfg.RTORRENT_ADOPT_LABELS.includes(l)) return null;
   if (l.includes('sonarr')) return cfg.SONARR_URL ? 'sonarr' : null;
+  // B2: check radarr-4k BEFORE the generic radarr match — 'radarr-4k'.includes('radarr') is true.
+  if (l.includes('radarr-4k') || l.includes('radarr4k')) return cfg.RADARR_4K_URL ? 'radarr-4k' : null;
   if (l.includes('radarr')) return cfg.RADARR_URL ? 'radarr' : null;
   return null;
 }
@@ -214,7 +216,8 @@ function bulkTargetChoices(candidates, explicitTarget, cfg = CONFIG) {
   if (explicitTarget) return [explicitTarget];
   const resolved = (candidates || []).map(t => adoptTargetForLabel(t.label, cfg));
   if (resolved.length && resolved.every(t => t && t === resolved[0])) return [resolved[0]];
-  return [cfg.SONARR_URL ? 'sonarr' : null, cfg.RADARR_URL ? 'radarr' : null].filter(Boolean);
+  // B13: fallback must include radarr-4k when configured, not just sonarr/radarr.
+  return [cfg.SONARR_URL ? 'sonarr' : null, cfg.RADARR_URL ? 'radarr' : null, cfg.RADARR_4K_URL ? 'radarr-4k' : null].filter(Boolean);
 }
 
 module.exports = { findUnprocessableTorrents, unacknowledgedTorrents, pruneAcknowledged, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices };

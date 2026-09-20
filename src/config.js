@@ -320,7 +320,7 @@ const CONFIG = (() => {
   RTORRENT_ADOPT_ENABLED: parseBool(process.env.RTORRENT_ADOPT_ENABLED, false),
   RTORRENT_ADOPT_CHECK_MINUTES: Number.parseInt(process.env.RTORRENT_ADOPT_CHECK_MINUTES || '5', 10),
   // rTorrent labels (d.custom1, lowercased) the discovery sweep considers adoptable.
-  RTORRENT_ADOPT_LABELS: (process.env.RTORRENT_ADOPT_LABELS || 'sonarr,radarr').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+  RTORRENT_ADOPT_LABELS: (process.env.RTORRENT_ADOPT_LABELS || 'sonarr,radarr,radarr-4k').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
   // Adopt discovered candidates automatically instead of posting Adopt buttons.
   RTORRENT_ADOPT_AUTO: parseBool(process.env.RTORRENT_ADOPT_AUTO, false),
   // Seedbox-side absolute folder that GRAB_RCLONE_REMOTE points at (e.g.
@@ -372,6 +372,11 @@ const CONFIG = (() => {
   // public hostname). Strictly validated in validateConfig() via passkeyRp() (#190): https only,
   // no path/query/fragment/credentials/port, not an IP address.
   DASHBOARD_PUBLIC_URL: process.env.DASHBOARD_PUBLIC_URL || (process.env.TUNNEL_DOMAIN ? `https://${process.env.TUNNEL_DOMAIN}` : ''),
+  // L2: explicit Secure-cookie flag derived from the public URL scheme, not from the
+  // client-controlled x-forwarded-proto header. Override with COOKIE_SECURE=1/0.
+  COOKIE_SECURE: process.env.COOKIE_SECURE !== undefined
+    ? process.env.COOKIE_SECURE === '1'
+    : (process.env.DASHBOARD_PUBLIC_URL || (process.env.TUNNEL_DOMAIN ? `https://${process.env.TUNNEL_DOMAIN}` : '')).startsWith('https://'),
   RAID_PATH: process.env.RAID_PATH || '/mnt/raid',
   PATH_REMAP_FROM: process.env.PATH_REMAP_FROM || '',
   PATH_REMAP_TO: process.env.PATH_REMAP_TO || process.env.RAID_PATH || '/mnt/raid',
@@ -475,6 +480,11 @@ const CONFIG = (() => {
   CA_PLAY_PROMOTE_AUDIT_ONLY: parseBool(process.env.CA_PLAY_PROMOTE_AUDIT_ONLY, true),
   CA_PLAY_PROMOTE_COOLDOWN_HOURS: Number.parseInt(process.env.CA_PLAY_PROMOTE_COOLDOWN_HOURS || '12', 10),
   CA_PLAY_PROMOTE_MAX_PER_USER_PER_DAY: Number.parseInt(process.env.CA_PLAY_PROMOTE_MAX_PER_USER_PER_DAY || '6', 10),
+  // §182 follow-up: optional byte budget (GB) for play-promotion pins on a California node. A pin
+  // holds real disk for days, so this bounds the total pinned bytes the promotion path can
+  // consume. 0 (default) = not configured — the pre-check passes open and the planner's own
+  // eviction math remains the capacity guard.
+  CA_PLAY_PROMOTE_NODE_BUDGET_GB: Number.parseFloat(process.env.CA_PLAY_PROMOTE_NODE_BUDGET_GB || '0'),
   // Durable play-promotion pin lifetime and the bounded per-viewer cap on SIMULTANEOUS active pins
   // per node (distinct from the daily counter above — a pin holds persistent local storage for
   // days, so the cap that matters is concurrent outstanding promotions).
@@ -541,6 +551,13 @@ const CONFIG = (() => {
   // confirmation (mirrors the `/tier apply` confirm-code pattern in TIER_APPLY_MAX_*). 0 disables
   // the cap. Unused until granularity-aware promotion is wired to a live command.
   TIER_TV_GRANULARITY_PROMOTION_CAP_GB: Number.parseInt(process.env.TIER_TV_GRANULARITY_PROMOTION_CAP_GB || '60', 10),
+  // §182 follow-up, interim whole-series TV promotion cap (GB, default 60): until #183 wires
+  // season-level granularity, a TV promotion pins the WHOLE series, so this bounds that blast
+  // radius with a skip reason instead of a silent promotion. 0 disables the cap (not recommended
+  // until #183 lands — an uncapped whole-series pin is exactly what this exists to prevent).
+  // Mirrors the scale of TIER_TV_GRANULARITY_PROMOTION_CAP_GB, which will apply per
+  // season/episode unit once granularity is wired.
+  TIER_TV_PROMOTE_MAX_SERIES_GB: Number.parseInt(process.env.TIER_TV_PROMOTE_MAX_SERIES_GB || '60', 10),
   // Bounds how often an authenticated node can post a full report (each carries up to a 25 MB
   // JSON body and up to 200k inventory rows). The systemd timer runs the agent every 15 minutes,
   // so this only needs headroom for manual re-runs/retries, not the steady-state cadence.
@@ -806,6 +823,13 @@ function configWarnings() {
   }
   if (CONFIG.CA_PLAY_PROMOTE_ENABLED && !CONFIG.CA_PLAY_PROMOTE_AUDIT_ONLY) {
     warnings.push('⚠️ `CA_PLAY_PROMOTE_ENABLED=true` and `CA_PLAY_PROMOTE_AUDIT_ONLY=false` — California play-triggered promotion will record real pins and republish tier plans. The remote-fallback mount rollout (#181) should be verified on real hardware first; see docs/edge-playback-architecture.md.');
+  }
+  // F3: shared download-folder trap — both Radarrs watching the same blackhole/downloads
+  // folder causes the HD instance to try importing 4K's finished downloads ("not an upgrade").
+  // This can't be detected from config alone (it's in the *arr UIs), so warn when both are
+  // configured to prompt a manual check.
+  if (CONFIG.RADARR_URL && CONFIG.RADARR_4K_URL) {
+    warnings.push('Both `RADARR_URL` and `RADARR_4K_URL` are set — verify their download clients do NOT share a folder/category. A shared blackhole/downloads folder makes the HD Radarr try to import 4K downloads (the "not an upgrade" trap). Each Radarr needs its own distinct download path.');
   }
   return warnings;
 }

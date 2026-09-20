@@ -31,12 +31,13 @@ function request(port, { method = 'GET', path: requestPath = '/', headers = {}, 
 
 function createFixture(overrides = {}) {
   const config = {
+    COOKIE_SECURE: true,
     DASHBOARD_ADMIN_PASSWORD: 'correct-password',
     DASHBOARD_ADMIN_TOKEN: 'header-token',
     STRICT_DASHBOARD_POST_AUTH: true,
     ...overrides.config,
   };
-  const session = createDashboardSession({ secret: 'test-session-secret', ttlHours: 1 });
+  const session = createDashboardSession({ secret: 'test-session-secret', ttlHours: 1, cookieSecure: config.COOKIE_SECURE !== false });
   const dashboardAuth = createDashboardAuth({ config, session, safeEqual: (a, b) => a === b });
   const passkeys = overrides.passkeys || [];
   const audits = [];
@@ -162,6 +163,32 @@ test('passkey login preserves no-store options, binding cookie, verification, an
     const failed = await request(port, { method: 'POST', path: '/admin/passkey/authenticate', body: { answer: 'bad' } });
     assert.strictEqual(failed.statusCode, 401);
     assert.deepStrictEqual(JSON.parse(failed.body), { verified: false, error: 'Passkey sign-in failed.' });
+  } finally {
+    await close(server);
+  }
+});
+
+test('passkey challenge cookie Secure flag follows COOKIE_SECURE config (L2)', async () => {
+  // L2: the Secure flag is config-driven, not header-driven. With COOKIE_SECURE=true the
+  // challenge cookie carries `; Secure` even without X-Forwarded-Proto; with false it omits it.
+  const { app } = createFixture({ config: { COOKIE_SECURE: false }, passkeys: [{ credential_id: 'one' }] });
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const plain = await request(port, { path: '/admin/passkey/authentication-options' });
+    assert.strictEqual(plain.statusCode, 200);
+    assert.match(plain.headers['set-cookie'][0], /^dm_webauthn=[^;]+; HttpOnly; SameSite=Strict; Path=\/admin; Max-Age=300$/);
+    // And with the flag on, a spoofed plain-http header cannot clear it.
+    const { app: app2 } = createFixture({ passkeys: [{ credential_id: 'one' }] });
+    const server2 = await listen(app2, 0);
+    try {
+      const port2 = server2.address().port;
+      const spoofed = await request(port2, { path: '/admin/passkey/authentication-options', headers: { 'x-forwarded-proto': 'http' } });
+      assert.strictEqual(spoofed.statusCode, 200);
+      assert.match(spoofed.headers['set-cookie'][0], /; Secure$/);
+    } finally {
+      await close(server2);
+    }
   } finally {
     await close(server);
   }

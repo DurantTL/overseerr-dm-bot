@@ -65,10 +65,10 @@ Device UX remains platform-aware:
 
 Each PH device has a saved **I Connected This Device** confirmation. This is onboarding state, not a live VPN probe. `/setup` remembers phone/tablet, Apple TV, Android/Google TV, and computer independently and allows the user to reset a device later.
 
-When `TAILSCALE_SERVER_ADDRESS=ph-server.end-cobra.ts.net`, the setup UI derives:
+When `TAILSCALE_SERVER_ADDRESS=<ph-host>.<your-tailnet>.ts.net`, the setup UI derives:
 
 ```text
-http://ph-server.end-cobra.ts.net:32400/web
+http://<ph-host>.<your-tailnet>.ts.net:32400/web
 ```
 
 An explicit `PH_PLEX_URL` overrides that base. If Tailscale Serve is enabled for Plex, use the HTTPS tailnet endpoint there.
@@ -82,8 +82,8 @@ PLEX_SIGNUP_URL=https://www.plex.tv/sign-up/
 PLEX_WEB_URL=https://app.plex.tv/
 TAILSCALE_ENABLED=true
 TAILSCALE_SETUP_URL=https://tailscale.com/download
-TAILSCALE_SERVER_ADDRESS=ph-server.end-cobra.ts.net
-PH_PLEX_URL=http://ph-server.end-cobra.ts.net:32400
+TAILSCALE_SERVER_ADDRESS=<ph-host>.<your-tailnet>.ts.net
+PH_PLEX_URL=http://<ph-host>.<your-tailnet>.ts.net:32400
 TAILSCALE_API_ENABLED=false
 ```
 
@@ -157,8 +157,8 @@ Regression tests cover the code-path cases above; deployment documentation now d
 
 ## Remaining cleanup
 
-The feature is intentionally layered around the current large `index.js` composition root. The Media Center is now the first migrated feature: `index.js` registers its command and dispatches its command/button/modal interactions through an injected handler in `src/media-panel.js`.
+The feature is intentionally layered around the current large `index.js` composition root. The Media Center was the first migrated feature: `index.js` registers its command and dispatches its command/button/modal interactions through an injected handler in `src/media-panel.js`.
 
-Guided setup still uses wrapper hooks in `src/setup-discord-extension.js`, `src/setup-discord-enhancements.js`, `src/setup-device-state.js`, and `src/setup-request-ui.js`. Their existing source-extraction and wrapper-order regression tests remain until each setup component moves to the same explicit registration boundary.
+Guided setup has completed the same migration (#257): `src/setup-discord-extension.js`, `src/setup-discord-enhancements.js`, `src/setup-device-state.js`, and `src/setup-request-ui.js` no longer patch `Client.prototype.emit` or `REST.prototype.put`. Each exposes a `createXFeature(deps)` factory with `owns()`/`handleInteraction()`; `index.js` instantiates them with injected dependencies and calls them directly from its own `interactionCreate` listener, chained most-specific first (media-panel → support-case → request-ui → device-state → enhancements → extension), and registers `/setup` and `/send-setup` in its `slashCommands` array. Routing-order regression tests live in `scripts/tests/setup-routing-order.test.js`.
 
 Optional future work can correlate saved PH device state with live Tailscale device inventory, but the current UI deliberately does not claim that user-confirmed setup is a live VPN health check. The operator must still create/provide the tailnet invitation and keep the PH viewer user's grants restricted to the PH media service.

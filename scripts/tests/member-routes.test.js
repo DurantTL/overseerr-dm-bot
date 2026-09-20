@@ -137,7 +137,8 @@ test('member auth: login page renders, /member redirects when logged out', async
   }
 });
 
-test('member auth: unknown handle 404s, unlinked ID 403s', async () => {
+test('member auth: unknown handle and unlinked ID get identical generic responses (L1)', async () => {
+  // L1: no user enumeration — both cases return 200 with the same generic message.
   const { app } = fixture();
   const server = await listen(app, 0);
   try {
@@ -145,13 +146,17 @@ test('member auth: unknown handle 404s, unlinked ID 403s', async () => {
     const unknown = await request(port, 'POST', '/member/login', {
       headers: formHeaders(form({ handle: 'nobody' })), body: form({ handle: 'nobody' }),
     });
-    assert.strictEqual(unknown.statusCode, 404);
+    assert.strictEqual(unknown.statusCode, 200);
 
     const unlinked = await request(port, 'POST', '/member/login', {
       headers: formHeaders(form({ handle: '999999999999999999' })), body: form({ handle: '999999999999999999' }),
     });
-    assert.strictEqual(unlinked.statusCode, 403);
-    assert.match(unlinked.body, /linked to the media server/);
+    assert.strictEqual(unlinked.statusCode, 200);
+    // Both responses must be indistinguishable (no membership/linkage signal).
+    assert.match(unknown.body, /If that account is linked/);
+    assert.match(unlinked.body, /If that account is linked/);
+    assert.doesNotMatch(unknown.body, /Discord server|linked to the media server/);
+    assert.doesNotMatch(unlinked.body, /Discord server|linked to the media server/);
   } finally {
     await close(server);
   }

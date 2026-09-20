@@ -87,6 +87,8 @@ function registerHealthAndDownloadRoutes(app, {
 
     const fileSize = stat.size;
     const fileName = path.basename(filePath);
+    // L5: strip quotes/CR/LF so a hostile media filename can't malform the header.
+    const safeFileName = fileName.replace(/["\r\n]/g, '');
     const mimeType = mimeFor(path.extname(filePath).toLowerCase());
 
     res.on('finish', () => {
@@ -118,7 +120,7 @@ function registerHealthAndDownloadRoutes(app, {
         'Accept-Ranges': 'bytes',
         'Content-Length': end - start + 1,
         'Content-Type': mimeType,
-        'Content-Disposition': `attachment; filename="${fileName}"`,
+        'Content-Disposition': `attachment; filename="${safeFileName}"`,
       });
       fileSystem.createReadStream(filePath, { start, end }).pipe(res);
     } else {
@@ -126,7 +128,7 @@ function registerHealthAndDownloadRoutes(app, {
         'Content-Length': fileSize,
         'Content-Type': mimeType,
         'Accept-Ranges': 'bytes',
-        'Content-Disposition': `attachment; filename="${fileName}"`,
+        'Content-Disposition': `attachment; filename="${safeFileName}"`,
       });
       fileSystem.createReadStream(filePath).pipe(res);
     }

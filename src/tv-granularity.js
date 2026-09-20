@@ -1,11 +1,19 @@
 // Season/episode-level TV cache planning identity + pure planner slices (issue #183).
 //
-// STATUS — AUDIT-ONLY / PREVIEW. Nothing in this module is called from the live planner
-// (src/tier.js), staging (src/staging.js), agent ignore-rule generation, or any Discord command
-// yet. It exists as a self-contained, DB/Discord-free library (same shape as src/tier.js) so the
-// data model and pure planning math can be reviewed and tested in isolation before anything here
-// touches real inventory, budgets, or deletion boundaries. See the #183 PR description for the
-// exact rollout plan and what remains before any of this can run in production.
+// STATUS — PREVIEW + GATED WIRING (issue #183). This module stays a self-contained,
+// DB/Discord-free library (same shape as src/tier.js). The live planner (src/tier.js),
+// staging (src/staging.js), and agent ignore-rule generation still use whole-series units
+// everywhere — nothing here changes live inventory, budgets, or deletion boundaries. What IS
+// wired, as of this writing:
+//   · `/tier granularity preview` (index.js) — read-only; runs buildTvUnitInventory +
+//     computeMigrationPreview against live Sonarr data and renders the report. Writes nothing.
+//   · handleCaPlayStart (index.js) — resolves the played unit via resolvePromotableUnit and
+//     records the promotion-cap verdict in audit events. At the default 'series' granularity
+//     this is byte-identical to the old behavior (unit === the whole-series id, no new reads).
+// Live inventory expansion and any manifest migration remain explicitly out of scope and need
+// their own human-reviewed step per the #183 issue's routing guidance. See the #183 PR
+// description for the exact rollout plan and what remains before any of this can run in
+// production.
 //
 // Design note: src/tier.js's planner (`planNode` / `planTier`) is already generic over inventory
 // items shaped as { mediaId, title, mediaType, sizeBytes, addedAt, path, relPath } — it has no
@@ -368,6 +376,99 @@ function computeMigrationPreview({ legacyEntries = [], expandedItems = [], capBy
   };
 }
 
+// ---- Promotion-unit resolution (play-start wiring) ------------------------------------------------
+// Which unit id a play-start promotion may pin, floored to units the planner actually knows
+// about. `inventoryMediaIds` is the live planner's unit vocabulary (e.g. the node's published
+// plan keep set); pass null/undefined when there is nothing to floor against.
+//
+// At the default 'series' granularity this is a byte-identical no-op: the resolved unit IS the
+// whole-series id, returned without any inventory lookup. With finer granularity configured but a
+// whole-series inventory, a season/episode id fails closed back to the whole-series id rather
+// than pinning a unit no plan contains (a pin whose mediaId matches nothing in the manifest
+// resolves to nothing and would be silently inert).
+//
+// Returns the mediaId to pin, or null when tvdbId itself is unusable.
+function resolvePromotableUnit({ tvdbId, seasonNumber, episodeNumber, granularity = 'series', inventoryMediaIds = null } = {}) {
+  const series = canonicalSeriesId(tvdbId);
+  if (!series) return null;
+  const unit = resolvePlayedUnit({ tvdbId, seasonNumber, episodeNumber, granularity });
+  const resolved = unit ? unit.mediaId : series;
+  if (resolved === series) return series;
+  if (!inventoryMediaIds) return resolved;
+  const known = inventoryMediaIds instanceof Set ? inventoryMediaIds : new Set(inventoryMediaIds);
+  const parsed = parseTvUnitId(resolved);
+  const candidates = [resolved];
+  if (parsed?.kind === 'episode') candidates.push(canonicalSeasonId(parsed.tvdbId, parsed.seasonNumber));
+  candidates.push(series);
+  return candidates.find(id => known.has(id)) || series;
+}
+
+// ---- Live-Sonarr mapping + read-only preview assembly ------------------------------------------
+// These map raw Sonarr API shapes into the documented inputs of buildTvUnitInventory, and assemble
+// the read-only preview the `/tier granularity preview` command renders. Pure and synchronous —
+// the Discord handler does the fetching (listSonarrSeries / getEpisodeFiles), this module does
+// the shaping. Nothing here performs I/O or writes anything, anywhere.
+
+// Raw Sonarr /api/v3/series record → whole-series inventory item in fetchTierInventory's shape,
+// plus the Sonarr-internal id the preview needs to fetch episode files. Series without a tvdbId
+// are dropped (they can never mint a canonical unit id).
+function mapSonarrSeriesList(rawList, { sourceRoot = '' } = {}) {
+  return (Array.isArray(rawList) ? rawList : [])
+    .filter(s => s && s.tvdbId)
+    .map(s => {
+      const mediaId = canonicalSeriesId(s.tvdbId);
+      const addedAt = s.addedDate ? Date.parse(s.addedDate) : NaN;
+      const p = s.path || '';
+      return {
+        mediaId,
+        title: s.title || `tvdb:${s.tvdbId}`,
+        mediaType: 'tv',
+        unit: 'series',
+        seriesMediaId: mediaId,
+        sonarrId: s.id,
+        sizeBytes: Number(s.statistics?.sizeOnDisk) || 0,
+        addedAt: Number.isFinite(addedAt) ? addedAt : null,
+        path: p,
+        relPath: sourceRoot ? stripRoot(p, sourceRoot) : p,
+      };
+    })
+    .filter(t => t.mediaId);
+}
+
+// Raw Sonarr /api/v3/episodefile record → the documented episode-file shape
+// { seasonNumber, episodeNumber (nullable), sizeBytes, path, addedAt (ms|null) }.
+// Records without a usable season number are dropped (they can't roll up into any unit).
+function mapSonarrEpisodeFiles(rawFiles) {
+  return (Array.isArray(rawFiles) ? rawFiles : [])
+    .filter(f => f && f.path)
+    .map(f => {
+      const addedAt = f.dateAdded ? Date.parse(f.dateAdded) : NaN;
+      return {
+        seasonNumber: Number(f.seasonNumber),
+        episodeNumber: f.episodeNumber == null ? null : Number(f.episodeNumber),
+        sizeBytes: Number(f.sizeOnDisk) || 0,
+        path: f.path,
+        addedAt: Number.isFinite(addedAt) ? addedAt : null,
+      };
+    })
+    .filter(f => Number.isFinite(f.seasonNumber));
+}
+
+// Assemble the read-only preview: expand whole-series items to the requested granularity, then
+// report what a migration to that granularity WOULD look like. Returns the computeMigrationPreview
+// report plus the build warnings and the effective granularity — a report, not a plan, and never
+// something to act on directly (the result carries readOnly: true, live: false).
+function previewTvGranularity({ seriesItems = [], episodeFilesBySeries = {}, granularity = 'season', capBytes = null, sourceRoot = '' } = {}) {
+  const g = normalizeGranularity(granularity) === 'episode' ? 'episode' : 'season';
+  const { items, warnings: buildWarnings } = buildTvUnitInventory({ seriesItems, episodeFilesBySeries, granularity: g, sourceRoot });
+  const preview = computeMigrationPreview({
+    legacyEntries: seriesItems.filter(t => t.mediaType === 'tv'),
+    expandedItems: items,
+    capBytes,
+  });
+  return { ...preview, buildWarnings, granularity: g, previewedSeries: seriesItems.length };
+}
+
 module.exports = {
   TV_GRANULARITIES,
   normalizeGranularity,
@@ -376,6 +477,10 @@ module.exports = {
   canonicalEpisodeId,
   parseTvUnitId,
   resolvePlayedUnit,
+  resolvePromotableUnit,
+  mapSonarrSeriesList,
+  mapSonarrEpisodeFiles,
+  previewTvGranularity,
   buildTvUnitInventory,
   checkPromotionCap,
   computeMigrationPreview,

@@ -206,10 +206,32 @@ test('disk-space report: preserves partial failures and explains allowlist filte
   const report = await bed.run('fetchDiskSpaceReport()');
   assert.strictEqual(report.sourceCount, 2);
   assert.strictEqual(report.reportedCount, 1);
-  assert.strictEqual(report.disks.length, 0);
+  // Allowlist matched nothing, so we fall back to the unfiltered list rather
+  // than reporting zero disks (the configured paths may use a different mount
+  // perspective than the *arrs).
+  assert.strictEqual(report.disks.length, 1);
+  assert.strictEqual(report.disks[0].path, '/other');
   assert.strictEqual(report.errors.sonarr, 'ETIMEDOUT');
   assert.strictEqual(auditRows.length, 1);
-  assert.deepStrictEqual([...(await bed.run('fetchDiskSpace()'))], []);
+  assert.strictEqual((await bed.run('fetchDiskSpace()')).length, 1);
+});
+
+test('disk-space report: allowlist filter applies when paths match', async () => {
+  const bed = loadSandbox(['fetchDiskSpaceReport'], {
+    CONFIG: { DISK_SPACE_PATHS: ['/wanted'] },
+    arrSources: () => [{ label: 'radarr', url: 'http://radarr', key: 'r' }],
+    axios: { get: async () => ({ data: [
+      { path: '/wanted', totalSpace: 100 * 1024 ** 3, freeSpace: 50 * 1024 ** 3 },
+      { path: '/other', totalSpace: 100 * 1024 ** 3, freeSpace: 50 * 1024 ** 3 },
+    ] }) },
+    audit: () => {},
+    healthErrorDetail,
+  });
+
+  const report = await bed.run('fetchDiskSpaceReport()');
+  assert.strictEqual(report.reportedCount, 2);
+  assert.strictEqual(report.disks.length, 1);
+  assert.strictEqual(report.disks[0].path, '/wanted');
 });
 
 test('health: director board services report reachability, skip when unconfigured', async () => {

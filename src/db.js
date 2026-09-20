@@ -1133,17 +1133,26 @@ function stashGrabOffer(payload) {
   return nonce;
 }
 
+// B4: downsize/grab offers expire after 24h — a stale Swap button must not delete a library
+// file and import the wrong replacement.
+const GRAB_OFFER_TTL_MS = 24 * 60 * 60 * 1000;
 function takeGrabOffer(nonce) {
   if (!/^[0-9a-f]{8}$/.test(String(nonce || ''))) return null;
   const raw = getSetting(`grab_offer:${nonce}`);
   if (!raw) return null;
   db.prepare('DELETE FROM app_settings WHERE key = ?').run(`grab_offer:${nonce}`);
-  try { return JSON.parse(raw); } catch (_e) { return null; }
+  try {
+    const offer = JSON.parse(raw);
+    if (offer.createdAt && Date.now() - offer.createdAt > GRAB_OFFER_TTL_MS) return null;
+    return offer;
+  } catch (_e) { return null; }
 }
 
 // Put a consumed offer back (grab failed against rTorrent) so the buttons can be retried.
 function restashGrabOffer(nonce, payload) {
-  setSetting(`grab_offer:${nonce}`, JSON.stringify(payload));
+  // B12: a retried/restashed offer is a fresh offer — refresh createdAt so the 24h
+  // expiry doesn't kill an offer the admin is actively working.
+  setSetting(`grab_offer:${nonce}`, JSON.stringify({ ...payload, createdAt: Date.now() }));
 }
 
 // ---- rTorrent adoption bookkeeping ----
@@ -1684,7 +1693,7 @@ function listRequestsByRequesters(discordIds, sinceDays) {
 //               drive-missing, or a lightweight no-op heartbeat) — it is the liveness signal;
 //               lastAgentReportAt tracks only full (convergence) reports.
 function emptyTierPlan() {
-  return { published: null, converged: null, lastAgentReportAt: null, lastInventoryAt: null, lastHeartbeatAt: null, lastErrors: [], lastTelemetry: null, lastTelemetryLevel: 'unknown', errorAlert: null, lastAgentVersion: null, mergedMountDiagnostics: null, lastMergedMountDiagnosticsAt: null };
+  return { published: null, converged: null, lastAgentReportAt: null, lastInventoryAt: null, lastHeartbeatAt: null, lastErrors: [], lastTelemetry: null, lastTelemetryLevel: 'unknown', errorAlert: null, lastAgentVersion: null, mergedMountDiagnostics: null, lastMergedMountDiagnosticsAt: null, folderCompletion: null };
 }
 
 // Read + normalize. Legacy records are migrated on read: an old "applied" plan was assumed-converged
@@ -1706,6 +1715,7 @@ function normalizeTierPlan(raw) {
       lastAgentVersion: raw.lastAgentVersion || null,
       mergedMountDiagnostics: raw.mergedMountDiagnostics || null,
       lastMergedMountDiagnosticsAt: raw.lastMergedMountDiagnosticsAt ?? null,
+      folderCompletion: normalizeFolderCompletion(raw.folderCompletion),
     };
   }
   if (!raw.planHash) return null;
@@ -1723,7 +1733,23 @@ function normalizeTierPlan(raw) {
     lastAgentVersion: null,
     mergedMountDiagnostics: null,
     lastMergedMountDiagnosticsAt: null,
+    folderCompletion: null,
   };
+}
+
+// Normalize the stored §182 per-folder Syncthing completion snapshot defensively on read —
+// a hand-edited or older record must never hand decideCaLocality a malformed percentage.
+function normalizeFolderCompletion(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const at = Number(raw.at);
+  const folders = Array.isArray(raw.folders) ? raw.folders.filter(f =>
+    f && typeof f === 'object' && typeof f.folderId === 'string' && f.folderId && Number.isFinite(Number(f.completion))
+  ).map(f => ({
+    folderId: String(f.folderId).slice(0, 120),
+    completion: Math.min(100, Math.max(0, Number(f.completion))),
+  })) : [];
+  if (!folders.length || !Number.isFinite(at)) return null;
+  return { at, folders };
 }
 
 const getTierPlan = node => { const raw = getSetting(`tier_plan:${String(node).toLowerCase()}`); if (!raw) return null; try { return normalizeTierPlan(JSON.parse(raw)); } catch (_e) { return null; } };
@@ -1796,6 +1822,30 @@ function recordTierMergedMountDiagnostics(node, diagnostics) {
   rec.lastMergedMountDiagnosticsAt = Date.now();
   writeTierPlan(node, rec);
   return rec;
+}
+
+// §182 follow-up: the agent's per-folder Syncthing completion snapshot (see
+// collectFolderCompletion in agent/agent.js), stored on the tier plan exactly like the §181
+// merged-mount diagnostics — handleCaPlayStart reads it for decideCaLocality, and a missing or
+// stale snapshot simply falls back to byte-fraction presence.
+function recordTierFolderCompletion(node, { at = Date.now(), folders = [] } = {}) {
+  const rec = getTierPlan(node) || emptyTierPlan();
+  rec.folderCompletion = { at, folders: Array.isArray(folders) ? folders : [] };
+  writeTierPlan(node, rec);
+  return rec;
+}
+
+// Read-only count of audit_log actions over a trailing window, for edge-diagnostics' §182
+// promotion-activity summary. Actions with no events come back 0; empty input never throws.
+function countAuditActionsSince(actions = [], sinceMs = Date.now() - 86400000) {
+  const out = {};
+  for (const a of actions) out[a] = 0;
+  if (!actions.length) return out;
+  const rows = db.prepare(
+    `SELECT action, COUNT(*) AS c FROM audit_log WHERE action IN (${actions.map(() => '?').join(',')}) AND created_at >= datetime(? / 1000, 'unixepoch') GROUP BY action`
+  ).all(...actions, sinceMs);
+  for (const r of rows) out[r.action] = r.c;
+  return out;
 }
 
 // §op Persist the repeated-error backoff decision (src/repeat-alert.js) alongside the plan so the
@@ -2144,7 +2194,7 @@ function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k, seasonsKey)
   return null;
 }
 
-module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, MIGRATIONS, SCHEMA_VERSION, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, createAgentApiToken, listAgentApiTokens, revokeAgentApiToken, getAgentApiTokenHashes, getAgentApiTokenLabel, touchAgentApiTokenUse, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, createSupportCase, getSupportCaseById, getSupportCaseByReference, listSupportCases, listSupportCasesForRequester, listSupportCasesNeedingNotifyRetry, recordSupportCaseNotifyResult, recordSupportCaseMemberNotifyResult, assignSupportCase, acknowledgeSupportCase, resolveSupportCase, reopenSupportCase, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, recordTierPlayPin, getTierPlayPin, listActiveTierPlayPins, countActiveTierPlayPinsForViewer, pruneExpiredTierPlayPins, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
+module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, MIGRATIONS, SCHEMA_VERSION, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, createAgentApiToken, listAgentApiTokens, revokeAgentApiToken, getAgentApiTokenHashes, getAgentApiTokenLabel, touchAgentApiTokenUse, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, recordTierFolderCompletion, countAuditActionsSince, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, createSupportCase, getSupportCaseById, getSupportCaseByReference, listSupportCases, listSupportCasesForRequester, listSupportCasesNeedingNotifyRetry, recordSupportCaseNotifyResult, recordSupportCaseMemberNotifyResult, assignSupportCase, acknowledgeSupportCase, resolveSupportCase, reopenSupportCase, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, recordTierPlayPin, getTierPlayPin, listActiveTierPlayPins, countActiveTierPlayPinsForViewer, pruneExpiredTierPlayPins, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;
 Object.assign(module.exports, {
   recordPackRejections,

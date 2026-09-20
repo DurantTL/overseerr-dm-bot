@@ -134,3 +134,28 @@ test('edge-diagnostics: §182 California play-promotion telemetry — enabled+au
   const routing = checks.find(c => c.name === 'California tier-node identity routing');
   assert.strictEqual(routing.status, 'fail', 'enabled with no identity map at all can never promote anything — that is a real misconfiguration');
 });
+
+test('edge-diagnostics: §182 promotion activity check summarizes the 24h audit trail', async () => {
+  await withScratchDb(async db => {
+    delete require.cache[require.resolve('../../src/edge-diagnostics')];
+    const { runEdgeDiagnostics } = require('../../src/edge-diagnostics');
+    const find = async () => (await runEdgeDiagnostics({ live: false })).find(c => c.name === 'California promotion activity (24h)');
+
+    const quiet = await find();
+    assert.strictEqual(quiet.status, 'ok');
+    assert.ok(/no play-triggered promotion activity/.test(quiet.detail), `quiet gate reads quiet: ${quiet.detail}`);
+
+    db.audit('edge_playback_observed', { edge: 'california' });
+    db.audit('edge_playback_observed', { edge: 'california' });
+    db.audit('edge_promote_would_pin', {});
+    db.audit('edge_promote_rate_limited', {});
+    db.audit('something_else_entirely', {});
+    const busy = await find();
+    assert.strictEqual(busy.status, 'ok', 'informational only — never a failure');
+    assert.ok(/playback_observed=2/.test(busy.detail), busy.detail);
+    assert.ok(/would_pin=1/.test(busy.detail), busy.detail);
+    assert.ok(/rate_limited=1/.test(busy.detail), busy.detail);
+    assert.ok(/pinned=0/.test(busy.detail), busy.detail);
+    assert.ok(!/something_else/.test(busy.detail), 'only the promotion actions are summarized');
+  });
+});

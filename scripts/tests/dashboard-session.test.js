@@ -3,8 +3,8 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { createDashboardSession, readCookie } = require('../../src/routes/dashboard-auth');
 
-function makeSession(secret, now = Date.now) {
-  return createDashboardSession({ secret, ttlHours: 1, now });
+function makeSession(secret, now = Date.now, cookieSecure = false) {
+  return createDashboardSession({ secret, ttlHours: 1, now, cookieSecure });
 }
 
 test('dashboard session: a token signed with one secret does not verify under another', () => {
@@ -61,4 +61,26 @@ test('dashboard session: readCookie extracts dm_session from a cookie header', (
   const req = { headers: { cookie: 'other=1; dm_session=abc.def; another=2' } };
   assert.strictEqual(readCookie(req, 'dm_session'), 'abc.def');
   assert.strictEqual(readCookie({ headers: {} }, 'dm_session'), undefined);
+});
+
+test('dashboard session: setCookie marks `; Secure` from cookieSecure config (L2)', () => {
+  // L2: the Secure flag is config-driven (COOKIE_SECURE), not header-driven. A spoofed
+  // X-Forwarded-Proto must not flip it.
+  const secureSession = makeSession('s', Date.now, true);
+  const insecureSession = makeSession('s', Date.now, false);
+  const cookieFor = (session, req) => {
+    let header;
+    session.setCookie(req, { setHeader: (_name, value) => { header = value; } });
+    return header;
+  };
+  assert.match(cookieFor(secureSession, { secure: false, headers: {} }), /; Secure$/, 'config on → Secure even on plain request');
+  assert.match(cookieFor(secureSession, { secure: false, headers: { 'x-forwarded-proto': 'http' } }), /; Secure$/, 'config on → spoofed http header cannot clear Secure');
+  assert.doesNotMatch(cookieFor(insecureSession, { secure: false, headers: {} }), /Secure/, 'config off → no Secure flag');
+  assert.doesNotMatch(cookieFor(insecureSession, { secure: true, headers: {} }), /Secure/, 'config off → req.secure cannot set Secure');
+  assert.doesNotMatch(cookieFor(insecureSession, { secure: false, headers: { 'x-forwarded-proto': 'https' } }), /Secure/, 'config off → spoofed https header cannot set Secure');
+  assert.match(
+    cookieFor(insecureSession, { secure: false, headers: {} }),
+    /^dm_session=[^;]+; HttpOnly; SameSite=Strict; Path=\/admin; Max-Age=3600$/,
+    'the insecure cookie keeps every other attribute',
+  );
 });

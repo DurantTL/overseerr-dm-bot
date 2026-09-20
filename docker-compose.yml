@@ -33,7 +33,10 @@ services:
       # Container side must match PORT (default 3000). Compose only interpolates from the shell
       # and the project .env — never from env_file — so a PORT set in stack.env would not be
       # visible here; change both sides by hand if you ever move off 3000.
-      - "3000:3000"
+      # Bound to loopback only (H1): the public path is the Cloudflare tunnel, which reaches
+      # the container over the internal Docker network. Publishing 0.0.0.0:3000 exposed the
+      # dashboard/API over plain HTTP outside the tunnel, bypassing TLS.
+      - "127.0.0.1:3000:3000"
     volumes:
       - durant_bot_data:/app/data
       # Plex Home staging: drop rclone.conf into this volume (/app/data/rclone.conf)

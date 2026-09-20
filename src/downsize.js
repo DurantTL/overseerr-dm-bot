@@ -114,13 +114,17 @@ function findStagedReplacement(stagingPath, movie, adoptedJobs = []) {
   }
 
   // Strategy 2: filename similarity scan across the whole staging folder.
+  // B14: if the top two candidates tie on score, the match is ambiguous — don't silently
+  // pick one. Return null so the caller reports "no confident match" instead of swapping
+  // the wrong file.
   const videos = listStagedVideos(stagingPath);
   const scored = videos
     .map(v => ({ ...v, score: matchScore(v.path, `${movie.title || ''} ${movie.year || ''}`.trim()) }))
     .filter(v => v.score > 0 && (!oldSize || v.size < oldSize))
     .sort((a, b) => b.score - a.score || b.size - a.size);
-  if (scored.length) return { path: scored[0].path, size: scored[0].size, via: 'filename-match' };
-  return null;
+  if (!scored.length) return null;
+  if (scored.length > 1 && scored[0].score === scored[1].score) return null;
+  return { path: scored[0].path, size: scored[0].size, via: 'filename-match' };
 }
 
 // Build the preview data for the Swap/Cancel prompt.
@@ -140,11 +144,19 @@ function buildDownsizePreview({ movie, oldFile, newFile }) {
     movieYear: movie.year,
     oldPath: oldFile.path,
     oldSize,
-    oldQuality: oldFile.quality?.name || oldFile.quality || 'unknown',
+    oldQuality: qualityName(oldFile.quality),
     newPath: newFile.path,
     newSize,
     bytesSaved: oldSize > 0 ? oldSize - newSize : null,
   };
+}
+
+// B1: Radarr nests the quality name at quality.quality.name; other shapes use quality.name.
+// Centralize so the [object Object] class can't recur.
+function qualityName(q) {
+  if (!q) return 'unknown';
+  if (typeof q === 'string') return q;
+  return q.quality?.name || q.name || 'unknown';
 }
 
 // Execute the downsize swap. All side effects go through `deps` so tests can stub them.
@@ -163,6 +175,12 @@ async function executeDownsizeSwap({ offer, deps }) {
   if (!stagedStat?.isFile()) {
     audit('downsize_aborted', { ...actor, reason: 'replacement_gone', newPath: offer.newPath });
     return { ok: false, reason: 'replacement_gone', newPath: offer.newPath };
+  }
+  // B4: size re-check — if the staged file changed size since the preview, it may be a
+  // different file (re-download, partial write). Abort rather than swap in the wrong bytes.
+  if (offer.newSize && Math.abs(stagedStat.size - offer.newSize) > 1024) {
+    audit('downsize_aborted', { ...actor, reason: 'size_changed', newPath: offer.newPath, expectedSize: offer.newSize, actualSize: stagedStat.size });
+    return { ok: false, reason: 'size_changed', newPath: offer.newPath, expectedSize: offer.newSize, actualSize: stagedStat.size };
   }
 
   // Step 1: delete the existing file via the Radarr API.
@@ -216,4 +234,5 @@ async function executeDownsizeSwap({ offer, deps }) {
   return { ok: false, reason: 'unverified', commandId, newMoviePath, stagedGone, oldDeleted: true };
 }
 
-module.exports = { formatBytes, listStagedVideos, matchScore, findStagedReplacement, buildDownsizePreview, executeDownsizeSwap, VIDEO_EXTS };
+module.exports = { formatBytes, listStagedVideos, matchScore, findStagedReplacement, buildDownsizePreview, executeDownsizeSwap, VIDEO_EXTS,
+  qualityName,};

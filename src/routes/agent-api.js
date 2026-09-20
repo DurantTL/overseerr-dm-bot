@@ -519,9 +519,9 @@ function registerAgentApiRoutes(app, deps) {
   app.post('/api/v1/import-scan', auth, writeLimiter, guarded(async (req, res) => {
     if (!summarizeManualImportPreview) return res.status(503).json({ error: 'Import scan is unavailable' });
     const target = String(req.body?.target || '').trim().toLowerCase();
-    if (target !== 'sonarr' && target !== 'radarr') {
+    if (target !== 'sonarr' && target !== 'radarr' && target !== 'radarr-4k') {
       audit('agent_api_import_scan', { ...agentActor(req), ok: false, reason: 'invalid_target', target: target || null });
-      return res.status(400).json({ error: 'target must be "sonarr" or "radarr"' });
+      return res.status(400).json({ error: 'target must be "sonarr", "radarr", or "radarr-4k"' });
     }
     const source = String(req.body?.source || 'premiumize').trim().toLowerCase();
     const pair = source === 'seedbox'
@@ -539,7 +539,9 @@ function registerAgentApiRoutes(app, deps) {
     }
     const arr = target === 'sonarr'
       ? { url: config.SONARR_URL, key: config.SONARR_API_KEY, cmd: 'DownloadedEpisodesScan', label: 'Sonarr' }
-      : { url: config.RADARR_URL, key: config.RADARR_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr' };
+      : target === 'radarr-4k'
+        ? { url: config.RADARR_4K_URL, key: config.RADARR_4K_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr 4K' }
+        : { url: config.RADARR_URL, key: config.RADARR_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr' };
     if (!arr.url) {
       audit('agent_api_import_scan', { ...agentActor(req), ok: false, reason: 'arr_not_configured', target });
       return res.status(409).json({ error: `${arr.label} isn't configured` });
