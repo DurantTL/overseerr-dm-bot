@@ -31,13 +31,22 @@ test('downsize: matchScore', () => {
 test('downsize: buildDownsizePreview — happy path', () => {
   const preview = buildDownsizePreview({
     movie: { title: 'Dune: Part Two', year: 2024 },
-    oldFile: { path: '/media/Movies/Dune Part Two (2024)/dune.mkv', size: 15 * 1024 ** 3, quality: { name: 'WEBRip-1080p' } },
+    oldFile: { path: '/media/Movies/Dune Part Two (2024)/dune.mkv', size: 15 * 1024 ** 3, quality: { quality: { name: 'WEBRip-1080p' } } },
     newFile: { path: '/staging/Dune.Part.Two.2024.2160p.mkv', size: 2.9 * 1024 ** 3 },
   });
   assert.strictEqual(preview.ok, true);
   assert.strictEqual(preview.movieTitle, 'Dune: Part Two');
   assert.strictEqual(preview.oldQuality, 'WEBRip-1080p');
   assert.ok(Math.abs(preview.bytesSaved - (15 - 2.9) * 1024 ** 3) < 1024, 'bytes saved = old - new');
+});
+
+test('downsize: qualityName handles Radarr nested shape (B1 regression)', () => {
+  const { qualityName } = require('../../src/downsize');
+  assert.strictEqual(qualityName({ quality: { name: 'WEBRip-2160p' } }), 'WEBRip-2160p');
+  assert.strictEqual(qualityName({ name: 'HDTV-1080p' }), 'HDTV-1080p');
+  assert.strictEqual(qualityName('Bluray-2160p'), 'Bluray-2160p');
+  assert.strictEqual(qualityName(null), 'unknown');
+  assert.strictEqual(qualityName({}), 'unknown');
 });
 
 test('downsize: buildDownsizePreview — no replacement is a clean error', () => {
@@ -176,7 +185,7 @@ test('downsize: executeDownsizeSwap — missing staged file aborts before any AP
 
 test('downsize: executeDownsizeSwap — happy path deletes then scans then verifies', async () => {
   const { calls, deps } = stubDeps({
-    files: { '/staging/Dune.Part.Two.2024.mkv': 100 },
+    files: { '/staging/Dune.Part.Two.2024.mkv': 2.9 * 1024 ** 3 },
     movies: [{ id: 42, movieFile: { path: '/media/Movies/Dune Part Two (2024)/Dune.Part.Two.2024.mkv' } }],
   });
   const result = await executeDownsizeSwap({ offer: baseOffer, deps });
@@ -200,7 +209,7 @@ test('downsize: executeDownsizeSwap — happy path deletes then scans then verif
 
 test('downsize: executeDownsizeSwap — delete failure aborts before the scan', async () => {
   const { calls, deps } = stubDeps({
-    files: { '/staging/Dune.Part.Two.2024.mkv': 100 },
+    files: { '/staging/Dune.Part.Two.2024.mkv': 2.9 * 1024 ** 3 },
     depOverrides: {},
   });
   deps.axios.delete = async () => { calls.delete.push({}); throw new Error('403 forbidden'); };
@@ -212,7 +221,7 @@ test('downsize: executeDownsizeSwap — delete failure aborts before the scan', 
 });
 
 test('downsize: executeDownsizeSwap — scan failure after delete reports oldDeleted', async () => {
-  const { calls, deps } = stubDeps({ files: { '/staging/Dune.Part.Two.2024.mkv': 100 } });
+  const { calls, deps } = stubDeps({ files: { '/staging/Dune.Part.Two.2024.mkv': 2.9 * 1024 ** 3 } });
   deps.axios.post = async () => { throw new Error('connection refused'); };
   const result = await executeDownsizeSwap({ offer: baseOffer, deps });
   assert.strictEqual(result.ok, false);

@@ -62,8 +62,8 @@ PLEX_WEB_URL=https://app.plex.tv/
 
 TAILSCALE_ENABLED=true
 TAILSCALE_SETUP_URL=https://tailscale.com/download
-TAILSCALE_SERVER_ADDRESS=ph-server.end-cobra.ts.net
-PH_PLEX_URL=http://ph-server.end-cobra.ts.net:32400
+TAILSCALE_SERVER_ADDRESS=<ph-host>.<your-tailnet>.ts.net
+PH_PLEX_URL=http://<ph-host>.<your-tailnet>.ts.net:32400
 
 # Current PH machine-share link. Rotate when it expires/revokes.
 TAILSCALE_PH_SHARE_URL=https://login.tailscale.com/...
@@ -146,10 +146,10 @@ Each PH user can confirm setup separately for phone/tablet, Apple TV, Android/Go
 
 ## PH endpoint
 
-With `TAILSCALE_SERVER_ADDRESS=ph-server.end-cobra.ts.net`, the setup wizard derives:
+With `TAILSCALE_SERVER_ADDRESS=<ph-host>.<your-tailnet>.ts.net`, the setup wizard derives:
 
 ```text
-http://ph-server.end-cobra.ts.net:32400/web
+http://<ph-host>.<your-tailnet>.ts.net:32400/web
 ```
 
 for the **Test / Open PH Plex** button unless `PH_PLEX_URL` explicitly overrides it.

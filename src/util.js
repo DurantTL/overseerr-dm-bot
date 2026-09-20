@@ -117,6 +117,8 @@ const gb = bytes => bytes / (1024 ** 3);
 // Human-readable size that stays honest at both ends: a 500 MB episode must not render as
 // "0 GB", and multi-TB libraries shouldn't show meaningless decimals.
 const fmtSpace = bytes => {
+  // B10: null/undefined/NaN means unknown, not zero.
+  if (bytes == null || Number.isNaN(Number(bytes))) return 'unknown';
   const g = gb(bytes);
   if (g >= 1024) return `${(g / 1024).toFixed(2)} TB`;
   if (g >= 10) return `${g.toFixed(0)} GB`;

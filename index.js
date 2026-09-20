@@ -30,10 +30,14 @@ const { log } = require('./src/log');
 const { createMediaPanelFeature, mediaPanelCommand } = require('./src/media-panel');
 const { createSupportCaseFeature, casesCommand, myCasesCommand } = require('./src/support-cases');
 const { createSetupRequestUiFeature, requestModal } = require('./src/setup-request-ui');
+const { createSetupDeviceStateFeature } = require('./src/setup-device-state');
+const { createSetupEnhancementsFeature } = require('./src/setup-discord-enhancements');
+const { createSetupExtensionFeature } = require('./src/setup-discord-extension');
+const { createViewerAuthKey, configured: tailscaleApiConfigured, provisionConfig } = require('./src/tailscale-provision');
 const { CONFIG, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
 const { sha256, safeEqual, isSnowflake, canonicalizeEmail, isValidEmail, mediaTypeLabel, mediaTypeEmoji, requestStatusBadge, discordTimestamp, quotaLine, releaseEtaInfo, statusEmoji, pad, fmtDuration, mimeFor, gb, fmtSpace, progressBar, queuePercent, queueItemLooksUnhealthy } = require('./src/util');
-const { db, DB_PATH, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, countRecentPromotions, recordPromotion, recordTierPlayPin, listActiveTierPlayPins, countActiveTierPlayPinsForViewer, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, createSupportCase, getSupportCaseById, listSupportCases, listSupportCasesForRequester, listSupportCasesNeedingNotifyRetry, recordSupportCaseNotifyResult, recordSupportCaseMemberNotifyResult, assignSupportCase, acknowledgeSupportCase, resolveSupportCase, reopenSupportCase, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, recordPackRejections, getPackRejectionSighting, markPackRejectionSuggested, dismissPackRejectionSuggestion, resetPackRejectionSightings, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, createAgentApiToken, listAgentApiTokens, revokeAgentApiToken, getAgentApiTokenHashes, getAgentApiTokenLabel, touchAgentApiTokenUse, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
+const { db, DB_PATH, runMigrations, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, recordTierFolderCompletion, countRecentPromotions, recordPromotion, recordTierPlayPin, listActiveTierPlayPins, countActiveTierPlayPinsForViewer, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, createSupportCase, getSupportCaseById, listSupportCases, listSupportCasesForRequester, listSupportCasesNeedingNotifyRetry, recordSupportCaseNotifyResult, recordSupportCaseMemberNotifyResult, assignSupportCase, acknowledgeSupportCase, resolveSupportCase, reopenSupportCase, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, recordPackRejections, getPackRejectionSighting, markPackRejectionSuggested, dismissPackRejectionSuggestion, resetPackRejectionSightings, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, createAgentApiToken, listAgentApiTokens, revokeAgentApiToken, getAgentApiTokenHashes, getAgentApiTokenLabel, touchAgentApiTokenUse, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore } = require('./src/db');
 const { reconcileRequestStatuses } = require('./src/db');
 const { listPendingRequests, setPendingRequestNotice } = require('./src/db');
 const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeasonEpisodeFallbacks,
@@ -55,8 +59,9 @@ const { assessAsianOrigin, describeAvistazFit, isAsianLanguageName } = require('
 const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone, nodeFolders, toRelPath, resolveTitleFolder, physicalTitleBytes } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
-const { resolveEdgeTierNode, decideCaLocality, planCaPlayPromotion, computePlayPin } = require('./src/edge-promotion');
+const { resolveEdgeTierNode, decideCaLocality, planCaPlayPromotion, computePlayPin, promotionFitsBudget, tvPromotionSizeCapped, GB_BYTES } = require('./src/edge-promotion');
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
+const { normalizeGranularity, parseTvUnitId, resolvePromotableUnit, checkPromotionCap, previewTvGranularity, mapSonarrSeriesList, mapSonarrEpisodeFiles } = require('./src/tv-granularity');
 const { checkPublicOriginReadiness } = require('./src/public-origin-diagnostics');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderDirectorPanel, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement, renderPasskeySetupBanner, renderAgentApiTokens, DASHBOARD_CSS } = require('./src/dashboard-render');
 const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
@@ -115,9 +120,22 @@ function brandedEmbed(color) {
   return e;
 }
 
+// B9: Discord rejects embeds with descriptions > 4096 chars (error 50035). Truncate long
+// descriptions instead of failing the entire message. Applied at the EmbedBuilder level
+// so all ~346 setDescription calls are guarded without touching each one.
+function desc4096(s) {
+  const str = String(s ?? '');
+  return str.length > 4096 ? str.slice(0, 4093) + '...' : str;
+}
+const _origSetDescription = EmbedBuilder.prototype.setDescription;
+EmbedBuilder.prototype.setDescription = function (text) {
+  return _origSetDescription.call(this, desc4096(text));
+};
+
 const dashboardSession = createDashboardSession({
   secret: CONFIG.SESSION_SECRET,
   ttlHours: CONFIG.SESSION_TTL_HOURS,
+  cookieSecure: CONFIG.COOKIE_SECURE,
 });
 const dashboardAuth = createDashboardAuth({ config: CONFIG, session: dashboardSession, safeEqual });
 const dashboardGateActor = createDashboardGateActor({ sha256 });
@@ -3080,6 +3098,15 @@ const arrForMediaType = mediaType => (mediaType === 'movie'
   ? { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, scan: 'DownloadedMoviesScan', label: 'Radarr' }
   : { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, scan: 'DownloadedEpisodesScan', label: 'Sonarr' });
 
+// B3: 4K-aware arr resolver for manual import targets. 'radarr-4k' must resolve to the 4K
+// Radarr, never fall through to the HD instance.
+const arrForImportTarget = target => {
+  if (target === 'sonarr') return { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, cmd: 'DownloadedEpisodesScan', label: 'Sonarr' };
+  if (target === 'radarr-4k') return { url: CONFIG.RADARR_4K_URL, key: CONFIG.RADARR_4K_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr 4K' };
+  return { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr' };
+};
+const arrDisplayName = target => (target === 'sonarr' ? 'Sonarr' : target === 'radarr-4k' ? 'Radarr 4K' : 'Radarr');
+
 // Video files still sitting under a path — after a Move-mode import these should be gone,
 // so leftovers are the tell that the arr declined (or never ran) the import.
 const VIDEO_EXTS = new Set(['.mkv', '.mp4', '.avi', '.m4v', '.ts', '.wmv', '.mov']);
@@ -3221,7 +3248,7 @@ const readMapOffer = nonce => { try { return JSON.parse(getSetting(`mapimp:${Str
 const writeMapOffer = (nonce, state) => setSetting(`mapimp:${nonce}`, JSON.stringify(state));
 const dropMapOffer = nonce => db.prepare('DELETE FROM app_settings WHERE key = ?').run(`mapimp:${nonce}`);
 function stashMapOffer(payload) {
-  const nonce = crypto.randomBytes(4).toString('hex');
+  const nonce = crypto.randomBytes(16).toString('hex'); // B11: 128-bit, not 32-bit
   writeMapOffer(nonce, { ...payload, createdAt: Date.now() });
   return nonce;
 }
@@ -3486,7 +3513,7 @@ async function executeAdoption(torrent, target, meta, resolver = null) {
   const verdict = decideAdoption({ torrent, existingJob: existingJob && ADOPT_BLOCKING_STATES.has(existingJob.state) ? existingJob : null, target });
   if (!verdict.ok) return verdict;
   if (!grabImportTarget(verdict.mediaType)) {
-    return { ok: false, why: `${target === 'sonarr' ? 'Sonarr' : 'Radarr'} isn't configured — the adopted torrent could never be imported` };
+    return { ok: false, why: `${arrDisplayName(target)} isn't configured — the adopted torrent could never be imported` };
   }
   // Another active job already covers these episodes (a different release of the same content):
   // don't adopt the duplicate. Runs before the remote-path search so we skip the wasted rclone work.
@@ -3675,7 +3702,7 @@ async function sweepAdoptCandidates() {
     if (result.ok) {
       notifyChannel('downloads', { embeds: [brandedEmbed(COLORS.SUCCESS)
         .setTitle(`🧲 Auto-Adopted — ${t.name}`.slice(0, 256))
-        .setDescription(`Found in rTorrent with label \`${t.label}\` and no grab job — adopted as job #${result.job.id} (**${result.state}**, ${fmtSpace(t.sizeBytes)}) → ${target === 'sonarr' ? 'Sonarr' : 'Radarr'}. ${result.state === 'complete' ? 'Transferring home now.' : 'I\'ll transfer + import when it hits 100%.'}`)] });
+        .setDescription(`Found in rTorrent with label \`${t.label}\` and no grab job — adopted as job #${result.job.id} (**${result.state}**, ${fmtSpace(t.sizeBytes)}) → ${arrDisplayName(target)}. ${result.state === 'complete' ? 'Transferring home now.' : 'I\'ll transfer + import when it hits 100%.'}`)] });
     } else if (result.dup) {
       // A different release of content already in the pipeline — skip quietly (not a failure).
       audit('rtorrent_adopt_dup_skipped', { infoHash: t.hash, name: t.name, why: result.why });
@@ -4432,11 +4459,11 @@ const slashCommands = [
   new SlashCommandBuilder().setName('debrid').setDescription('Premiumize account + transfer status, and importing manually-added cloud downloads').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('status').setDescription('Premiumize account usage + active/failed transfers'))
     .addSubcommand(s => s.setName('import').setDescription('Trigger a Sonarr/Radarr import scan of the Premiumize downloads folder')
-      .addStringOption(o => o.setName('target').setDescription('Which arr should import').setRequired(true).addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }))
+      .addStringOption(o => o.setName('target').setDescription('Which arr should import').setRequired(true).addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }, { name: 'radarr-4k', value: 'radarr-4k' }))
       .addStringOption(o => o.setName('folder').setDescription('Subfolder of the Premiumize downloads folder (default: the whole folder)'))
       .addStringOption(o => o.setName('mode').setDescription('move (default, cleans up the folder) or copy (leaves the files in place)').addChoices({ name: 'move', value: 'move' }, { name: 'copy', value: 'copy' })))
     .addSubcommand(s => s.setName('staging').setDescription('Why-won\'t-it-import report: per-folder match/rejection summary of the Premiumize downloads folder')
-      .addStringOption(o => o.setName('target').setDescription('Which arr to ask (default sonarr)').addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }))),
+      .addStringOption(o => o.setName('target').setDescription('Which arr to ask (default sonarr)').addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }, { name: 'radarr-4k', value: 'radarr-4k' }))),
   new SlashCommandBuilder().setName('avistaz').setDescription('AvistaZ direct grab (Prowlarr search → seedbox rTorrent)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('search').setDescription('Search AvistaZ and pick a release to send to the seedbox')
       .addStringOption(o => o.setName('title').setDescription('Title to search for').setRequired(true))
@@ -4450,18 +4477,26 @@ const slashCommands = [
       .addStringOption(o => o.setName('search').setDescription('Only names containing these words')))
     .addSubcommand(s => s.setName('adopt').setDescription('Adopt an existing torrent into the transfer/import pipeline (no tracker download)')
       .addStringOption(o => o.setName('search').setDescription('Words from the torrent name').setRequired(true))
-      .addStringOption(o => o.setName('target').setDescription('Import target (default: derived from the rTorrent label)').addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' })))
+      .addStringOption(o => o.setName('target').setDescription('Import target (default: derived from the rTorrent label)').addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }, { name: 'radarr-4k', value: 'radarr-4k' })))
     .addSubcommand(s => s.setName('ignore').setDescription('Toggle the discovery sweep\'s ignore flag for a torrent')
       .addStringOption(o => o.setName('search').setDescription('Words from the torrent name').setRequired(true)))
     .addSubcommand(s => s.setName('adopted').setDescription('Adopted jobs + ignored torrents'))
     .addSubcommand(s => s.setName('import').setDescription('Trigger a Sonarr/Radarr import scan of the seedbox staging folder')
-      .addStringOption(o => o.setName('target').setDescription('Which arr should import').setRequired(true).addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }))
+      .addStringOption(o => o.setName('target').setDescription('Which arr should import').setRequired(true).addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }, { name: 'radarr-4k', value: 'radarr-4k' }))
       .addStringOption(o => o.setName('folder').setDescription('Subfolder of the staging share (default: the whole staging folder)'))
       .addStringOption(o => o.setName('mode').setDescription('move (default, cleans up staging) or copy (leaves the files in place)').addChoices({ name: 'move', value: 'move' }, { name: 'copy', value: 'copy' })))
     .addSubcommand(s => s.setName('staging').setDescription('Why-won\'t-it-import report: per-folder match/rejection summary of the staging share')
-      .addStringOption(o => o.setName('target').setDescription('Which arr to ask (default sonarr)').addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }))),
+      .addStringOption(o => o.setName('target').setDescription('Which arr to ask (default sonarr)').addChoices({ name: 'sonarr', value: 'sonarr' }, { name: 'radarr', value: 'radarr' }, { name: 'radarr-4k', value: 'radarr-4k' }))),
+  new SlashCommandBuilder().setName('config-lint').setDescription('F3: Check configuration for shared-folder and import traps').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('duplicates').setDescription('F4: Find movies present in both HD and 4K libraries with wasted-space totals').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addIntegerOption(o => o.setName('limit').setDescription('Max results (default 15)').setMinValue(1).setMaxValue(30)),
+  new SlashCommandBuilder().setName('storage').setDescription('F5: Show disk headroom per mount with warn/urgent status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('downsize').setDescription('Swap a movie file for a smaller staged replacement (same quality, less space)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addStringOption(o => o.setName('movie').setDescription('Movie title to downsize').setRequired(true)),
+    .addSubcommand(s => s.setName('swap').setDescription('Swap a specific movie for a smaller staged replacement')
+      .addStringOption(o => o.setName('movie').setDescription('Movie title to downsize').setRequired(true)))
+    .addSubcommand(s => s.setName('scan').setDescription('F1: Find oversized 4K movies by GB/hour')
+      .addNumberOption(o => o.setName('threshold').setDescription('GB/hour threshold (default 8)').setMinValue(1).setMaxValue(50))
+      .addIntegerOption(o => o.setName('limit').setDescription('Max results (default 10)').setMinValue(1).setMaxValue(25))),
   new SlashCommandBuilder().setName('season').setDescription('Season-pack sweep: force a search now, or see why one hasn\'t happened').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('search').setDescription('Force a season search right now (Sonarr, or AvistaZ direct if the series is tagged)')
       .addStringOption(o => o.setName('title').setDescription('Sonarr series — start typing to search').setRequired(true).setAutocomplete(true))
@@ -4482,6 +4517,10 @@ const slashCommands = [
     .addUserOption(o => o.setName('user').setDescription('User').setRequired(true))
     .addStringOption(o => o.setName('server').setDescription('Home server').setRequired(true).addChoices({ name: 'Main', value: 'primary' }, { name: 'Philippines', value: 'ph' })),
   new SlashCommandBuilder().setName('me').setDescription('Show your linked profile'),
+  new SlashCommandBuilder().setName('setup').setDescription('Setup or troubleshoot your Plex access and server connection'),
+  new SlashCommandBuilder().setName('send-setup').setDescription('Send a member their personalized Plex/PH setup guide')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addUserOption(o => o.setName('user').setDescription('Member to send the guide to').setRequired(true)),
   new SlashCommandBuilder().setName('stats').setDescription('Your watch/request stats this month (admins can see the server-wide view)')
     .addBooleanOption(o => o.setName('server').setDescription('Admin only: server-wide stats instead of your own')),
   new SlashCommandBuilder().setName('myrequests').setDescription('Show your recent requests'),
@@ -4495,7 +4534,11 @@ const slashCommands = [
     .addSubcommand(s => s.setName('apply').setDescription('Publish manifests — agents converge on their next run')
       .addStringOption(o => o.setName('node').setDescription('Only this node'))
       .addBooleanOption(o => o.setName('details').setDescription('Per-title change list for a single node'))
-      .addStringOption(o => o.setName('confirm').setDescription('Confirmation code for a large rebalance (shown when apply is held)'))),
+      .addStringOption(o => o.setName('confirm').setDescription('Confirmation code for a large rebalance (shown when apply is held)')))
+    .addSubcommandGroup(g => g.setName('granularity').setDescription('TV cache granularity — read-only previews (issue #183)')
+      .addSubcommand(s => s.setName('preview').setDescription('Preview what season/episode-level TV units the library would split into — writes nothing')
+        .addStringOption(o => o.setName('granularity').setDescription('Unit size to preview').addChoices({ name: 'season', value: 'season' }, { name: 'episode', value: 'episode' }))
+        .addStringOption(o => o.setName('title').setDescription('Only include titles matching this text')))),
   new SlashCommandBuilder().setName('tier-node').setDescription('Manage the tiering node registry').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand(s => s.setName('add').setDescription('Add or update a node')
       .addStringOption(o => o.setName('name').setDescription('Node name, e.g. california').setRequired(true))
@@ -4879,16 +4922,63 @@ const setupRequestUiFeature = createSetupRequestUiFeature({
   forwardSlashCommand: handleSlashCommand,
 });
 
+// Guided-setup features, chained most-specific first to preserve the first-refusal order
+// the old Client.prototype.emit wrappers had by install order (device-state >
+// enhancements > extension). They run before the chat-command branch because the
+// device-state feature owns /setup, the enhancements feature owns /send-setup, and the
+// extension feature owns /me — none of which handleSlashCommand implements.
+const setupDeviceStateFeature = createSetupDeviceStateFeature({
+  getUserByDiscordId,
+  getSetting,
+  setSetting,
+  deleteSetting,
+  audit,
+  log,
+});
+
+const setupEnhancementsFeature = createSetupEnhancementsFeature({
+  getUserByDiscordId,
+  audit,
+  db,
+  getPlexToken,
+  fetchPlexFriends,
+  inviteUserToPlex,
+  createViewerAuthKey,
+  tailscaleApiConfigured,
+  provisionConfig,
+  deviceConfirmations: setupDeviceStateFeature.deviceConfirmations,
+  anyDeviceConfirmed: setupDeviceStateFeature.anyDeviceConfirmed,
+  log,
+});
+
+const setupExtensionFeature = createSetupExtensionFeature({
+  getUserByDiscordId,
+  getTrustScore,
+  audit,
+  db,
+  inviteUserToPlex,
+  fetchUserQuota,
+  log,
+});
+
 client.on('interactionCreate', async interaction => {
   try {
     if (interaction.isAutocomplete()) return handleAutocomplete(interaction);
+    // Explicit feature chain, most-specific first. This order preserves the first-refusal
+    // order the old Client.prototype.emit wrappers had by install order
+    // (mediaPanel > supportCase > setupRequestUi > setupDeviceState > setupEnhancements >
+    // setupExtension). The setup features own their slash commands (/setup, /send-setup,
+    // /me), so the chain runs before the generic chat-command branch.
+    if (await mediaPanelFeature.handleInteraction(interaction)) return;
+    if (await supportCaseFeature.handleInteraction(interaction)) return;
+    if (await setupRequestUiFeature.handleInteraction(interaction)) return;
+    if (await setupDeviceStateFeature.handleInteraction(interaction)) return;
+    if (await setupEnhancementsFeature.handleInteraction(interaction)) return;
+    if (await setupExtensionFeature.handleInteraction(interaction)) return;
     if (interaction.isChatInputCommand()) {
       await handleSlashCommand(interaction);
       return;
     }
-    if (await mediaPanelFeature.handleInteraction(interaction)) return;
-    if (await supportCaseFeature.handleInteraction(interaction)) return;
-    if (await setupRequestUiFeature.handleInteraction(interaction)) return;
     if (interaction.isButton()) {
       if (buttonActionsInFlight.has(interaction.customId)) {
         return interaction.reply({ content: '⏳ This action is already being processed.', ephemeral: true });
@@ -5181,6 +5271,9 @@ async function handleSlashCommand(interaction) {
   if (n === 'debrid') return handleDebridCommand(interaction);
   if (n === 'avistaz') return handleAvistazCommand(interaction);
   if (n === 'rtorrent') return handleRtorrentCommand(interaction);
+  if (n === 'config-lint') return handleConfigLintCommand(interaction);
+  if (n === 'duplicates') return handleDuplicatesCommand(interaction);
+  if (n === 'storage') return handleStorageCommand(interaction);
   if (n === 'downsize') return handleDownsizeCommand(interaction);
   if (n === 'season') return handleSeasonCommand(interaction);
   if (n === 'cleanup-suggestions') return handleCleanupSuggestionsCommand(interaction);
@@ -7145,9 +7238,7 @@ function summarizeManualImportPreview(preview, target) {
 async function runManualImportSub(interaction, { stagingPath, importPath, sourceLabel, auditAction }) {
   if (!stagingPath || !importPath) return interaction.reply({ content: `❌ ${sourceLabel} isn't configured (needs both a staging and an import path).`, ephemeral: true });
   const target = interaction.options.getString('target');
-  const arr = target === 'sonarr'
-    ? { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, cmd: 'DownloadedEpisodesScan', label: 'Sonarr' }
-    : { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr' };
+  const arr = arrForImportTarget(target);
   if (!arr.url) return interaction.reply({ content: `❌ ${arr.label} isn't configured.`, ephemeral: true });
   // Strip wrapping quotes: Discord passes option strings verbatim, and admins used to
   // shell quoting will type folder:"Name With Spaces" — the quotes are not part of the name.
@@ -7453,12 +7544,173 @@ async function handleRtorrentCommand(interaction) {
 // /downsize — swap an existing movie file for a smaller staged replacement.
 //
 // Caleb is downsizing the 4K library: same quality, smaller files. Radarr only imports
+// F4: /duplicates — overlap detection across HD/4K libraries. A movie with a file in BOTH
+// libraries is flagged; the HD copy's size counts as reclaimable waste (the 4K copy supersedes
+// it — informational only, never auto-deletes).
+async function handleDuplicatesCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  const limit = interaction.options.getInteger('limit') || 15;
+  if (!CONFIG.RADARR_URL || !CONFIG.RADARR_4K_URL) {
+    return interaction.reply({ content: '❌ Both Radarr (HD) and Radarr 4K must be configured.', ephemeral: true });
+  }
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    const [hd, fourK] = await Promise.all([
+      radarrGetFrom(CONFIG.RADARR_URL, CONFIG.RADARR_API_KEY, '/movie'),
+      radarrGetFrom(CONFIG.RADARR_4K_URL, CONFIG.RADARR_4K_API_KEY, '/movie'),
+    ]);
+    const keyOf = m => m.tmdbId ? `tmdb:${m.tmdbId}` : `title:${String(m.title || '').toLowerCase()}|${m.year || ''}`;
+    const hdByKey = new Map();
+    for (const m of (hd || [])) {
+      if (m.hasFile && m.movieFile?.size) hdByKey.set(keyOf(m), m);
+    }
+    const dupes = [];
+    for (const m of (fourK || [])) {
+      if (!m.hasFile || !m.movieFile?.size) continue;
+      const other = hdByKey.get(keyOf(m));
+      if (other) {
+        dupes.push({
+          title: m.title, year: m.year,
+          hdSize: Number(other.movieFile.size) || 0,
+          fourKSize: Number(m.movieFile.size) || 0,
+        });
+      }
+    }
+    dupes.sort((a, b) => b.hdSize - a.hdSize);
+    const totalWaste = dupes.reduce((s, d) => s + d.hdSize, 0);
+    audit('duplicates_scan', { actorDiscordId: interaction.user.id, dupes: dupes.length, wasteBytes: totalWaste });
+    if (!dupes.length) {
+      return interaction.editReply('✅ No overlap — no movie has files in both HD and 4K libraries.');
+    }
+    const shown = dupes.slice(0, limit);
+    const lines = shown.map((d, i) =>
+      `${i + 1}. **${d.title}** (${d.year || '?'}) — HD ${formatBytes(d.hdSize)} · 4K ${formatBytes(d.fourKSize)}`);
+    const more = dupes.length > shown.length ? `\n\n…and ${dupes.length - shown.length} more.` : '';
+    return interaction.editReply({
+      embeds: [brandedEmbed(COLORS.WARN)
+        .setTitle(`🔁 Library Overlap — ${dupes.length} movie${dupes.length === 1 ? '' : 's'} in both libraries`)
+        .setDescription(desc4096(
+          lines.join('\n') +
+          `\n\n**${formatBytes(totalWaste)}** tied up in redundant HD copies (4K supersedes them). ` +
+          `Review before deleting anything — HD copies are still useful for remote/bandwidth-limited streaming.${more}`))],
+    });
+  } catch (err) {
+    audit('duplicates_scan_failed', { actorDiscordId: interaction.user.id, error: err.message });
+    return interaction.editReply(`❌ Duplicate scan failed: ${err.message}`);
+  }
+}
+
+// F5: /storage — disk headroom per mount using the existing capacity logic
+// (fetchDiskSpaceReport), with warn/urgent status from the configured thresholds.
+async function handleStorageCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    const report = await fetchDiskSpaceReport().catch(error => ({ disks: [], errors: { unknown: error.message } }));
+    const disks = report.disks || [];
+    if (!disks.length) {
+      return interaction.editReply('❌ No disk data available from the *arrs.');
+    }
+    const warnPct = Number(CONFIG.DISK_WARN_FREE_PCT) || 15;
+    const urgentPct = Number(CONFIG.DISK_URGENT_FREE_PCT) || 5;
+    const lines = disks.map(d => {
+      const free = Number(d.freeSpace) || 0;
+      const total = Number(d.totalSpace) || 0;
+      const pct = total ? (free / total) * 100 : 0;
+      const status = pct <= urgentPct ? '🔴 URGENT' : pct <= warnPct ? '⚠️ low' : '✅ ok';
+      const label = d.displayPath || d.path;
+      return `${status} **${label}** — ${formatBytes(free)} free of ${formatBytes(total)} (${pct.toFixed(1)}%)`;
+    });
+    audit('storage_headroom_view', { actorDiscordId: interaction.user.id, disks: disks.length });
+    return interaction.editReply({
+      embeds: [brandedEmbed(COLORS.INFO)
+        .setTitle('💾 Storage Headroom')
+        .setDescription(desc4096(lines.join('\n') + `\n\nThresholds: warn ≤ ${warnPct}% free, urgent ≤ ${urgentPct}% free. Automated alerts run on the disk-space sweep.`))],
+    });
+  } catch (err) {
+    return interaction.editReply(`❌ Storage check failed: ${err.message}`);
+  }
+}
+
+// F3: /config-lint — surface config warnings including the shared download-folder trap.
+async function handleConfigLintCommand(interaction) {
+  if (!(await requireAdmin(interaction))) return;
+  await interaction.deferReply({ ephemeral: true });
+  const { configWarnings } = require('./src/config');
+  const warnings = configWarnings();
+  if (!warnings.length) {
+    return interaction.editReply('✅ Config looks clean — no traps detected.');
+  }
+  const lines = warnings.map((w, i) => `${i + 1}. ${w}`);
+  audit('config_lint', { actorDiscordId: interaction.user.id, warnings: warnings.length });
+  return interaction.editReply({
+    embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle(`⚠️ Config Lint — ${warnings.length} warning${warnings.length === 1 ? '' : 's'}`)
+      .setDescription(desc4096(lines.join('\n\n')))],
+  });
+}
+
+// F1: /downsize scan — find oversized 4K movies by GB/hour (size ÷ runtime).
+// Lists movies above the threshold with a one-tap button to start the downsize flow.
+async function handleDownsizeScan(interaction) {
+  const threshold = interaction.options.getNumber('threshold') || 8;
+  const limit = interaction.options.getInteger('limit') || 10;
+  if (!CONFIG.RADARR_4K_URL || !CONFIG.RADARR_4K_API_KEY) {
+    return interaction.reply({ content: '❌ Radarr 4K is not configured.', ephemeral: true });
+  }
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    const movies = await radarrGetFrom(CONFIG.RADARR_4K_URL, CONFIG.RADARR_4K_API_KEY, '/movie');
+    const oversized = [];
+    for (const m of (movies || [])) {
+      const size = Number(m.movieFile?.size) || 0;
+      const runtimeMin = Number(m.runtime) || 0;
+      if (!size || !runtimeMin) continue;
+      const gbPerHour = (size / 1024 ** 3) / (runtimeMin / 60);
+      if (gbPerHour >= threshold) {
+        oversized.push({ title: m.title, year: m.year, size, runtimeMin, gbPerHour, id: m.id });
+      }
+    }
+    oversized.sort((a, b) => b.gbPerHour - a.gbPerHour);
+    const shown = oversized.slice(0, limit);
+    if (!shown.length) {
+      return interaction.editReply(`✅ No 4K movies over ${threshold} GB/hour. Your library is lean.`);
+    }
+    const lines = shown.map((m, i) =>
+      `${i + 1}. **${m.title}** (${m.year || '?'}) — ${formatBytes(m.size)} / ${m.runtimeMin} min = **${m.gbPerHour.toFixed(1)} GB/h**`);
+    // One-tap: button per movie to start the downsize swap flow.
+    const rows = [];
+    for (let i = 0; i < Math.min(shown.length, 10); i++) {
+      const m = shown[i];
+      const nonce = stashGrabOffer({ kind: 'downsize-scan-pick', movieId: m.id, movieTitle: m.title, actorDiscordId: interaction.user.id });
+      if (i % 5 === 0) rows.push(new ActionRowBuilder());
+      rows[rows.length - 1].addComponents(
+        new ButtonBuilder().setCustomId(`downsize_scan_pick:${nonce}`).setLabel(`${i + 1}. ${String(m.title).slice(0, 40)}`).setStyle(ButtonStyle.Secondary),
+      );
+    }
+    audit('downsize_scan', { actorDiscordId: interaction.user.id, threshold, found: oversized.length });
+    return interaction.editReply({
+      embeds: [brandedEmbed(COLORS.INFO)
+        .setTitle(`🔍 Oversized 4K Movies (≥ ${threshold} GB/h)`)
+        .setDescription(desc4096(lines.join('\n') + `\n\nTap a button to preview a downsize swap for that movie.`))],
+      components: rows,
+    });
+  } catch (err) {
+    audit('downsize_scan_failed', { actorDiscordId: interaction.user.id, error: err.message });
+    return interaction.editReply(`❌ Scan failed: ${err.message}`);
+  }
+}
+
 // "upgrades," so a smaller replacement is rejected ("Not a quality revision upgrade") no
 // matter how the scan is triggered. The working swap is: delete the old file via the
 // Radarr API, then import the staged smaller one. This command does both behind one
 // preview + Swap/Cancel gate — the preview is mandatory, there is no direct-to-delete path.
 async function handleDownsizeCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
+  const sub = interaction.options.getSubcommand(false);
+  // F1: /downsize scan — find oversized 4K movies by GB/hour.
+  if (sub === 'scan') return handleDownsizeScan(interaction);
+  // Default/swap subcommand: swap a specific movie.
   const title = String(interaction.options.getString('movie') || '').trim();
   if (!title) return interaction.reply({ content: '❌ Give me a movie title.', ephemeral: true });
 
@@ -7471,17 +7723,32 @@ async function handleDownsizeCommand(interaction) {
   await interaction.deferReply({ ephemeral: true });
 
   // Find the movie: Radarr 4K first (the downsize target), then HD Radarr.
+  // B6: exact match wins; if only substring matches exist and there's more than one,
+  // show disambiguation instead of silently swapping the wrong movie.
   let movie = null;
   let source = null;
   const want = title.toLowerCase();
+  const substringHits = [];
   for (const s of sources) {
     try {
       const all = await radarrGetFrom(s.url, s.key, '/movie');
-      const hit = (all || []).find(m => String(m.title || '').toLowerCase() === want)
-        || (all || []).find(m => String(m.title || '').toLowerCase().includes(want));
-      if (hit) { movie = hit; source = s; break; }
+      const exact = (all || []).find(m => String(m.title || '').toLowerCase() === want);
+      if (exact) { movie = exact; source = s; break; }
+      for (const m of (all || [])) {
+        if (String(m.title || '').toLowerCase().includes(want)) substringHits.push({ movie: m, source: s });
+      }
     } catch (err) {
       audit('external_api_error', { provider: s.label, error: err.message, action: 'downsize_lookup', title });
+    }
+  }
+  if (!movie) {
+    if (substringHits.length === 1) {
+      movie = substringHits[0].movie;
+      source = substringHits[0].source;
+    } else if (substringHits.length > 1) {
+      const list = substringHits.slice(0, 10).map(h => `• **${h.movie.title}** (${h.movie.year || '?'}) — ${h.source.label}`).join('\n');
+      audit('downsize_ambiguous', { actorDiscordId: interaction.user.id, title, hits: substringHits.length });
+      return interaction.editReply(`❓ Multiple movies match \`${title}\`:\n${list}\n\nRe-run \`/downsize\` with the exact title.`);
     }
   }
   if (!movie) {
@@ -8352,7 +8619,7 @@ async function publishCaPromotionNow(node, { mediaId, title } = {}) {
 // yet, so a play on an uncached California title still cannot reliably produce the play-start
 // event this handler needs (see docs §1) — every code path here is exercised by tests, but is not
 // safe to trust in production until #181 lands and a human bounds a rollout on top of this PR.
-async function handleCaPlayStart({ mediaId, title, mediaType, serverName, machineId, watcherEmail, watcherKey }) {
+async function handleCaPlayStart({ mediaId, title, mediaType, serverName, machineId, watcherEmail, watcherKey, seasonNumber, episodeNumber }) {
   if (!CONFIG.CA_PLAY_PROMOTE_ENABLED) {
     audit('edge_playback_observed', { edge: 'california', mediaId, title, reason: 'promotion_disabled' });
     return;
@@ -8367,6 +8634,27 @@ async function handleCaPlayStart({ mediaId, title, mediaType, serverName, machin
     audit('edge_promote_node_unavailable', { node, mediaId });
     return;
   }
+  // #183: resolve the configured promotion unit, floored to units the planner actually knows
+  // about. At the default 'series' granularity this block is skipped and promotableId is just
+  // mediaId — byte-identical to before, no new reads. With finer granularity configured but a
+  // whole-series inventory, the season/episode id fails closed back to the whole-series id
+  // rather than pinning a unit no published plan contains (such a pin would resolve to nothing).
+  // Locality/source checks below stay series-level on purpose — the master-coverage question is
+  // about the title the master can serve.
+  let promotableId = mediaId;
+  const promoteGranularity = mediaType === 'tv' ? normalizeGranularity(CONFIG.TIER_TV_GRANULARITY) : 'series';
+  if (promoteGranularity !== 'series') {
+    const parsed = parseTvUnitId(mediaId);
+    const plan = getTierPlan(node);
+    const knownUnits = new Set([
+      ...(plan?.published?.keepMediaIds || []),
+      ...(plan?.converged?.keepMediaIds || []),
+    ]);
+    promotableId = resolvePromotableUnit({
+      tvdbId: parsed?.tvdbId, seasonNumber, episodeNumber,
+      granularity: promoteGranularity, inventoryMediaIds: knownUnits,
+    }) || mediaId;
+  }
   // Only promote titles the master can actually serve (mirrors planTier's noFullCopy guard) — and
   // resolveStageSource is a convenient existing arr lookup that already returns exactly the facts
   // needed here (found, sizeBytes, the remapped source path) without duplicating radarr/sonarr
@@ -8376,16 +8664,33 @@ async function handleCaPlayStart({ mediaId, title, mediaType, serverName, machin
     audit('edge_promote_no_full_copy', { node, mediaId, title });
     return;
   }
-  // Locality: presence bytes against the reported inventory, not the desired keep-set (§2.2b).
-  // completionPct stays null here — no agent endpoint reports per-folder Syncthing completion yet
-  // (see the PR notes); byte-fraction presence is the honest interim signal, and decideCaLocality
-  // already accepts a real completionPct the moment that agent capability exists.
+  // #183: promotion-cap verdict, recorded in the audit trail only. Log-only — it never changes
+  // the plan outcome; any enforcement stays a human decision.
+  const capGb = Number(CONFIG.TIER_TV_GRANULARITY_PROMOTION_CAP_GB) || 0;
+  const promotionCap = checkPromotionCap({ unitBytes: src.sizeBytes, capBytes: capGb > 0 ? capGb * 1024 ** 3 : 0 });
+  // Locality: presence bytes against the reported inventory, plus the node's own Syncthing
+  // per-folder completion when the agent has reported it (§182 follow-up — collectFolderCompletion
+  // in agent/agent.js, stored on the tier plan by the report route). A title can be
+  // presence-byte-close while Syncthing is still pulling it, and only the node's own completion
+  // signal can tell the difference. A missing or stale (>6h) snapshot falls back to the
+  // byte-fraction signal — never blocks on data we don't have.
   const folders = nodeFolders({ ...nodeRow, folders: listTierNodeFolders(node) });
   const relPath = toRelPath(src.srcPath, CONFIG.TIER_SOURCE_ROOT);
   const route = resolveTitleFolder({ path: src.srcPath, relPath, mediaId }, folders);
   const files = listTierNodeFiles(node);
   const presentBytes = physicalTitleBytes({ inventory: [{ mediaId, folderId: route.folderId, relPath: route.relPath }], files }).get(mediaId) || 0;
-  const locality = decideCaLocality({ presentBytes, expectedBytes: src.sizeBytes, completionPct: null });
+  const completionRec = getTierPlan(node)?.folderCompletion;
+  const completionFresh = completionRec && completionRec.at && (Date.now() - completionRec.at) < 6 * 3600000;
+  const completionInfo = completionFresh ? (completionRec.folders || []).find(f => f.folderId === route.folderId) : null;
+  const completionPct = completionInfo && Number.isFinite(completionInfo.completion) ? completionInfo.completion : null;
+  const locality = decideCaLocality({ presentBytes, expectedBytes: src.sizeBytes, completionPct });
+
+  // Capacity + interim whole-series TV cap (§182 follow-ups): pure pre-checks, audited as skip
+  // reasons like every other gate. Both are inert while the double gate is on (disabled /
+  // audit_only return before any pin is recorded), and the budget check passes open when no
+  // node budget is configured.
+  const fits = promotionFitsBudget({ nodeBudgetBytes: (CONFIG.CA_PLAY_PROMOTE_NODE_BUDGET_GB || 0) * GB_BYTES, pinBytes: src.sizeBytes });
+  const tvCap = tvPromotionSizeCapped({ mediaType, sizeBytes: src.sizeBytes, maxSeriesGb: CONFIG.TIER_TV_PROMOTE_MAX_SERIES_GB });
 
   const watcher = watcherEmail ? getUserByCanonicalEmail(watcherEmail) : null;
   const attributedId = [watcher?.discord_id, watcherEmail && `email:${watcherEmail}`, watcherKey, 'edge-anon'].find(Boolean);
@@ -8397,7 +8702,11 @@ async function handleCaPlayStart({ mediaId, title, mediaType, serverName, machin
     enabled: CONFIG.CA_PLAY_PROMOTE_ENABLED,
     hasFullCopy: true,
     alreadyLocal: locality.local,
-    lastPromoteAt: Number(getSetting(`ca_promote_last:${node}:${mediaId}`) || '0'),
+    fitsBudget: fits.fits,
+    budgetReason: fits.reason,
+    tvSizeCapped: tvCap.capped,
+    tvCapReason: tvCap.reason,
+    lastPromoteAt: Number(getSetting(`ca_promote_last:${node}:${promotableId}`) || '0'),
     now: Date.now(),
     cooldownMs: CONFIG.CA_PLAY_PROMOTE_COOLDOWN_HOURS * 3600000,
     viewerActivePins,
@@ -8412,22 +8721,128 @@ async function handleCaPlayStart({ mediaId, title, mediaType, serverName, machin
     return;
   }
   if (plan.action === 'audit') {
-    audit('edge_promote_would_pin', { node, mediaId, title, mediaType, attributedId, localityReason: locality.reason });
+    audit('edge_promote_would_pin', { node, mediaId, promotableMediaId: promotableId, title, mediaType, attributedId, localityReason: locality.reason, promotionGranularity: promoteGranularity, capGb, capExceeds: promotionCap.exceeds });
     return;
   }
   // pin: record the durable pin (consuming the daily counter — a skipped/audited event never
   // does), set the per-title cooldown, then attempt immediate publish (best-effort; see
   // publishCaPromotionNow). The scheduled tier cycle remains the fallback convergence path.
-  recordPromotion(`ca:${attributedId}`, mediaId, DAY_MS);
-  setSetting(`ca_promote_last:${node}:${mediaId}`, String(Date.now()));
-  const pin = computePlayPin({ mediaId, viewerId: attributedId, pinDays: CONFIG.TIER_PLAY_PIN_DAYS });
-  recordTierPlayPin(node, mediaId, attributedId, pin.expiresAt);
-  audit('edge_promote_pinned', { node, mediaId, title, mediaType, attributedId, expiresAt: pin.expiresAt });
-  await publishCaPromotionNow(node, { mediaId, title });
+  recordPromotion(`ca:${attributedId}`, promotableId, DAY_MS);
+  setSetting(`ca_promote_last:${node}:${promotableId}`, String(Date.now()));
+  const pin = computePlayPin({ mediaId: promotableId, viewerId: attributedId, pinDays: CONFIG.TIER_PLAY_PIN_DAYS });
+  recordTierPlayPin(node, promotableId, attributedId, pin.expiresAt);
+  audit('edge_promote_pinned', { node, mediaId, promotableMediaId: promotableId, title, mediaType, attributedId, expiresAt: pin.expiresAt, promotionGranularity: promoteGranularity, capGb, capExceeds: promotionCap.exceeds });
+  await publishCaPromotionNow(node, { mediaId: promotableId, title });
+}
+
+// #183 — `/tier granularity preview`: read-only report of what season/episode-level TV units the
+// Sonarr library would split into. Fetches live Sonarr data, shapes it with the pure tv-granularity
+// library, renders a bounded embed. Writes nothing — no plan is built, no manifest touched, no
+// migration run or scheduled.
+async function handleTierGranularityPreview(interaction) {
+  await interaction.deferReply({ ephemeral: true });
+  const granularity = interaction.options.getString('granularity') || 'season';
+  const titleFilter = (interaction.options.getString('title') || '').trim().toLowerCase();
+
+  let rawSeries;
+  try {
+    rawSeries = await listSonarrSeries();
+  } catch (err) {
+    return interaction.editReply(`❌ Couldn't reach Sonarr (${err?.message || err}). The preview needs live Sonarr data — nothing was changed.`);
+  }
+  const allItems = mapSonarrSeriesList(rawSeries, { sourceRoot: CONFIG.TIER_SOURCE_ROOT });
+  const wanted = titleFilter
+    ? allItems.filter(t => t.title.toLowerCase().includes(titleFilter))
+    : allItems;
+
+  // Bounded: episode-file fetches are one Sonarr call per series, so cap the preview size to keep
+  // the command fast. The embed says when it truncated.
+  const MAX_SERIES = 50;
+  const truncated = wanted.length > MAX_SERIES;
+  const slice = wanted.slice(0, MAX_SERIES);
+
+  const episodeFilesBySeries = new Map();
+  const fetchFailures = [];
+  for (const t of slice) {
+    const parsed = parseTvUnitId(t.mediaId);
+    if (!parsed) continue;
+    let raw;
+    try {
+      raw = await getEpisodeFiles(t.sonarrId);
+    } catch (_err) {
+      fetchFailures.push(t.title);
+      continue;
+    }
+    episodeFilesBySeries.set(parsed.tvdbId, mapSonarrEpisodeFiles(raw));
+  }
+
+  const capGb = Number(CONFIG.TIER_TV_GRANULARITY_PROMOTION_CAP_GB) || 0;
+  const preview = previewTvGranularity({
+    seriesItems: slice,
+    episodeFilesBySeries,
+    granularity,
+    capBytes: capGb > 0 ? capGb * 1024 ** 3 : 0,
+    sourceRoot: CONFIG.TIER_SOURCE_ROOT,
+  });
+  audit('tier_granularity_preview', {
+    actorDiscordId: interaction.user.id, granularity: preview.granularity,
+    previewedSeries: preview.previewedSeries, unitCount: preview.totals.unitCount,
+    titleFilter: titleFilter || null,
+  });
+
+  const gb = b => (b / 1024 ** 3).toFixed(1);
+  const embed = brandedEmbed(COLORS.INFO)
+    .setTitle('📺 TV Granularity Preview — read-only')
+    .setDescription([
+      `What **${preview.granularity}-level** TV cache planning WOULD look like for ${preview.previewedSeries} series from Sonarr.`,
+      '',
+      '⚠️ **Preview only — nothing was written.** The live planner still uses whole-series units; enabling season/episode planning needs its own human-reviewed step (#183).',
+    ].join('\n'));
+
+  const t = preview.totals;
+  embed.addFields({
+    name: '📊 Totals',
+    value: [
+      `Series: ${t.seriesCount} → **${t.unitCount} ${preview.granularity} units**`,
+      `Library bytes: ${gb(t.totalLegacyBytes)} GB → unit bytes: ${gb(t.totalUnitBytes)} GB (Δ ${t.totalByteDeltaBytes >= 0 ? '+' : ''}${gb(t.totalByteDeltaBytes)} GB)`,
+      t.seriesMissingChildData ? `⚠️ ${t.seriesMissingChildData} series had no episode-file data — kept whole` : 'Episode-file data found for every series',
+      t.oversizedUnitCount ? `🛑 ${t.oversizedUnitCount} unit(s) exceed the ${capGb} GB promotion cap and would need confirmation` : `No unit exceeds the ${capGb} GB promotion cap`,
+    ].join('\n'),
+    inline: false,
+  });
+
+  const top = [...preview.perSeries].sort((a, b) => b.units.length - a.units.length).slice(0, 8);
+  if (top.length) {
+    embed.addFields({
+      name: `🎞️ Largest splits${truncated ? ` (top 8 of ${preview.perSeries.length} shown)` : ''}`,
+      value: top.map(s => (s.missingChildData
+        ? `• **${s.title}** — no episode data, stays whole (${gb(s.legacyBytes)} GB)`
+        : `• **${s.title}** — ${s.units.length} ${preview.granularity} units, ${gb(s.unitBytes)} GB (series: ${gb(s.legacyBytes)} GB)`)).join('\n').slice(0, 1024),
+      inline: false,
+    });
+  }
+
+  const warnings = [...preview.buildWarnings, ...preview.warnings];
+  if (fetchFailures.length) warnings.unshift(`Couldn't fetch episode files for ${fetchFailures.length} series (${fetchFailures.slice(0, 3).join(', ')}${fetchFailures.length > 3 ? '…' : ''}) — those kept whole-series units.`);
+  if (warnings.length) {
+    embed.addFields({ name: '⚠️ Warnings', value: warnings.slice(0, 6).map(w => `• ${w}`).join('\n').slice(0, 1024), inline: false });
+  }
+  if (truncated) {
+    embed.addFields({ name: '✂️ Truncated', value: `Matched ${wanted.length} series — previewed the first ${MAX_SERIES}. Add \`title:\` to narrow it down.`, inline: false });
+  }
+  if (!wanted.length) {
+    embed.addFields({ name: '🔎 No matches', value: titleFilter ? `No Sonarr series matched \`${titleFilter}\`.` : 'Sonarr returned no series with a tvdbId.', inline: false });
+  }
+  return interaction.editReply({ embeds: [embed] });
 }
 
 async function handleTierCommand(interaction) {
   if (!(await requireAdmin(interaction))) return;
+  // #183: `/tier granularity preview` is a read-only report — it never builds plans or writes.
+  if (interaction.options.getSubcommandGroup(false) === 'granularity'
+    && interaction.options.getSubcommand() === 'preview') {
+    return handleTierGranularityPreview(interaction);
+  }
   const sub = interaction.options.getSubcommand();
   const only = interaction.options.getString('node')?.toLowerCase() || null;
   await interaction.deferReply({ ephemeral: true });
@@ -8834,7 +9249,7 @@ async function handleButton(interaction) {
     return interaction.showModal(requestAccessModal(server));
   }
 
-  if (['plex_approve', 'plex_approve_ts', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'trust_undo', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'season_grab', 'adopt_do', 'adopt_bulk', 'adopt_cancel', 'manual_import_confirm', 'manual_import_cancel', 'downsize_do', 'downsize_cancel'].includes(action) && !isAdminInteraction(interaction)) {
+  if (['plex_approve', 'plex_approve_ts', 'plex_deny', 'overseerr_approve', 'overseerr_deny', 'request_approve', 'request_approve_az', 'request_deny', 'trust_undo', 'pm_retry', 'pm_clear', 'pm_ignore', 'pm_clearstuck', 'pm_clearfinished', 'grab_dl', 'grab_all', 'grab_cancel', 'grab_retry', 'season_grab', 'adopt_do', 'adopt_bulk', 'adopt_cancel', 'manual_import_confirm', 'manual_import_cancel', 'downsize_do', 'downsize_cancel', 'downsize_reverify', 'downsize_scan_pick'].includes(action) && !isAdminInteraction(interaction)) {
     return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
   }
 
@@ -9486,8 +9901,8 @@ async function handleButton(interaction) {
     return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`🧲 Adopted — ${String(torrent.name).slice(0, 200)}`.slice(0, 256))
       .setDescription(result.state === 'complete'
-        ? `Job #${result.job.id} created as **complete** by <@${interaction.user.id}> — transferring home now, then handed to ${target === 'sonarr' ? 'Sonarr' : 'Radarr'} for import. The torrent keeps seeding on the seedbox.`
-        : `Job #${result.job.id} created as **downloading** (${adoptProgressPct(torrent)}%) by <@${interaction.user.id}> — I'll watch it and transfer + import via ${target === 'sonarr' ? 'Sonarr' : 'Radarr'} when it hits 100%.`)], components: [] });
+        ? `Job #${result.job.id} created as **complete** by <@${interaction.user.id}> — transferring home now, then handed to ${arrDisplayName(target)} for import. The torrent keeps seeding on the seedbox.`
+        : `Job #${result.job.id} created as **downloading** (${adoptProgressPct(torrent)}%) by <@${interaction.user.id}> — I'll watch it and transfer + import via ${arrDisplayName(target)} when it hits 100%.`)], components: [] });
   }
   if (action === 'adopt_bulk') {
     const offer = takeGrabOffer(parts[0]);
@@ -9503,7 +9918,7 @@ async function handleButton(interaction) {
       discordId: offer.discordId || interaction.user.id, origin: offer.origin || 'adopt', actorDiscordId: interaction.user.id,
     });
     const lines = [
-      `Adopted **${outcome.adopted}** of ${candidates.length} → ${target === 'sonarr' ? 'Sonarr' : 'Radarr'} (${outcome.complete} complete → transferring one at a time, ${outcome.downloading} watched until 100%).`,
+      `Adopted **${outcome.adopted}** of ${candidates.length} → ${arrDisplayName(target)} (${outcome.complete} complete → transferring one at a time, ${outcome.downloading} watched until 100%).`,
     ];
     if (outcome.dup) lines.push(`Skipped ${outcome.dup} already tracked.`);
     if (outcome.ambiguous.length) {
@@ -9545,9 +9960,7 @@ async function handleButton(interaction) {
         .setDescription(`Dismissed by <@${interaction.user.id}> — \`${offer.fullImportPath}\` was left alone. Fix the mismatch and re-run \`${offer.sourceLabel === 'Premiumize' ? '/debrid import' : '/rtorrent import'}\`, or use \`mode:copy\`.`)], components: [] });
     }
     await interaction.deferUpdate();
-    const arr = offer.target === 'sonarr'
-      ? { url: CONFIG.SONARR_URL, key: CONFIG.SONARR_API_KEY, cmd: 'DownloadedEpisodesScan', label: 'Sonarr' }
-      : { url: CONFIG.RADARR_URL, key: CONFIG.RADARR_API_KEY, cmd: 'DownloadedMoviesScan', label: 'Radarr' };
+    const arr = arrForImportTarget(offer.target);
     if (!arr.url) return interaction.editReply({ content: `❌ ${arr.label} isn't configured.`, embeds: [], components: [] });
     audit('manual_import_partial_confirmed', { actorDiscordId: interaction.user.id, path: offer.fullImportPath, target: offer.target });
     return executeManualImport(interaction, { arr, target: offer.target, fullImportPath: offer.fullImportPath, localPath: offer.localPath, clean: offer.clean, mode: 'Move', sourceLabel: offer.sourceLabel, auditAction: offer.auditAction });
@@ -9578,6 +9991,11 @@ async function handleButton(interaction) {
         .setTitle('❌ Downsize Aborted')
         .setDescription(`The staged replacement is gone (\`${result.newPath}\`) — the existing file was NOT touched. Re-stage the file and run \`/downsize\` again.`)], components: [] });
     }
+    if (result.reason === 'size_changed') {
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.DANGER)
+        .setTitle('❌ Downsize Aborted')
+        .setDescription(`The staged file changed size since the preview (expected ${result.expectedSize}, found ${result.actualSize}) — it may be a different file. The existing file was NOT touched. Re-run \`/downsize\` to get a fresh preview.`)], components: [] });
+    }
     if (result.reason === 'delete_failed') {
       return interaction.editReply({ embeds: [brandedEmbed(COLORS.DANGER)
         .setTitle('❌ Downsize Failed')
@@ -9586,18 +10004,38 @@ async function handleButton(interaction) {
     if (result.reason === 'scan_failed') {
       return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
         .setTitle('⚠️ Old File Deleted, Import Not Triggered')
-        .setDescription(`The existing file was deleted, but the Radarr import scan failed to start: ${result.error}\n\n**The movie currently has no file.** Run \`/rtorrent import\` with target radarr and the staged folder to bring the file in, or re-add the movie in Radarr.`)], components: [] });
+        .setDescription(`The existing file was deleted, but the Radarr import scan failed to start: ${result.error}\n\n**The movie currently has no file.** Run \`/rtorrent import\` with target ${offer.sourceLabel === 'Radarr 4K' ? 'radarr-4k' : 'radarr'} and the staged folder to bring the file in, or re-add the movie in Radarr.`)], components: [] });
     }
     if (result.ok) {
+      // B8: report the actual imported file size, not the staged size — re-fetch the movie.
+      let actualNewSize = offer.newSize;
+      try {
+        const movies = await radarrGetFrom(offer.sourceUrl, offer.sourceKey, '/movie');
+        const m = (movies || []).find(x => Number(x.id) === Number(offer.movieId));
+        if (m?.movieFile?.size) actualNewSize = m.movieFile.size;
+      } catch (_e) { /* fall back to staged size */ }
+      const actualSaved = offer.oldSize > 0 && actualNewSize > 0 ? offer.oldSize - actualNewSize : offer.bytesSaved;
       return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
         .setTitle(`✅ Downsized: ${offer.movieTitle}${offer.movieYear ? ` (${offer.movieYear})` : ''}`)
         .setDescription(
           `**Removed:** \`${offer.oldPath}\` (${formatBytes(offer.oldSize)})\n` +
-          `**Now:** \`${result.newMoviePath}\` (${formatBytes(offer.newSize)})\n\n` +
-          `**${formatBytes(offer.bytesSaved)} saved.**`)], components: [] });
+          `**Now:** \`${result.newMoviePath}\` (${formatBytes(actualNewSize)})\n\n` +
+          `**${formatBytes(actualSaved)} saved.**`)], components: [] });
     }
     // Unverified: the old file is gone and the scan was triggered, but the new file
-    // hasn't shown up yet.
+    // hasn't shown up yet. B7: offer a "Check again" button that re-polls the movie.
+    const reverifyNonce = stashGrabOffer({
+      kind: 'downsize-reverify',
+      movieId: offer.movieId,
+      movieTitle: offer.movieTitle,
+      sourceLabel: offer.sourceLabel,
+      sourceUrl: offer.sourceUrl,
+      sourceKey: offer.sourceKey,
+      actorDiscordId: interaction.user.id,
+    });
+    const reverifyRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`downsize_reverify:${reverifyNonce}`).setLabel('Check again').setStyle(ButtonStyle.Primary),
+    );
     return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
       .setTitle('⚠️ Swap Unverified')
       .setDescription(
@@ -9605,7 +10043,81 @@ async function handleButton(interaction) {
         `but the new file hasn't appeared in ${offer.sourceLabel} after 60s.\n\n` +
         (result.stagedGone
           ? `The staged file is gone, so the import likely succeeded — check the movie in ${offer.sourceLabel}.`
-          : `The staged file is still there — Radarr may still be working, or it rejected the import. Check the queue in ${offer.sourceLabel}.`))], components: [] });
+          : `The staged file is still there — Radarr may still be working, or it rejected the import. Check the queue in ${offer.sourceLabel}.`))], components: [reverifyRow] });
+  }
+
+  if (action === 'downsize_reverify') {
+    const offer = takeGrabOffer(parts[0]);
+    if (!offer || offer.kind !== 'downsize-reverify') {
+      return interaction.update({ content: 'ℹ️ Already handled (or expired).', embeds: [], components: [] });
+    }
+    await interaction.deferUpdate();
+    try {
+      const movies = await radarrGetFrom(offer.sourceUrl, offer.sourceKey, '/movie');
+      const m = (movies || []).find(x => Number(x.id) === Number(offer.movieId));
+      const newPath = m?.movieFile?.path || null;
+      const inLibrary = newPath && !newPath.startsWith(CONFIG.GRAB_STAGING_PATH) && !newPath.startsWith(CONFIG.GRAB_IMPORT_PATH);
+      if (inLibrary) {
+        audit('downsize_reverified', { actorDiscordId: interaction.user.id, title: offer.movieTitle, newPath });
+        return interaction.editReply({ embeds: [brandedEmbed(COLORS.SUCCESS)
+          .setTitle(`✅ Verified: ${offer.movieTitle}`)
+          .setDescription(`The new file is in place: \`${newPath}\``)], components: [] });
+      }
+      return interaction.editReply({ embeds: [brandedEmbed(COLORS.WARN)
+        .setTitle('⚠️ Still Not Verified')
+        .setDescription(`No library file yet for **${offer.movieTitle}** in ${offer.sourceLabel}. The import may still be working — check the queue, or press Check again in a bit.`)],
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`downsize_reverify:${stashGrabOffer({ ...offer, createdAt: Date.now() })}`).setLabel('Check again').setStyle(ButtonStyle.Primary),
+        )] });
+    } catch (err) {
+      return interaction.editReply({ content: `❌ Re-verify failed: ${err.message}`, components: [] });
+    }
+  }
+
+  // F1: one-tap button from /downsize scan — start the swap preview for the picked movie.
+  if (action === 'downsize_scan_pick') {
+    const offer = takeGrabOffer(parts[0]);
+    if (!offer || offer.kind !== 'downsize-scan-pick') {
+      return interaction.update({ content: 'ℹ️ Already handled (or expired).', embeds: [], components: [] });
+    }
+    // Reuse the swap flow by faking a movie title lookup — find the movie by ID.
+    await interaction.deferUpdate();
+    try {
+      const movies = await radarrGetFrom(CONFIG.RADARR_4K_URL, CONFIG.RADARR_4K_API_KEY, '/movie');
+      const movie = (movies || []).find(m => Number(m.id) === Number(offer.movieId));
+      if (!movie) return interaction.editReply({ content: '❌ Movie not found in Radarr 4K.', components: [] });
+      // Stash a swap offer and show the preview (same as /downsize swap).
+      const { buildDownsizePreview, findStagedReplacement } = require('./src/downsize');
+      const oldFile = movie.movieFile || null;
+      if (!oldFile?.path) {
+        return interaction.editReply({ content: `ℹ️ **${movie.title}** has no file in Radarr 4K yet.`, components: [] });
+      }
+      const newFile = findStagedReplacement(CONFIG.GRAB_STAGING_PATH, movie, []);
+      const preview = buildDownsizePreview({ movie, oldFile, newFile });
+      if (!preview.ok) {
+        const reasons = { movie_not_found: 'Movie not found.', no_existing_file: 'No existing file.', no_replacement: 'No smaller staged replacement found. Stage one first.', not_smaller: 'The staged file is not smaller.' };
+        return interaction.editReply({ content: `❌ ${reasons[preview.reason] || preview.reason}`, components: [] });
+      }
+      const nonce = stashGrabOffer({
+        kind: 'downsize-swap', actorDiscordId: interaction.user.id, movieId: movie.id,
+        movieTitle: movie.title, movieYear: movie.year, sourceLabel: 'Radarr 4K',
+        sourceUrl: CONFIG.RADARR_4K_URL, sourceKey: CONFIG.RADARR_4K_API_KEY,
+        oldFileId: oldFile.id, oldPath: oldFile.path, oldSize: preview.oldSize,
+        newPath: preview.newPath, newSize: preview.newSize, bytesSaved: preview.bytesSaved,
+      });
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`downsize_do:${nonce}`).setLabel(`Swap (${formatBytes(preview.bytesSaved)} saved)`).setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`downsize_cancel:${nonce}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
+      );
+      return interaction.editReply({
+        embeds: [brandedEmbed(COLORS.WARN)
+          .setTitle(`Downsize: ${movie.title}${movie.year ? ` (${movie.year})` : ''}`)
+          .setDescription(`**Now:** \`${preview.oldPath}\` (${formatBytes(preview.oldSize)})\n**Staged:** \`${preview.newPath}\` (${formatBytes(preview.newSize)})\n\n**${formatBytes(preview.bytesSaved)} saved.**\n\n⚠️ This deletes the existing file. The preview is mandatory.`)],
+        components: [row],
+      });
+    } catch (err) {
+      return interaction.editReply({ content: `❌ Failed: ${err.message}`, components: [] });
+    }
   }
 
   if (['stuck_retry', 'stuck_rm', 'stuck_ignore'].includes(action)) {
@@ -9896,9 +10408,11 @@ function startExpressServer() {
   // src/app.js factory so it can be exercised with real HTTP requests on an ephemeral port
   // without booting Discord — see scripts/tests/app-factory.test.js. Route registration below is
   // unchanged; only the app's own setup moved.
-  const app = createApp({ trustProxy: !!CONFIG.TRUST_PROXY, skipJsonPaths: ['/agent/', '/webhook/tautulli'] });
+  const app = createApp({ trustProxy: !!CONFIG.TRUST_PROXY, skipJsonPaths: ['/agent/', '/webhook/tautulli', '/webhook/overseerr'] });
   const upload = multer({ limits: { fileSize: 5 * 1024 * 1024, files: 5 } });
   const tautulliJsonParser = bodyParser.json({ limit: '1mb' });
+  // M3: Overseerr sends JSON — parse only after the secret + concurrency checks, like tautulli.
+  const overseerrJsonParser = bodyParser.json({ limit: '1mb' });
   const webhookBodyConcurrencyLimiter = createBodyConcurrencyLimiter({
     limit: CONFIG.WEBHOOK_BODY_MAX_CONCURRENT,
     scope: 'webhook body',
@@ -9930,7 +10444,7 @@ function startExpressServer() {
     handleTautulliWebhook,
     log,
   });
-  app.post('/webhook/overseerr', requireWebhookSecret(() => CONFIG.WEBHOOK_SECRET), webhookBodyConcurrencyLimiter, upload.any(), webhookHandlers.overseerr);
+  app.post('/webhook/overseerr', requireWebhookSecret(() => CONFIG.WEBHOOK_SECRET), webhookBodyConcurrencyLimiter, overseerrJsonParser, upload.any(), webhookHandlers.overseerr);
 
   app.post('/webhook/plex', requireWebhookSecret(() => CONFIG.WEBHOOK_SECRET, { allowQuery: true }), webhookBodyConcurrencyLimiter, upload.any(), webhookHandlers.plex);
 
@@ -9946,7 +10460,7 @@ function startExpressServer() {
   registerTierAgentRoutes(app, {
     config: CONFIG,
     getTierAgentTokenHash, sha256, safeEqual, audit, getSetting, setSetting,
-    getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, recordTierErrorAlertState, recordTierMergedMountDiagnostics, markTierPlanConverged,
+    getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, recordTierErrorAlertState, recordTierMergedMountDiagnostics, recordTierFolderCompletion, markTierPlanConverged,
     getTierNode, listTierNodeFiles, replaceTierNodeFiles, parseAtimeMask, maskSuspectAtimes,
     notifyTelemetryTransition: ({ node, telemetry, telemetryHealth, previousTelemetryLevel }) => {
       if (!telemetry || telemetryHealth.level === previousTelemetryLevel) return;
@@ -10552,7 +11066,12 @@ async function handlePlexWebhook(payload) {
     // queue — that routing is unchanged. Play-start events go to §182's promotion path, which is
     // itself double-gated off by default (see handleCaPlayStart).
     if (isPlayStart) {
-      await handleCaPlayStart({ mediaId, title, mediaType: mediaType === 'episode' ? 'tv' : 'movie', serverName: Server?.title, machineId: Server?.uuid, watcherKey: Account?.id != null ? `plex:${Account.id}` : undefined });
+      // #183: Plex carries the played season/episode numbers on episode events
+      // (parentIndex/index) so the promotion path can resolve the configured unit; other webhook
+      // sources don't carry them and degrade to the whole series.
+      const seasonNumber = mediaType === 'episode' && Number.isFinite(Number(Metadata.parentIndex)) ? Number(Metadata.parentIndex) : null;
+      const episodeNumber = mediaType === 'episode' && Number.isFinite(Number(Metadata.index)) ? Number(Metadata.index) : null;
+      await handleCaPlayStart({ mediaId, title, mediaType: mediaType === 'episode' ? 'tv' : 'movie', serverName: Server?.title, machineId: Server?.uuid, watcherKey: Account?.id != null ? `plex:${Account.id}` : undefined, seasonNumber, episodeNumber });
     } else {
       audit('edge_playback_observed', { edge: 'california', source: 'plex', serverName: Server?.title || null, machineId: Server?.uuid || null, event });
     }

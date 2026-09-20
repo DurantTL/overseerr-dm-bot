@@ -114,7 +114,7 @@ function registerMemberRoutes(app, deps) {
   app.use('/member', memberLimiter);
 
   function setMemberCookie(req, res, discordId) {
-    const secure = req.secure || String(req.headers['x-forwarded-proto'] || '').includes('https');
+    const secure = CONFIG.COOKIE_SECURE;
     const value = signMemberSession(sessionSecret, discordId);
     res.setHeader('Set-Cookie', `${MEMBER_COOKIE}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/member; Max-Age=${Math.floor(MEMBER_SESSION_TTL_MS / 1000)}${secure ? '; Secure' : ''}`);
   }
@@ -235,9 +235,10 @@ function registerMemberRoutes(app, deps) {
     const handle = String(req.body?.handle || '');
     try {
       const { discordId } = await resolveHandle(handle);
-      if (!discordId) return res.status(404).send(loginPage({ error: `Couldn't find "${handle}" in the Discord server — check the spelling or use your numeric user ID.`, handle }));
-      const user = getUserByDiscordId(discordId);
-      if (!user) return res.status(403).send(loginPage({ error: 'That Discord account isn\'t linked to the media server yet — ask Caleb to link it first.', handle }));
+      // L1: same generic response whether the handle resolves or not — an unauthenticated
+      // caller must not be able to enumerate Discord membership / media-server linkage.
+      const user = discordId ? getUserByDiscordId(discordId) : null;
+      if (!discordId || !user) return res.send(loginPage({ verify: true, handle, error: 'If that account is linked, a login code was sent — check your DMs.' }));
       const recent = db.prepare("SELECT COUNT(*) AS c FROM member_login_codes WHERE discord_id = ? AND created_at > datetime('now', '-1 hour')").get(discordId).c;
       if (recent >= CODE_MAX_PER_HOUR) {
         return res.status(429).send(loginPage({ verify: true, handle, error: 'Too many codes sent — wait a bit and request a new one.' }));
@@ -304,11 +305,51 @@ function registerMemberRoutes(app, deps) {
       ['/member/report', '🛠️', 'Report a Problem', 'Bad audio, subs, wrong file…'],
       ['/member/stats', '📊', 'My Stats', 'Requests and watching.'],
       ['/member/keep', '📌', 'Keep List', 'Titles safe from cleanup.'],
+      ['/member/status', '💚', 'Server Status', 'Are Plex and the *arrs up?'],
     ].map(([href, icon, label, desc]) =>
       `<a class="member-nav-card" href="${href}"><div class="icon">${icon}</div><div class="label">${label}</div><div class="desc">${desc}</div></a>`).join('');
     res.send(page(req, {
       title: 'Home', active: '/member',
       body: `<h1>Hey, ${escapeHtml(name)} 👋</h1><div class="member-nav-cards">${cards}</div><h2>Your recent requests</h2>${recentHtml}`,
+    }));
+  });
+
+  // F13: member-facing status page — which services are reachable, at a glance.
+  // Best-effort snapshot with short timeouts; never blocks page render on a down service.
+  app.get('/member/status', requireMember, async (req, res) => {
+    const axios = require('axios');
+    const services = [
+      ['Plex', CONFIG.PLEX_URL, `${CONFIG.PLEX_URL}/identity`],
+      ['Radarr (HD)', CONFIG.RADARR_URL, `${CONFIG.RADARR_URL}/api/v3/system/status`],
+      ['Radarr 4K', CONFIG.RADARR_4K_URL, `${CONFIG.RADARR_4K_URL}/api/v3/system/status`],
+      ['Sonarr', CONFIG.SONARR_URL, `${CONFIG.SONARR_URL}/api/v3/system/status`],
+      ['Overseerr', CONFIG.OVERSEERR_URL, `${CONFIG.OVERSEERR_URL}/api/v1/status`],
+    ].filter(([, url]) => url);
+    const checks = await Promise.all(services.map(async ([label, url, pingUrl]) => {
+      const started = Date.now();
+      try {
+        const headers = {};
+        if (label.startsWith('Radarr')) headers['X-Api-Key'] = label === 'Radarr 4K' ? CONFIG.RADARR_4K_API_KEY : CONFIG.RADARR_API_KEY;
+        if (label === 'Sonarr') headers['X-Api-Key'] = CONFIG.SONARR_API_KEY;
+        if (label === 'Plex' && CONFIG.PLEX_TOKEN) headers['X-Plex-Token'] = CONFIG.PLEX_TOKEN;
+        await axios.get(pingUrl, { headers, timeout: 4000, validateStatus: s => s < 500 });
+        return { label, ok: true, ms: Date.now() - started };
+      } catch (err) {
+        return { label, ok: false, ms: Date.now() - started, error: err.code || err.message };
+      }
+    }));
+    const rows = checks.map(c =>
+      `<div class="member-status-row"><span class="dot ${c.ok ? 'ok' : 'down'}"></span>` +
+      `<span class="name">${escapeHtml(c.label)}</span>` +
+      `<span class="meta">${c.ok ? `${c.ms}ms` : `unreachable (${escapeHtml(String(c.error || 'error')).slice(0, 40)})`}</span></div>`
+    ).join('');
+    const allOk = checks.every(c => c.ok);
+    res.send(page(req, {
+      title: 'Server Status', active: '/member/status',
+      body: `<h1>Server Status</h1>` +
+        `<p class="${allOk ? '' : 'error'}">${allOk ? '✅ All services are reachable.' : '⚠️ Some services are unreachable — the admin has been notified.'}</p>` +
+        `<div class="member-status-list">${rows}</div>` +
+        `<style>.member-status-row{display:flex;align-items:center;gap:10px;padding:10px;background:#1b1b1b;border:1px solid #2c2c2c;border-radius:10px;margin-top:8px;}.member-status-row .dot{width:10px;height:10px;border-radius:50%;background:#666;}.member-status-row .dot.ok{background:#4caf50;}.member-status-row .dot.down{background:#f44336;}.member-status-row .name{font-weight:600;flex:1;}.member-status-row .meta{color:#999;font-size:.85rem;}</style>`,
     }));
   });
 

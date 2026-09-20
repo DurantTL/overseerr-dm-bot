@@ -16,6 +16,14 @@ backups
 
 # Logs
 npm-debug.log*
+logs/
+
+# Private keys / certificates — never commit
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
 
 # Local Claude Code tooling state (agent worktrees, etc.)
 .claude/

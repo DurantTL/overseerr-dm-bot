@@ -8,21 +8,12 @@ try { validateConfig(); } catch (err) { configError = err; }
 if (configError) {
   startConfigErrorServer(configError);
 } else {
-  // Guided setup is installed before index.js so it can extend the existing Discord command
-  // registration and intercept only setup-owned interactions. Layers are installed from broadest
-  // to most specific; the later wrappers get first refusal and otherwise pass through to the
-  // existing index.js listener unchanged. The Request Media wizard (src/setup-request-ui.js) no
-  // longer patches Client.prototype.emit here — it registers explicitly inside index.js's own
-  // interactionCreate listener instead, and setup-discord-extension.js's catch-all defers to it by
-  // name (see isOwnedInteraction there) so button routing order is unchanged. It still forwards
-  // its final choice down to the real /request handler as a synthetic interaction so the original
-  // request gate remains the one authoritative implementation.
-  const { installSetupDiscordExtension } = require('./src/setup-discord-extension');
-  installSetupDiscordExtension();
-  const { installSetupDiscordEnhancements } = require('./src/setup-discord-enhancements');
-  installSetupDiscordEnhancements();
-  const { installSetupDeviceState } = require('./src/setup-device-state');
-  installSetupDeviceState();
+  // Guided setup no longer patches Discord prototypes. The setup features
+  // (src/setup-device-state.js, src/setup-discord-enhancements.js,
+  // src/setup-discord-extension.js, src/setup-request-ui.js) register explicitly inside
+  // index.js's own interactionCreate listener, chained most-specific first
+  // (device-state > enhancements > extension, after media-panel/support-case/request-ui),
+  // and their slash commands (/setup, /send-setup) live in index.js's slashCommands array.
 
   // Existing welcome/completion DMs are emitted by index.js. Install this bridge before index.js
   // so those messages automatically gain the Setup / Troubleshooting entry point without

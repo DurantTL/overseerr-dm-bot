@@ -5,6 +5,13 @@
 function createTierAgentAuth({ getTierAgentTokenHash, sha256, safeEqual, audit }) {
   return (req, res, next) => {
     const node = String(req.params.node || '').toLowerCase();
+    // L4: validate the node name at the auth boundary — it is interpolated into install.sh.tmpl
+    // which operators pipe to sh as root. Names are validated at creation too, but the route
+    // must not trust that a future token-issuance path keeps the invariant.
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(node)) {
+      audit('tier_agent_auth_failed', { node: '(invalid)', ip: req.ip || req.socket?.remoteAddress || 'unknown' });
+      return res.status(400).json({ error: 'Invalid node name' });
+    }
     const m = /^Bearer\s+(\S+)$/.exec(String(req.headers.authorization || ''));
     const storedHash = getTierAgentTokenHash(node);
     if (!m || !storedHash || !safeEqual(sha256(m[1]), storedHash)) {

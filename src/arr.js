@@ -100,12 +100,16 @@ async function fetchDiskSpaceReport() {
   if (wanted.length) {
     const norm = p => (p.length > 1 ? p.replace(/\/+$/, '') : p);
     const related = (a, b) => { a = norm(a); b = norm(b); return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`); };
-    disks = disks
+    const filtered = disks
       .filter(d => wanted.some(w => related(d.path, w)))
       .map(d => {
         const moreSpecific = wanted.find(w => norm(w).startsWith(`${norm(d.path)}/`));
         return moreSpecific ? { ...d, displayPath: norm(moreSpecific) } : d;
       });
+    // If the allowlist matches nothing, the configured paths likely use a different
+    // mount perspective than the *arrs report (e.g. bot sees /mnt/raid, Radarr sees
+    // /share). Fall back to the unfiltered list rather than reporting no disks.
+    disks = filtered.length ? filtered : disks;
   }
   return { disks, errors, sourceCount: sources.length, reportedCount };
 }

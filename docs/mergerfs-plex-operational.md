@@ -155,11 +155,36 @@ trivially reversible:
 - [ ] **Local play:** start a title you know is cached locally. Confirm it plays and that
       `iostat`/`nethogs` shows disk reads, not tunnel traffic.
 - [ ] **Remote play:** start a title that is **only** on the master (not cached). Confirm it plays
-      through the tunnel (expect tunnel bandwidth, higher start latency). This is the case that
-      previously failed — it must now succeed.
+      through the tunnel and record the numbers against **Expected remote-playback numbers** above.
+      This is the case that previously failed — it must now succeed.
 - [ ] **Play event fires:** confirm Tautulli/Plex emits a play-*start* for the remote play (this is
       the signal the bot's promotion path keys off). With promotion still off, nothing is copied yet —
       you're only proving the event exists.
+
+### Expected remote-playback numbers (bandwidth/latency thresholds)
+
+The runbook's code and diagnostics can't tell you what your tunnel actually delivers — measure it once
+per box and record the numbers here, so the next edge box has something to compare against. The table
+below ships with placeholders **on purpose**: fill in every TBD cell from live measurements during
+the pilot. Do not copy PH's numbers to California — different tunnels, different boxes.
+
+| Metric | Minimum usable | Expected | Investigate if worse |
+|---|---|---|---|
+| Sustained throughput over the tunnel | **TBD — fill in from live measurements** (enough for a direct-play 1080p stream of your heaviest typical file without pauses) | **TBD — fill in from live measurements** (roughly the tunnel's line rate between the edge box and the master) | Pauses/buffering on files that played fine during the pilot, or throughput below minimum usable — **TBD — fill in from live measurements** |
+| Play-start latency for a master-only title (press play → first frame) | Starts within **TBD — fill in from live measurements** | **TBD — fill in from live measurements** (tunnel round-trips + Plex probing the remote file) | Starts taking longer than **TBD — fill in from live measurements**, or timing out |
+| Syncthing sync lag (master change → edge "Up to date") | Converges within **TBD — fill in from live measurements** | **TBD — fill in from live measurements** after the master scan | Folders stuck "syncing" with no progress for longer than **TBD — fill in from live measurements** |
+
+How to measure each:
+
+- **Throughput:** play a master-only title and watch `nethogs`/`nload` on the edge box through the
+  first minutes — note the *sustained* figure, not the burst.
+- **Start latency:** press play on a master-only title with a stopwatch; note the time to first
+  frame. Do it 3× and take the median.
+- **Sync lag:** Syncthing GUI on the edge box → folder status; note the time from a master-side
+  change to "Up to date".
+
+If a metric is worse than "minimum usable", that box's pilot is a **fail** — stop, fix the tunnel,
+re-run, and attach the new evidence. This is a go/no-go gate, not a tuning exercise.
 
 ### 2.5 Remote-master outage test (the failure mode that matters)
 
@@ -269,7 +294,8 @@ fallback stream, not a missing file.
 Repeat §2.3–§2.6 on California:
 
 - temporary `TEST — Merged` libraries on `/mnt/plex-library`,
-- verify local + remote playback and that a remote play emits an event,
+- verify local + remote playback and that a remote play emits an event (same thresholds as §2.4 —
+  fill in California's own numbers, don't copy PH's),
 - **outage test:** drop `/mnt/master-ro` and confirm RAID-local titles still play and the box doesn't
   hang,
 - reconcile: here "DB vs disk" is the tier planner's converged state vs the agent's reported
@@ -297,6 +323,49 @@ promotion when §3.4's bot work is done. **Do not** point Syncthing or the tier 
 path to work around the missing pieces.
 
 ---
+
+---
+
+## Pilot-evidence checklist (attach to #181)
+
+Copy the block below **per box** (PH first, then California) and paste the filled-in copy as a comment
+on #181. Redact API tokens, tunnel keys, public IPs, and anything else you wouldn't post — the shape
+of the evidence matters, not the secrets.
+
+```text
+## #181 pilot evidence — <PH | California> — <YYYY-MM-DD>
+
+- [ ] /doctor edge-diagnostics output (all checks green, or list the red ones):
+      <paste the "Merged mount (<node>)" block; redact hostnames/tokens>
+
+- [ ] Device-number precedence check (§2.2):
+      cached title:     <check_branch output — must say LOCAL>
+      master-only title: <check_branch output — must say REMOTE>
+
+- [ ] Remote-play start event (§2.4 / §3.3):
+      title played:   <title>
+      merged path Plex reported: <e.g. /mnt/plex-library/Movies/<folder>/<file>.mkv>
+      play pressed at: <HH:MM:SS>
+      first frame at:  <HH:MM:SS>
+      play-start event seen in Tautulli/Plex at: <HH:MM:SS>
+
+- [ ] Outage test (§2.5 / §3.3):
+      cached titles still played: <yes/no>
+      uncached titles failed cleanly (no hang): <yes/no>
+      box responsive during outage: <yes/no>
+      remote mount restored, uncached titles play again: <yes/no>
+
+- [ ] Thresholds measured ("Expected remote-playback numbers"):
+      sustained throughput: <Mbps>
+      play-start latency (median of 3): <s>
+      Syncthing sync lag: <time>
+
+Notes: <anything odd — hangs, stalls, surprises>
+```
+
+Mark a box "pilot complete" only when every box is checked and the measured thresholds are at or
+better than "minimum usable". A box that fails a threshold is a failed pilot for that box — fix the
+tunnel, re-run, and attach the new evidence.
 
 ## Rollback (either box)
 

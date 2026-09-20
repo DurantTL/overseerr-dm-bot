@@ -8,7 +8,8 @@
     "test:docs": "node scripts/check-docs.js",
     "test:helpers": "node scripts/test-security.js",
     "lint": "eslint .",
-    "doctor:edge": "node scripts/check-edge-transfer.js"
+    "doctor:edge": "node scripts/check-edge-transfer.js",
+    "smoke": "node scripts/smoke-public-origin.js"
   },
   "dependencies": {
     "@simplewebauthn/browser": "^13.3.0",

@@ -81,8 +81,8 @@ function buildEdgeTierNodeMap(rawMap, legacyCaNames = [], legacyNode = 'californ
 // while Syncthing is still pulling it, has partially failed, or the agent hasn't converged yet, and
 // in every one of those cases playback is still on the remote fallback. completionPct is the
 // node's own Syncthing GET /rest/db/completion?folder=...&device=... percentage for the title's
-// folder when the caller has it (null = not available yet; see the PR notes on this being an
-// interim signal until the agent reports it). Byte comparison against completeFrac is the
+// folder (reported by this agent's collectFolderCompletion and stored on the node's tier plan;
+// null = not reported yet or the snapshot is stale). Byte comparison against completeFrac is the
 // always-available fallback proof (mirrors tier.js's own physicalTitleBytes / completeFrac use).
 function decideCaLocality({ presentBytes = 0, expectedBytes = 0, completionPct = null, completeFrac = 0.98 }) {
   if (!(expectedBytes > 0)) return { local: false, reason: 'unknown_size' };
@@ -90,6 +90,40 @@ function decideCaLocality({ presentBytes = 0, expectedBytes = 0, completionPct =
   if (completionPct != null && completionPct < 100) return { local: false, reason: 'syncthing_incomplete' };
   if (presentBytes < expectedBytes * completeFrac) return { local: false, reason: 'partial' };
   return { local: true, reason: 'synced' };
+}
+
+// ---- capacity + interim whole-series TV caps (§182 follow-ups) ----
+// A play-promotion pin holds real disk on a constrained node for days, so pinning is bounded by
+// two pure pre-checks, both audited as skip reasons in planCaPlayPromotion below. Both are inert
+// while the double gate is on (audit_only/disabled return first), and both fail CLOSED on
+// unmeasurable input — pinning bytes we can't measure is exactly the blast radius they bound.
+
+// Byte budget for play-promotion pins on a node (operator-configured). 0/missing/negative =
+// not configured → the check passes OPEN and the planner's own eviction math remains the real
+// capacity guard; an unknown pin size fails closed, because "can't prove it fits" is not "fits".
+function promotionFitsBudget({ nodeBudgetBytes = 0, pinBytes = 0 }) {
+  if (!(nodeBudgetBytes > 0)) return { fits: true, reason: 'budget_not_configured' };
+  if (!(pinBytes > 0)) return { fits: false, reason: 'pin_size_unknown' };
+  return pinBytes <= nodeBudgetBytes
+    ? { fits: true, reason: 'fits_budget' }
+    : { fits: false, reason: 'over_budget' };
+}
+
+const GB_BYTES = 1024 ** 3;
+
+// Interim whole-series cap: until #183 wires season-level granularity, a TV promotion pins the
+// WHOLE series — so bound it by an explicit per-series size cap (TIER_TV_PROMOTE_MAX_SERIES_GB).
+// Movies are single-unit and always pass; a disabled cap (<= 0) passes everything open. An
+// unknown TV-series size fails closed (skip), because promoting an unmeasured whole series is
+// the blast radius this cap exists to bound. Season-level promotion replaces this once #183
+// lands; until then this is the issue's "explicitly capped" interim guarantee.
+function tvPromotionSizeCapped({ mediaType, sizeBytes = 0, maxSeriesGb = 0 }) {
+  if (mediaType !== 'tv') return { capped: false, reason: 'not_tv' };
+  if (!(maxSeriesGb > 0)) return { capped: false, reason: 'cap_disabled' };
+  if (!(sizeBytes > 0)) return { capped: true, reason: 'tv_size_unknown' };
+  return sizeBytes > maxSeriesGb * GB_BYTES
+    ? { capped: true, reason: 'tv_series_over_cap' }
+    : { capped: false, reason: 'tv_series_under_cap' };
 }
 
 // ---- the promotion decision itself ----
@@ -102,6 +136,8 @@ function decideCaLocality({ presentBytes = 0, expectedBytes = 0, completionPct =
 //   hasFullCopy        — the title actually exists on an enabled full master node; never promote
 //                         something the master can't serve (mirrors planTier's noFullCopy guard)
 //   alreadyLocal       — decideCaLocality(...).local
+//   fitsBudget         — promotionFitsBudget(...).fits (pass budgetReason for the audit trail)
+//   tvSizeCapped       — tvPromotionSizeCapped(...).capped (pass tvCapReason for the audit trail)
 //   lastPromoteAt/cooldownMs — per-(node,title) debounce, mirrors PH's promote_last: cooldown
 //   viewerActivePins/maxPinsPerViewer — bounded per-viewer cap: a viewer may only hold this many
 //                         SIMULTANEOUS active pins on a node at once (distinct from PH's daily
@@ -115,6 +151,10 @@ function planCaPlayPromotion({
   enabled,
   hasFullCopy,
   alreadyLocal,
+  fitsBudget = true,
+  budgetReason = null,
+  tvSizeCapped = false,
+  tvCapReason = null,
   lastPromoteAt = 0,
   now = Date.now(),
   cooldownMs = 0,
@@ -126,6 +166,8 @@ function planCaPlayPromotion({
   if (!enabled) return { action: 'skip', reason: 'disabled' };
   if (!hasFullCopy) return { action: 'skip', reason: 'no_full_copy' };
   if (alreadyLocal) return { action: 'skip', reason: 'already_local' };
+  if (!fitsBudget) return { action: 'skip', reason: budgetReason || 'over_budget' };
+  if (tvSizeCapped) return { action: 'skip', reason: tvCapReason || 'tv_series_over_cap' };
   if (lastPromoteAt && cooldownMs > 0 && (now - lastPromoteAt) < cooldownMs) return { action: 'skip', reason: 'cooldown' };
   if (!rateLimitOk) return { action: 'skip', reason: 'rate_limited' };
   if (viewerActivePins >= maxPinsPerViewer) return { action: 'skip', reason: 'viewer_pin_cap' };
@@ -171,10 +213,13 @@ function computeFinalIgnoreLines({ plannerLines = [], legacyLines = [], pinnedLi
 
 module.exports = {
   DAY_MS,
+  GB_BYTES,
   resolveEdgeTierNode,
   parseEdgeTierNodeMap,
   buildEdgeTierNodeMap,
   decideCaLocality,
+  promotionFitsBudget,
+  tvPromotionSizeCapped,
   planCaPlayPromotion,
   computePlayPin,
   activePlayPins,

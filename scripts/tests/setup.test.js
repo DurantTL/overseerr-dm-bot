@@ -52,14 +52,14 @@ test('setup: PH users receive device picker and connection actions', () => {
   assert.match(setupIntro(state), /PH Server Connection|Philippines server/);
   assert.ok(setupSummaryLines(state).some(line => /PH device setup/.test(line)));
 
-  const actions = setupActions(state, { PH_PLEX_URL: 'http://ph-server.end-cobra.ts.net:32400' });
+  const actions = setupActions(state, { PH_PLEX_URL: 'http://ph-server.example.ts.net:32400' });
   const ids = actions.map(a => a.id);
   assert.ok(ids.includes('ph_device_phone'));
   assert.ok(ids.includes('ph_device_appletv'));
   assert.ok(ids.includes('ph_device_androidtv'));
   assert.ok(ids.includes('ph_device_computer'));
   assert.ok(ids.includes('test_ph_connection'));
-  assert.equal(actions.find(a => a.id === 'open_ph_plex').url, 'http://ph-server.end-cobra.ts.net:32400');
+  assert.equal(actions.find(a => a.id === 'open_ph_plex').url, 'http://ph-server.example.ts.net:32400');
 
   const quickIds = quickActions(state).map(a => a.id);
   assert.ok(quickIds.includes('ph_connection'));

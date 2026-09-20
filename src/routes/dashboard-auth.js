@@ -13,7 +13,7 @@ function readCookie(req, name) {
   return undefined;
 }
 
-function createDashboardSession({ secret, ttlHours, now = Date.now }) {
+function createDashboardSession({ secret, ttlHours, now = Date.now, cookieSecure = false }) {
   function sign(ttlMs = ttlHours * 3600000) {
     const payload = Buffer.from(JSON.stringify({ exp: now() + ttlMs })).toString('base64url');
     const signature = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
@@ -37,7 +37,7 @@ function createDashboardSession({ secret, ttlHours, now = Date.now }) {
 
   function setCookie(req, res) {
     const ttlMs = ttlHours * 3600000;
-    const secure = req.secure || (req.headers['x-forwarded-proto'] || '').includes('https');
+    const secure = cookieSecure;
     res.setHeader('Set-Cookie', `dm_session=${sign(ttlMs)}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=${Math.floor(ttlMs / 1000)}${secure ? '; Secure' : ''}`);
   }
 
@@ -148,7 +148,7 @@ function registerDashboardAuthRoutes(app, {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
     if (!listPasskeys().length) return res.status(404).json({ error: 'No passkeys are enrolled.' });
     const binding = crypto.randomBytes(32).toString('base64url');
-    const secure = req.secure || (req.headers['x-forwarded-proto'] || '').includes('https');
+    const secure = config.COOKIE_SECURE;
     try {
       const options = await passkeyService.authenticationOptions(binding);
       res.setHeader('Cache-Control', 'no-store');

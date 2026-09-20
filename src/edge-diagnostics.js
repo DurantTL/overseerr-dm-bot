@@ -4,7 +4,7 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const axios = require('axios');
 const { CONFIG } = require('./config');
-const { listTierNodes, getTierPlan } = require('./db');
+const { listTierNodes, getTierPlan, countAuditActionsSince } = require('./db');
 
 function run(command, args, timeoutMs = 15000) {
   return new Promise(resolve => {
@@ -63,6 +63,21 @@ async function runEdgeDiagnostics({ live = true } = {}) {
     CONFIG.EDGE_TIER_NODE_MAP.length
       ? `${CONFIG.EDGE_TIER_NODE_MAP.length} identity→node mapping(s) (EDGE_TIER_NODE_MAP / CA_EDGE_SERVER_NAMES)`
       : 'no identity resolves to a tier node — a California play event can never be attributed',
+  ));
+
+  // §182 promotion telemetry — a read-only 24h rollup of the audit trail handleCaPlayStart
+  // writes: observed playbacks vs would-pin / pinned / deferred / rate-limited decisions. Purely
+  // informational: a quiet gate shows zeros, which is itself the signal that the double gate is
+  // holding (nothing durable can happen while CA_PLAY_PROMOTE_AUDIT_ONLY is true).
+  const promoActions = ['edge_playback_observed', 'edge_promote_would_pin', 'edge_promote_pinned', 'edge_promote_publish_deferred', 'edge_promote_rate_limited'];
+  const promoCounts = countAuditActionsSince(promoActions, Date.now() - 24 * 3600000);
+  const promoTotal = promoActions.reduce((s, a) => s + (promoCounts[a] || 0), 0);
+  checks.push(check(
+    'California promotion activity (24h)',
+    'ok',
+    promoTotal
+      ? promoActions.map(a => `${a.replace(/^edge_/, '')}=${promoCounts[a]}`).join(', ')
+      : 'no play-triggered promotion activity in the last 24h (expected while the double gate holds)',
   ));
 
   const sourceRoot = CONFIG.TIER_SOURCE_ROOT || CONFIG.PATH_REMAP_TO || CONFIG.RAID_PATH;
