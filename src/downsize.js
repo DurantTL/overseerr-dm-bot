@@ -169,18 +169,40 @@ async function executeDownsizeSwap({ offer, deps }) {
   const sleepMs = deps.sleepMs || (ms => new Promise(r => setTimeout(r, ms)));
   const actor = { actorDiscordId: offer.actorDiscordId, title: offer.movieTitle, arrId: offer.movieId, source: offer.sourceLabel };
 
-  // Safety: the staged file must still be there.
+  // Safety: the offer is valid only for the exact staged file previewed by the admin.
+  // Reject path traversal, .incoming, and symlinks escaping staging before touching Radarr.
+  const stagingRoot = String(CONFIG.GRAB_STAGING_PATH || '');
+  let resolvedRoot = stagingRoot;
+  let resolvedReplacement = offer.newPath;
+  try {
+    if (typeof fs.realpathSync === 'function') {
+      resolvedRoot = fs.realpathSync(stagingRoot);
+      resolvedReplacement = fs.realpathSync(offer.newPath);
+    }
+  } catch (_e) { /* statSync below gives the clearer replacement_gone result */ }
+  const rel = stagingRoot ? path.relative(resolvedRoot, resolvedReplacement) : '';
+  if (!stagingRoot || !rel || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel) || rel.split(path.sep).includes('.incoming')) {
+    audit('downsize_aborted', { ...actor, reason: 'unsafe_replacement_path', newPath: offer.newPath });
+    return { ok: false, reason: 'unsafe_replacement_path', newPath: offer.newPath };
+  }
+
   let stagedStat = null;
   try { stagedStat = fs.statSync(offer.newPath); } catch (_e) { /* gone */ }
   if (!stagedStat?.isFile()) {
     audit('downsize_aborted', { ...actor, reason: 'replacement_gone', newPath: offer.newPath });
     return { ok: false, reason: 'replacement_gone', newPath: offer.newPath };
   }
-  // B4: size re-check — if the staged file changed size since the preview, it may be a
-  // different file (re-download, partial write). Abort rather than swap in the wrong bytes.
-  if (offer.newSize && Math.abs(stagedStat.size - offer.newSize) > 1024) {
+  // Exact byte equality is intentional: a one-byte change can be a different or incomplete
+  // replacement. The preview's stat size is the consent boundary for this destructive swap.
+  const expectedNewSize = Number(offer.newSize);
+  if (!Number.isFinite(expectedNewSize) || expectedNewSize <= 0 || stagedStat.size !== expectedNewSize) {
     audit('downsize_aborted', { ...actor, reason: 'size_changed', newPath: offer.newPath, expectedSize: offer.newSize, actualSize: stagedStat.size });
     return { ok: false, reason: 'size_changed', newPath: offer.newPath, expectedSize: offer.newSize, actualSize: stagedStat.size };
+  }
+  const expectedOldSize = Number(offer.oldSize);
+  if (!Number.isFinite(expectedOldSize) || expectedOldSize <= 0 || stagedStat.size >= expectedOldSize) {
+    audit('downsize_aborted', { ...actor, reason: 'not_smaller', newPath: offer.newPath, oldSize: offer.oldSize, actualSize: stagedStat.size });
+    return { ok: false, reason: 'not_smaller', newPath: offer.newPath, oldSize: offer.oldSize, actualSize: stagedStat.size };
   }
 
   // Step 1: delete the existing file via the Radarr API.

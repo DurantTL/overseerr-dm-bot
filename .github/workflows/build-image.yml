@@ -60,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     permissions:
-      contents: write # write only for `gh release create` on a vX.Y.Z tag push; read otherwise
+      contents: read
       packages: write
     steps:
       - name: Checkout
@@ -126,8 +126,15 @@ jobs:
           sbom: true
           provenance: true
 
+  release:
+    # Only version-tag pushes need repository write permission; image builds never do.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+    steps:
       - name: Create GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

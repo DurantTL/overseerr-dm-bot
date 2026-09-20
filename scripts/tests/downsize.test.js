@@ -148,7 +148,12 @@ function stubDeps(overrides = {}) {
         post: async (url, body, opts) => { calls.post.push({ url, body, opts }); return overrides.postResult || { data: { id: 789 } }; },
       },
       CONFIG: { GRAB_STAGING_PATH: '/staging', GRAB_IMPORT_PATH: '/import' },
-      radarrGetFrom: async () => { calls.get.push(1); return overrides.movies || []; },
+      radarrGetFrom: async () => {
+        calls.get.push(1);
+        const responses = overrides.movieResponses || [overrides.movies || []];
+        const index = Math.min(calls.get.length - 1, responses.length - 1);
+        return responses[index];
+      },
       audit: (action, data) => { calls.audits.push({ action, data }); },
       sleepMs: async () => {},
       ...overrides.depOverrides,
@@ -181,6 +186,24 @@ test('downsize: executeDownsizeSwap — missing staged file aborts before any AP
   assert.strictEqual(calls.delete.length, 0, 'no DELETE when the replacement is gone');
   assert.strictEqual(calls.post.length, 0, 'no import scan when the replacement is gone');
   assert.ok(calls.audits.some(a => a.action === 'downsize_aborted'), 'abort is audited');
+});
+
+test('downsize: executeDownsizeSwap — unsafe staged path aborts before any API call', async () => {
+  const { calls, deps } = stubDeps({ files: { '/elsewhere/Dune.mkv': 2.9 * 1024 ** 3 } });
+  const result = await executeDownsizeSwap({ offer: { ...baseOffer, newPath: '/elsewhere/Dune.mkv' }, deps });
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'unsafe_replacement_path');
+  assert.strictEqual(calls.delete.length, 0);
+  assert.strictEqual(calls.post.length, 0);
+});
+
+test('downsize: executeDownsizeSwap — even one changed byte aborts before delete', async () => {
+  const { calls, deps } = stubDeps({ files: { [baseOffer.newPath]: baseOffer.newSize + 1 } });
+  const result = await executeDownsizeSwap({ offer: baseOffer, deps });
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'size_changed');
+  assert.strictEqual(calls.delete.length, 0);
+  assert.strictEqual(calls.post.length, 0);
 });
 
 test('downsize: executeDownsizeSwap — happy path deletes then scans then verifies', async () => {

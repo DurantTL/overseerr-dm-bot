@@ -6,6 +6,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 
 const { pruneAcknowledged, unacknowledgedTorrents, findUnprocessableTorrents, matchTorrentsByName, adoptTargetForLabel, remoteSubpathFor, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('../../src/adopt');
 const { CONFIG } = require('../../src/config');
@@ -124,6 +126,16 @@ test('adopt: bulkTargetChoices', () => {
   assert.deepStrictEqual(bulkTargetChoices([{ label: 'sonarr' }, { label: 'radarr' }], null, cfg), ['sonarr', 'radarr'], 'mixed labels force an explicit choice');
   assert.deepStrictEqual(bulkTargetChoices([{ label: '' }], null, { ...cfg, RADARR_URL: '' }), ['sonarr'], 'only configured arrs are offered');
   assert.deepStrictEqual(bulkTargetChoices([], null, cfg), ['sonarr', 'radarr'], 'an empty cohort still never invents a target');
+});
+
+test('adopt: Discord target choices include Radarr 4K', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'index.js'), 'utf8');
+  const start = source.indexOf("new SlashCommandBuilder().setName('rtorrent')");
+  const end = source.indexOf("addSubcommand(s => s.setName('ignore')", start);
+  assert.ok(start >= 0 && end > start, 'rTorrent command definition exists');
+  const definition = source.slice(start, end);
+  assert.match(definition, /\{ name: 'radarr-4k', value: 'radarr-4k' \}/,
+    'manual Discord adoption can select the configured Radarr 4K target');
 });
 
 test('adopt: d.multicall2 listing against a mock XML-RPC endpoint', async () => {
