@@ -9868,7 +9868,7 @@ async function handleButton(interaction) {
     const offer = takeGrabOffer(parts[0]);
     if (!offer) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
     const torrent = offer.candidates?.[Number(parts[1])];
-    const target = ['sonarr', 'radarr'].includes(parts[2]) ? parts[2] : null;
+    const target = ['sonarr', 'radarr', 'radarr-4k'].includes(parts[2]) ? parts[2] : null;
     if (!torrent || !target) return interaction.update({ content: 'ℹ️ That option no longer exists.', components: [] });
     await interaction.deferUpdate();
     const result = await executeAdoption(torrent, target, {
@@ -9907,7 +9907,7 @@ async function handleButton(interaction) {
   if (action === 'adopt_bulk') {
     const offer = takeGrabOffer(parts[0]);
     if (!offer) return interaction.update({ content: 'ℹ️ Already handled (or expired).', components: [] });
-    const target = ['sonarr', 'radarr'].includes(parts[1]) ? parts[1] : null;
+    const target = ['sonarr', 'radarr', 'radarr-4k'].includes(parts[1]) ? parts[1] : null;
     const candidates = offer.candidates || [];
     if (!target || !candidates.length) return interaction.update({ content: 'ℹ️ That option no longer exists.', components: [] });
     await interaction.deferUpdate();
