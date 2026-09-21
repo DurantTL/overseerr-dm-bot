@@ -833,16 +833,44 @@ function registerAgentApiRoutes(app, deps) {
     try {
       fs.mkdirSync(destination, { recursive: true });
       const files = fs.readdirSync(srcPath);
+      // Optional ownership fix: if MEDIA_UID/MEDIA_GID are set, chown copied files
+      // so the arr containers (e.g. Sonarr running as abc:users) can manage them.
+      // Best-effort: if chown fails (no permission), log and continue — the files
+      // are still world-readable (644) so the arr can import them.
+      const mediaUid = config.MEDIA_UID ? parseInt(config.MEDIA_UID, 10) : null;
+      const mediaGid = config.MEDIA_GID ? parseInt(config.MEDIA_GID, 10) : null;
+      const wantChown = Number.isInteger(mediaUid) && Number.isInteger(mediaGid);
+      let chowned = 0;
+      let chownFailed = false;
       let copied = 0;
       for (const file of files) {
         const srcFile = path.join(srcPath, file);
         const destFile = path.join(destination, file);
         if (fs.statSync(srcFile).isFile()) {
           fs.copyFileSync(srcFile, destFile);
+          // Ensure world-readable so the arr can import regardless of ownership
+          try { fs.chmodSync(destFile, 0o644); } catch {}
+          if (wantChown) {
+            try {
+              fs.chownSync(destFile, mediaUid, mediaGid);
+              chowned++;
+            } catch {
+              chownFailed = true;
+            }
+          }
           copied++;
         }
       }
-      audit('agent_api_seedbox_import_force', { ...agentActor(req), ok: true, folder, destination, copied, target });
+      // Also chown the destination directory itself so the arr can write into it
+      if (wantChown) {
+        try {
+          fs.chownSync(destination, mediaUid, mediaGid);
+          try { fs.chmodSync(destination, 0o755); } catch {}
+        } catch {
+          chownFailed = true;
+        }
+      }
+      audit('agent_api_seedbox_import_force', { ...agentActor(req), ok: true, folder, destination, copied, target, chowned, chownFailed });
       // Trigger Sonarr rescan if target is sonarr
       let scanResult = null;
       if (target === 'sonarr' && config.SONARR_URL && config.SONARR_API_KEY) {
@@ -852,12 +880,21 @@ function registerAgentApiRoutes(app, deps) {
           scanResult = 'Files copied. Trigger Refresh & Scan in Sonarr UI for the series.';
         } catch {}
       }
+      let message = `Copied ${copied} files to ${destination}.`;
+      if (wantChown) {
+        message += chownFailed
+          ? ` Ownership fix partially failed (bot lacks chown permission); files are world-readable.`
+          : ` Ownership set to ${mediaUid}:${mediaGid} (${chowned} files).`;
+      }
+      if (scanResult) message += ` ${scanResult}`;
       return res.json({
         ok: true,
         folder,
         destination,
         copied,
-        message: `Copied ${copied} files to ${destination}. ${scanResult || ''}`.trim(),
+        chowned,
+        chownFailed,
+        message: message.trim(),
       });
     } catch (err) {
       audit('agent_api_seedbox_import_force', { ...agentActor(req), ok: false, folder, destination, error: err.message?.slice(0, 200) });
