@@ -691,7 +691,8 @@ function registerAgentApiRoutes(app, deps) {
 
     const child = spawn(rcloneBinary, ['copy', srcPath, destPath, ...flags], {
       stdio: ['ignore', 'ignore', 'pipe'],
-      detached: true,
+      // Note: NOT using detached:true — it causes issues in Docker when Node is PID 1.
+      // unref() is enough to let the HTTP response return while rclone continues.
     });
     let stderrTail = '';
     child.stderr.on('data', d => { stderrTail += d; if (stderrTail.length > 4000) stderrTail = stderrTail.slice(-4000); });
