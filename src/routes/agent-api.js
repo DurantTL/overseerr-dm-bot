@@ -618,7 +618,10 @@ function registerAgentApiRoutes(app, deps) {
   // call /api/v1/import-scan with source=seedbox to have Sonarr/Radarr import it.
   // The copy is resumable (rclone skips already-transferred files), so re-running after
   // a failure is safe.
-  app.post('/api/v1/seedbox/sync', auth, writeLimiter, guarded(async (req, res) => {
+  // NOTE: This endpoint bypasses the `guarded` wrapper (which returns a generic 502)
+  // so that handler crashes return the actual error message for debugging.
+  app.post('/api/v1/seedbox/sync', auth, writeLimiter, async (req, res) => {
+    try {
     const remote = (config.GRAB_RCLONE_REMOTE || '').replace(/\/$/, '');
     const stagingPath = (config.GRAB_STAGING_PATH || '').replace(/\/$/, '');
     if (!remote || !stagingPath) {
@@ -727,7 +730,18 @@ function registerAgentApiRoutes(app, deps) {
       status: 'started',
       message: `Sync of \`${clean}\` started in background. Poll /api/v1/seedbox/sync-status?folder=${encodeURIComponent(clean)} for completion.`,
     });
-  }));
+    } catch (err) {
+      // Defensive: return the actual error instead of crashing to a generic 502.
+      // This helps diagnose why the sync endpoint fails.
+      try {
+        audit('agent_api_seedbox_sync', { ...agentActor(req), ok: false, reason: 'handler_crashed', error: String(err.message || err).slice(0, 500) });
+      } catch {}
+      return res.status(500).json({
+        error: `Sync handler failed: ${err.message || String(err)}`,
+        stack: String(err.stack || '').split('\n').slice(0, 5).join('\n'),
+      });
+    }
+  });
 
   // Seedbox sync status: check if a folder is currently syncing, failed, or done.
   // Returns: { status: 'in-progress'|'failed'|'done'|'not-started', ... }
