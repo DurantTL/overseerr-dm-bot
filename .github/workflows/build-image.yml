@@ -91,7 +91,7 @@ jobs:
       # be discoverable only after it already reached GHCR and Watchtower auto-updated the host.
       # The publish step below reuses this build's cache, so it does not pay for the build twice.
       - name: Build (local, for scanning)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           push: false
@@ -112,7 +112,7 @@ jobs:
           exit-code: '1'
 
       - name: Build and push
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           push: true
