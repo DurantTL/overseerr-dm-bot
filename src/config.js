@@ -378,6 +378,15 @@ const CONFIG = (() => {
     ? process.env.COOKIE_SECURE === '1'
     : (process.env.DASHBOARD_PUBLIC_URL || (process.env.TUNNEL_DOMAIN ? `https://${process.env.TUNNEL_DOMAIN}` : '')).startsWith('https://'),
   RAID_PATH: process.env.RAID_PATH || '/mnt/raid',
+  // Extra roots POST /api/v1/seedbox/import-force may copy into, comma-separated. The endpoint
+  // already allows RAID_PATH/PATH_REMAP_TO/TIER_SOURCE_ROOT and the *arr import+staging paths;
+  // this covers a library root none of those name. Anything outside every root is a 400 — the
+  // destination is a caller-supplied absolute path that gets created and written over, so it is
+  // contained like the download routes' resolveSafeMediaPath().
+  IMPORT_FORCE_DEST_ROOTS: String(process.env.IMPORT_FORCE_DEST_ROOTS || '')
+    .split(',')
+    .map(root => root.trim())
+    .filter(Boolean),
   PATH_REMAP_FROM: process.env.PATH_REMAP_FROM || '',
   PATH_REMAP_TO: process.env.PATH_REMAP_TO || process.env.RAID_PATH || '/mnt/raid',
   TAUTULLI_WEBHOOK_SECRET: process.env.TAUTULLI_WEBHOOK_SECRET || '',

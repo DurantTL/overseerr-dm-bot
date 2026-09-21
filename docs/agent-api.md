@@ -24,6 +24,9 @@ errors, and downstream secrets stay in outbound headers.
 | POST | `/api/v1/requests/:id/retry` | Re-run the direct-add repair for a **failed** Seerr request (adds to the arr bypassing Seerr, starts a search). 404 unless the request is currently failed. |
 | POST | `/api/v1/search/season` | Force a season search: `{ series, season, force? }`. `series` is a Sonarr id or an unambiguous title; same missing-episode/cooldown gates and AvistaZ-vs-Sonarr routing as the dashboard's Search Now button. |
 | POST | `/api/v1/import-scan` | Trigger an arr import scan: `{ target: "sonarr"\|"radarr", source?: "premiumize"\|"seedbox", folder?, mode?: "move"\|"copy" }`. Same safety logic as the Discord `import` subcommands — path traversal guard, `.incoming` guard, existence check. In Move mode a partial-match preview **refuses** (409) instead of asking an interactive confirm button; nothing destructive is ever clicked through silently. |
+| POST | `/api/v1/seedbox/sync` | rclone-copy a completed folder from the seedbox (`GRAB_RCLONE_REMOTE`) into local staging (`GRAB_STAGING_PATH`): `{ folder }`. Same folder validation as `/import-scan` (no traversal, no `.incoming`). Returns 202 immediately and copies in the background; the copy is resumable, so re-running after a failure is safe. |
+| GET | `/api/v1/seedbox/sync-status` | Progress for one synced folder (`?folder=`): `{ status: "in-progress"\|"failed"\|"done"\|"not-started", fileCount, totalBytes }`. |
+| POST | `/api/v1/seedbox/import-force` | Copy a staged folder's files to a library path and trigger a Sonarr rescan: `{ folder, destination, target }`. `destination` must be an absolute path **inside an allowed media root** — see "Import destinations are contained" below. The Sonarr rescan targets the series whose own path contains the destination; no match means the files are copied and the rescan is left to the operator. |
 | POST | `/api/v1/discord/exec` | v1.2 — headless slash-command invocation. `{ command, subcommand?, options? }`; validated against the live slash-command definitions (unknown command/subcommand/option, wrong type, missing required option → 400). Routes through the same `handleSlashCommand` dispatch as Discord and returns `{ ok, replies }`. Replies that carried buttons list them as `buttons: [{ custom_id, label, style }]` for discovery. See "Discord command bridge" below. |
 | POST | `/api/v1/discord/interact` | v1.2 — headless button press. `{ custom_id }` (max 100 chars, Discord's limit); validated non-empty → 400 otherwise. Routes through the same `handleButton` dispatch as Discord and returns `{ ok, replies }`. The admin gate inside `handleButton` still applies (the synthetic actor is admin-privileged, same as `/discord/exec`); every press is audited as `agent:<token-label>`. |
 
@@ -149,6 +152,15 @@ The agent token is now **privileged, not read-only**. What keeps that sane:
   (`AGENT_API_WRITE_MAX_PER_MINUTE`), separate from the read limiter (60/min).
 - **Per-label revocable tokens.** Mint one token per client; revoke any one of them at
   any time from the dashboard without touching the others.
+- **Import destinations are contained.** `/api/v1/seedbox/import-force` takes a
+  caller-supplied absolute `destination`, creates it, and overwrites files inside it, so the
+  path is contained the same way `resolveSafeMediaPath()` contains the download routes. Allowed
+  roots are the ones the deployment already configures — `RAID_PATH`, `PATH_REMAP_TO`,
+  `TIER_SOURCE_ROOT`, and the *arr import/staging paths — plus `IMPORT_FORCE_DEST_ROOTS` for a
+  library root none of those name. The deepest existing ancestor is resolved with `realpath`, so
+  a symlinked parent cannot be used to escape a root, and a destination outside every root is a
+  400 that lists the roots. Without this the endpoint is an arbitrary write for anyone holding an
+  agent token, `/app/data` (the SQLite database and its backups) included.
 - **Upstream failures are 502s.** Like the read routes, fix endpoints never leak raw
   error text (which can carry sensitive detail).
 
