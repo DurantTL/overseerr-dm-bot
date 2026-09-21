@@ -233,6 +233,7 @@ function registerAgentApiRoutes(app, deps) {
     triggerSeasonSearch = null,
     runSeasonDirectGrab = null,
     findAvistazIndexer = null,
+    findAnimezIndexer = null,
     grabDailyAllowance = null,
     grabConfigured = null,
     tunable = () => undefined,
@@ -492,7 +493,10 @@ function registerAgentApiRoutes(app, deps) {
     const tagId = getArrTagId ? await getArrTagId(tagSource, config.AVISTAZ_TAG).catch(() => null) : null;
     const tagged = tagId != null && (series.tags || []).includes(tagId);
     const directEnabled = tunable('SEASON_PACK_AVISTAZ_DIRECT') && grabConfigured && grabConfigured();
-    const indexer = tagged && directEnabled && findAvistazIndexer ? await findAvistazIndexer().catch(() => null) : null;
+    // Use AnimeZ for anime series, AvistaZ for other tagged content
+    const isAnime = String(series.seriesType || '').toLowerCase() === 'anime';
+    const findIndexer = isAnime && findAnimezIndexer ? findAnimezIndexer : findAvistazIndexer;
+    const indexer = tagged && directEnabled && findIndexer ? await findIndexer().catch(() => null) : null;
     if (tagged && directEnabled && !indexer) {
       audit('agent_api_season_search', { ...agentActor(req), ok: false, reason: 'indexer_missing', seriesId: series.id, season: seasonNumber });
       return res.status(409).json({ error: `${series.title} is tagged for AvistaZ, but the AvistaZ indexer could not be found in Prowlarr` });
@@ -618,7 +622,10 @@ function registerAgentApiRoutes(app, deps) {
   // call /api/v1/import-scan with source=seedbox to have Sonarr/Radarr import it.
   // The copy is resumable (rclone skips already-transferred files), so re-running after
   // a failure is safe.
-  app.post('/api/v1/seedbox/sync', auth, writeLimiter, guarded(async (req, res) => {
+  // NOTE: This endpoint bypasses the `guarded` wrapper (which returns a generic 502)
+  // so that handler crashes return the actual error message for debugging.
+  app.post('/api/v1/seedbox/sync', auth, writeLimiter, async (req, res) => {
+    try {
     const remote = (config.GRAB_RCLONE_REMOTE || '').replace(/\/$/, '');
     const stagingPath = (config.GRAB_STAGING_PATH || '').replace(/\/$/, '');
     if (!remote || !stagingPath) {
@@ -727,7 +734,18 @@ function registerAgentApiRoutes(app, deps) {
       status: 'started',
       message: `Sync of \`${clean}\` started in background. Poll /api/v1/seedbox/sync-status?folder=${encodeURIComponent(clean)} for completion.`,
     });
-  }));
+    } catch (err) {
+      // Defensive: return the actual error instead of crashing to a generic 502.
+      // This helps diagnose why the sync endpoint fails.
+      try {
+        audit('agent_api_seedbox_sync', { ...agentActor(req), ok: false, reason: 'handler_crashed', error: String(err.message || err).slice(0, 500) });
+      } catch {}
+      return res.status(500).json({
+        error: `Sync handler failed: ${err.message || String(err)}`,
+        stack: String(err.stack || '').split('\n').slice(0, 5).join('\n'),
+      });
+    }
+  });
 
   // Seedbox sync status: check if a folder is currently syncing, failed, or done.
   // Returns: { status: 'in-progress'|'failed'|'done'|'not-started', ... }

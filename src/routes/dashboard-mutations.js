@@ -24,6 +24,7 @@ function registerDashboardMutationRoutes(app, deps) {
     clearMediaPriority,
     clearSeasonAlertState,
     findAvistazIndexer,
+    findAnimezIndexer,
     getArrTagId,
     getEscalationById,
     getSeasonEpisodeFallback,
@@ -244,7 +245,10 @@ function registerDashboardMutationRoutes(app, deps) {
         const tagId = await getArrTagId(tagSource, CONFIG.AVISTAZ_TAG).catch(() => null);
         const tagged = tagId != null && (series.tags || []).includes(tagId);
         const directEnabled = tunable('SEASON_PACK_AVISTAZ_DIRECT') && grabConfigured();
-        const indexer = tagged && directEnabled ? await findAvistazIndexer().catch(() => null) : null;
+        // Use AnimeZ for anime series, AvistaZ for other tagged content
+        const isAnime = String(series.seriesType || '').toLowerCase() === 'anime';
+        const findIndexer = isAnime && findAnimezIndexer ? findAnimezIndexer : findAvistazIndexer;
+        const indexer = tagged && directEnabled ? await findIndexer().catch(() => null) : null;
         if (tagged && directEnabled && !indexer) {
           audit('dashboard_search', { ...dashboardActor(req), ok: false, reason: 'indexer_missing', seriesId, seasonNumber, title: series.title });
           return res.status(409).json({ ok: false, error: `${series.title} is tagged for AvistaZ, but the AvistaZ indexer could not be found in Prowlarr — check AVISTAZ_INDEXER_NAME and the indexer's name there.` });

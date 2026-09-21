@@ -64,7 +64,7 @@ const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { normalizeGranularity, parseTvUnitId, resolvePromotableUnit, checkPromotionCap, previewTvGranularity, mapSonarrSeriesList, mapSonarrEpisodeFiles } = require('./src/tv-granularity');
 const { checkPublicOriginReadiness } = require('./src/public-origin-diagnostics');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderDirectorPanel, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement, renderPasskeySetupBanner, renderAgentApiTokens, DASHBOARD_CSS } = require('./src/dashboard-render');
-const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
+const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, findAnimezIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, eraseTorrent, getRtorrentVersion, getRtorrentPaths } = require('./src/rtorrent');
 const { decideRatioRemoval, describeDeletionSafety } = require('./src/ratio-cleanup');
 const { runBackup, rotateBackups, backupState, rehearseLatestBackup } = require('./scripts/backup-db');
@@ -10575,6 +10575,7 @@ function startExpressServer() {
       triggerSeasonSearch,
       runSeasonDirectGrab,
       findAvistazIndexer,
+      findAnimezIndexer,
       grabDailyAllowance,
       grabConfigured,
       tunable,
@@ -10701,6 +10702,7 @@ function startExpressServer() {
       clearMediaPriority,
       clearSeasonAlertState,
       findAvistazIndexer,
+      findAnimezIndexer,
       getArrTagId,
       getEscalationById,
       getSeasonEpisodeFallback,
