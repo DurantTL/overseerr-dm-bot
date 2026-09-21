@@ -233,6 +233,7 @@ function registerAgentApiRoutes(app, deps) {
     triggerSeasonSearch = null,
     runSeasonDirectGrab = null,
     findAvistazIndexer = null,
+    findAnimezIndexer = null,
     grabDailyAllowance = null,
     grabConfigured = null,
     tunable = () => undefined,
@@ -492,7 +493,10 @@ function registerAgentApiRoutes(app, deps) {
     const tagId = getArrTagId ? await getArrTagId(tagSource, config.AVISTAZ_TAG).catch(() => null) : null;
     const tagged = tagId != null && (series.tags || []).includes(tagId);
     const directEnabled = tunable('SEASON_PACK_AVISTAZ_DIRECT') && grabConfigured && grabConfigured();
-    const indexer = tagged && directEnabled && findAvistazIndexer ? await findAvistazIndexer().catch(() => null) : null;
+    // Use AnimeZ for anime series, AvistaZ for other tagged content
+    const isAnime = String(series.seriesType || '').toLowerCase() === 'anime';
+    const findIndexer = isAnime && findAnimezIndexer ? findAnimezIndexer : findAvistazIndexer;
+    const indexer = tagged && directEnabled && findIndexer ? await findIndexer().catch(() => null) : null;
     if (tagged && directEnabled && !indexer) {
       audit('agent_api_season_search', { ...agentActor(req), ok: false, reason: 'indexer_missing', seriesId: series.id, season: seasonNumber });
       return res.status(409).json({ error: `${series.title} is tagged for AvistaZ, but the AvistaZ indexer could not be found in Prowlarr` });

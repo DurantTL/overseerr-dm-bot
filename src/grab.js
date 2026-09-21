@@ -98,6 +98,15 @@ async function findAvistazIndexer(cfg = CONFIG) {
   return (res.data || []).find(ix => String(ix.name || '').toLowerCase().includes(wanted)) || null;
 }
 
+// The AnimeZ indexer as defined in Prowlarr, for anime series. Matched by name
+// (case-insensitive substring). Used instead of AvistaZ when the Sonarr series
+// is of type 'anime'.
+async function findAnimezIndexer(cfg = CONFIG) {
+  const res = await axios.get(`${cfg.PROWLARR_URL}/api/v1/indexer`, { headers: { 'X-Api-Key': cfg.PROWLARR_API_KEY }, timeout: 10000 });
+  const wanted = (cfg.ANIMEZ_INDEXER_NAME || 'animez').toLowerCase();
+  return (res.data || []).find(ix => String(ix.name || '').toLowerCase().includes(wanted)) || null;
+}
+
 // Search scoped to that one indexer. Torznab categories: 2000 = Movies, 5000 = TV.
 async function searchAvistaz({ query, mediaType, indexerId }, cfg = CONFIG) {
   const res = await axios.get(`${cfg.PROWLARR_URL}/api/v1/search`, {
@@ -578,4 +587,4 @@ function decideGrabJobAction(row, facts, now, cfg) {
   return row.state === 'sent' ? 'mark_downloading' : 'wait';
 }
 
-module.exports = { grabConfigured, grabTransferPreflight, rcloneConfigPath, grabImportTarget, findAvistazIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, claimCoversSeason, planSeriesGrab, describeGrabPlan, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction, buildSeriesAliases, seriesAliasMatch, ALIAS_NOISE_TOKENS };
+module.exports = { grabConfigured, grabTransferPreflight, rcloneConfigPath, grabImportTarget, findAvistazIndexer, findAnimezIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, claimCoversSeason, planSeriesGrab, describeGrabPlan, scoreAvistazResult, rankAvistazResults, grabAllowance, decideGrabJobAction, buildSeriesAliases, seriesAliasMatch, ALIAS_NOISE_TOKENS };
