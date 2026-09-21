@@ -673,56 +673,59 @@ function registerAgentApiRoutes(app, deps) {
 
     audit('agent_api_seedbox_sync', { ...agentActor(req), ok: true, reason: 'started', folder: clean, src: srcPath, dest: destPath });
 
-    // Run rclone in the background (detached). The HTTP request returns immediately;
-    // the client polls for completion by checking if the folder appears in staging
-    // (via import-scan, which 404s until the folder exists). This avoids Cloudflare's
-    // 100-second timeout on large transfers. rclone copy is resumable, so if the
-    // transfer is interrupted, re-calling this endpoint will pick up where it left off.
-    // A marker file tracks the sync status: <dest>.sync-in-progress is created at start
-    // and removed on completion. If rclone fails, <dest>.sync-failed contains the error.
+    // Run rclone in the background. The HTTP request returns immediately (202);
+    // the client polls /api/v1/seedbox/sync-status for completion.
+    // We use a marker file to track status: .sync-in-progress means running,
+    // .sync-failed means rclone errored (contains stderr).
     const markerInProgress = `${destPath}.sync-in-progress`;
     const markerFailed = `${destPath}.sync-failed`;
     try {
       fs.writeFileSync(markerInProgress, JSON.stringify({ started: new Date().toISOString(), src: srcPath }));
       if (fs.existsSync(markerFailed)) fs.unlinkSync(markerFailed);
     } catch (err) {
-      // Non-fatal: proceed without marker
+      // Non-fatal
     }
 
-    const child = spawn(rcloneBinary, ['copy', srcPath, destPath, ...flags], {
-      stdio: ['ignore', 'ignore', 'pipe'],
-      // Note: NOT using detached:true — it causes issues in Docker when Node is PID 1.
-      // unref() is enough to let the HTTP response return while rclone continues.
-    });
-    let stderrTail = '';
-    child.stderr.on('data', d => { stderrTail += d; if (stderrTail.length > 4000) stderrTail = stderrTail.slice(-4000); });
-    child.on('error', err => {
-      try {
-        fs.writeFileSync(markerFailed, `rclone failed to start: ${err.message}`);
-        if (fs.existsSync(markerInProgress)) fs.unlinkSync(markerInProgress);
-      } catch {}
-      audit('agent_api_seedbox_sync', { ...agentActor(req), ok: false, reason: 'rclone_start_failed', folder: clean, error: err.message?.slice(0, 200) });
-    });
-    child.on('close', code => {
-      try {
-        if (fs.existsSync(markerInProgress)) fs.unlinkSync(markerInProgress);
-        if (code !== 0) {
-          fs.writeFileSync(markerFailed, stderrTail.trim() || `rclone exited ${code}`);
-          audit('agent_api_seedbox_sync', { ...agentActor(req), ok: false, reason: 'rclone_failed', folder: clean, error: stderrTail.trim()?.slice(0, 200) });
-        } else {
-          audit('agent_api_seedbox_sync', { ...agentActor(req), ok: true, reason: 'completed', folder: clean, dest: destPath });
-        }
-      } catch {}
-    });
-    // Detach: don't wait for rclone. The HTTP response returns immediately.
-    child.unref();
+    // Spawn rclone. We don't wait for it — unref() lets the response return.
+    // If rclone isn't installed or fails to start, the error is captured async
+    // and written to the .sync-failed marker.
+    let spawnError = null;
+    try {
+      const child = spawn(rcloneBinary, ['copy', srcPath, destPath, ...flags], {
+        stdio: 'ignore',
+      });
+      child.on('error', (err) => {
+        spawnError = err.message;
+        try {
+          fs.writeFileSync(markerFailed, `rclone failed to start: ${err.message}`);
+          if (fs.existsSync(markerInProgress)) fs.unlinkSync(markerInProgress);
+        } catch {}
+        audit('agent_api_seedbox_sync', { ...agentActor(req), ok: false, reason: 'rclone_start_failed', folder: clean });
+      });
+      child.on('close', (code) => {
+        try {
+          if (fs.existsSync(markerInProgress)) fs.unlinkSync(markerInProgress);
+          if (code !== 0) {
+            fs.writeFileSync(markerFailed, `rclone exited ${code}`);
+          }
+          audit('agent_api_seedbox_sync', { ...agentActor(req), ok: code === 0, reason: code === 0 ? 'completed' : 'rclone_failed', folder: clean });
+        } catch {}
+      });
+      child.unref();
+    } catch (err) {
+      // Synchronous spawn failure (e.g. invalid args) — return 502 with the error
+      // instead of crashing the handler.
+      try { if (fs.existsSync(markerInProgress)) fs.unlinkSync(markerInProgress); } catch {}
+      audit('agent_api_seedbox_sync', { ...agentActor(req), ok: false, reason: 'spawn_threw', folder: clean, error: err.message?.slice(0, 200) });
+      return res.status(502).json({ error: `Failed to start rclone: ${err.message}`, folder: clean });
+    }
 
     return res.status(202).json({
       ok: true,
       folder: clean,
       dest: destPath,
       status: 'started',
-      message: `Sync of \`${clean}\` started in background. Poll import-scan (it 404s until the folder lands) or check \`${destPath}.sync-in-progress\`.`,
+      message: `Sync of \`${clean}\` started in background. Poll /api/v1/seedbox/sync-status?folder=${encodeURIComponent(clean)} for completion.`,
     });
   }));
 
