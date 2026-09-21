@@ -581,13 +581,21 @@ function registerAgentApiRoutes(app, deps) {
     // Move mode deletes/relocates the source once the arr considers the download handled —
     // including files that never matched. The Discord flow asks an interactive confirm here;
     // the API has no buttons, so a partial match refuses instead of risking data loss.
+    // P1 fix: require a valid, nonempty preview for Move. A failed/empty preview must
+    // refuse, not fall through to Move (previously a timeout/error would proceed).
     if (mode === 'Move') {
       const preview = await httpClient.get(`${arr.url}/api/v3/manualimport`, {
         params: { folder: fullImportPath, filterExistingFiles: false },
         headers: { 'X-Api-Key': arr.key },
         timeout: 120000,
       }).then(r => summarizeManualImportPreview(r.data || [], target)).catch(() => null);
-      if (preview && preview.totalFiles > 0 && preview.unmatchedFiles > 0) {
+      if (!preview || preview.totalFiles === 0) {
+        audit('agent_api_import_scan', { ...agentActor(req), ok: false, reason: 'preview_unavailable', target, source, folder: clean || null });
+        return res.status(409).json({
+          error: 'Refusing Move import: the safety preview is unavailable (timeout, error, or empty). Use mode "copy", or try again once the arr responds.',
+        });
+      }
+      if (preview.unmatchedFiles > 0) {
         audit('agent_api_import_scan', { ...agentActor(req), ok: false, reason: 'partial_match', target, source, folder: clean || null, matched: preview.matchedFiles, total: preview.totalFiles });
         return res.status(409).json({
           error: `Refusing Move import: ${preview.unmatchedFiles} of ${preview.totalFiles} file(s) won't import and would be swept away with the folder. Use mode "copy", or fix the mismatch first.`,
@@ -643,6 +651,25 @@ function registerAgentApiRoutes(app, deps) {
     const destPath = path.join(stagingPath, clean);
     const flags = (config.GRAB_RCLONE_FLAGS || '').split(/\s+/).filter(Boolean);
     const rcloneBinary = config.STAGE_RCLONE_BINARY || 'rclone';
+
+    // Disk space check: ensure at least 5 GB free on the staging filesystem before
+    // starting. The copy will fail anyway if space runs out, but failing fast with a
+    // clear message is kinder than a mid-transfer rclone error.
+    try {
+      const stats = fs.statfsSync(stagingPath);
+      const freeBytes = Number(stats.bfree) * Number(stats.bsize);
+      const freeGB = freeBytes / 1e9;
+      if (freeGB < 5) {
+        audit('agent_api_seedbox_sync', { ...agentActor(req), ok: false, reason: 'low_disk', folder: clean, freeGB: Math.round(freeGB * 10) / 10 });
+        return res.status(409).json({
+          error: `Refusing seedbox sync: only ${freeGB.toFixed(1)} GB free on staging (need at least 5 GB). Free up space first.`,
+          freeGB: Math.round(freeGB * 10) / 10,
+        });
+      }
+    } catch (err) {
+      // If we can't check disk space, proceed anyway — rclone will fail with a clear
+      // error if space runs out. Don't block the sync on a stat failure.
+    }
 
     audit('agent_api_seedbox_sync', { ...agentActor(req), ok: true, reason: 'started', folder: clean, src: srcPath, dest: destPath });
 
