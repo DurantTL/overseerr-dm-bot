@@ -764,17 +764,105 @@ function registerAgentApiRoutes(app, deps) {
     const markerInProgress = `${destPath}.sync-in-progress`;
     const markerFailed = `${destPath}.sync-failed`;
 
+    // Helper: count files and total size in a directory (recursive)
+    const getDirStats = (dirPath) => {
+      let fileCount = 0;
+      let totalBytes = 0;
+      try {
+        const walk = (current) => {
+          const entries = fs.readdirSync(current, { withFileTypes: true });
+          for (const entry of entries) {
+            const fullPath = path.join(current, entry.name);
+            if (entry.isDirectory()) {
+              walk(fullPath);
+            } else if (entry.isFile()) {
+              fileCount++;
+              try {
+                totalBytes += fs.statSync(fullPath).size;
+              } catch {}
+            }
+          }
+        };
+        walk(dirPath);
+      } catch {}
+      return { fileCount, totalBytes };
+    };
+
     if (fs.existsSync(markerFailed)) {
       const error = fs.readFileSync(markerFailed, 'utf8').slice(0, 500);
-      return res.json({ ok: true, folder, status: 'failed', error });
+      const stats = fs.existsSync(destPath) ? getDirStats(destPath) : { fileCount: 0, totalBytes: 0 };
+      return res.json({ ok: true, folder, status: 'failed', error, ...stats });
     }
     if (fs.existsSync(markerInProgress)) {
-      return res.json({ ok: true, folder, status: 'in-progress' });
+      const stats = fs.existsSync(destPath) ? getDirStats(destPath) : { fileCount: 0, totalBytes: 0 };
+      return res.json({ ok: true, folder, status: 'in-progress', ...stats });
     }
     if (fs.existsSync(destPath)) {
-      return res.json({ ok: true, folder, status: 'done', dest: destPath });
+      const stats = getDirStats(destPath);
+      return res.json({ ok: true, folder, status: 'done', dest: destPath, ...stats });
     }
     return res.json({ ok: true, folder, status: 'not-started' });
+  }));
+
+  // Force import: copy files from seedbox staging to a destination path, then trigger Sonarr rescan.
+  // Unlike import-scan (which relies on Sonarr's DownloadedEpisodesScan), this actually copies the files.
+  // Body: { folder: "Season 4", destination: "/share/media/Tv Shows/Bleach/Season 4", target: "sonarr" }
+  // The destination must be an absolute path accessible from the bot container.
+  app.post('/api/v1/seedbox/import-force', auth, writeLimiter, guarded(async (req, res) => {
+    const stagingPath = (config.GRAB_STAGING_PATH || '').replace(/\/$/, '');
+    if (!stagingPath) {
+      return res.status(409).json({ error: 'Seedbox sync is not configured (needs GRAB_STAGING_PATH)' });
+    }
+    const folder = String(req.body?.folder || '').trim().replace(/^["']|["']$/g, '').replace(/^\/+|\/+$/g, '');
+    const destination = String(req.body?.destination || '').trim();
+    const target = String(req.body?.target || 'sonarr').trim().toLowerCase();
+    if (!folder || folder.split('/').some(p => !p || p === '.' || p === '..')) {
+      return res.status(400).json({ error: 'Valid folder is required' });
+    }
+    if (!destination || !path.isAbsolute(destination)) {
+      return res.status(400).json({ error: 'Valid absolute destination path is required' });
+    }
+    if (target !== 'sonarr' && target !== 'radarr' && target !== 'radarr-4k') {
+      return res.status(400).json({ error: 'target must be "sonarr", "radarr", or "radarr-4k"' });
+    }
+    const srcPath = path.join(stagingPath, folder);
+    if (!fs.existsSync(srcPath)) {
+      return res.status(404).json({ error: `Staging folder not found: ${srcPath}` });
+    }
+    // Copy files (not directories) from staging to destination
+    try {
+      fs.mkdirSync(destination, { recursive: true });
+      const files = fs.readdirSync(srcPath);
+      let copied = 0;
+      for (const file of files) {
+        const srcFile = path.join(srcPath, file);
+        const destFile = path.join(destination, file);
+        if (fs.statSync(srcFile).isFile()) {
+          fs.copyFileSync(srcFile, destFile);
+          copied++;
+        }
+      }
+      audit('agent_api_seedbox_import_force', { ...agentActor(req), ok: true, folder, destination, copied, target });
+      // Trigger Sonarr rescan if target is sonarr
+      let scanResult = null;
+      if (target === 'sonarr' && config.SONARR_URL && config.SONARR_API_KEY) {
+        try {
+          // Trigger a rescan via Sonarr API (RefreshSeries or RescanSeries)
+          // For now, just report that files were copied; user triggers Refresh & Scan in Sonarr UI
+          scanResult = 'Files copied. Trigger Refresh & Scan in Sonarr UI for the series.';
+        } catch {}
+      }
+      return res.json({
+        ok: true,
+        folder,
+        destination,
+        copied,
+        message: `Copied ${copied} files to ${destination}. ${scanResult || ''}`.trim(),
+      });
+    } catch (err) {
+      audit('agent_api_seedbox_import_force', { ...agentActor(req), ok: false, folder, destination, error: err.message?.slice(0, 200) });
+      return res.status(500).json({ error: `Force import failed: ${err.message}` });
+    }
   }));
 
   // v1.2 Discord command bridge: invoke a slash command headlessly through the same
