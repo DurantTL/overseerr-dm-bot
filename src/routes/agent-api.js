@@ -652,7 +652,9 @@ function registerAgentApiRoutes(app, deps) {
 
     const srcPath = `${remote}/${clean}`;
     const destPath = path.join(stagingPath, clean);
-    const flags = (config.GRAB_RCLONE_FLAGS || '').split(/\s+/).filter(Boolean);
+    // GRAB_RCLONE_FLAGS may be a string (space-separated) or an array (if config parses it)
+    const flagsRaw = config.GRAB_RCLONE_FLAGS;
+    const flags = Array.isArray(flagsRaw) ? flagsRaw.filter(Boolean) : String(flagsRaw || '').split(/\s+/).filter(Boolean);
     const rcloneBinary = config.STAGE_RCLONE_BINARY || 'rclone';
 
     // Disk space check: ensure at least 5 GB free on the staging filesystem before
