@@ -4,7 +4,7 @@
 # linux-x64/arm64 (glibc) and loads one at require() time, so this image needs
 # no compiler. Musl has prebuilds too, but the rest of the toolchain here is
 # Debian-shaped, so stay on slim.
-FROM node:24-slim
+FROM node:25-slim
 
 # rclone drives the Plex Home staging copies/evictions (see README "Plex Home staging").
 # ca-certificates lets it talk TLS to remotes like SFTP-over-VPS or cloud backends.
