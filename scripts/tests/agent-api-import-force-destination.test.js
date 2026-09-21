@@ -41,6 +41,37 @@ function post(port, path, token, body) {
   });
 }
 
+function get(port, path, token, query = '') {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      host: '127.0.0.1',
+      port,
+      method: 'GET',
+      path: path + query,
+      headers: token ? { authorization: `Bearer ${token}` } : {},
+    }, res => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => resolve({ statusCode: res.statusCode, body: data }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+// import-force answers 202 before the copy runs, so every outcome assertion polls the job to a
+// terminal state first. Bounded so a hung worker fails the test instead of hanging the suite.
+async function waitForJob(port, token, jobId) {
+  for (let i = 0; i < 200; i++) {
+    const res = await get(port, '/api/v1/seedbox/import-status', token, `?jobId=${encodeURIComponent(jobId)}`);
+    assert.strictEqual(res.statusCode, 200, 'the job stays readable while it runs');
+    const job = JSON.parse(res.body);
+    if (job.status !== 'running') return job;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error(`import job ${jobId} never left "running"`);
+}
+
 // A staging dir holding one file to copy, a media root that is the only legal destination, and a
 // sibling dir outside it. Sonarr's series list is injected after setup (the fixture paths aren't
 // known until the temp dirs exist), same shape as setManualImportPreview in agent-api-routes.
@@ -203,7 +234,7 @@ test('import-force falls back to the staging root when no media root is configur
       destination: nodePath.join(fixture.staging, 'imported'),
       target: 'sonarr',
     });
-    assert.strictEqual(allowed.statusCode, 200, 'the staging root itself stays a legal destination');
+    assert.strictEqual(allowed.statusCode, 202, 'the staging root itself stays a legal destination');
   });
 });
 
@@ -221,9 +252,14 @@ test('import-force copies into an allowed destination and rescans the matching s
       destination,
       target: 'sonarr',
     });
-    assert.strictEqual(res.statusCode, 200, 'an in-root destination is accepted');
-    const body = JSON.parse(res.body);
-    assert.strictEqual(body.copied, 1);
+    assert.strictEqual(res.statusCode, 202, 'an in-root destination is accepted for background work');
+    const accepted = JSON.parse(res.body);
+    assert.ok(accepted.jobId, 'the caller gets a job id to poll');
+    assert.strictEqual(accepted.status, 'running');
+    const job = await waitForJob(port, 'valid-agent-token', accepted.jobId);
+    assert.strictEqual(job.status, 'done');
+    assert.strictEqual(job.copied, 1);
+    assert.strictEqual(job.error, null, 'a clean run carries no error');
     assert.strictEqual(
       fs.readFileSync(nodePath.join(destination, 'ep01.mkv'), 'utf8'),
       'payload',
@@ -249,12 +285,95 @@ test('import-force never falls back to a hardcoded series when no path matches',
       destination: nodePath.join(fixture.mediaRoot, 'Unrelated Show', 'Season 4'),
       target: 'sonarr',
     });
-    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.statusCode, 202);
+    const job = await waitForJob(port, 'valid-agent-token', JSON.parse(res.body).jobId);
+    assert.strictEqual(job.status, 'done');
     assert.deepStrictEqual(
       fixture.sonarrPosts,
       [],
       'a destination outside every series path must not rescan an unrelated series',
     );
-    assert.match(JSON.parse(res.body).message, /Could not find matching series/);
+    assert.match(job.message, /Could not find matching series/);
+  });
+});
+
+test('import-status: unknown job ids are 404, and the recent list is newest-first', async () => {
+  const fixture = setup();
+  await withServer(fixture, async port => {
+    const missing = await get(port, '/api/v1/seedbox/import-status', 'valid-agent-token', '?jobId=import-nope');
+    assert.strictEqual(missing.statusCode, 404, 'an unknown job id is a 404, not an empty 200');
+    assert.match(JSON.parse(missing.body).error, /No import job with that id/);
+
+    const empty = await get(port, '/api/v1/seedbox/import-status', 'valid-agent-token');
+    assert.deepStrictEqual(JSON.parse(empty.body).jobs, [], 'no jobs yet lists nothing');
+
+    const first = JSON.parse((await post(port, '/api/v1/seedbox/import-force', 'valid-agent-token', {
+      folder: 'Season 4', destination: nodePath.join(fixture.mediaRoot, 'A'), target: 'sonarr',
+    })).body);
+    await waitForJob(port, 'valid-agent-token', first.jobId);
+    const second = JSON.parse((await post(port, '/api/v1/seedbox/import-force', 'valid-agent-token', {
+      folder: 'Season 4', destination: nodePath.join(fixture.mediaRoot, 'B'), target: 'sonarr',
+    })).body);
+    await waitForJob(port, 'valid-agent-token', second.jobId);
+
+    const listed = JSON.parse((await get(port, '/api/v1/seedbox/import-status', 'valid-agent-token')).body);
+    assert.strictEqual(listed.jobs.length, 2);
+    assert.strictEqual(listed.jobs[0].jobId, second.jobId, 'newest first');
+    assert.strictEqual(listed.jobs[1].jobId, first.jobId);
+  });
+});
+
+test('import-status is behind the read limiter like every other GET here', async () => {
+  const fixture = setup({ configOverrides: { AGENT_API_READ_MAX_PER_MINUTE: 1 } });
+  await withServer(fixture, async port => {
+    const first = await get(port, '/api/v1/seedbox/import-status', 'valid-agent-token', '?jobId=import-nope');
+    assert.strictEqual(first.statusCode, 404, 'the first read is admitted (and finds no such job)');
+    const second = await get(port, '/api/v1/seedbox/import-status', 'valid-agent-token', '?jobId=import-nope');
+    assert.strictEqual(second.statusCode, 429, 'polling shares the read budget rather than being unbounded');
+  });
+});
+
+test('a failed import reports an errno, never the raw error text or paths', async () => {
+  const fixture = setup();
+  // A plain file where the destination directory would go: mkdir -p fails with ENOTDIR. The
+  // path is still inside the media root, so the containment check passes and the worker runs.
+  const blocker = nodePath.join(fixture.mediaRoot, 'blocker');
+  fs.writeFileSync(blocker, 'not a directory');
+  await withServer(fixture, async port => {
+    const res = await post(port, '/api/v1/seedbox/import-force', 'valid-agent-token', {
+      folder: 'Season 4',
+      destination: nodePath.join(blocker, 'Season 4'),
+      target: 'sonarr',
+    });
+    assert.strictEqual(res.statusCode, 202);
+    const job = await waitForJob(port, 'valid-agent-token', JSON.parse(res.body).jobId);
+    assert.strictEqual(job.status, 'failed');
+    assert.strictEqual(job.errorCode, 'ENOTDIR', 'the errno is exposed so a caller can branch on it');
+    assert.strictEqual(job.error, 'Import failed (ENOTDIR)', 'the message is fixed, not the raw fs error');
+    assert.ok(!/not a directory/i.test(job.error), 'no raw fs error text');
+    assert.strictEqual(job.copied, 0);
+    // The real message stays in the audit log, where only operators read it.
+    const failure = fixture.auditCalls.find(
+      c => c.action === 'agent_api_seedbox_import_force' && c.details.ok === false && c.details.jobId,
+    );
+    assert.ok(failure, 'the failure is audited');
+    assert.strictEqual(failure.details.code, 'ENOTDIR');
+    assert.match(String(failure.details.error), /ENOTDIR/, 'the audit keeps the full error');
+    assert.strictEqual(failure.details.actor, 'agent:test-client');
+  });
+});
+
+test('the destination guard still runs before a background job is created', async () => {
+  const fixture = setup();
+  await withServer(fixture, async port => {
+    const res = await post(port, '/api/v1/seedbox/import-force', 'valid-agent-token', {
+      folder: 'Season 4',
+      destination: '/app/data',
+      target: 'sonarr',
+    });
+    assert.strictEqual(res.statusCode, 400, 'refused synchronously, not accepted as a job');
+    assert.strictEqual(JSON.parse(res.body).jobId, undefined, 'no job id is handed out for a refused path');
+    const listed = JSON.parse((await get(port, '/api/v1/seedbox/import-status', 'valid-agent-token')).body);
+    assert.deepStrictEqual(listed.jobs, [], 'a refused request creates no job at all');
   });
 });
