@@ -875,10 +875,27 @@ function registerAgentApiRoutes(app, deps) {
       let scanResult = null;
       if (target === 'sonarr' && config.SONARR_URL && config.SONARR_API_KEY) {
         try {
-          // Trigger a rescan via Sonarr API (RefreshSeries or RescanSeries)
-          // For now, just report that files were copied; user triggers Refresh & Scan in Sonarr UI
-          scanResult = 'Files copied. Trigger Refresh & Scan in Sonarr UI for the series.';
-        } catch {}
+          const sonarrBase = config.SONARR_URL.replace(/\/$/, '');
+          const headers = { 'X-Api-Key': config.SONARR_API_KEY };
+          // Find the series by matching the destination path or title "Bleach"
+          const seriesRes = await axios.get(`${sonarrBase}/api/v3/series`, { headers, timeout: 15000 });
+          const allSeries = seriesRes.data || [];
+          // Match by path (destination should be inside the series path) or by title
+          let series = allSeries.find(s => destination.startsWith(s.path)) ||
+                       allSeries.find(s => s.title && s.title.toLowerCase() === 'bleach');
+          if (series) {
+            // Trigger RescanSeries to pick up the new files from disk
+            await axios.post(`${sonarrBase}/api/v3/command`, {
+              name: 'RescanSeries',
+              seriesId: series.id,
+            }, { headers, timeout: 15000 });
+            scanResult = `Triggered Sonarr rescan for "${series.title}" (ID ${series.id}).`;
+          } else {
+            scanResult = 'Files copied. Could not find matching series in Sonarr; trigger Refresh & Scan manually.';
+          }
+        } catch (err) {
+          scanResult = `Files copied. Sonarr rescan failed: ${err.message?.slice(0, 100)}; trigger manually.`;
+        }
       }
       let message = `Copied ${copied} files to ${destination}.`;
       if (wantChown) {
