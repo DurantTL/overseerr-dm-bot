@@ -808,6 +808,9 @@ function registerAgentApiRoutes(app, deps) {
   // Unlike import-scan (which relies on Sonarr's DownloadedEpisodesScan), this actually copies the files.
   // Body: { folder: "Season 4", destination: "/share/media/Tv Shows/Bleach/Season 4", target: "sonarr" }
   // The destination must be an absolute path accessible from the bot container.
+  // In-memory import job tracker (resets on restart; jobs are best-effort)
+  const importJobs = new Map();
+
   app.post('/api/v1/seedbox/import-force', auth, writeLimiter, guarded(async (req, res) => {
     const stagingPath = (config.GRAB_STAGING_PATH || '').replace(/\/$/, '');
     if (!stagingPath) {
@@ -829,94 +832,118 @@ function registerAgentApiRoutes(app, deps) {
     if (!fs.existsSync(srcPath)) {
       return res.status(404).json({ error: `Staging folder not found: ${srcPath}` });
     }
-    // Copy files (not directories) from staging to destination
-    try {
-      fs.mkdirSync(destination, { recursive: true });
-      const files = fs.readdirSync(srcPath);
-      // Optional ownership fix: if MEDIA_UID/MEDIA_GID are set, chown copied files
-      // so the arr containers (e.g. Sonarr running as abc:users) can manage them.
-      // Best-effort: if chown fails (no permission), log and continue — the files
-      // are still world-readable (644) so the arr can import them.
-      const mediaUid = config.MEDIA_UID ? parseInt(config.MEDIA_UID, 10) : null;
-      const mediaGid = config.MEDIA_GID ? parseInt(config.MEDIA_GID, 10) : null;
-      const wantChown = Number.isInteger(mediaUid) && Number.isInteger(mediaGid);
-      let chowned = 0;
-      let chownFailed = false;
-      let copied = 0;
-      for (const file of files) {
-        const srcFile = path.join(srcPath, file);
-        const destFile = path.join(destination, file);
-        if (fs.statSync(srcFile).isFile()) {
-          fs.copyFileSync(srcFile, destFile);
-          // Ensure world-readable so the arr can import regardless of ownership
-          try { fs.chmodSync(destFile, 0o644); } catch {}
-          if (wantChown) {
-            try {
-              fs.chownSync(destFile, mediaUid, mediaGid);
-              chowned++;
-            } catch {
-              chownFailed = true;
-            }
-          }
-          copied++;
-        }
-      }
-      // Also chown the destination directory itself so the arr can write into it
-      if (wantChown) {
-        try {
-          fs.chownSync(destination, mediaUid, mediaGid);
-          try { fs.chmodSync(destination, 0o755); } catch {}
-        } catch {
-          chownFailed = true;
-        }
-      }
-      audit('agent_api_seedbox_import_force', { ...agentActor(req), ok: true, folder, destination, copied, target, chowned, chownFailed });
-      // Trigger Sonarr rescan if target is sonarr
-      let scanResult = null;
-      if (target === 'sonarr' && config.SONARR_URL && config.SONARR_API_KEY) {
-        try {
-          const sonarrBase = config.SONARR_URL.replace(/\/$/, '');
-          const headers = { 'X-Api-Key': config.SONARR_API_KEY };
-          // Find the series by matching the destination path or title "Bleach"
-          const seriesRes = await axios.get(`${sonarrBase}/api/v3/series`, { headers, timeout: 15000 });
-          const allSeries = seriesRes.data || [];
-          // Match by path (destination should be inside the series path) or by title
-          let series = allSeries.find(s => destination.startsWith(s.path)) ||
-                       allSeries.find(s => s.title && s.title.toLowerCase() === 'bleach');
-          if (series) {
-            // Trigger RescanSeries to pick up the new files from disk
-            await axios.post(`${sonarrBase}/api/v3/command`, {
-              name: 'RescanSeries',
-              seriesId: series.id,
-            }, { headers, timeout: 15000 });
-            scanResult = `Triggered Sonarr rescan for "${series.title}" (ID ${series.id}).`;
-          } else {
-            scanResult = 'Files copied. Could not find matching series in Sonarr; trigger Refresh & Scan manually.';
-          }
-        } catch (err) {
-          scanResult = `Files copied. Sonarr rescan failed: ${err.message?.slice(0, 100)}; trigger manually.`;
-        }
-      }
-      let message = `Copied ${copied} files to ${destination}.`;
-      if (wantChown) {
-        message += chownFailed
-          ? ` Ownership fix partially failed (bot lacks chown permission); files are world-readable.`
-          : ` Ownership set to ${mediaUid}:${mediaGid} (${chowned} files).`;
-      }
-      if (scanResult) message += ` ${scanResult}`;
-      return res.json({
-        ok: true,
-        folder,
-        destination,
-        copied,
-        chowned,
-        chownFailed,
-        message: message.trim(),
-      });
-    } catch (err) {
-      audit('agent_api_seedbox_import_force', { ...agentActor(req), ok: false, folder, destination, error: err.message?.slice(0, 200) });
-      return res.status(500).json({ error: `Force import failed: ${err.message}` });
+
+    // Run as a background job so the API stays responsive during large copies.
+    // Uses fs.promises (async) to avoid blocking the event loop.
+    const jobId = `import-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const job = {
+      jobId, folder, destination, target,
+      status: 'running', started: new Date().toISOString(),
+      copied: 0, chowned: 0, chownFailed: false, error: null, message: null,
+    };
+    importJobs.set(jobId, job);
+    // Prune old jobs (keep last 20)
+    if (importJobs.size > 20) {
+      const oldest = [...importJobs.keys()].slice(0, importJobs.size - 20);
+      oldest.forEach(k => importJobs.delete(k));
     }
+
+    // Background worker — do not await
+    (async () => {
+      try {
+        await fs.promises.mkdir(destination, { recursive: true });
+        const files = await fs.promises.readdir(srcPath);
+        const mediaUid = config.MEDIA_UID ? parseInt(config.MEDIA_UID, 10) : null;
+        const mediaGid = config.MEDIA_GID ? parseInt(config.MEDIA_GID, 10) : null;
+        const wantChown = Number.isInteger(mediaUid) && Number.isInteger(mediaGid);
+        for (const file of files) {
+          const srcFile = path.join(srcPath, file);
+          const destFile = path.join(destination, file);
+          const stat = await fs.promises.stat(srcFile);
+          if (stat.isFile()) {
+            await fs.promises.copyFile(srcFile, destFile);
+            try { await fs.promises.chmod(destFile, 0o644); } catch {}
+            if (wantChown) {
+              try {
+                await fs.promises.chown(destFile, mediaUid, mediaGid);
+                job.chowned++;
+              } catch {
+                job.chownFailed = true;
+              }
+            }
+            job.copied++;
+          }
+        }
+        if (wantChown) {
+          try {
+            await fs.promises.chown(destination, mediaUid, mediaGid);
+            try { await fs.promises.chmod(destination, 0o755); } catch {}
+          } catch {
+            job.chownFailed = true;
+          }
+        }
+        audit('agent_api_seedbox_import_force', { ...agentActor(req), ok: true, folder, destination, copied: job.copied, target, chowned: job.chowned, chownFailed: job.chownFailed, jobId });
+        // Trigger Sonarr rescan if target is sonarr
+        let scanResult = null;
+        if (target === 'sonarr' && config.SONARR_URL && config.SONARR_API_KEY) {
+          try {
+            const sonarrBase = config.SONARR_URL.replace(/\/$/, '');
+            const headers = { 'X-Api-Key': config.SONARR_API_KEY };
+            const seriesRes = await axios.get(`${sonarrBase}/api/v3/series`, { headers, timeout: 15000 });
+            const allSeries = seriesRes.data || [];
+            let series = allSeries.find(s => destination.startsWith(s.path)) ||
+                         allSeries.find(s => s.title && s.title.toLowerCase() === 'bleach');
+            if (series) {
+              await axios.post(`${sonarrBase}/api/v3/command`, {
+                name: 'RescanSeries',
+                seriesId: series.id,
+              }, { headers, timeout: 15000 });
+              scanResult = `Triggered Sonarr rescan for "${series.title}" (ID ${series.id}).`;
+            } else {
+              scanResult = 'Files copied. Could not find matching series in Sonarr; trigger Refresh & Scan manually.';
+            }
+          } catch (err) {
+            scanResult = `Files copied. Sonarr rescan failed: ${err.message?.slice(0, 100)}; trigger manually.`;
+          }
+        }
+        let message = `Copied ${job.copied} files to ${destination}.`;
+        if (wantChown) {
+          message += job.chownFailed
+            ? ` Ownership fix partially failed (bot lacks chown permission); files are world-readable.`
+            : ` Ownership set to ${mediaUid}:${mediaGid} (${job.chowned} files).`;
+        }
+        if (scanResult) message += ` ${scanResult}`;
+        job.message = message.trim();
+        job.status = 'done';
+        job.finished = new Date().toISOString();
+      } catch (err) {
+        job.status = 'failed';
+        job.error = err.message?.slice(0, 500);
+        job.finished = new Date().toISOString();
+        audit('agent_api_seedbox_import_force', { ...agentActor(req), ok: false, folder, destination, error: job.error, jobId });
+      }
+    })();
+
+    return res.json({
+      ok: true,
+      jobId,
+      status: 'started',
+      folder,
+      destination,
+      message: `Import started in background. Check status via GET /api/v1/seedbox/import-status?jobId=${jobId}`,
+    });
+  }));
+
+  // Check the status of a background import job
+  app.get('/api/v1/seedbox/import-status', auth, guarded(async (req, res) => {
+    const jobId = String(req.query?.jobId || '').trim();
+    if (jobId) {
+      const job = importJobs.get(jobId);
+      if (!job) return res.status(404).json({ error: 'Job not found' });
+      return res.json({ ok: true, ...job });
+    }
+    // No jobId: list recent jobs
+    return res.json({ ok: true, jobs: [...importJobs.values()].slice(-10).reverse() });
   }));
 
   // v1.2 Discord command bridge: invoke a slash command headlessly through the same
