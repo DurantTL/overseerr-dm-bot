@@ -26,6 +26,11 @@ function createAgentApiAuth({ getAgentApiTokenHashes, getAgentApiTokenLabel = ()
     req.agentTokenLabel = matched === legacyTokenHash
       ? 'legacy-env-token'
       : (getAgentApiTokenLabel(matched) || 'unknown');
+    // A stable per-token identity for the rate limiters, which run after this middleware. The
+    // stored hash is already a one-way digest of the token and never leaves the process, and
+    // unlike the label it is unique — two tokens may carry the same label, and sharing a budget
+    // between them would be a surprise an operator never asked for.
+    req.agentTokenId = matched;
     // The legacy env token has no row to track; dashboard tokens record throttled last-use so an
     // operator can see which client is actually calling.
     if (matched !== legacyTokenHash) touchAgentApiTokenUse(matched);

@@ -184,7 +184,8 @@ The agent token is now **privileged, not read-only**. What keeps that sane:
 - **Audit with actor.** Every mutation is audited as `agent:<token label>` (or
   `agent:legacy-env-token`), so the audit log shows exactly which agent client acted.
 - **Tight write budget.** POST routes share a 10/min rate limiter
-  (`AGENT_API_WRITE_MAX_PER_MINUTE`), separate from the read limiter (60/min).
+  (`AGENT_API_WRITE_MAX_PER_MINUTE`), separate from the read limiter (60/min). Both are charged
+  per token, so one client can't spend another's budget.
 - **Per-label revocable tokens.** Mint one token per client; revoke any one of them at
   any time from the dashboard without touching the others.
 - **Background work never reports a state it can't prove.** Sync and import progress lives in
@@ -222,7 +223,7 @@ Admin dashboard → Overview → **Agent API tokens**:
 3. Revoke per client at any time from the same card. Revoked tokens stop working
    immediately; the dashboard records each token's label, creation time, and last use.
 
-Tokens are bearer credentials: send `Authorization: Bearer <token>`. Rate-limited per IP.
+Tokens are bearer credentials: send `Authorization: Bearer <token>`. **Rate-limited per token**, not per IP: both limiters run after authentication, so the budget is charged to the token that would be spending it. Clients sharing an egress address — a Director and a dashboard poller through the same tunnel — get independent budgets, and a token can't multiply its own by rotating addresses. Two tokens sharing a label still get separate budgets; the identity is the token, not its label.
 
 ## Legacy env token
 

@@ -91,6 +91,20 @@ function resolveSafeImportDestination(destination, allowedRoots) {
   return { ok: true, path: realTarget, roots };
 }
 
+// Rate-limit identity for the agent API. Both limiters are mounted after `auth`, so the token
+// that would be charged is already known, and charging it rather than its source address is what
+// an operator expects from a per-client budget: one client's burst can't starve another sharing
+// an egress address (a Director and a dashboard poller behind the same tunnel both present as
+// one IP), and a single token can't multiply its budget by rotating addresses. Falls back to the
+// IP key if a limiter is ever mounted ahead of auth, so a missing identity can never mean
+// "unlimited".
+function agentRateLimitKey(httpRateLimitKey) {
+  return req => {
+    if (req.agentTokenId) return `token:${req.agentTokenId}`;
+    return typeof httpRateLimitKey === 'function' ? httpRateLimitKey(req) : 'unidentified';
+  };
+}
+
 function createAgentApiReadLimiter({ limit, windowMs = 60000, keyGenerator }) {
   return rateLimit({
     windowMs,
@@ -320,8 +334,8 @@ function registerAgentApiRoutes(app, deps) {
     // tests that don't wire it (-> 503), same as the two bridges.
     getDiscordCommandDefs = null,
     auth = createAgentApiAuth({ getAgentApiTokenHashes, getAgentApiTokenLabel, legacyTokenHash, touchAgentApiTokenUse, sha256, safeEqual, audit }),
-    readLimiter = createAgentApiReadLimiter({ limit: config.AGENT_API_READ_MAX_PER_MINUTE, keyGenerator: httpRateLimitKey }),
-    writeLimiter = createAgentApiWriteLimiter({ limit: config.AGENT_API_WRITE_MAX_PER_MINUTE || 10, keyGenerator: httpRateLimitKey }),
+    readLimiter = createAgentApiReadLimiter({ limit: config.AGENT_API_READ_MAX_PER_MINUTE, keyGenerator: agentRateLimitKey(httpRateLimitKey) }),
+    writeLimiter = createAgentApiWriteLimiter({ limit: config.AGENT_API_WRITE_MAX_PER_MINUTE || 10, keyGenerator: agentRateLimitKey(httpRateLimitKey) }),
   } = deps;
 
   // gatherHealth() fans out to every integration; cache briefly like the public /health does so
@@ -1221,4 +1235,4 @@ function registerAgentApiRoutes(app, deps) {
   }));
 }
 
-module.exports = { registerAgentApiRoutes, createAgentApiAuth, createAgentApiReadLimiter, createAgentApiWriteLimiter, importDestinationRoots, resolveSafeImportDestination };
+module.exports = { registerAgentApiRoutes, createAgentApiAuth, createAgentApiReadLimiter, createAgentApiWriteLimiter, agentRateLimitKey, importDestinationRoots, resolveSafeImportDestination };
