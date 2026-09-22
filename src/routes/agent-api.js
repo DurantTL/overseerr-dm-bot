@@ -29,6 +29,63 @@ const MAX_RESULTS = 25;
 const MAX_REQUESTS = 200;
 const HEALTH_CACHE_MS = 30000;
 
+// Roots that POST /api/v1/seedbox/import-force is allowed to copy into. The endpoint takes a
+// caller-supplied absolute `destination`, mkdir -p's it, and overwrites files inside it, so the
+// path has to be contained the same way resolveSafeMediaPath() contains the download routes —
+// otherwise an agent token can write anywhere the bot's uid can reach, /app/data (the SQLite
+// database and its backups) included. Derived from the media/import paths the deployment already
+// configures, plus IMPORT_FORCE_DEST_ROOTS for a layout none of them cover. Order doesn't matter;
+// blanks are dropped.
+function importDestinationRoots(config = {}) {
+  const extra = Array.isArray(config.IMPORT_FORCE_DEST_ROOTS)
+    ? config.IMPORT_FORCE_DEST_ROOTS
+    : String(config.IMPORT_FORCE_DEST_ROOTS || '').split(',');
+  return [
+    ...extra,
+    config.RAID_PATH,
+    config.PATH_REMAP_TO,
+    config.TIER_SOURCE_ROOT,
+    config.GRAB_IMPORT_PATH,
+    config.GRAB_STAGING_PATH,
+    config.PREMIUMIZE_IMPORT_PATH,
+    config.PREMIUMIZE_STAGING_PATH,
+  ]
+    .map(root => String(root || '').trim())
+    .filter(Boolean);
+}
+
+// Containment check for a caller-supplied import destination. The destination usually does not
+// exist yet (the importer creates it), so realpath the deepest ancestor that *does* exist and
+// require that to sit inside an allowed root — a symlinked parent therefore cannot be used to
+// escape, while the not-yet-created leaf is still checked. Returns the resolved real path on
+// success so callers copy into the checked location rather than re-deriving it.
+function resolveSafeImportDestination(destination, allowedRoots) {
+  const raw = String(destination || '').trim();
+  if (!raw || raw.includes('\0') || !path.isAbsolute(raw)) return { ok: false, reason: 'not_absolute' };
+  const roots = [];
+  for (const root of allowedRoots || []) {
+    const resolvedRoot = path.resolve(String(root));
+    try { roots.push(fs.realpathSync(resolvedRoot)); } catch { roots.push(resolvedRoot); }
+  }
+  if (!roots.length) return { ok: false, reason: 'no_roots' };
+  const resolved = path.resolve(raw);
+  let probe = resolved;
+  let realAncestor = null;
+  for (;;) {
+    try { realAncestor = fs.realpathSync(probe); break; } catch { /* keep walking up */ }
+    const parent = path.dirname(probe);
+    if (parent === probe) break;
+    probe = parent;
+  }
+  if (!realAncestor) return { ok: false, reason: 'unresolvable' };
+  // path.resolve() already collapsed any `..`, so this tail can only descend.
+  const tail = path.relative(probe, resolved);
+  const realTarget = tail ? path.join(realAncestor, tail) : realAncestor;
+  const inside = roots.some(root => realTarget === root || realTarget.startsWith(root + path.sep));
+  if (!inside) return { ok: false, reason: 'outside_roots' };
+  return { ok: true, path: realTarget, roots };
+}
+
 function createAgentApiReadLimiter({ limit, windowMs = 60000, keyGenerator }) {
   return rateLimit({
     windowMs,
@@ -814,14 +871,30 @@ function registerAgentApiRoutes(app, deps) {
       return res.status(409).json({ error: 'Seedbox sync is not configured (needs GRAB_STAGING_PATH)' });
     }
     const folder = String(req.body?.folder || '').trim().replace(/^["']|["']$/g, '').replace(/^\/+|\/+$/g, '');
-    const destination = String(req.body?.destination || '').trim();
+    const requestedDestination = String(req.body?.destination || '').trim();
     const target = String(req.body?.target || 'sonarr').trim().toLowerCase();
     if (!folder || folder.split('/').some(p => !p || p === '.' || p === '..')) {
       return res.status(400).json({ error: 'Valid folder is required' });
     }
-    if (!destination || !path.isAbsolute(destination)) {
-      return res.status(400).json({ error: 'Valid absolute destination path is required' });
+    // The destination is contained before anything is created or overwritten: this handler
+    // mkdir -p's it and copyFile()s over whatever is already there, so an unchecked absolute
+    // path is an arbitrary write for anyone holding an agent token. Everything below uses the
+    // returned real path, never the raw request value.
+    const destRoots = importDestinationRoots(config);
+    const safeDestination = resolveSafeImportDestination(requestedDestination, destRoots);
+    if (!safeDestination.ok) {
+      audit('agent_api_seedbox_import_force', { ...agentActor(req), ok: false, reason: `destination_${safeDestination.reason}`, folder, destination: requestedDestination.slice(0, 200) });
+      if (safeDestination.reason === 'no_roots') {
+        return res.status(409).json({ error: 'Force import is not configured: no destination root is set (RAID_PATH, the *arr import paths, or IMPORT_FORCE_DEST_ROOTS).' });
+      }
+      if (safeDestination.reason === 'not_absolute') {
+        return res.status(400).json({ error: 'Valid absolute destination path is required' });
+      }
+      return res.status(400).json({
+        error: `Destination is outside every allowed media root. Allowed roots: ${destRoots.join(', ')}. Set IMPORT_FORCE_DEST_ROOTS if this layout needs another one.`,
+      });
     }
+    const destination = safeDestination.path;
     if (target !== 'sonarr' && target !== 'radarr' && target !== 'radarr-4k') {
       return res.status(400).json({ error: 'target must be "sonarr", "radarr", or "radarr-4k"' });
     }
@@ -877,15 +950,18 @@ function registerAgentApiRoutes(app, deps) {
         try {
           const sonarrBase = config.SONARR_URL.replace(/\/$/, '');
           const headers = { 'X-Api-Key': config.SONARR_API_KEY };
-          // Find the series by matching the destination path or title "Bleach"
-          const seriesRes = await axios.get(`${sonarrBase}/api/v3/series`, { headers, timeout: 15000 });
+          // Match the series by path only: the destination has to sit inside the series folder.
+          // There is deliberately no title fallback — the previous `=== 'bleach'` one meant any
+          // unmatched destination rescanned that one series.
+          const seriesRes = await httpClient.get(`${sonarrBase}/api/v3/series`, { headers, timeout: 15000 });
           const allSeries = seriesRes.data || [];
-          // Match by path (destination should be inside the series path) or by title
-          let series = allSeries.find(s => destination.startsWith(s.path)) ||
-                       allSeries.find(s => s.title && s.title.toLowerCase() === 'bleach');
+          // Path containment, not a bare string prefix: a series at /media/Show must not claim a
+          // destination under /media/ShowOther.
+          const series = allSeries.find(s => s.path
+            && (destination === s.path || destination.startsWith(String(s.path).replace(/\/$/, '') + path.sep)));
           if (series) {
             // Trigger RescanSeries to pick up the new files from disk
-            await axios.post(`${sonarrBase}/api/v3/command`, {
+            await httpClient.post(`${sonarrBase}/api/v3/command`, {
               name: 'RescanSeries',
               seriesId: series.id,
             }, { headers, timeout: 15000 });
@@ -986,4 +1062,4 @@ function registerAgentApiRoutes(app, deps) {
   }));
 }
 
-module.exports = { registerAgentApiRoutes, createAgentApiAuth, createAgentApiReadLimiter, createAgentApiWriteLimiter };
+module.exports = { registerAgentApiRoutes, createAgentApiAuth, createAgentApiReadLimiter, createAgentApiWriteLimiter, importDestinationRoots, resolveSafeImportDestination };
