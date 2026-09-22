@@ -466,3 +466,10 @@ same way as a regular backup (`scripts/restore-db.js <path-to-.bak> /app/data/pl
 transaction, so a migration that throws never leaves a partially-migrated schema in the live
 database — the pre-migration snapshot is for rolling back a migration that completed successfully
 but produced behavior you want to undo.
+
+### rTorrent API credentials
+
+For EvoSeedbox, configure `RTORRENT_URL=https://<server>.myseedbox.site/RPC2` plus private
+`RTORRENT_USERNAME` and `RTORRENT_PASSWORD` environment values, then restart. This shares the
+existing rTorrent connection used by direct grabs. See [rTorrent control API](docs/rtorrent-control-api.md)
+for token scopes and a read-only connection check before using mutations.

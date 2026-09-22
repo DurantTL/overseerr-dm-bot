@@ -275,6 +275,8 @@ const CONFIG = (() => {
   // Full rTorrent XML-RPC endpoint incl. credentials, e.g.
   // https://user:pass@server.rapidseedbox.com/plugins/rpc/rpc.php
   RTORRENT_URL: process.env.RTORRENT_URL || '',
+  RTORRENT_USERNAME: process.env.RTORRENT_USERNAME || '',
+  RTORRENT_PASSWORD: process.env.RTORRENT_PASSWORD || '',
   // rTorrent label (d.custom1) applied per media type — the category the seedbox side sees.
   RTORRENT_LABEL_MOVIE: process.env.RTORRENT_LABEL_MOVIE || 'radarr',
   RTORRENT_LABEL_TV: process.env.RTORRENT_LABEL_TV || 'sonarr',

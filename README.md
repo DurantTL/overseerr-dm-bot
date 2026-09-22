@@ -637,3 +637,8 @@ User:
 
 ## Migration Notes
 On startup the bot creates missing tables and adds missing columns with non-destructive migrations. Existing data is preserved.
+
+### Director rTorrent API
+
+The agent API can inspect and control the configured rTorrent seedbox, including EvoSeedbox's
+`/RPC2` endpoint. See [rTorrent control API](docs/rtorrent-control-api.md) for setup and endpoints.

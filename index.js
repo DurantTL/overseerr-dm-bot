@@ -65,7 +65,7 @@ const { normalizeGranularity, parseTvUnitId, resolvePromotableUnit, checkPromoti
 const { checkPublicOriginReadiness } = require('./src/public-origin-diagnostics');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderDirectorPanel, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement, renderPasskeySetupBanner, renderAgentApiTokens, DASHBOARD_CSS } = require('./src/dashboard-render');
 const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, findAnimezIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
-const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, eraseTorrent, getRtorrentVersion, getRtorrentPaths } = require('./src/rtorrent');
+const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, eraseTorrent, getRtorrentVersion, getRtorrentPaths, rtorrentCall } = require('./src/rtorrent');
 const { decideRatioRemoval, describeDeletionSafety } = require('./src/ratio-cleanup');
 const { runBackup, rotateBackups, backupState, rehearseLatestBackup } = require('./scripts/backup-db');
 const { recordDiskSamples, pruneDiskSamples, forecastDisks, pathIsOnRoot, forecastLabel } = require('./src/capacity');
@@ -73,6 +73,7 @@ const { webhookEventKey } = require('./src/webhook-events');
 const { createWebhookHandlers, requireWebhookSecret } = require('./src/routes/webhooks');
 const { registerTierAgentRoutes } = require('./src/routes/tier-agent');
 const { registerAgentApiRoutes } = require('./src/routes/agent-api');
+const { createRtorrentControl } = require('./src/rtorrent-control');
 const { createDiscordExec, createDiscordInteract } = require('./src/discord-exec');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
 const { registerDashboardReadRoutes } = require('./src/routes/dashboard-read');
@@ -10546,6 +10547,7 @@ function startExpressServer() {
     // actor is admin-privileged (agent tokens already are) and audited as agent:<label>.
     const discordInteract = createDiscordInteract({ handleButton, audit });
     registerAgentApiRoutes(app, {
+      rtorrentControl: createRtorrentControl({ call: rtorrentCall, list: listRtorrentTorrents, configured: rtorrentConfigured }),
       config: CONFIG,
       getAgentApiTokenHashes,
       getAgentApiTokenLabel,
