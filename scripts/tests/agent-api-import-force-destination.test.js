@@ -235,6 +235,7 @@ test('import-force falls back to the staging root when no media root is configur
       target: 'sonarr',
     });
     assert.strictEqual(allowed.statusCode, 202, 'the staging root itself stays a legal destination');
+    await waitForJob(port, 'valid-agent-token', JSON.parse(allowed.body).jobId);
   });
 });
 
@@ -375,5 +376,110 @@ test('the destination guard still runs before a background job is created', asyn
     assert.strictEqual(JSON.parse(res.body).jobId, undefined, 'no job id is handed out for a refused path');
     const listed = JSON.parse((await get(port, '/api/v1/seedbox/import-status', 'valid-agent-token')).body);
     assert.deepStrictEqual(listed.jobs, [], 'a refused request creates no job at all');
+  });
+});
+
+test('import-force actually chowns when MEDIA_UID/MEDIA_GID are configured', async () => {
+  // The point of this test is the wiring, not the syscall: MEDIA_UID/MEDIA_GID were read as
+  // config.MEDIA_UID by this handler for two releases while config.js never defined them, so
+  // wantChown was permanently false and the ownership step silently did nothing. Chowning to the
+  // ids the process already has succeeds unprivileged, which is enough to prove it ran.
+  const fixture = setup({ configOverrides: { MEDIA_UID: process.getuid(), MEDIA_GID: process.getgid() } });
+  await withServer(fixture, async port => {
+    const res = await post(port, '/api/v1/seedbox/import-force', 'valid-agent-token', {
+      folder: 'Season 4',
+      destination: nodePath.join(fixture.mediaRoot, 'Show', 'Season 4'),
+      target: 'sonarr',
+    });
+    const job = await waitForJob(port, 'valid-agent-token', JSON.parse(res.body).jobId);
+    assert.strictEqual(job.status, 'done');
+    assert.strictEqual(job.copied, 1);
+    assert.strictEqual(job.chowned, 1, 'the ownership step ran instead of being skipped');
+    assert.strictEqual(job.chownFailed, false);
+    assert.match(job.message, /Ownership set to/);
+  });
+});
+
+test('import-force treats uid/gid 0 as a real value, not as unset', async () => {
+  // `config.MEDIA_UID ? ... : null` read 0 as unset, so root-owned libraries silently got no
+  // chown. config now parses to integers and the handler checks Number.isInteger.
+  const fixture = setup({ configOverrides: { MEDIA_UID: 0, MEDIA_GID: 0 } });
+  await withServer(fixture, async port => {
+    const res = await post(port, '/api/v1/seedbox/import-force', 'valid-agent-token', {
+      folder: 'Season 4',
+      destination: nodePath.join(fixture.mediaRoot, 'Show', 'Season 4'),
+      target: 'sonarr',
+    });
+    const job = await waitForJob(port, 'valid-agent-token', JSON.parse(res.body).jobId);
+    assert.strictEqual(job.status, 'done', 'the copy still succeeds');
+    assert.strictEqual(job.copied, 1);
+    // Unprivileged chown to root fails with EPERM, which is reported rather than hidden — the
+    // point is that it was attempted at all.
+    assert.strictEqual(job.chownFailed, process.getuid() !== 0, 'uid 0 was attempted, not skipped');
+    assert.match(job.message, /Ownership/);
+  });
+});
+
+test('import-force skips the chown when only one of MEDIA_UID/MEDIA_GID is set', async () => {
+  const fixture = setup({ configOverrides: { MEDIA_UID: process.getuid() } });
+  await withServer(fixture, async port => {
+    const res = await post(port, '/api/v1/seedbox/import-force', 'valid-agent-token', {
+      folder: 'Season 4',
+      destination: nodePath.join(fixture.mediaRoot, 'Show', 'Season 4'),
+      target: 'sonarr',
+    });
+    const job = await waitForJob(port, 'valid-agent-token', JSON.parse(res.body).jobId);
+    assert.strictEqual(job.status, 'done');
+    assert.strictEqual(job.chowned, 0, 'a chown needs both halves');
+    assert.strictEqual(job.chownFailed, false);
+    assert.ok(!/Ownership/.test(job.message), 'and the message does not claim ownership was set');
+  });
+});
+
+test('import-force refuses a second import into a destination already being written', async () => {
+  const fixture = setup();
+  // Enough files that the copy spans many event-loop turns, so the second request reliably lands
+  // while the first job is still running rather than racing its completion.
+  for (let i = 0; i < 400; i++) {
+    fs.writeFileSync(nodePath.join(fixture.staging, 'Season 4', `ep${i}.mkv`), 'payload');
+  }
+  const destination = nodePath.join(fixture.mediaRoot, 'Show', 'Season 4');
+  await withServer(fixture, async port => {
+    const first = await post(port, '/api/v1/seedbox/import-force', 'valid-agent-token', {
+      folder: 'Season 4', destination, target: 'sonarr',
+    });
+    assert.strictEqual(first.statusCode, 202);
+    const firstJobId = JSON.parse(first.body).jobId;
+
+    // Same destination while that job is still running: previously both were accepted and their
+    // copyFile() writes interleaved into the same files.
+    const second = await post(port, '/api/v1/seedbox/import-force', 'valid-agent-token', {
+      folder: 'Season 4', destination, target: 'sonarr',
+    });
+    assert.strictEqual(second.statusCode, 409, 'the destination in flight is refused');
+    const body = JSON.parse(second.body);
+    assert.match(body.error, /already running/);
+    assert.strictEqual(body.jobId, firstJobId, 'the caller is pointed at the job already in flight');
+    assert.ok(
+      fixture.auditCalls.some(c => c.details.reason === 'already_running'),
+      'the refusal is audited',
+    );
+
+    const firstJob = await waitForJob(port, 'valid-agent-token', firstJobId);
+    assert.strictEqual(firstJob.status, 'done');
+    assert.strictEqual(firstJob.copied, 401, 'only the one job did the copying');
+
+    // Once it finishes the destination is free again, and a different one is never blocked.
+    const again = await post(port, '/api/v1/seedbox/import-force', 'valid-agent-token', {
+      folder: 'Season 4', destination, target: 'sonarr',
+    });
+    assert.strictEqual(again.statusCode, 202, 'a finished destination can be imported again');
+    await waitForJob(port, 'valid-agent-token', JSON.parse(again.body).jobId);
+    const other = await post(port, '/api/v1/seedbox/import-force', 'valid-agent-token', {
+      folder: 'Season 4', destination: nodePath.join(fixture.mediaRoot, 'Show', 'Season 5'), target: 'sonarr',
+    });
+    assert.strictEqual(other.statusCode, 202);
+    // Drain it: a worker still copying while withServer() removes the temp tree races rimraf.
+    await waitForJob(port, 'valid-agent-token', JSON.parse(other.body).jobId);
   });
 });
