@@ -28,8 +28,42 @@ errors, and downstream secrets stay in outbound headers.
 | GET | `/api/v1/seedbox/sync-status` | Progress for one synced folder (`?folder=`): `{ status, fileCount, totalBytes, dest?, started?, finished?, exitCode?, error?, errorCode? }`. `in-progress` / `done` / `failed` come from a sync job this process started; **`unknown`** means the folder is staged but no job explains it (the bot restarted mid-copy, or it was staged another way) — it may be incomplete, and re-running the sync is safe and resumable; `not-started` means nothing is there. A failed sync reports `exitCode` and a fixed message, never rclone's output — that can echo the remote and its credentials, so it goes to the audit log instead. |
 | POST | `/api/v1/seedbox/import-force` | Copy a staged folder's files to a library path and trigger a Sonarr rescan: `{ folder, destination, target }`. `destination` must be an absolute path **inside an allowed media root** — see "Import destinations are contained" below. Returns **202** with `{ jobId, status: "running" }` and copies in the background (a multi-GB season would otherwise block the event loop for minutes); poll `/seedbox/import-status`. The Sonarr rescan targets the series whose own path contains the destination; no match means the files are copied and the rescan is left to the operator. |
 | GET | `/api/v1/seedbox/import-status` | Progress of a background import: `?jobId=` returns that job, or omit it for the recent list (newest first). A job is `{ jobId, folder, destination, target, status: "running"\|"done"\|"failed", started, finished?, copied, chowned, chownFailed, message, error, errorCode }`. `error`/`errorCode` are a fixed message plus the errno (`ENOSPC`, `EACCES`, …) to branch on — never raw error text; the full error goes to the audit log. Jobs are in-memory, the most recent 20, and reset when the bot restarts, so an unknown `jobId` is a 404. |
+| GET | `/api/v1/discord/commands` | v1.2 — the live slash-command surface, so a client doesn't hardcode it: `{ count, invocable, commands: [{ name, description, options?, subcommands?, invocable, reason? }] }`. Options carry `{ name, description, type, required, supported, choices?, min?, max?, autocomplete? }` with readable type names. Built from the same definitions `/discord/exec` validates against, and `invocable` mirrors that validator's rules — anything listed as invocable is a call `/discord/exec` accepts. See "Discovering the command surface" below. |
 | POST | `/api/v1/discord/exec` | v1.2 — headless slash-command invocation. `{ command, subcommand?, options? }`; validated against the live slash-command definitions (unknown command/subcommand/option, wrong type, missing required option → 400). Routes through the same `handleSlashCommand` dispatch as Discord and returns `{ ok, replies }`. Replies that carried buttons list them as `buttons: [{ custom_id, label, style }]` for discovery. See "Discord command bridge" below. |
 | POST | `/api/v1/discord/interact` | v1.2 — headless button press. `{ custom_id }` (max 100 chars, Discord's limit); validated non-empty → 400 otherwise. Routes through the same `handleButton` dispatch as Discord and returns `{ ok, replies }`. The admin gate inside `handleButton` still applies (the synthetic actor is admin-privileged, same as `/discord/exec`); every press is audited as `agent:<token-label>`. |
+
+## Discovering the command surface (v1.2)
+
+`GET /api/v1/discord/commands` returns the commands the bridge will accept, read straight from
+the live `SlashCommandBuilder` definitions. Without it a client has to hardcode every command and
+its options, and drifts silently the moment one changes — the only symptom being a 400 from
+`/discord/exec` that looks like a client bug.
+
+Two fields do the useful work:
+
+- **`invocable`** (per command, and per subcommand) mirrors `validateExecInput`'s own rules, so a
+  command listed as invocable is one `/discord/exec` will accept. When it is false, `reason` says
+  why — a required option of a type the headless shim cannot supply (attachment, channel, role,
+  mentionable), or a command built from subcommand groups, which the bridge doesn't support. An
+  *optional* unsupported option doesn't block the command; it is simply marked
+  `supported: false` and has to be left out.
+- **`autocomplete: true`** on an option means Discord would normally resolve it from a live
+  lookup. That never runs headless, so the value is free-form: the caller has to supply something
+  the command's own resolution accepts (a title it can find, an email it can match) rather than
+  one of a fixed set. It is not a `choices` list, and an unresolvable value fails inside the
+  handler rather than in validation.
+
+```json
+// GET /api/v1/discord/commands
+{ "ok": true, "count": 58, "invocable": 58, "commands": [
+  { "name": "queue", "description": "Show the download queue", "options": [], "invocable": true },
+  { "name": "rtorrent", "description": "Seedbox controls", "invocable": true, "subcommands": [
+    { "name": "adopt", "description": "Adopt a finished torrent", "invocable": true, "options": [
+      { "name": "search", "description": "Torrent name", "type": "string", "required": true, "supported": true }
+    ] }
+  ] }
+] }
+```
 
 ## Discord command bridge (v1.2)
 

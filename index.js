@@ -10591,6 +10591,9 @@ function startExpressServer() {
       discordExec,
       // v1.2 Discord button bridge: headless button presses (same dispatch as Discord).
       discordInteract,
+      // v1.2 discovery: the live slash-command definitions behind GET /api/v1/discord/commands,
+      // the same list the exec bridge validates against.
+      getDiscordCommandDefs: () => slashCommands,
     });
   } else {
     log.info('Agent API disabled: AGENT_API_TOKEN is not set and the dashboard is disabled.');
