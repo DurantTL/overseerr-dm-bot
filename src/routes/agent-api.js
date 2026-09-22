@@ -14,11 +14,21 @@ const { pad } = require('../util');
 // Machine API for the Plex Director agent (v1.1).
 // Auth: `Authorization: Bearer <token>`, hash-compared like the tier-agent tokens; the matched
 // token's label rides on req.agentTokenLabel so every audited mutation names its client.
-// v1 was GET-only; v1.1 adds a small allowlist of fix endpoints (POST) behind explicit approval.
-// The allowlist is deliberately narrow: only repairs the bot already performs on its own or
-// through existing dashboard/Discord controls. No deletes, restarts, config changes, user
-// management, or token management exist on this surface. Every mutation is audited with an
-// `agent:<label>` actor, and POST routes sit behind a much tighter rate limiter than reads.
+// v1 was GET-only; v1.1 added a small allowlist of fix endpoints (POST), and v1.2 the Discord
+// bridge. The fix endpoints are still narrow — only repairs the bot already performs on its own
+// or through existing dashboard/Discord controls — but the bridge is as wide as Discord itself,
+// which reaches user management, media deletion and credential rotation because those commands
+// exist. An earlier version of this comment claimed none of that was here; it was written before
+// the bridge and was wrong from v1.2 on. What bounds the surface now is per-token scopes
+// (read/write/discord) and, for the bridge, an explicit per-token allowlist of command names and
+// button action prefixes — see docs/agent-api.md "Token scopes".
+//
+// One property does hold by construction rather than by promise: this surface cannot mint or
+// revoke an agent API token. createAgentApiToken is reachable only from the dashboard, and no
+// command or button calls it, so a token can neither widen itself nor outlive its revocation.
+//
+// Every mutation is audited with an `agent:<label>` actor, and POST routes sit behind a much
+// tighter rate limiter than reads.
 // Responses are small, typed projections — never raw upstream payloads, so tokens, API keys,
 // and full config can never leak through this surface.
 
@@ -98,6 +108,49 @@ function resolveSafeImportDestination(destination, allowedRoots) {
 // one IP), and a single token can't multiply its budget by rotating addresses. Falls back to the
 // IP key if a limiter is ever mounted ahead of auth, so a missing identity can never mean
 // "unlimited".
+// Scope enforcement. Mounted after the rate limiter rather than before it, so every
+// authenticated request costs the same budget whether or not it was allowed — otherwise a
+// misconfigured client could hammer refusals for free. A token with no matching scope gets 403
+// and an audit line naming what it tried, which is how an operator finds a too-narrow grant.
+function requireScope(scope, audit) {
+  return (req, res, next) => {
+    const held = Array.isArray(req.agentScopes) ? req.agentScopes : [];
+    if (held.includes(scope)) return next();
+    audit('agent_api_scope_denied', {
+      actor: `agent:${req.agentTokenLabel || 'unknown'}`,
+      path: req.path,
+      needed: scope,
+      held: held.join(',') || '(none)',
+    });
+    return res.status(403).json({
+      error: `This token does not hold the "${scope}" scope (it has: ${held.join(', ') || 'none'}).`,
+      needed: scope,
+    });
+  };
+}
+
+// Whether a token may drive one Discord action. The unit is deliberately the same for both
+// bridges: a slash command's name for /discord/exec, and a button's action prefix — the part of
+// custom_id before the first ':' — for /discord/interact. Buttons need gating of their own
+// because not every custom_id is unguessable: the offer-backed ones carry a random nonce, but
+// `plex_approve:<discord id>` is addressed by a user id an agent can simply know.
+function allowedDiscordAction(req, action) {
+  const allowed = Array.isArray(req.agentDiscordActions) ? req.agentDiscordActions : [];
+  return allowed.includes('*') || allowed.includes(String(action || '').toLowerCase());
+}
+
+function denyDiscordAction(req, res, audit, action, kind) {
+  audit('agent_api_discord_action_denied', {
+    actor: `agent:${req.agentTokenLabel || 'unknown'}`,
+    kind,
+    action: String(action || '').slice(0, 80),
+  });
+  return res.status(403).json({
+    error: `This token is not allowed the Discord action "${String(action || '').slice(0, 80)}". Its allowlist: ${(req.agentDiscordActions || []).join(', ') || 'none'}.`,
+    action: String(action || '').slice(0, 80),
+  });
+}
+
 function agentRateLimitKey(httpRateLimitKey) {
   return req => {
     if (req.agentTokenId) return `token:${req.agentTokenId}`;
@@ -333,10 +386,15 @@ function registerAgentApiRoutes(app, deps) {
     // v1.2 discovery: the live slash-command definitions (index.js's slashCommands). Null in
     // tests that don't wire it (-> 503), same as the two bridges.
     getDiscordCommandDefs = null,
-    auth = createAgentApiAuth({ getAgentApiTokenHashes, getAgentApiTokenLabel, legacyTokenHash, touchAgentApiTokenUse, sha256, safeEqual, audit }),
+    getAgentApiTokenGrants = () => null,
+    auth = createAgentApiAuth({ getAgentApiTokenHashes, getAgentApiTokenLabel, getAgentApiTokenGrants, legacyTokenHash, touchAgentApiTokenUse, sha256, safeEqual, audit }),
     readLimiter = createAgentApiReadLimiter({ limit: config.AGENT_API_READ_MAX_PER_MINUTE, keyGenerator: agentRateLimitKey(httpRateLimitKey) }),
     writeLimiter = createAgentApiWriteLimiter({ limit: config.AGENT_API_WRITE_MAX_PER_MINUTE || 10, keyGenerator: agentRateLimitKey(httpRateLimitKey) }),
   } = deps;
+
+  const requireRead = requireScope('read', audit);
+  const requireWrite = requireScope('write', audit);
+  const requireDiscord = requireScope('discord', audit);
 
   // gatherHealth() fans out to every integration; cache briefly like the public /health does so
   // a polling agent can't multiply upstream traffic.
@@ -359,7 +417,7 @@ function registerAgentApiRoutes(app, deps) {
     }
   };
 
-  app.get('/api/v1/health', auth, readLimiter, guarded(async (_req, res) => {
+  app.get('/api/v1/health', auth, readLimiter, requireRead, guarded(async (_req, res) => {
     const h = await getCachedHealth();
     // v1.1: backup age is additive — the v1 shape is unchanged, two fields are added so a
     // polling agent can alert on stale backups, not just hard backup failures.
@@ -389,14 +447,14 @@ function registerAgentApiRoutes(app, deps) {
   // from the latest agent telemetry. Safe shape only: names + byte counts, no arr URLs,
   // keys, or raw mount internals. Tier nodes with no telemetry yet are skipped; stale
   // telemetry is included but flagged via telemetryAgeMs.
-  app.get('/api/v1/disks', auth, readLimiter, guarded(async (_req, res) => {
+  app.get('/api/v1/disks', auth, readLimiter, requireRead, guarded(async (_req, res) => {
     const raw = (await fetchDiskSpace()) || [];
     const tierNodes = listTierNodes().map(n => ({ name: n.name, telemetry: getTierPlan(n.name)?.lastTelemetry || null }));
     const disks = mergeFleetDisks({ arrDisks: raw, tierNodes, masterSmartHealth: getMasterSmartHealth() });
     res.json({ ok: true, count: disks.length, disks });
   }));
 
-  app.get('/api/v1/library/search', auth, readLimiter, guarded(async (req, res) => {
+  app.get('/api/v1/library/search', auth, readLimiter, requireRead, guarded(async (req, res) => {
     const title = String(req.query.title || '').trim();
     const type = String(req.query.type || '').trim().toLowerCase();
     if (title.length < 2 || title.length > 100) {
@@ -412,12 +470,12 @@ function registerAgentApiRoutes(app, deps) {
     res.json({ ok: true, query: title, type: type || null, count: results.length, results });
   }));
 
-  app.get('/api/v1/queue', auth, readLimiter, guarded(async (_req, res) => {
+  app.get('/api/v1/queue', auth, readLimiter, requireRead, guarded(async (_req, res) => {
     const items = (await fetchArrQueues()).map(projectQueueItem);
     res.json({ ok: true, count: items.length, items });
   }));
 
-  app.get('/api/v1/requests', auth, readLimiter, guarded(async (req, res) => {
+  app.get('/api/v1/requests', auth, readLimiter, requireRead, guarded(async (req, res) => {
     const statusFilter = String(req.query.status || '').trim().toLowerCase();
     if (statusFilter && !REQUEST_STATUS_FILTERS.includes(statusFilter)) {
       return res.status(400).json({ error: `status must be one of: ${REQUEST_STATUS_FILTERS.join(', ')}` });
@@ -440,7 +498,7 @@ function registerAgentApiRoutes(app, deps) {
 
   // Run or preview an automation sweep — the same preview()/run() the /automation Discord
   // command uses. Sweep names are validated against the registry; unknown names are 400.
-  app.post('/api/v1/automation/sweep', auth, writeLimiter, guarded(async (req, res) => {
+  app.post('/api/v1/automation/sweep', auth, writeLimiter, requireWrite, guarded(async (req, res) => {
     if (!automationRegistry) return res.status(503).json({ error: 'Automation registry is unavailable' });
     const sweep = String(req.body?.sweep || '').trim();
     const mode = String(req.body?.mode || '').trim();
@@ -481,7 +539,7 @@ function registerAgentApiRoutes(app, deps) {
   // Retry a failed Seerr request: re-runs the same direct-add repair the escalation sweep
   // uses for lost hand-offs (addMediaToArr — bypasses Seerr, adds to the arr, starts a search).
   // Only requests currently in the `failed` state are eligible; anything else is 404.
-  app.post('/api/v1/requests/:id/retry', auth, writeLimiter, guarded(async (req, res) => {
+  app.post('/api/v1/requests/:id/retry', auth, writeLimiter, requireWrite, guarded(async (req, res) => {
     if (!addMediaToArr) return res.status(503).json({ error: 'Request repair is unavailable' });
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id < 1) {
@@ -512,7 +570,7 @@ function registerAgentApiRoutes(app, deps) {
   // Force a season search — mirrors the dashboard's "Search Now" button: same series
   // resolution (Sonarr id or unambiguous title), same missing-episode / fallback / cooldown
   // gates, and the same AvistaZ-tagged → direct grab vs Sonarr SeasonSearch route decision.
-  app.post('/api/v1/search/season', auth, writeLimiter, guarded(async (req, res) => {
+  app.post('/api/v1/search/season', auth, writeLimiter, requireWrite, guarded(async (req, res) => {
     const need = { listSonarrSeries, getSeriesEpisodes, triggerSeasonSearch };
     if (Object.values(need).some(fn => typeof fn !== 'function')) {
       return res.status(503).json({ error: 'Season search is unavailable' });
@@ -603,7 +661,7 @@ function registerAgentApiRoutes(app, deps) {
   // /debrid and /rtorrent Discord `import` subcommands: path traversal guard, `.incoming`
   // guard, existence through the bot's path view, and a partial-match preview in Move mode
   // that refuses (409) instead of asking an interactive confirm button.
-  app.post('/api/v1/import-scan', auth, writeLimiter, guarded(async (req, res) => {
+  app.post('/api/v1/import-scan', auth, writeLimiter, requireWrite, guarded(async (req, res) => {
     if (!summarizeManualImportPreview) return res.status(503).json({ error: 'Import scan is unavailable' });
     const target = String(req.body?.target || '').trim().toLowerCase();
     if (target !== 'sonarr' && target !== 'radarr' && target !== 'radarr-4k') {
@@ -755,7 +813,7 @@ function registerAgentApiRoutes(app, deps) {
     return { fileCount, totalBytes };
   }
 
-  app.post('/api/v1/seedbox/sync', auth, writeLimiter, guarded(async (req, res) => {
+  app.post('/api/v1/seedbox/sync', auth, writeLimiter, requireWrite, guarded(async (req, res) => {
     const remote = (config.GRAB_RCLONE_REMOTE || '').replace(/\/$/, '');
     const stagingPath = (config.GRAB_STAGING_PATH || '').replace(/\/$/, '');
     if (!remote || !stagingPath) {
@@ -903,7 +961,7 @@ function registerAgentApiRoutes(app, deps) {
   // mid-copy, or it was staged by something else), which the old marker model reported as a
   // confident `done` — importing a half-copied season. rclone copies are resumable, so the remedy
   // for `unknown` is simply to sync again.
-  app.get('/api/v1/seedbox/sync-status', auth, readLimiter, guarded(async (req, res) => {
+  app.get('/api/v1/seedbox/sync-status', auth, readLimiter, requireRead, guarded(async (req, res) => {
     const stagingPath = (config.GRAB_STAGING_PATH || '').replace(/\/$/, '');
     if (!stagingPath) {
       return res.status(409).json({ error: 'Seedbox sync is not configured' });
@@ -951,7 +1009,7 @@ function registerAgentApiRoutes(app, deps) {
   // In-memory import job tracker (resets on restart; jobs are best-effort)
   const importJobs = new Map();
 
-  app.post('/api/v1/seedbox/import-force', auth, writeLimiter, guarded(async (req, res) => {
+  app.post('/api/v1/seedbox/import-force', auth, writeLimiter, requireWrite, guarded(async (req, res) => {
     const stagingPath = (config.GRAB_STAGING_PATH || '').replace(/\/$/, '');
     if (!stagingPath) {
       return res.status(409).json({ error: 'Seedbox sync is not configured (needs GRAB_STAGING_PATH)' });
@@ -1138,7 +1196,7 @@ function registerAgentApiRoutes(app, deps) {
   // Status of one background import job, or the recent job list when no jobId is given.
   // readLimiter like every other GET on this surface: polling is the intended access pattern,
   // so it shares the same read budget rather than being the one unbounded route here.
-  app.get('/api/v1/seedbox/import-status', auth, readLimiter, guarded(async (req, res) => {
+  app.get('/api/v1/seedbox/import-status', auth, readLimiter, requireRead, guarded(async (req, res) => {
     const jobId = String(req.query?.jobId || '').trim();
     if (jobId) {
       const job = importJobs.get(jobId);
@@ -1156,7 +1214,7 @@ function registerAgentApiRoutes(app, deps) {
   // 400 from /discord/exec. `invocable` mirrors the validator's own rules, so a command listed
   // as callable is one /discord/exec will actually accept. Read-only, so readLimiter like every
   // other GET here.
-  app.get('/api/v1/discord/commands', auth, readLimiter, guarded(async (_req, res) => {
+  app.get('/api/v1/discord/commands', auth, readLimiter, requireRead, guarded(async (_req, res) => {
     if (!getDiscordCommandDefs) return res.status(503).json({ error: 'Discord command definitions are unavailable' });
     const commands = describeCommandsForApi(getDiscordCommandDefs());
     if (!commands.length) return res.status(503).json({ error: 'Discord command definitions are unavailable' });
@@ -1176,7 +1234,7 @@ function registerAgentApiRoutes(app, deps) {
   // and returned — interactive follow-ups (buttons, selects, modals) and DMs are not
   // supported headless; see docs/agent-api.md. Every invocation is audited inside the
   // executor as agent:<token-label> with the command + args.
-  app.post('/api/v1/discord/exec', auth, writeLimiter, guarded(async (req, res) => {
+  app.post('/api/v1/discord/exec', auth, writeLimiter, requireDiscord, guarded(async (req, res) => {
     if (!discordExec) return res.status(503).json({ error: 'Discord command bridge is unavailable' });
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const command = String(body.command || '').trim();
@@ -1189,6 +1247,11 @@ function registerAgentApiRoutes(app, deps) {
     if (typeof options !== 'object' || Array.isArray(options)) {
       audit('agent_api_discord_exec', { ...agentActor(req), ok: false, reason: 'invalid_options' });
       return res.status(400).json({ error: 'options must be an object of option-name -> value' });
+    }
+    // Checked before dispatch, and before the command is even validated: a token that may not
+    // run /downsize should learn nothing about it, not even whether its options were well formed.
+    if (!allowedDiscordAction(req, command)) {
+      return denyDiscordAction(req, res, audit, command, 'command');
     }
     try {
       const result = await discordExec({
@@ -1212,13 +1275,19 @@ function registerAgentApiRoutes(app, deps) {
   // `buttons: [{ custom_id, label, style }]` for discovery. The admin gate inside
   // handleButton still runs (the synthetic actor is admin-privileged, same as the exec
   // bridge), and every press is audited as agent:<token-label>, including failures.
-  app.post('/api/v1/discord/interact', auth, writeLimiter, guarded(async (req, res) => {
+  app.post('/api/v1/discord/interact', auth, writeLimiter, requireDiscord, guarded(async (req, res) => {
     if (!discordInteract) return res.status(503).json({ error: 'Discord interaction bridge is unavailable' });
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const customId = typeof body.custom_id === 'string' ? body.custom_id.trim() : '';
     if (!customId) {
       audit('agent_api_discord_interact', { ...agentActor(req), custom_id: '', ok: false, reason: 'missing_custom_id' });
       return res.status(400).json({ error: 'custom_id is required' });
+    }
+    // handleButton dispatches on the part before the first ':', so that is the unit the
+    // allowlist names. Everything after it is the button's own payload.
+    const buttonAction = customId.split(':')[0];
+    if (!allowedDiscordAction(req, buttonAction)) {
+      return denyDiscordAction(req, res, audit, buttonAction, 'button');
     }
     try {
       const result = await discordInteract({

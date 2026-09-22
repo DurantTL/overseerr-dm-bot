@@ -7,7 +7,7 @@
 // is hashed and compared in constant time against every live hash, and failures are audited. This
 // is a cheap header check, so it belongs ahead of any downstream work: an unauthenticated caller
 // shouldn't be able to spend Plex/*arr/Seerr API calls.
-function createAgentApiAuth({ getAgentApiTokenHashes, getAgentApiTokenLabel = () => null, legacyTokenHash = '', sha256, safeEqual, audit, touchAgentApiTokenUse = () => {} }) {
+function createAgentApiAuth({ getAgentApiTokenHashes, getAgentApiTokenLabel = () => null, getAgentApiTokenGrants = () => null, legacyTokenHash = '', sha256, safeEqual, audit, touchAgentApiTokenUse = () => {} }) {
   return (req, res, next) => {
     const m = /^Bearer\s+(\S+)$/.exec(String(req.headers.authorization || ''));
     const presentedHash = m ? sha256(m[1]) : '';
@@ -31,6 +31,14 @@ function createAgentApiAuth({ getAgentApiTokenHashes, getAgentApiTokenLabel = ()
     // unlike the label it is unique — two tokens may carry the same label, and sharing a budget
     // between them would be a surprise an operator never asked for.
     req.agentTokenId = matched;
+    // What this token may reach. The legacy env token has no row to carry grants, and it
+    // predates scopes entirely, so it is grandfathered at full access exactly like the tokens
+    // migration 5 backfilled — clearing AGENT_API_TOKEN stays the way to retire it. A dashboard
+    // token whose row has somehow lost its grants reads as full access too (see readGrants):
+    // narrowing a live token silently is a worse failure than leaving it as its operator left it.
+    const grants = matched === legacyTokenHash ? null : getAgentApiTokenGrants(matched);
+    req.agentScopes = grants ? grants.scopes : ['read', 'write', 'discord'];
+    req.agentDiscordActions = grants ? grants.discordActions : ['*'];
     // The legacy env token has no row to track; dashboard tokens record throttled last-use so an
     // operator can see which client is actually calling.
     if (matched !== legacyTokenHash) touchAgentApiTokenUse(matched);

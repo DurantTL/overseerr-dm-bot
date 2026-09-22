@@ -130,6 +130,34 @@ function commandDefsToMetadata(builders) {
 // mirror that function's rules exactly — an endpoint that advertises a call the validator then
 // rejects is worse than no endpoint at all. Separate from commandDefsToMetadata() because the
 // validator wants the raw numeric types and no prose, while a caller wants the descriptions.
+// Commands that hand out, rotate or destroy a credential, keyed by command name or
+// "command subcommand". Nothing in a SlashCommandBuilder marks this, so it is a hand-kept
+// register: a command that starts minting or revoking a credential has to be added here, or it
+// reads as ordinary in the discovery endpoint and in whatever allowlist an operator writes from
+// it. The pinning test in agent-api-discord-commands.test.js is the reminder.
+//
+// These are the three that exist today. Agent API tokens are deliberately absent: they can only
+// be minted from the dashboard, and no command or button reaches createAgentApiToken.
+const CREDENTIAL_ACTIONS = {
+  download: {
+    effect: 'mint',
+    reason: 'mints a tokenised download URL that grants access to the file without a further login',
+  },
+  'revoke-downloads': {
+    effect: 'revoke',
+    reason: 'revokes active download links, for one user or for everyone at once',
+  },
+  'tier-node token': {
+    effect: 'rotate',
+    reason: 'rotates that node\'s agent token and replaces the old one — the agent already running on the box keeps using the token it has and silently stops reporting, which surfaces later as a node that went quiet rather than as an error here',
+  },
+};
+
+function credentialMarks(key) {
+  const entry = CREDENTIAL_ACTIONS[key];
+  return entry ? { credential: true, credentialEffect: entry.effect, credentialReason: entry.reason } : {};
+}
+
 function describeOption(o) {
   const described = {
     name: String(o.name || ''),
@@ -169,6 +197,7 @@ function describeCommandsForApi(builders) {
       const described = {
         name: String(json.name || '').toLowerCase(),
         description: String(json.description || ''),
+        ...credentialMarks(String(json.name || '').toLowerCase()),
       };
 
       // Order matters: validateExecInput takes the subcommand path first and only rejects
@@ -177,11 +206,13 @@ function describeCommandsForApi(builders) {
         described.subcommands = subs.map(s => {
           const options = (s.options || []).map(describeOption);
           const blocker = blockingOption(options);
+          const subName = String(s.name || '').toLowerCase();
           const sub = {
-            name: String(s.name || '').toLowerCase(),
+            name: subName,
             description: String(s.description || ''),
             options,
             invocable: !blocker,
+            ...credentialMarks(`${String(json.name || '').toLowerCase()} ${subName}`),
           };
           if (blocker) sub.reason = blockedReason(blocker);
           return sub;
@@ -667,6 +698,7 @@ module.exports = {
   DiscordExecError,
   commandDefsToMetadata,
   describeCommandsForApi,
+  CREDENTIAL_ACTIONS,
   validateExecInput,
   buildHeadlessInteraction,
   buildHeadlessButtonInteraction,

@@ -11,7 +11,7 @@ const http = require('node:http');
 const { ApplicationCommandOptionType } = require('discord.js');
 const { createApp, listen, close } = require('../../src/app');
 const { registerAgentApiRoutes } = require('../../src/routes/agent-api');
-const { describeCommandsForApi, commandDefsToMetadata, validateExecInput } = require('../../src/discord-exec');
+const { describeCommandsForApi, commandDefsToMetadata, validateExecInput, CREDENTIAL_ACTIONS } = require('../../src/discord-exec');
 const { sha256, safeEqual } = require('../../src/util');
 
 const T = ApplicationCommandOptionType;
@@ -322,4 +322,56 @@ test('GET /discord/commands is 503 when definitions are not wired, and shares th
       'discovery shares the read budget rather than being unbounded',
     );
   });
+});
+
+// ---- credential-touching commands ----
+
+test('the three credential commands are flagged with an effect and a reason', () => {
+  const described = describeCommandsForApi([
+    { name: 'download', description: 'Get a secure download link', options: [] },
+    { name: 'revoke-downloads', description: 'Revoke download links', options: [] },
+    { name: 'tier-node', description: 'Tier node admin', options: [
+      { name: 'token', description: 'Rotate the agent token', type: T.Subcommand, options: [] },
+      { name: 'add', description: 'Add a node', type: T.Subcommand, options: [] },
+    ] },
+    { name: 'queue', description: 'Show the queue', options: [] },
+  ]);
+
+  const download = byName(described, 'download');
+  assert.strictEqual(download.credential, true);
+  assert.strictEqual(download.credentialEffect, 'mint');
+  assert.match(download.credentialReason, /without a further login/);
+
+  const revoke = byName(described, 'revoke-downloads');
+  assert.strictEqual(revoke.credentialEffect, 'revoke');
+
+  // The flag belongs to the subcommand that rotates, not to /tier-node as a whole — `add` and
+  // the rest of the group are ordinary.
+  const tierNode = byName(described, 'tier-node');
+  assert.strictEqual(tierNode.credential, undefined, 'the parent command is not itself a credential action');
+  const tokenSub = tierNode.subcommands.find(s => s.name === 'token');
+  assert.strictEqual(tokenSub.credential, true);
+  assert.strictEqual(tokenSub.credentialEffect, 'rotate');
+  assert.match(tokenSub.credentialReason, /silently stops reporting/,
+    'the reason says the sharp part: the failure shows up later as a quiet node, not as an error here');
+  assert.strictEqual(tierNode.subcommands.find(s => s.name === 'add').credential, undefined);
+
+  assert.strictEqual(byName(described, 'queue').credential, undefined, 'ordinary commands carry no flag');
+});
+
+test('the credential register lists exactly the actions that touch a credential today', () => {
+  // A hand-kept register: nothing in a SlashCommandBuilder says a command mints or revokes
+  // anything. This pins it so adding a credential command without registering it fails here
+  // rather than going unflagged into somebody's allowlist.
+  assert.deepStrictEqual(
+    Object.keys(CREDENTIAL_ACTIONS).sort(),
+    ['download', 'revoke-downloads', 'tier-node token'],
+  );
+  for (const [key, entry] of Object.entries(CREDENTIAL_ACTIONS)) {
+    assert.ok(['mint', 'rotate', 'revoke'].includes(entry.effect), `${key} has a known effect`);
+    assert.ok(entry.reason && entry.reason.length > 20, `${key} explains itself`);
+  }
+  // Agent API tokens are absent on purpose: createAgentApiToken is reachable only from the
+  // dashboard, so no command or button can mint one.
+  assert.ok(!Object.keys(CREDENTIAL_ACTIONS).some(k => k.includes('agent-api')));
 });
