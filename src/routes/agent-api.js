@@ -30,6 +30,8 @@ const MAX_REQUESTS = 200;
 const HEALTH_CACHE_MS = 30000;
 // How many finished/running import jobs /api/v1/seedbox/import-status keeps in memory.
 const IMPORT_JOB_HISTORY = 20;
+// Same for the seedbox sync jobs behind /api/v1/seedbox/sync-status, keyed by folder.
+const SYNC_JOB_HISTORY = 20;
 
 // Roots that POST /api/v1/seedbox/import-force is allowed to copy into. The endpoint takes a
 // caller-supplied absolute `destination`, mkdir -p's it, and overwrites files inside it, so the
@@ -281,6 +283,9 @@ function registerAgentApiRoutes(app, deps) {
     getPlexServers,
     httpRateLimitKey,
     httpClient = axios,
+    // Injectable so the seedbox sync path is testable without really running rclone; the sync
+    // handler used child_process.spawn directly, which is why it had no tests.
+    spawnProcess = spawn,
     // v1.1 fix-endpoint collaborators. All are existing bot functions passed in from index.js —
     // the API invents no repair logic of its own.
     automationRegistry = null,
@@ -683,8 +688,56 @@ function registerAgentApiRoutes(app, deps) {
   // a failure is safe.
   // NOTE: This endpoint bypasses the `guarded` wrapper (which returns a generic 502)
   // so that handler crashes return the actual error message for debugging.
-  app.post('/api/v1/seedbox/sync', auth, writeLimiter, async (req, res) => {
-    try {
+  // Seedbox sync jobs, keyed by folder. State lives here rather than in marker files next to the
+  // media: a marker written before a crash is orphaned forever (the cleanup ran in the child's
+  // close handler, which dies with the parent), so the old model reported a folder as syncing
+  // indefinitely, and reported any folder that merely *existed* as `done` even when the copy had
+  // been interrupted half way. In memory the state can only be honest — after a restart there is
+  // no job, which is reported as `unknown` rather than a confident `done`.
+  const syncJobs = new Map();
+
+  // Legacy marker files from the previous model. They are inert now, but a stray
+  // `<folder>.sync-in-progress` sitting in staging is an unmatched file that makes a Move
+  // import-scan refuse, so a new sync for that folder clears its own leftovers.
+  function clearLegacySyncMarkers(destPath) {
+    for (const suffix of ['.sync-in-progress', '.sync-failed']) {
+      try { fs.unlinkSync(`${destPath}${suffix}`); } catch { /* absent, or not ours to remove */ }
+    }
+  }
+
+  function pruneSyncJobs() {
+    if (syncJobs.size <= SYNC_JOB_HISTORY) return;
+    for (const key of [...syncJobs.keys()].slice(0, syncJobs.size - SYNC_JOB_HISTORY)) {
+      // Never drop a job that is still running — its folder would start reporting `unknown`.
+      if (syncJobs.get(key)?.status !== 'in-progress') syncJobs.delete(key);
+    }
+  }
+
+  // Recursive file count + byte total, async so a poll over a large staged season doesn't stall
+  // the event loop the way the synchronous readdir/stat walk did.
+  async function dirStats(dirPath) {
+    let fileCount = 0;
+    let totalBytes = 0;
+    const walk = async current => {
+      let entries;
+      try {
+        entries = await fs.promises.readdir(current, { withFileTypes: true });
+      } catch { return; }
+      for (const entry of entries) {
+        const fullPath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          await walk(fullPath);
+        } else if (entry.isFile()) {
+          fileCount++;
+          try { totalBytes += (await fs.promises.stat(fullPath)).size; } catch { /* vanished mid-walk */ }
+        }
+      }
+    };
+    await walk(dirPath);
+    return { fileCount, totalBytes };
+  }
+
+  app.post('/api/v1/seedbox/sync', auth, writeLimiter, guarded(async (req, res) => {
     const remote = (config.GRAB_RCLONE_REMOTE || '').replace(/\/$/, '');
     const stagingPath = (config.GRAB_STAGING_PATH || '').replace(/\/$/, '');
     if (!remote || !stagingPath) {
@@ -713,20 +766,32 @@ function registerAgentApiRoutes(app, deps) {
       return res.status(400).json({ error: '`.incoming` holds in-flight copies — never sync from there' });
     }
 
+    // One rclone per folder. Without this a retrying client (or an agent that treats a slow
+    // response as a failure) spawns several copies onto the same destination, all writing the
+    // same files. rclone is resumable, so the right answer is to wait for the one in flight.
+    const running = syncJobs.get(clean);
+    if (running && running.status === 'in-progress') {
+      audit('agent_api_seedbox_sync', { ...agentActor(req), ok: false, reason: 'already_running', folder: clean });
+      return res.status(409).json({
+        error: `A sync of \`${clean}\` is already running (started ${running.started}). Poll /api/v1/seedbox/sync-status?folder=${encodeURIComponent(clean)} instead of starting another.`,
+        folder: clean,
+        status: running.status,
+        started: running.started,
+      });
+    }
+
     const srcPath = `${remote}/${clean}`;
     const destPath = path.join(stagingPath, clean);
-    // GRAB_RCLONE_FLAGS may be a string (space-separated) or an array (if config parses it)
     const flagsRaw = config.GRAB_RCLONE_FLAGS;
     const flags = Array.isArray(flagsRaw) ? flagsRaw.filter(Boolean) : String(flagsRaw || '').split(/\s+/).filter(Boolean);
     const rcloneBinary = config.STAGE_RCLONE_BINARY || 'rclone';
 
-    // Disk space check: ensure at least 5 GB free on the staging filesystem before
-    // starting. The copy will fail anyway if space runs out, but failing fast with a
-    // clear message is kinder than a mid-transfer rclone error.
+    // Disk space check before starting: the copy would fail anyway, but failing fast with a clear
+    // message beats a mid-transfer rclone error. bavail, not bfree — bfree counts the
+    // root-reserved blocks the bot's own uid cannot actually write into.
     try {
       const stats = fs.statfsSync(stagingPath);
-      const freeBytes = Number(stats.bfree) * Number(stats.bsize);
-      const freeGB = freeBytes / 1e9;
+      const freeGB = (Number(stats.bavail) * Number(stats.bsize)) / 1e9;
       if (freeGB < 5) {
         audit('agent_api_seedbox_sync', { ...agentActor(req), ok: false, reason: 'low_disk', folder: clean, freeGB: Math.round(freeGB * 10) / 10 });
         return res.status(409).json({
@@ -734,82 +799,92 @@ function registerAgentApiRoutes(app, deps) {
           freeGB: Math.round(freeGB * 10) / 10,
         });
       }
-    } catch (err) {
-      // If we can't check disk space, proceed anyway — rclone will fail with a clear
-      // error if space runs out. Don't block the sync on a stat failure.
-    }
+    } catch { /* unreadable statfs is not a reason to block the sync; rclone will fail loudly */ }
 
-    audit('agent_api_seedbox_sync', { ...agentActor(req), ok: true, reason: 'started', folder: clean, src: srcPath, dest: destPath });
+    clearLegacySyncMarkers(destPath);
 
-    // Run rclone in the background. The HTTP request returns immediately (202);
-    // the client polls /api/v1/seedbox/sync-status for completion.
-    // We use a marker file to track status: .sync-in-progress means running,
-    // .sync-failed means rclone errored (contains stderr).
-    const markerInProgress = `${destPath}.sync-in-progress`;
-    const markerFailed = `${destPath}.sync-failed`;
+    const actor = agentActor(req);
+    const job = {
+      folder: clean,
+      dest: destPath,
+      status: 'in-progress',
+      started: new Date().toISOString(),
+      finished: null,
+      exitCode: null,
+      error: null,
+      errorCode: null,
+    };
+    syncJobs.set(clean, job);
+    pruneSyncJobs();
+
+    let child;
     try {
-      fs.writeFileSync(markerInProgress, JSON.stringify({ started: new Date().toISOString(), src: srcPath }));
-      if (fs.existsSync(markerFailed)) fs.unlinkSync(markerFailed);
+      // stderr is piped so a failure is diagnosable, but it is always drained and only ever
+      // audited — rclone echoes the remote (and with some backends its credentials) back out.
+      child = spawnProcess(rcloneBinary, ['copy', srcPath, destPath, ...flags], { stdio: ['ignore', 'ignore', 'pipe'] });
     } catch (err) {
-      // Non-fatal
+      job.status = 'failed';
+      job.finished = new Date().toISOString();
+      job.errorCode = typeof err?.code === 'string' ? err.code.slice(0, 40) : 'SPAWN_FAILED';
+      job.error = `rclone could not be started (${job.errorCode})`;
+      audit('agent_api_seedbox_sync', { ...actor, ok: false, reason: 'spawn_threw', folder: clean, code: job.errorCode, error: err?.message });
+      // A fixed message: the raw spawn error carries the binary path and argv.
+      return res.status(502).json({ error: 'Failed to start rclone — check STAGE_RCLONE_BINARY and the container PATH.', folder: clean });
     }
 
-    // Spawn rclone. We don't wait for it — unref() lets the response return.
-    // If rclone isn't installed or fails to start, the error is captured async
-    // and written to the .sync-failed marker.
-    let spawnError = null;
-    try {
-      const child = spawn(rcloneBinary, ['copy', srcPath, destPath, ...flags], {
-        stdio: 'ignore',
+    let stderrTail = '';
+    if (child.stderr) {
+      child.stderr.on('data', chunk => {
+        // Always consume, or a full pipe buffer blocks rclone; retain only the tail.
+        stderrTail = (stderrTail + String(chunk)).slice(-2000);
       });
-      child.on('error', (err) => {
-        spawnError = err.message;
-        try {
-          fs.writeFileSync(markerFailed, `rclone failed to start: ${err.message}`);
-          if (fs.existsSync(markerInProgress)) fs.unlinkSync(markerInProgress);
-        } catch {}
-        audit('agent_api_seedbox_sync', { ...agentActor(req), ok: false, reason: 'rclone_start_failed', folder: clean });
-      });
-      child.on('close', (code) => {
-        try {
-          if (fs.existsSync(markerInProgress)) fs.unlinkSync(markerInProgress);
-          if (code !== 0) {
-            fs.writeFileSync(markerFailed, `rclone exited ${code}`);
-          }
-          audit('agent_api_seedbox_sync', { ...agentActor(req), ok: code === 0, reason: code === 0 ? 'completed' : 'rclone_failed', folder: clean });
-        } catch {}
-      });
-      child.unref();
-    } catch (err) {
-      // Synchronous spawn failure (e.g. invalid args) — return 502 with the error
-      // instead of crashing the handler.
-      try { if (fs.existsSync(markerInProgress)) fs.unlinkSync(markerInProgress); } catch {}
-      audit('agent_api_seedbox_sync', { ...agentActor(req), ok: false, reason: 'spawn_threw', folder: clean, error: err.message?.slice(0, 200) });
-      return res.status(502).json({ error: `Failed to start rclone: ${err.message}`, folder: clean });
+      child.stderr.on('error', () => {});
     }
+    child.on('error', err => {
+      job.status = 'failed';
+      job.finished = new Date().toISOString();
+      job.errorCode = typeof err?.code === 'string' ? err.code.slice(0, 40) : 'SPAWN_FAILED';
+      job.error = `rclone could not be started (${job.errorCode})`;
+      try {
+        audit('agent_api_seedbox_sync', { ...actor, ok: false, reason: 'rclone_start_failed', folder: clean, code: job.errorCode, error: err?.message });
+      } catch { /* the job already records the failure for the caller */ }
+    });
+    child.on('close', code => {
+      // A spawn error already settled the job; don't overwrite it with the close that follows.
+      if (job.status !== 'in-progress') return;
+      job.finished = new Date().toISOString();
+      job.exitCode = code;
+      if (code === 0) {
+        job.status = 'done';
+      } else {
+        job.status = 'failed';
+        job.errorCode = `EXIT_${code}`;
+        job.error = `rclone exited ${code}`;
+      }
+      try {
+        audit('agent_api_seedbox_sync', {
+          ...actor, ok: code === 0, reason: code === 0 ? 'completed' : 'rclone_failed',
+          folder: clean, exitCode: code, error: code === 0 ? undefined : stderrTail.slice(-500),
+        });
+      } catch { /* the job already records the outcome for the caller */ }
+    });
+    child.unref();
 
+    audit('agent_api_seedbox_sync', { ...actor, ok: true, reason: 'started', folder: clean, src: srcPath, dest: destPath });
     return res.status(202).json({
       ok: true,
       folder: clean,
       dest: destPath,
-      status: 'started',
+      status: job.status,
       message: `Sync of \`${clean}\` started in background. Poll /api/v1/seedbox/sync-status?folder=${encodeURIComponent(clean)} for completion.`,
     });
-    } catch (err) {
-      // Defensive: return the actual error instead of crashing to a generic 502.
-      // This helps diagnose why the sync endpoint fails.
-      try {
-        audit('agent_api_seedbox_sync', { ...agentActor(req), ok: false, reason: 'handler_crashed', error: String(err.message || err).slice(0, 500) });
-      } catch {}
-      return res.status(500).json({
-        error: `Sync handler failed: ${err.message || String(err)}`,
-        stack: String(err.stack || '').split('\n').slice(0, 5).join('\n'),
-      });
-    }
-  });
+  }));
 
-  // Seedbox sync status: check if a folder is currently syncing, failed, or done.
-  // Returns: { status: 'in-progress'|'failed'|'done'|'not-started', ... }
+  // Seedbox sync status for one folder. `in-progress` / `done` / `failed` come from a job this
+  // process started; `unknown` means the folder exists but no job explains it (the bot restarted
+  // mid-copy, or it was staged by something else), which the old marker model reported as a
+  // confident `done` — importing a half-copied season. rclone copies are resumable, so the remedy
+  // for `unknown` is simply to sync again.
   app.get('/api/v1/seedbox/sync-status', auth, readLimiter, guarded(async (req, res) => {
     const stagingPath = (config.GRAB_STAGING_PATH || '').replace(/\/$/, '');
     if (!stagingPath) {
@@ -820,47 +895,35 @@ function registerAgentApiRoutes(app, deps) {
       return res.status(400).json({ error: 'Valid folder query param is required' });
     }
     const destPath = path.join(stagingPath, folder);
-    const markerInProgress = `${destPath}.sync-in-progress`;
-    const markerFailed = `${destPath}.sync-failed`;
+    const exists = fs.existsSync(destPath);
+    const stats = exists ? await dirStats(destPath) : { fileCount: 0, totalBytes: 0 };
+    const job = syncJobs.get(folder);
 
-    // Helper: count files and total size in a directory (recursive)
-    const getDirStats = (dirPath) => {
-      let fileCount = 0;
-      let totalBytes = 0;
-      try {
-        const walk = (current) => {
-          const entries = fs.readdirSync(current, { withFileTypes: true });
-          for (const entry of entries) {
-            const fullPath = path.join(current, entry.name);
-            if (entry.isDirectory()) {
-              walk(fullPath);
-            } else if (entry.isFile()) {
-              fileCount++;
-              try {
-                totalBytes += fs.statSync(fullPath).size;
-              } catch {}
-            }
-          }
-        };
-        walk(dirPath);
-      } catch {}
-      return { fileCount, totalBytes };
-    };
-
-    if (fs.existsSync(markerFailed)) {
-      const error = fs.readFileSync(markerFailed, 'utf8').slice(0, 500);
-      const stats = fs.existsSync(destPath) ? getDirStats(destPath) : { fileCount: 0, totalBytes: 0 };
-      return res.json({ ok: true, folder, status: 'failed', error, ...stats });
+    if (job) {
+      return res.json({
+        ok: true,
+        folder,
+        status: job.status,
+        dest: job.dest,
+        started: job.started,
+        finished: job.finished,
+        exitCode: job.exitCode,
+        error: job.error,
+        errorCode: job.errorCode,
+        ...stats,
+      });
     }
-    if (fs.existsSync(markerInProgress)) {
-      const stats = fs.existsSync(destPath) ? getDirStats(destPath) : { fileCount: 0, totalBytes: 0 };
-      return res.json({ ok: true, folder, status: 'in-progress', ...stats });
+    if (exists) {
+      return res.json({
+        ok: true,
+        folder,
+        status: 'unknown',
+        dest: destPath,
+        detail: 'The folder is staged but no sync job in this process explains it — the bot restarted mid-copy, or it was staged another way. It may be incomplete; re-running the sync is safe and resumable.',
+        ...stats,
+      });
     }
-    if (fs.existsSync(destPath)) {
-      const stats = getDirStats(destPath);
-      return res.json({ ok: true, folder, status: 'done', dest: destPath, ...stats });
-    }
-    return res.json({ ok: true, folder, status: 'not-started' });
+    return res.json({ ok: true, folder, status: 'not-started', ...stats });
   }));
 
   // Force import: copy files from seedbox staging to a destination path, then trigger Sonarr rescan.
@@ -907,6 +970,20 @@ function registerAgentApiRoutes(app, deps) {
     if (!fs.existsSync(srcPath)) {
       return res.status(404).json({ error: `Staging folder not found: ${srcPath}` });
     }
+    // One import per destination. Since the copy went background these no longer serialise on a
+    // blocked event loop: two calls for the same destination would both be accepted and race,
+    // interleaving copyFile() writes into the same files.
+    const inFlight = [...importJobs.values()].find(j => j.status === 'running' && j.destination === destination);
+    if (inFlight) {
+      audit('agent_api_seedbox_import_force', { ...agentActor(req), ok: false, reason: 'already_running', folder, destination, jobId: inFlight.jobId });
+      return res.status(409).json({
+        error: `An import into \`${destination}\` is already running (job ${inFlight.jobId}, started ${inFlight.started}). Poll /api/v1/seedbox/import-status?jobId=${encodeURIComponent(inFlight.jobId)} instead of starting another.`,
+        jobId: inFlight.jobId,
+        status: inFlight.status,
+        started: inFlight.started,
+      });
+    }
+
     // Run as a background job so the API stays responsive during large copies: a multi-GB
     // season blocked the event loop for minutes under the old synchronous copy, stalling
     // Discord, /health and every other route with it. fs.promises keeps the loop free.
@@ -937,9 +1014,11 @@ function registerAgentApiRoutes(app, deps) {
         // Optional ownership fix: if MEDIA_UID/MEDIA_GID are set, chown copied files so the
         // arr containers (e.g. Sonarr running as abc:users) can manage them. Best-effort: a
         // chown failure still leaves the files world-readable (644) for the arr to import.
-        const mediaUid = config.MEDIA_UID ? parseInt(config.MEDIA_UID, 10) : null;
-        const mediaGid = config.MEDIA_GID ? parseInt(config.MEDIA_GID, 10) : null;
-        const wantChown = Number.isInteger(mediaUid) && Number.isInteger(mediaGid);
+        // config parses these to integers or null, so 0 (root) is a real value rather than
+        // reading as unset — and a chown needs both halves, hence the pair check.
+        const mediaUid = Number.isInteger(config.MEDIA_UID) ? config.MEDIA_UID : null;
+        const mediaGid = Number.isInteger(config.MEDIA_GID) ? config.MEDIA_GID : null;
+        const wantChown = mediaUid !== null && mediaGid !== null;
         for (const file of files) {
           const srcFile = path.join(srcPath, file);
           const destFile = path.join(destination, file);

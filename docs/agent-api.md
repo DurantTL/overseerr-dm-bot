@@ -24,8 +24,8 @@ errors, and downstream secrets stay in outbound headers.
 | POST | `/api/v1/requests/:id/retry` | Re-run the direct-add repair for a **failed** Seerr request (adds to the arr bypassing Seerr, starts a search). 404 unless the request is currently failed. |
 | POST | `/api/v1/search/season` | Force a season search: `{ series, season, force? }`. `series` is a Sonarr id or an unambiguous title; same missing-episode/cooldown gates and AvistaZ-vs-Sonarr routing as the dashboard's Search Now button. |
 | POST | `/api/v1/import-scan` | Trigger an arr import scan: `{ target: "sonarr"\|"radarr", source?: "premiumize"\|"seedbox", folder?, mode?: "move"\|"copy" }`. Same safety logic as the Discord `import` subcommands — path traversal guard, `.incoming` guard, existence check. In Move mode a partial-match preview **refuses** (409) instead of asking an interactive confirm button; nothing destructive is ever clicked through silently. |
-| POST | `/api/v1/seedbox/sync` | rclone-copy a completed folder from the seedbox (`GRAB_RCLONE_REMOTE`) into local staging (`GRAB_STAGING_PATH`): `{ folder }`. Same folder validation as `/import-scan` (no traversal, no `.incoming`). Returns 202 immediately and copies in the background; the copy is resumable, so re-running after a failure is safe. |
-| GET | `/api/v1/seedbox/sync-status` | Progress for one synced folder (`?folder=`): `{ status: "in-progress"\|"failed"\|"done"\|"not-started", fileCount, totalBytes }`. |
+| POST | `/api/v1/seedbox/sync` | rclone-copy a completed folder from the seedbox (`GRAB_RCLONE_REMOTE`) into local staging (`GRAB_STAGING_PATH`): `{ folder }`. Same folder validation as `/import-scan` (no traversal, no `.incoming`). Returns 202 immediately and copies in the background; the copy is resumable, so re-running after a failure is safe. **One sync per folder**: while one is in flight the same folder is a 409 naming the running job, so a retrying client can't start a second rclone onto the same destination. |
+| GET | `/api/v1/seedbox/sync-status` | Progress for one synced folder (`?folder=`): `{ status, fileCount, totalBytes, dest?, started?, finished?, exitCode?, error?, errorCode? }`. `in-progress` / `done` / `failed` come from a sync job this process started; **`unknown`** means the folder is staged but no job explains it (the bot restarted mid-copy, or it was staged another way) — it may be incomplete, and re-running the sync is safe and resumable; `not-started` means nothing is there. A failed sync reports `exitCode` and a fixed message, never rclone's output — that can echo the remote and its credentials, so it goes to the audit log instead. |
 | POST | `/api/v1/seedbox/import-force` | Copy a staged folder's files to a library path and trigger a Sonarr rescan: `{ folder, destination, target }`. `destination` must be an absolute path **inside an allowed media root** — see "Import destinations are contained" below. Returns **202** with `{ jobId, status: "running" }` and copies in the background (a multi-GB season would otherwise block the event loop for minutes); poll `/seedbox/import-status`. The Sonarr rescan targets the series whose own path contains the destination; no match means the files are copied and the rescan is left to the operator. |
 | GET | `/api/v1/seedbox/import-status` | Progress of a background import: `?jobId=` returns that job, or omit it for the recent list (newest first). A job is `{ jobId, folder, destination, target, status: "running"\|"done"\|"failed", started, finished?, copied, chowned, chownFailed, message, error, errorCode }`. `error`/`errorCode` are a fixed message plus the errno (`ENOSPC`, `EACCES`, …) to branch on — never raw error text; the full error goes to the audit log. Jobs are in-memory, the most recent 20, and reset when the bot restarts, so an unknown `jobId` is a 404. |
 | POST | `/api/v1/discord/exec` | v1.2 — headless slash-command invocation. `{ command, subcommand?, options? }`; validated against the live slash-command definitions (unknown command/subcommand/option, wrong type, missing required option → 400). Routes through the same `handleSlashCommand` dispatch as Discord and returns `{ ok, replies }`. Replies that carried buttons list them as `buttons: [{ custom_id, label, style }]` for discovery. See "Discord command bridge" below. |
@@ -153,6 +153,19 @@ The agent token is now **privileged, not read-only**. What keeps that sane:
   (`AGENT_API_WRITE_MAX_PER_MINUTE`), separate from the read limiter (60/min).
 - **Per-label revocable tokens.** Mint one token per client; revoke any one of them at
   any time from the dashboard without touching the others.
+- **Background work never reports a state it can't prove.** Sync and import progress lives in
+  memory for the life of the process, not in marker files beside the media. A marker written
+  before a crash is orphaned (its cleanup ran in the child's close handler, which dies with the
+  parent), so the old model reported a folder as syncing forever, and reported any folder that
+  merely existed as `done` — which is how a half-copied season got imported as complete. A staged
+  folder with no job behind it is now `unknown`, and the remedy is to sync again: rclone copies are
+  resumable. The trade is that a restart forgets in-flight jobs, which is why `unknown` exists at
+  all rather than a confident answer.
+- **One writer per destination.** `/seedbox/sync` is one rclone per folder and
+  `/seedbox/import-force` one job per destination; a second call while the first runs is a 409
+  naming the job in flight. Both copies went background to keep the event loop free, so they no
+  longer serialise by blocking it, and an agent that retries a slow call would otherwise have two
+  writers interleaving into the same files.
 - **Import destinations are contained.** `/api/v1/seedbox/import-force` takes a
   caller-supplied absolute `destination`, creates it, and overwrites files inside it, so the
   path is contained the same way `resolveSafeMediaPath()` contains the download routes. Allowed
