@@ -12,7 +12,7 @@
     "smoke": "node scripts/smoke-public-origin.js"
   },
   "dependencies": {
-    "@simplewebauthn/browser": "^13.3.0",
+    "@simplewebauthn/browser": "^14.0.0",
     "@simplewebauthn/server": "^14.0.2",
     "axios": "^1.20.0",
     "better-sqlite3": "^13.0.3",
