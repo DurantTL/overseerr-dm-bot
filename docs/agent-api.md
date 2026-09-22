@@ -47,6 +47,9 @@ Two fields do the useful work:
   mentionable), or a command built from subcommand groups, which the bridge doesn't support. An
   *optional* unsupported option doesn't block the command; it is simply marked
   `supported: false` and has to be left out.
+- **`credential: true`** marks an action that hands out, rotates or destroys a credential,
+  with `credentialEffect` and `credentialReason`. Three carry it today; `/tier-node token` is
+  the one whose failure mode is delayed rather than immediate.
 - **`autocomplete: true`** on an option means Discord would normally resolve it from a live
   lookup. That never runs headless, so the value is free-form: the caller has to supply something
   the command's own resolution accepts (a title it can find, an email it can match) rather than
@@ -171,20 +174,32 @@ failure paths).
 
 The agent token is now **privileged, not read-only**. What keeps that sane:
 
-- **Allowlist only.** The four v1.1 POST fix endpoints plus the v1.2 Discord bridge
-  (`/api/v1/discord/exec` + `/api/v1/discord/interact`) are the entire mutation surface. The bridge can only invoke
-  commands that exist in the bot's slash-command definitions — unknown commands,
-  subcommands, and options are rejected with a 400 — and it runs the same dispatch
-  code a Discord user triggers, so it can't do anything Discord itself can't. No
-  deletes outside what commands already do, no container/service restarts, no config
-  changes, no token management, no Plex shares, no direct database writes. Anything
-  not listed does not exist.
+- **Scoped, and the bridge is as wide as Discord.** The POST fix endpoints plus
+  `/api/v1/discord/exec` and `/api/v1/discord/interact` are the mutation surface. The bridge
+  only invokes commands that exist in the bot's slash-command definitions — unknown commands,
+  subcommands and options are a 400 — and runs the same dispatch a Discord user triggers, so it
+  can't do anything Discord itself can't.
+
+  That last clause is the point, and it cuts both ways: **an admin in Discord can do a great
+  deal**, so a token holding the `discord` scope with a wide allowlist is not a narrow
+  credential. It reaches user management (`/unlink`), media deletion (`/downsize`,
+  `/cleanup`), config-shaped changes (`/assign-server`, `/tier-node`) and credential
+  management (`/download`, `/revoke-downloads`, `/tier-node token`) — because those commands
+  exist in Discord. This section previously claimed "no config changes, no token management",
+  which stopped being true when the bridge shipped in v1.2. What keeps it bounded is the
+  per-token allowlist below, not the shape of the surface.
+
+  Two things the surface genuinely cannot do, by construction rather than by promise: **it
+  cannot mint or revoke an agent API token** — `createAgentApiToken` is reachable only from the
+  dashboard, and no command or button calls it, so a token can't widen itself or outlive your
+  revoking it — and it cannot reach anything the bot has no command for.
 - **No new repair logic.** Each fix endpoint calls an existing bot function — the same
   code the Discord commands and dashboard buttons already run. The API invents nothing.
 - **Audit with actor.** Every mutation is audited as `agent:<token label>` (or
   `agent:legacy-env-token`), so the audit log shows exactly which agent client acted.
 - **Tight write budget.** POST routes share a 10/min rate limiter
-  (`AGENT_API_WRITE_MAX_PER_MINUTE`), separate from the read limiter (60/min).
+  (`AGENT_API_WRITE_MAX_PER_MINUTE`), separate from the read limiter (60/min). Both are charged
+  per token, so one client can't spend another's budget.
 - **Per-label revocable tokens.** Mint one token per client; revoke any one of them at
   any time from the dashboard without touching the others.
 - **Background work never reports a state it can't prove.** Sync and import progress lives in
@@ -212,17 +227,81 @@ The agent token is now **privileged, not read-only**. What keeps that sane:
 - **Upstream failures are 502s.** Like the read routes, fix endpoints never leak raw
   error text (which can carry sensitive detail).
 
+## Token scopes
+
+Every token carries an explicit set of scopes, and the `discord` scope carries an explicit list
+of the actions it may drive. A token reaches only what it was given; there is no "everything"
+default.
+
+| Scope | Covers |
+|---|---|
+| `read` | Every `GET`: health, disks, queue, requests, library search, sync/import status, command discovery. |
+| `write` | The POST fix endpoints: automation sweeps, request retry, season search, import scan, seedbox sync and force-import. |
+| `discord` | `POST /discord/exec` and `POST /discord/interact`, limited further by the token's action allowlist. |
+
+A request without the scope its route needs is a **403** naming the scope it wanted and the
+scopes the token holds, and the refusal is audited (`agent_api_scope_denied`). The check runs
+after the rate limiter, so a refused request still costs the token budget — otherwise a
+misconfigured client could hammer refusals for free.
+
+### The Discord action allowlist
+
+With the `discord` scope, a token names the actions it may drive. The unit is the same for both
+bridges: a **slash command's name** for `/discord/exec`, and a **button's action prefix** — the
+part of `custom_id` before the first `:` — for `/discord/interact`.
+
+Buttons need naming too, and not only for symmetry. Most button ids carry an unguessable offer
+nonce, so a token can only press what a command it was allowed to run handed it. But some are
+addressed by something an agent simply knows: `plex_approve:<discord user id>` is pressable by
+anyone who can name the user. Gating on the prefix closes that.
+
+A refused action is a 403 naming the action and the token's allowlist, audited as
+`agent_api_discord_action_denied`. Nothing is dispatched — a token that may not run `/downsize`
+learns nothing about it, not even whether its options were well formed.
+
+`GET /api/v1/discord/commands` is the list to write an allowlist from. It flags the three
+actions that touch a credential, with `credentialEffect` (`mint` / `rotate` / `revoke`) and a
+`credentialReason`:
+
+| Action | Effect | Why it is worth a second look |
+|---|---|---|
+| `/download` | `mint` | Mints a tokenised download URL that grants access to the file without a further login. |
+| `/revoke-downloads` | `revoke` | Revokes active download links, for one user or everyone at once. |
+| `/tier-node token` | `rotate` | Rotates that node's agent token and replaces the old one. The agent already running on the box keeps the token it has and **silently stops reporting** — which surfaces later as a node that went quiet, not as an error at call time. |
+
+That register is hand-kept: nothing in a `SlashCommandBuilder` marks a command as
+credential-touching, so a command that starts minting or revoking one has to be added to
+`CREDENTIAL_ACTIONS` in `src/discord-exec.js` or it reads as ordinary here.
+
+### Existing tokens
+
+Tokens minted before scopes existed are **grandfathered at full access**: every scope, and the
+`*` wildcard for Discord actions rather than the command list as it stood on upgrade day.
+Freezing the list would mean a command added later silently stopped working for a token that
+used to reach everything — the opposite of not breaking anything. The wildcard is only ever
+carried by those tokens; a new one cannot be given it.
+
+The legacy `AGENT_API_TOKEN` env var has no row to carry grants and is likewise unscoped —
+clearing it from the environment is still how you retire it.
+
+Tightening a live token is a row edit, not a re-mint: the client keeps the credential it
+already holds. From the dashboard's token card, or `POST /admin/action/agent-api-token-grants`
+with `{ id, scopes, discordActions }`.
+
 ## Mint tokens from the dashboard
 
 Admin dashboard → Overview → **Agent API tokens**:
 
 1. Give the client a label (e.g. `Edith`, `nightly-audit`).
-2. Create — the raw token is shown **once**. Copy it immediately; it is never shown or
+2. Tick the scopes it needs, and — with `discord` — list the actions it may drive. There is no
+   "all commands" shortcut: a Director that should reach all of them lists all of them, so
+   narrowing it later is an edit to that list rather than a migration.
+3. Create — the raw token is shown **once**. Copy it immediately; it is never shown or
    logged again. Only a sha256 hash is stored in the database.
-3. Revoke per client at any time from the same card. Revoked tokens stop working
+4. Revoke per client at any time from the same card. Revoked tokens stop working
    immediately; the dashboard records each token's label, creation time, and last use.
 
-Tokens are bearer credentials: send `Authorization: Bearer <token>`. Rate-limited per IP.
+Tokens are bearer credentials: send `Authorization: Bearer <token>`. **Rate-limited per token**, not per IP: both limiters run after authentication, so the budget is charged to the token that would be spending it. Clients sharing an egress address — a Director and a dashboard poller through the same tunnel — get independent budgets, and a token can't multiply its own by rotating addresses. Two tokens sharing a label still get separate budgets; the identity is the token, not its label.
 
 ## Legacy env token
 
