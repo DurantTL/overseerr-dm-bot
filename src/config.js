@@ -44,6 +44,17 @@ function parseId(v) {
   return String(v).trim().replace(/^['"]|['"]$/g, '').trim();
 }
 
+// A uid/gid from the environment, or null when unset/unusable. Parsed here rather than at the
+// call site so that 0 (root) is a real value instead of reading as "unset", and so a typo is
+// surfaced as a config warning instead of silently disabling the chown it was set to enable.
+function parseUnixId(v) {
+  const raw = String(v ?? '').trim();
+  if (!raw) return null;
+  if (!/^\d+$/.test(raw)) return null;
+  const n = Number.parseInt(raw, 10);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
 function isPlaceholderValue(raw) {
   const value = String(raw || '').trim();
   if (!value) return false;
@@ -378,6 +389,22 @@ const CONFIG = (() => {
     ? process.env.COOKIE_SECURE === '1'
     : (process.env.DASHBOARD_PUBLIC_URL || (process.env.TUNNEL_DOMAIN ? `https://${process.env.TUNNEL_DOMAIN}` : '')).startsWith('https://'),
   RAID_PATH: process.env.RAID_PATH || '/mnt/raid',
+  // Ownership for the files POST /api/v1/seedbox/import-force copies into a library, so the *arr
+  // containers (e.g. Sonarr running as abc:users) can manage them afterwards. A chown needs both
+  // halves, so the import only attempts one when both parse; either alone is a config warning.
+  // These were read as `config.MEDIA_UID` by the import for two releases without ever being
+  // defined here, which made the whole ownership step a silent no-op.
+  MEDIA_UID: parseUnixId(process.env.MEDIA_UID),
+  MEDIA_GID: parseUnixId(process.env.MEDIA_GID),
+  // Extra roots POST /api/v1/seedbox/import-force may copy into, comma-separated. The endpoint
+  // already allows RAID_PATH/PATH_REMAP_TO/TIER_SOURCE_ROOT and the *arr import+staging paths;
+  // this covers a library root none of those name. Anything outside every root is a 400 — the
+  // destination is a caller-supplied absolute path that gets created and written over, so it is
+  // contained like the download routes' resolveSafeMediaPath().
+  IMPORT_FORCE_DEST_ROOTS: String(process.env.IMPORT_FORCE_DEST_ROOTS || '')
+    .split(',')
+    .map(root => root.trim())
+    .filter(Boolean),
   PATH_REMAP_FROM: process.env.PATH_REMAP_FROM || '',
   PATH_REMAP_TO: process.env.PATH_REMAP_TO || process.env.RAID_PATH || '/mnt/raid',
   TAUTULLI_WEBHOOK_SECRET: process.env.TAUTULLI_WEBHOOK_SECRET || '',
@@ -616,6 +643,10 @@ CONFIG.PLACEHOLDER_WARNINGS = placeholderConfigWarnings(CONFIG, RESOLVED_ENV);
 // module's own `require`s in scope, so a call to buildEdgeTierNodeMap from inside that function
 // body would be a ReferenceError there.
 CONFIG.EDGE_TIER_NODE_MAP_ERRORS = buildEdgeTierNodeMap(process.env.EDGE_TIER_NODE_MAP, CONFIG.CA_EDGE_SERVER_NAMES).errors;
+// Same reason: configWarnings must stay a pure read of CONFIG, so which of MEDIA_UID/MEDIA_GID
+// were set-but-unparseable is decided here, where process.env is in scope.
+CONFIG.MEDIA_ID_UNPARSEABLE = ['MEDIA_UID', 'MEDIA_GID']
+  .filter(key => String(process.env[key] ?? '').trim() !== '' && CONFIG[key] === null);
 
 const REQUIRED_ENV = [
   'DISCORD_BOT_TOKEN', 'DISCORD_CLIENT_ID', 'DISCORD_GUILD_ID', 'ADMIN_CHANNEL_ID', 'ADMIN_USER_ID',
@@ -767,6 +798,16 @@ function configWarnings() {
   if (CONFIG.ESCALATION_ENABLED && !CONFIG.RADARR_URL && !CONFIG.SONARR_URL) {
     warnings.push('`ESCALATION_ENABLED=true` but neither Radarr nor Sonarr is configured — AvistaZ escalation can never fire.');
   }
+  // MEDIA_UID/MEDIA_GID only do anything as a pair, and a non-numeric value parses to null. Warn
+  // rather than throw: a mis-set ownership hint shouldn't stop the bot booting, but it must not be
+  // invisible either — the files still import, just owned by the bot's own uid.
+  for (const key of (CONFIG.MEDIA_ID_UNPARSEABLE || [])) {
+    warnings.push(`\`${key}\` is set but is not a non-negative integer, so it is ignored — force-imported files keep the bot's own ownership.`);
+  }
+  // Number.isInteger rather than a null check: in the extract.js sandbox these are undefined.
+  if (Number.isInteger(CONFIG.MEDIA_UID) !== Number.isInteger(CONFIG.MEDIA_GID)) {
+    warnings.push('`MEDIA_UID` and `MEDIA_GID` only take effect together (a chown needs both) — with one of them unset, force-imported files keep the bot\'s own ownership.');
+  }
   if (CONFIG.RTORRENT_URL && !CONFIG.PROWLARR_URL) {
     warnings.push('`RTORRENT_URL` is set but Prowlarr isn\'t (`PROWLARR_URL` + `PROWLARR_API_KEY`) — the AvistaZ direct-grab pipeline can\'t search anything.');
   }
@@ -834,4 +875,4 @@ function configWarnings() {
   return warnings;
 }
 
-module.exports = { parseBool, parseId, resolveFileEnv, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings, CONFIG, REQUIRED_ENV, validateConfig, startConfigErrorServer, configWarnings };
+module.exports = { parseBool, parseId, parseUnixId, resolveFileEnv, isPlaceholderValue, parseIdentityList, omitPlaceholder, placeholderConfigWarnings, CONFIG, REQUIRED_ENV, validateConfig, startConfigErrorServer, configWarnings };

@@ -288,8 +288,11 @@ test('#189: a successful mutation invalidates the dashboard cache; a failed one 
 test('agent API token routes require auth, validate input, and confirm revokes', async () => {
   const tokens = [];
   const { app, state } = fixture({
-    createAgentApiToken: label => {
-      const record = { id: tokens.length + 1, label, token: `raw-token-${tokens.length + 1}` };
+    createAgentApiToken: (label, grants) => {
+      const record = {
+        id: tokens.length + 1, label, token: `raw-token-${tokens.length + 1}`,
+        scopes: grants?.scopes || [], discordActions: grants?.discordActions || [],
+      };
       tokens.push(record);
       return record;
     },
@@ -305,15 +308,15 @@ test('agent API token routes require auth, validate input, and confirm revokes',
     const port = server.address().port;
     const headers = { 'x-admin-token': 'secret' };
 
-    assert.strictEqual((await post(port, '/admin/action/agent-api-token', { label: 'Edith' })).statusCode, 401);
-    assert.strictEqual((await post(port, '/admin/action/agent-api-token', { label: '' }, headers)).statusCode, 400);
-    assert.strictEqual((await post(port, '/admin/action/agent-api-token', { label: 'x'.repeat(65) }, headers)).statusCode, 400);
+    assert.strictEqual((await post(port, '/admin/action/agent-api-token', { label: 'Edith', scopes: ['read'] })).statusCode, 401);
+    assert.strictEqual((await post(port, '/admin/action/agent-api-token', { label: '', scopes: ['read'] }, headers)).statusCode, 400);
+    assert.strictEqual((await post(port, '/admin/action/agent-api-token', { label: 'x'.repeat(65), scopes: ['read'] }, headers)).statusCode, 400);
 
-    const created = await post(port, '/admin/action/agent-api-token', { label: 'Edith' }, headers);
+    const created = await post(port, '/admin/action/agent-api-token', { label: 'Edith', scopes: ['read'] }, headers);
     assert.strictEqual(created.statusCode, 200);
     assert.strictEqual(created.headers['cache-control'], 'no-store');
     const body = JSON.parse(created.body);
-    assert.deepStrictEqual({ ...body, token: 'redacted' }, { ok: true, id: 1, label: 'Edith', token: 'redacted' });
+    assert.deepStrictEqual({ ...body, token: 'redacted' }, { ok: true, id: 1, label: 'Edith', token: 'redacted', scopes: ['read'], discordActions: [] });
     assert.ok(body.token.length >= 10, 'the raw token is returned once at creation');
     const createdAudit = state.audits.find(a => a.action === 'dashboard_agent_api_token_created');
     assert.ok(createdAudit, 'creation is audited');
