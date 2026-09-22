@@ -10,6 +10,7 @@ const { describeCommandsForApi } = require('../discord-exec');
 const { statusFromSeerrRequest } = require('../request-tracking');
 const { mergeFleetDisks } = require('../fleet-disks');
 const { pad } = require('../util');
+const { registerAgentRtorrentRoutes } = require('./agent-rtorrent');
 
 // Machine API for the Plex Director agent (v1.1).
 // Auth: `Authorization: Bearer <token>`, hash-compared like the tier-agent tokens; the matched
@@ -395,6 +396,7 @@ function registerAgentApiRoutes(app, deps) {
   const requireRead = requireScope('read', audit);
   const requireWrite = requireScope('write', audit);
   const requireDiscord = requireScope('discord', audit);
+  registerAgentRtorrentRoutes(app, { service: deps.rtorrentControl, auth, readLimiter, writeLimiter, requireRead, requireWrite, audit });
 
   // gatherHealth() fans out to every integration; cache briefly like the public /health does so
   // a polling agent can't multiply upstream traffic.

@@ -147,6 +147,9 @@ async function rtorrentCall(method, params = []) {
   const res = await axios.post(CONFIG.RTORRENT_URL, serializeXmlRpcCall(method, params), {
     headers: { 'Content-Type': 'text/xml' },
     timeout: 30000,
+    maxRedirects: 0,
+    maxContentLength: 8 * 1024 * 1024,
+    ...(CONFIG.RTORRENT_USERNAME ? { auth: { username: CONFIG.RTORRENT_USERNAME, password: CONFIG.RTORRENT_PASSWORD } } : {}),
   });
   return parseXmlRpcResponse(res.data);
 }
@@ -193,7 +196,8 @@ async function getRtorrentStatus(infoHash) {
 async function listRtorrentTorrents() {
   const rows = await rtorrentCall('d.multicall2', ['', 'main',
     'd.hash=', 'd.name=', 'd.complete=', 'd.custom1=', 'd.base_path=', 'd.size_bytes=', 'd.completed_bytes=', 'd.down.rate=', 'd.ratio=']);
-  return (rows || []).map(r => ({
+  if (!Array.isArray(rows) || rows.some(r => !Array.isArray(r) || r.length < 9)) throw new Error('Invalid rTorrent list response');
+  return rows.map(r => ({
     hash: String(r[0] || '').toUpperCase(),
     name: String(r[1] || ''),
     complete: Number(r[2]) === 1,

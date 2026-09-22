@@ -355,3 +355,9 @@ The dashboard supports passkeys (WebAuthn) alongside the admin password fallback
 
 Enroll a passkey on every device you sign in from, then treat the password as a
 break-glass fallback kept in your password manager.
+
+## rTorrent controls
+
+The scoped `/api/v1/rtorrent/torrents` API provides torrent listing/detail and fixed start, stop,
+pause, resume, recheck, label and magnet-add operations. See [rTorrent control API](rtorrent-control-api.md)
+for routes, EvoSeedbox configuration, error semantics and Sonarr matching limitations.
