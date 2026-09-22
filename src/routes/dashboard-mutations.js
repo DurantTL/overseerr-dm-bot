@@ -37,6 +37,7 @@ function registerDashboardMutationRoutes(app, deps) {
     buildTierPlans,
     computeTierActionPreview,
     createAgentApiToken,
+    setAgentApiTokenGrants,
     fmtSpace,
     grabConfigured,
     grabDailyAllowance,
@@ -159,15 +160,47 @@ function registerDashboardMutationRoutes(app, deps) {
     if (!label || label.length > 64) {
       return res.status(400).json({ ok: false, error: 'Give the token a label of 1 to 64 characters, e.g. "Edith".' });
     }
+    // Scopes and the Discord action allowlist are named at mint time and never defaulted to
+    // everything: a token that wasn't given a reach doesn't get one. createAgentApiToken()
+    // rejects an empty scope list, a discord scope with no actions, and the '*' wildcard, which
+    // only tokens predating scopes carry.
+    const scopes = Array.isArray(req.body?.scopes) ? req.body.scopes : [];
+    const discordActions = Array.isArray(req.body?.discordActions) ? req.body.discordActions : [];
     let created;
     try {
-      created = createAgentApiToken(label);
+      created = createAgentApiToken(label, { scopes, discordActions });
     } catch (err) {
       return res.status(400).json({ ok: false, error: err.message });
     }
-    audit('dashboard_agent_api_token_created', { ...dashboardActor(req), tokenId: created.id, label: created.label });
+    audit('dashboard_agent_api_token_created', {
+      ...dashboardActor(req), tokenId: created.id, label: created.label,
+      scopes: created.scopes.join(','), discordActions: created.discordActions.join(',') || '(none)',
+    });
     res.setHeader('Cache-Control', 'no-store');
-    return res.json({ ok: true, id: created.id, label: created.label, token: created.token });
+    return res.json({
+      ok: true, id: created.id, label: created.label, token: created.token,
+      scopes: created.scopes, discordActions: created.discordActions,
+    });
+  });
+  // Tightening (or widening) a live token without re-minting it: the client keeps its
+  // credential, which is the whole point of making the allowlist editable rather than baked in.
+  router.post('/admin/action/agent-api-token-grants', dashboardAuth, (req, res) => {
+    const id = Number(req.body?.id);
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ ok: false, error: 'Token id is required.' });
+    const scopes = Array.isArray(req.body?.scopes) ? req.body.scopes : [];
+    const discordActions = Array.isArray(req.body?.discordActions) ? req.body.discordActions : [];
+    let updated;
+    try {
+      updated = setAgentApiTokenGrants(id, { scopes, discordActions });
+    } catch (err) {
+      return res.status(400).json({ ok: false, error: err.message });
+    }
+    if (!updated) return res.status(404).json({ ok: false, error: 'Token not found or already revoked.' });
+    audit('dashboard_agent_api_token_grants_changed', {
+      ...dashboardActor(req), tokenId: id,
+      scopes: updated.scopes.join(','), discordActions: updated.discordActions.join(',') || '(none)',
+    });
+    return res.json({ ok: true, id, scopes: updated.scopes, discordActions: updated.discordActions });
   });
   router.post('/admin/action/agent-api-token-revoke', dashboardAuth, (req, res) => {
     const id = Number(req.body?.id);

@@ -731,12 +731,25 @@ function registerDashboardReadRoutes(app, deps) {
           createBtn.addEventListener('click', async function () {
             var label = labelInput.value.trim();
             if (!label) { say('Give the token a label first.', true); return; }
+            var scopes = ['read', 'write', 'discord'].filter(function (name) {
+              var box = document.getElementById('agent-scope-' + name);
+              return box && box.checked;
+            });
+            if (!scopes.length) { say('Pick at least one scope.', true); return; }
+            var actionsField = document.getElementById('agent-token-actions');
+            var discordActions = (actionsField ? actionsField.value : '').split(',')
+              .map(function (a) { return a.trim(); })
+              .filter(Boolean);
+            if (scopes.indexOf('discord') !== -1 && !discordActions.length) {
+              say('The discord scope needs an explicit action list.', true);
+              return;
+            }
             createBtn.disabled = true;
             try {
-              var result = await actionPost('/admin/action/agent-api-token', { label: label });
+              var result = await actionPost('/admin/action/agent-api-token', { label: label, scopes: scopes, discordActions: discordActions });
               onceValue.textContent = result.token;
               once.hidden = false;
-              say('Token created for "' + label + '".');
+              say('Token created for "' + label + '" with scopes: ' + result.scopes.join(', ') + '.');
               if (copyBtn) copyBtn.focus();
             } catch (error) {
               say(error.message || String(error), true);

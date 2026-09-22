@@ -6,6 +6,7 @@ const axios = require('axios');
 const { spawn } = require('child_process');
 const { rateLimit } = require('express-rate-limit');
 const { createAgentApiAuth } = require('./agent-api-auth');
+const { describeCommandsForApi } = require('../discord-exec');
 const { statusFromSeerrRequest } = require('../request-tracking');
 const { mergeFleetDisks } = require('../fleet-disks');
 const { pad } = require('../util');
@@ -13,11 +14,21 @@ const { pad } = require('../util');
 // Machine API for the Plex Director agent (v1.1).
 // Auth: `Authorization: Bearer <token>`, hash-compared like the tier-agent tokens; the matched
 // token's label rides on req.agentTokenLabel so every audited mutation names its client.
-// v1 was GET-only; v1.1 adds a small allowlist of fix endpoints (POST) behind explicit approval.
-// The allowlist is deliberately narrow: only repairs the bot already performs on its own or
-// through existing dashboard/Discord controls. No deletes, restarts, config changes, user
-// management, or token management exist on this surface. Every mutation is audited with an
-// `agent:<label>` actor, and POST routes sit behind a much tighter rate limiter than reads.
+// v1 was GET-only; v1.1 added a small allowlist of fix endpoints (POST), and v1.2 the Discord
+// bridge. The fix endpoints are still narrow — only repairs the bot already performs on its own
+// or through existing dashboard/Discord controls — but the bridge is as wide as Discord itself,
+// which reaches user management, media deletion and credential rotation because those commands
+// exist. An earlier version of this comment claimed none of that was here; it was written before
+// the bridge and was wrong from v1.2 on. What bounds the surface now is per-token scopes
+// (read/write/discord) and, for the bridge, an explicit per-token allowlist of command names and
+// button action prefixes — see docs/agent-api.md "Token scopes".
+//
+// One property does hold by construction rather than by promise: this surface cannot mint or
+// revoke an agent API token. createAgentApiToken is reachable only from the dashboard, and no
+// command or button calls it, so a token can neither widen itself nor outlive its revocation.
+//
+// Every mutation is audited with an `agent:<label>` actor, and POST routes sit behind a much
+// tighter rate limiter than reads.
 // Responses are small, typed projections — never raw upstream payloads, so tokens, API keys,
 // and full config can never leak through this surface.
 
@@ -28,6 +39,124 @@ const REQUEST_STATUS_FILTERS = ['pending', 'approved', 'available', 'declined', 
 const MAX_RESULTS = 25;
 const MAX_REQUESTS = 200;
 const HEALTH_CACHE_MS = 30000;
+// How many finished/running import jobs /api/v1/seedbox/import-status keeps in memory.
+const IMPORT_JOB_HISTORY = 20;
+// Same for the seedbox sync jobs behind /api/v1/seedbox/sync-status, keyed by folder.
+const SYNC_JOB_HISTORY = 20;
+
+// Roots that POST /api/v1/seedbox/import-force is allowed to copy into. The endpoint takes a
+// caller-supplied absolute `destination`, mkdir -p's it, and overwrites files inside it, so the
+// path has to be contained the same way resolveSafeMediaPath() contains the download routes —
+// otherwise an agent token can write anywhere the bot's uid can reach, /app/data (the SQLite
+// database and its backups) included. Derived from the media/import paths the deployment already
+// configures, plus IMPORT_FORCE_DEST_ROOTS for a layout none of them cover. Order doesn't matter;
+// blanks are dropped.
+function importDestinationRoots(config = {}) {
+  const extra = Array.isArray(config.IMPORT_FORCE_DEST_ROOTS)
+    ? config.IMPORT_FORCE_DEST_ROOTS
+    : String(config.IMPORT_FORCE_DEST_ROOTS || '').split(',');
+  return [
+    ...extra,
+    config.RAID_PATH,
+    config.PATH_REMAP_TO,
+    config.TIER_SOURCE_ROOT,
+    config.GRAB_IMPORT_PATH,
+    config.GRAB_STAGING_PATH,
+    config.PREMIUMIZE_IMPORT_PATH,
+    config.PREMIUMIZE_STAGING_PATH,
+  ]
+    .map(root => String(root || '').trim())
+    .filter(Boolean);
+}
+
+// Containment check for a caller-supplied import destination. The destination usually does not
+// exist yet (the importer creates it), so realpath the deepest ancestor that *does* exist and
+// require that to sit inside an allowed root — a symlinked parent therefore cannot be used to
+// escape, while the not-yet-created leaf is still checked. Returns the resolved real path on
+// success so callers copy into the checked location rather than re-deriving it.
+function resolveSafeImportDestination(destination, allowedRoots) {
+  const raw = String(destination || '').trim();
+  if (!raw || raw.includes('\0') || !path.isAbsolute(raw)) return { ok: false, reason: 'not_absolute' };
+  const roots = [];
+  for (const root of allowedRoots || []) {
+    const resolvedRoot = path.resolve(String(root));
+    try { roots.push(fs.realpathSync(resolvedRoot)); } catch { roots.push(resolvedRoot); }
+  }
+  if (!roots.length) return { ok: false, reason: 'no_roots' };
+  const resolved = path.resolve(raw);
+  let probe = resolved;
+  let realAncestor = null;
+  for (;;) {
+    try { realAncestor = fs.realpathSync(probe); break; } catch { /* keep walking up */ }
+    const parent = path.dirname(probe);
+    if (parent === probe) break;
+    probe = parent;
+  }
+  if (!realAncestor) return { ok: false, reason: 'unresolvable' };
+  // path.resolve() already collapsed any `..`, so this tail can only descend.
+  const tail = path.relative(probe, resolved);
+  const realTarget = tail ? path.join(realAncestor, tail) : realAncestor;
+  const inside = roots.some(root => realTarget === root || realTarget.startsWith(root + path.sep));
+  if (!inside) return { ok: false, reason: 'outside_roots' };
+  return { ok: true, path: realTarget, roots };
+}
+
+// Rate-limit identity for the agent API. Both limiters are mounted after `auth`, so the token
+// that would be charged is already known, and charging it rather than its source address is what
+// an operator expects from a per-client budget: one client's burst can't starve another sharing
+// an egress address (a Director and a dashboard poller behind the same tunnel both present as
+// one IP), and a single token can't multiply its budget by rotating addresses. Falls back to the
+// IP key if a limiter is ever mounted ahead of auth, so a missing identity can never mean
+// "unlimited".
+// Scope enforcement. Mounted after the rate limiter rather than before it, so every
+// authenticated request costs the same budget whether or not it was allowed — otherwise a
+// misconfigured client could hammer refusals for free. A token with no matching scope gets 403
+// and an audit line naming what it tried, which is how an operator finds a too-narrow grant.
+function requireScope(scope, audit) {
+  return (req, res, next) => {
+    const held = Array.isArray(req.agentScopes) ? req.agentScopes : [];
+    if (held.includes(scope)) return next();
+    audit('agent_api_scope_denied', {
+      actor: `agent:${req.agentTokenLabel || 'unknown'}`,
+      path: req.path,
+      needed: scope,
+      held: held.join(',') || '(none)',
+    });
+    return res.status(403).json({
+      error: `This token does not hold the "${scope}" scope (it has: ${held.join(', ') || 'none'}).`,
+      needed: scope,
+    });
+  };
+}
+
+// Whether a token may drive one Discord action. The unit is deliberately the same for both
+// bridges: a slash command's name for /discord/exec, and a button's action prefix — the part of
+// custom_id before the first ':' — for /discord/interact. Buttons need gating of their own
+// because not every custom_id is unguessable: the offer-backed ones carry a random nonce, but
+// `plex_approve:<discord id>` is addressed by a user id an agent can simply know.
+function allowedDiscordAction(req, action) {
+  const allowed = Array.isArray(req.agentDiscordActions) ? req.agentDiscordActions : [];
+  return allowed.includes('*') || allowed.includes(String(action || '').toLowerCase());
+}
+
+function denyDiscordAction(req, res, audit, action, kind) {
+  audit('agent_api_discord_action_denied', {
+    actor: `agent:${req.agentTokenLabel || 'unknown'}`,
+    kind,
+    action: String(action || '').slice(0, 80),
+  });
+  return res.status(403).json({
+    error: `This token is not allowed the Discord action "${String(action || '').slice(0, 80)}". Its allowlist: ${(req.agentDiscordActions || []).join(', ') || 'none'}.`,
+    action: String(action || '').slice(0, 80),
+  });
+}
+
+function agentRateLimitKey(httpRateLimitKey) {
+  return req => {
+    if (req.agentTokenId) return `token:${req.agentTokenId}`;
+    return typeof httpRateLimitKey === 'function' ? httpRateLimitKey(req) : 'unidentified';
+  };
+}
 
 function createAgentApiReadLimiter({ limit, windowMs = 60000, keyGenerator }) {
   return rateLimit({
@@ -222,6 +351,9 @@ function registerAgentApiRoutes(app, deps) {
     getPlexServers,
     httpRateLimitKey,
     httpClient = axios,
+    // Injectable so the seedbox sync path is testable without really running rclone; the sync
+    // handler used child_process.spawn directly, which is why it had no tests.
+    spawnProcess = spawn,
     // v1.1 fix-endpoint collaborators. All are existing bot functions passed in from index.js —
     // the API invents no repair logic of its own.
     automationRegistry = null,
@@ -251,10 +383,18 @@ function registerAgentApiRoutes(app, deps) {
     // v1.2 Discord button bridge: headless button-press executor built in index.js
     // around the real handleButton dispatch. Null in tests that don't wire it (-> 503).
     discordInteract = null,
-    auth = createAgentApiAuth({ getAgentApiTokenHashes, getAgentApiTokenLabel, legacyTokenHash, touchAgentApiTokenUse, sha256, safeEqual, audit }),
-    readLimiter = createAgentApiReadLimiter({ limit: config.AGENT_API_READ_MAX_PER_MINUTE, keyGenerator: httpRateLimitKey }),
-    writeLimiter = createAgentApiWriteLimiter({ limit: config.AGENT_API_WRITE_MAX_PER_MINUTE || 10, keyGenerator: httpRateLimitKey }),
+    // v1.2 discovery: the live slash-command definitions (index.js's slashCommands). Null in
+    // tests that don't wire it (-> 503), same as the two bridges.
+    getDiscordCommandDefs = null,
+    getAgentApiTokenGrants = () => null,
+    auth = createAgentApiAuth({ getAgentApiTokenHashes, getAgentApiTokenLabel, getAgentApiTokenGrants, legacyTokenHash, touchAgentApiTokenUse, sha256, safeEqual, audit }),
+    readLimiter = createAgentApiReadLimiter({ limit: config.AGENT_API_READ_MAX_PER_MINUTE, keyGenerator: agentRateLimitKey(httpRateLimitKey) }),
+    writeLimiter = createAgentApiWriteLimiter({ limit: config.AGENT_API_WRITE_MAX_PER_MINUTE || 10, keyGenerator: agentRateLimitKey(httpRateLimitKey) }),
   } = deps;
+
+  const requireRead = requireScope('read', audit);
+  const requireWrite = requireScope('write', audit);
+  const requireDiscord = requireScope('discord', audit);
 
   // gatherHealth() fans out to every integration; cache briefly like the public /health does so
   // a polling agent can't multiply upstream traffic.
@@ -277,7 +417,7 @@ function registerAgentApiRoutes(app, deps) {
     }
   };
 
-  app.get('/api/v1/health', auth, readLimiter, guarded(async (_req, res) => {
+  app.get('/api/v1/health', auth, readLimiter, requireRead, guarded(async (_req, res) => {
     const h = await getCachedHealth();
     // v1.1: backup age is additive — the v1 shape is unchanged, two fields are added so a
     // polling agent can alert on stale backups, not just hard backup failures.
@@ -307,14 +447,14 @@ function registerAgentApiRoutes(app, deps) {
   // from the latest agent telemetry. Safe shape only: names + byte counts, no arr URLs,
   // keys, or raw mount internals. Tier nodes with no telemetry yet are skipped; stale
   // telemetry is included but flagged via telemetryAgeMs.
-  app.get('/api/v1/disks', auth, readLimiter, guarded(async (_req, res) => {
+  app.get('/api/v1/disks', auth, readLimiter, requireRead, guarded(async (_req, res) => {
     const raw = (await fetchDiskSpace()) || [];
     const tierNodes = listTierNodes().map(n => ({ name: n.name, telemetry: getTierPlan(n.name)?.lastTelemetry || null }));
     const disks = mergeFleetDisks({ arrDisks: raw, tierNodes, masterSmartHealth: getMasterSmartHealth() });
     res.json({ ok: true, count: disks.length, disks });
   }));
 
-  app.get('/api/v1/library/search', auth, readLimiter, guarded(async (req, res) => {
+  app.get('/api/v1/library/search', auth, readLimiter, requireRead, guarded(async (req, res) => {
     const title = String(req.query.title || '').trim();
     const type = String(req.query.type || '').trim().toLowerCase();
     if (title.length < 2 || title.length > 100) {
@@ -330,12 +470,12 @@ function registerAgentApiRoutes(app, deps) {
     res.json({ ok: true, query: title, type: type || null, count: results.length, results });
   }));
 
-  app.get('/api/v1/queue', auth, readLimiter, guarded(async (_req, res) => {
+  app.get('/api/v1/queue', auth, readLimiter, requireRead, guarded(async (_req, res) => {
     const items = (await fetchArrQueues()).map(projectQueueItem);
     res.json({ ok: true, count: items.length, items });
   }));
 
-  app.get('/api/v1/requests', auth, readLimiter, guarded(async (req, res) => {
+  app.get('/api/v1/requests', auth, readLimiter, requireRead, guarded(async (req, res) => {
     const statusFilter = String(req.query.status || '').trim().toLowerCase();
     if (statusFilter && !REQUEST_STATUS_FILTERS.includes(statusFilter)) {
       return res.status(400).json({ error: `status must be one of: ${REQUEST_STATUS_FILTERS.join(', ')}` });
@@ -358,7 +498,7 @@ function registerAgentApiRoutes(app, deps) {
 
   // Run or preview an automation sweep — the same preview()/run() the /automation Discord
   // command uses. Sweep names are validated against the registry; unknown names are 400.
-  app.post('/api/v1/automation/sweep', auth, writeLimiter, guarded(async (req, res) => {
+  app.post('/api/v1/automation/sweep', auth, writeLimiter, requireWrite, guarded(async (req, res) => {
     if (!automationRegistry) return res.status(503).json({ error: 'Automation registry is unavailable' });
     const sweep = String(req.body?.sweep || '').trim();
     const mode = String(req.body?.mode || '').trim();
@@ -399,7 +539,7 @@ function registerAgentApiRoutes(app, deps) {
   // Retry a failed Seerr request: re-runs the same direct-add repair the escalation sweep
   // uses for lost hand-offs (addMediaToArr — bypasses Seerr, adds to the arr, starts a search).
   // Only requests currently in the `failed` state are eligible; anything else is 404.
-  app.post('/api/v1/requests/:id/retry', auth, writeLimiter, guarded(async (req, res) => {
+  app.post('/api/v1/requests/:id/retry', auth, writeLimiter, requireWrite, guarded(async (req, res) => {
     if (!addMediaToArr) return res.status(503).json({ error: 'Request repair is unavailable' });
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id < 1) {
@@ -430,7 +570,7 @@ function registerAgentApiRoutes(app, deps) {
   // Force a season search — mirrors the dashboard's "Search Now" button: same series
   // resolution (Sonarr id or unambiguous title), same missing-episode / fallback / cooldown
   // gates, and the same AvistaZ-tagged → direct grab vs Sonarr SeasonSearch route decision.
-  app.post('/api/v1/search/season', auth, writeLimiter, guarded(async (req, res) => {
+  app.post('/api/v1/search/season', auth, writeLimiter, requireWrite, guarded(async (req, res) => {
     const need = { listSonarrSeries, getSeriesEpisodes, triggerSeasonSearch };
     if (Object.values(need).some(fn => typeof fn !== 'function')) {
       return res.status(503).json({ error: 'Season search is unavailable' });
@@ -521,7 +661,7 @@ function registerAgentApiRoutes(app, deps) {
   // /debrid and /rtorrent Discord `import` subcommands: path traversal guard, `.incoming`
   // guard, existence through the bot's path view, and a partial-match preview in Move mode
   // that refuses (409) instead of asking an interactive confirm button.
-  app.post('/api/v1/import-scan', auth, writeLimiter, guarded(async (req, res) => {
+  app.post('/api/v1/import-scan', auth, writeLimiter, requireWrite, guarded(async (req, res) => {
     if (!summarizeManualImportPreview) return res.status(503).json({ error: 'Import scan is unavailable' });
     const target = String(req.body?.target || '').trim().toLowerCase();
     if (target !== 'sonarr' && target !== 'radarr' && target !== 'radarr-4k') {
@@ -624,8 +764,56 @@ function registerAgentApiRoutes(app, deps) {
   // a failure is safe.
   // NOTE: This endpoint bypasses the `guarded` wrapper (which returns a generic 502)
   // so that handler crashes return the actual error message for debugging.
-  app.post('/api/v1/seedbox/sync', auth, writeLimiter, async (req, res) => {
-    try {
+  // Seedbox sync jobs, keyed by folder. State lives here rather than in marker files next to the
+  // media: a marker written before a crash is orphaned forever (the cleanup ran in the child's
+  // close handler, which dies with the parent), so the old model reported a folder as syncing
+  // indefinitely, and reported any folder that merely *existed* as `done` even when the copy had
+  // been interrupted half way. In memory the state can only be honest — after a restart there is
+  // no job, which is reported as `unknown` rather than a confident `done`.
+  const syncJobs = new Map();
+
+  // Legacy marker files from the previous model. They are inert now, but a stray
+  // `<folder>.sync-in-progress` sitting in staging is an unmatched file that makes a Move
+  // import-scan refuse, so a new sync for that folder clears its own leftovers.
+  function clearLegacySyncMarkers(destPath) {
+    for (const suffix of ['.sync-in-progress', '.sync-failed']) {
+      try { fs.unlinkSync(`${destPath}${suffix}`); } catch { /* absent, or not ours to remove */ }
+    }
+  }
+
+  function pruneSyncJobs() {
+    if (syncJobs.size <= SYNC_JOB_HISTORY) return;
+    for (const key of [...syncJobs.keys()].slice(0, syncJobs.size - SYNC_JOB_HISTORY)) {
+      // Never drop a job that is still running — its folder would start reporting `unknown`.
+      if (syncJobs.get(key)?.status !== 'in-progress') syncJobs.delete(key);
+    }
+  }
+
+  // Recursive file count + byte total, async so a poll over a large staged season doesn't stall
+  // the event loop the way the synchronous readdir/stat walk did.
+  async function dirStats(dirPath) {
+    let fileCount = 0;
+    let totalBytes = 0;
+    const walk = async current => {
+      let entries;
+      try {
+        entries = await fs.promises.readdir(current, { withFileTypes: true });
+      } catch { return; }
+      for (const entry of entries) {
+        const fullPath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          await walk(fullPath);
+        } else if (entry.isFile()) {
+          fileCount++;
+          try { totalBytes += (await fs.promises.stat(fullPath)).size; } catch { /* vanished mid-walk */ }
+        }
+      }
+    };
+    await walk(dirPath);
+    return { fileCount, totalBytes };
+  }
+
+  app.post('/api/v1/seedbox/sync', auth, writeLimiter, requireWrite, guarded(async (req, res) => {
     const remote = (config.GRAB_RCLONE_REMOTE || '').replace(/\/$/, '');
     const stagingPath = (config.GRAB_STAGING_PATH || '').replace(/\/$/, '');
     if (!remote || !stagingPath) {
@@ -654,20 +842,32 @@ function registerAgentApiRoutes(app, deps) {
       return res.status(400).json({ error: '`.incoming` holds in-flight copies — never sync from there' });
     }
 
+    // One rclone per folder. Without this a retrying client (or an agent that treats a slow
+    // response as a failure) spawns several copies onto the same destination, all writing the
+    // same files. rclone is resumable, so the right answer is to wait for the one in flight.
+    const running = syncJobs.get(clean);
+    if (running && running.status === 'in-progress') {
+      audit('agent_api_seedbox_sync', { ...agentActor(req), ok: false, reason: 'already_running', folder: clean });
+      return res.status(409).json({
+        error: `A sync of \`${clean}\` is already running (started ${running.started}). Poll /api/v1/seedbox/sync-status?folder=${encodeURIComponent(clean)} instead of starting another.`,
+        folder: clean,
+        status: running.status,
+        started: running.started,
+      });
+    }
+
     const srcPath = `${remote}/${clean}`;
     const destPath = path.join(stagingPath, clean);
-    // GRAB_RCLONE_FLAGS may be a string (space-separated) or an array (if config parses it)
     const flagsRaw = config.GRAB_RCLONE_FLAGS;
     const flags = Array.isArray(flagsRaw) ? flagsRaw.filter(Boolean) : String(flagsRaw || '').split(/\s+/).filter(Boolean);
     const rcloneBinary = config.STAGE_RCLONE_BINARY || 'rclone';
 
-    // Disk space check: ensure at least 5 GB free on the staging filesystem before
-    // starting. The copy will fail anyway if space runs out, but failing fast with a
-    // clear message is kinder than a mid-transfer rclone error.
+    // Disk space check before starting: the copy would fail anyway, but failing fast with a clear
+    // message beats a mid-transfer rclone error. bavail, not bfree — bfree counts the
+    // root-reserved blocks the bot's own uid cannot actually write into.
     try {
       const stats = fs.statfsSync(stagingPath);
-      const freeBytes = Number(stats.bfree) * Number(stats.bsize);
-      const freeGB = freeBytes / 1e9;
+      const freeGB = (Number(stats.bavail) * Number(stats.bsize)) / 1e9;
       if (freeGB < 5) {
         audit('agent_api_seedbox_sync', { ...agentActor(req), ok: false, reason: 'low_disk', folder: clean, freeGB: Math.round(freeGB * 10) / 10 });
         return res.status(409).json({
@@ -675,83 +875,93 @@ function registerAgentApiRoutes(app, deps) {
           freeGB: Math.round(freeGB * 10) / 10,
         });
       }
-    } catch (err) {
-      // If we can't check disk space, proceed anyway — rclone will fail with a clear
-      // error if space runs out. Don't block the sync on a stat failure.
-    }
+    } catch { /* unreadable statfs is not a reason to block the sync; rclone will fail loudly */ }
 
-    audit('agent_api_seedbox_sync', { ...agentActor(req), ok: true, reason: 'started', folder: clean, src: srcPath, dest: destPath });
+    clearLegacySyncMarkers(destPath);
 
-    // Run rclone in the background. The HTTP request returns immediately (202);
-    // the client polls /api/v1/seedbox/sync-status for completion.
-    // We use a marker file to track status: .sync-in-progress means running,
-    // .sync-failed means rclone errored (contains stderr).
-    const markerInProgress = `${destPath}.sync-in-progress`;
-    const markerFailed = `${destPath}.sync-failed`;
+    const actor = agentActor(req);
+    const job = {
+      folder: clean,
+      dest: destPath,
+      status: 'in-progress',
+      started: new Date().toISOString(),
+      finished: null,
+      exitCode: null,
+      error: null,
+      errorCode: null,
+    };
+    syncJobs.set(clean, job);
+    pruneSyncJobs();
+
+    let child;
     try {
-      fs.writeFileSync(markerInProgress, JSON.stringify({ started: new Date().toISOString(), src: srcPath }));
-      if (fs.existsSync(markerFailed)) fs.unlinkSync(markerFailed);
+      // stderr is piped so a failure is diagnosable, but it is always drained and only ever
+      // audited — rclone echoes the remote (and with some backends its credentials) back out.
+      child = spawnProcess(rcloneBinary, ['copy', srcPath, destPath, ...flags], { stdio: ['ignore', 'ignore', 'pipe'] });
     } catch (err) {
-      // Non-fatal
+      job.status = 'failed';
+      job.finished = new Date().toISOString();
+      job.errorCode = typeof err?.code === 'string' ? err.code.slice(0, 40) : 'SPAWN_FAILED';
+      job.error = `rclone could not be started (${job.errorCode})`;
+      audit('agent_api_seedbox_sync', { ...actor, ok: false, reason: 'spawn_threw', folder: clean, code: job.errorCode, error: err?.message });
+      // A fixed message: the raw spawn error carries the binary path and argv.
+      return res.status(502).json({ error: 'Failed to start rclone — check STAGE_RCLONE_BINARY and the container PATH.', folder: clean });
     }
 
-    // Spawn rclone. We don't wait for it — unref() lets the response return.
-    // If rclone isn't installed or fails to start, the error is captured async
-    // and written to the .sync-failed marker.
-    let spawnError = null;
-    try {
-      const child = spawn(rcloneBinary, ['copy', srcPath, destPath, ...flags], {
-        stdio: 'ignore',
+    let stderrTail = '';
+    if (child.stderr) {
+      child.stderr.on('data', chunk => {
+        // Always consume, or a full pipe buffer blocks rclone; retain only the tail.
+        stderrTail = (stderrTail + String(chunk)).slice(-2000);
       });
-      child.on('error', (err) => {
-        spawnError = err.message;
-        try {
-          fs.writeFileSync(markerFailed, `rclone failed to start: ${err.message}`);
-          if (fs.existsSync(markerInProgress)) fs.unlinkSync(markerInProgress);
-        } catch {}
-        audit('agent_api_seedbox_sync', { ...agentActor(req), ok: false, reason: 'rclone_start_failed', folder: clean });
-      });
-      child.on('close', (code) => {
-        try {
-          if (fs.existsSync(markerInProgress)) fs.unlinkSync(markerInProgress);
-          if (code !== 0) {
-            fs.writeFileSync(markerFailed, `rclone exited ${code}`);
-          }
-          audit('agent_api_seedbox_sync', { ...agentActor(req), ok: code === 0, reason: code === 0 ? 'completed' : 'rclone_failed', folder: clean });
-        } catch {}
-      });
-      child.unref();
-    } catch (err) {
-      // Synchronous spawn failure (e.g. invalid args) — return 502 with the error
-      // instead of crashing the handler.
-      try { if (fs.existsSync(markerInProgress)) fs.unlinkSync(markerInProgress); } catch {}
-      audit('agent_api_seedbox_sync', { ...agentActor(req), ok: false, reason: 'spawn_threw', folder: clean, error: err.message?.slice(0, 200) });
-      return res.status(502).json({ error: `Failed to start rclone: ${err.message}`, folder: clean });
+      child.stderr.on('error', () => {});
     }
+    child.on('error', err => {
+      job.status = 'failed';
+      job.finished = new Date().toISOString();
+      job.errorCode = typeof err?.code === 'string' ? err.code.slice(0, 40) : 'SPAWN_FAILED';
+      job.error = `rclone could not be started (${job.errorCode})`;
+      try {
+        audit('agent_api_seedbox_sync', { ...actor, ok: false, reason: 'rclone_start_failed', folder: clean, code: job.errorCode, error: err?.message });
+      } catch { /* the job already records the failure for the caller */ }
+    });
+    child.on('close', code => {
+      // A spawn error already settled the job; don't overwrite it with the close that follows.
+      if (job.status !== 'in-progress') return;
+      job.finished = new Date().toISOString();
+      job.exitCode = code;
+      if (code === 0) {
+        job.status = 'done';
+      } else {
+        job.status = 'failed';
+        job.errorCode = `EXIT_${code}`;
+        job.error = `rclone exited ${code}`;
+      }
+      try {
+        audit('agent_api_seedbox_sync', {
+          ...actor, ok: code === 0, reason: code === 0 ? 'completed' : 'rclone_failed',
+          folder: clean, exitCode: code, error: code === 0 ? undefined : stderrTail.slice(-500),
+        });
+      } catch { /* the job already records the outcome for the caller */ }
+    });
+    child.unref();
 
+    audit('agent_api_seedbox_sync', { ...actor, ok: true, reason: 'started', folder: clean, src: srcPath, dest: destPath });
     return res.status(202).json({
       ok: true,
       folder: clean,
       dest: destPath,
-      status: 'started',
+      status: job.status,
       message: `Sync of \`${clean}\` started in background. Poll /api/v1/seedbox/sync-status?folder=${encodeURIComponent(clean)} for completion.`,
     });
-    } catch (err) {
-      // Defensive: return the actual error instead of crashing to a generic 502.
-      // This helps diagnose why the sync endpoint fails.
-      try {
-        audit('agent_api_seedbox_sync', { ...agentActor(req), ok: false, reason: 'handler_crashed', error: String(err.message || err).slice(0, 500) });
-      } catch {}
-      return res.status(500).json({
-        error: `Sync handler failed: ${err.message || String(err)}`,
-        stack: String(err.stack || '').split('\n').slice(0, 5).join('\n'),
-      });
-    }
-  });
+  }));
 
-  // Seedbox sync status: check if a folder is currently syncing, failed, or done.
-  // Returns: { status: 'in-progress'|'failed'|'done'|'not-started', ... }
-  app.get('/api/v1/seedbox/sync-status', auth, readLimiter, guarded(async (req, res) => {
+  // Seedbox sync status for one folder. `in-progress` / `done` / `failed` come from a job this
+  // process started; `unknown` means the folder exists but no job explains it (the bot restarted
+  // mid-copy, or it was staged by something else), which the old marker model reported as a
+  // confident `done` — importing a half-copied season. rclone copies are resumable, so the remedy
+  // for `unknown` is simply to sync again.
+  app.get('/api/v1/seedbox/sync-status', auth, readLimiter, requireRead, guarded(async (req, res) => {
     const stagingPath = (config.GRAB_STAGING_PATH || '').replace(/\/$/, '');
     if (!stagingPath) {
       return res.status(409).json({ error: 'Seedbox sync is not configured' });
@@ -761,20 +971,259 @@ function registerAgentApiRoutes(app, deps) {
       return res.status(400).json({ error: 'Valid folder query param is required' });
     }
     const destPath = path.join(stagingPath, folder);
-    const markerInProgress = `${destPath}.sync-in-progress`;
-    const markerFailed = `${destPath}.sync-failed`;
+    const exists = fs.existsSync(destPath);
+    const stats = exists ? await dirStats(destPath) : { fileCount: 0, totalBytes: 0 };
+    const job = syncJobs.get(folder);
 
-    if (fs.existsSync(markerFailed)) {
-      const error = fs.readFileSync(markerFailed, 'utf8').slice(0, 500);
-      return res.json({ ok: true, folder, status: 'failed', error });
+    if (job) {
+      return res.json({
+        ok: true,
+        folder,
+        status: job.status,
+        dest: job.dest,
+        started: job.started,
+        finished: job.finished,
+        exitCode: job.exitCode,
+        error: job.error,
+        errorCode: job.errorCode,
+        ...stats,
+      });
     }
-    if (fs.existsSync(markerInProgress)) {
-      return res.json({ ok: true, folder, status: 'in-progress' });
+    if (exists) {
+      return res.json({
+        ok: true,
+        folder,
+        status: 'unknown',
+        dest: destPath,
+        detail: 'The folder is staged but no sync job in this process explains it — the bot restarted mid-copy, or it was staged another way. It may be incomplete; re-running the sync is safe and resumable.',
+        ...stats,
+      });
     }
-    if (fs.existsSync(destPath)) {
-      return res.json({ ok: true, folder, status: 'done', dest: destPath });
+    return res.json({ ok: true, folder, status: 'not-started', ...stats });
+  }));
+
+  // Force import: copy files from seedbox staging to a destination path, then trigger Sonarr rescan.
+  // Unlike import-scan (which relies on Sonarr's DownloadedEpisodesScan), this actually copies the files.
+  // Body: { folder: "Season 4", destination: "/share/media/Tv Shows/Bleach/Season 4", target: "sonarr" }
+  // The destination must be an absolute path accessible from the bot container.
+  // In-memory import job tracker (resets on restart; jobs are best-effort)
+  const importJobs = new Map();
+
+  app.post('/api/v1/seedbox/import-force', auth, writeLimiter, requireWrite, guarded(async (req, res) => {
+    const stagingPath = (config.GRAB_STAGING_PATH || '').replace(/\/$/, '');
+    if (!stagingPath) {
+      return res.status(409).json({ error: 'Seedbox sync is not configured (needs GRAB_STAGING_PATH)' });
     }
-    return res.json({ ok: true, folder, status: 'not-started' });
+    const folder = String(req.body?.folder || '').trim().replace(/^["']|["']$/g, '').replace(/^\/+|\/+$/g, '');
+    const requestedDestination = String(req.body?.destination || '').trim();
+    const target = String(req.body?.target || 'sonarr').trim().toLowerCase();
+    if (!folder || folder.split('/').some(p => !p || p === '.' || p === '..')) {
+      return res.status(400).json({ error: 'Valid folder is required' });
+    }
+    // The destination is contained before anything is created or overwritten: this handler
+    // mkdir -p's it and copyFile()s over whatever is already there, so an unchecked absolute
+    // path is an arbitrary write for anyone holding an agent token. Everything below uses the
+    // returned real path, never the raw request value.
+    const destRoots = importDestinationRoots(config);
+    const safeDestination = resolveSafeImportDestination(requestedDestination, destRoots);
+    if (!safeDestination.ok) {
+      audit('agent_api_seedbox_import_force', { ...agentActor(req), ok: false, reason: `destination_${safeDestination.reason}`, folder, destination: requestedDestination.slice(0, 200) });
+      if (safeDestination.reason === 'no_roots') {
+        return res.status(409).json({ error: 'Force import is not configured: no destination root is set (RAID_PATH, the *arr import paths, or IMPORT_FORCE_DEST_ROOTS).' });
+      }
+      if (safeDestination.reason === 'not_absolute') {
+        return res.status(400).json({ error: 'Valid absolute destination path is required' });
+      }
+      return res.status(400).json({
+        error: `Destination is outside every allowed media root. Allowed roots: ${destRoots.join(', ')}. Set IMPORT_FORCE_DEST_ROOTS if this layout needs another one.`,
+      });
+    }
+    const destination = safeDestination.path;
+    if (target !== 'sonarr' && target !== 'radarr' && target !== 'radarr-4k') {
+      return res.status(400).json({ error: 'target must be "sonarr", "radarr", or "radarr-4k"' });
+    }
+    const srcPath = path.join(stagingPath, folder);
+    if (!fs.existsSync(srcPath)) {
+      return res.status(404).json({ error: `Staging folder not found: ${srcPath}` });
+    }
+    // One import per destination. Since the copy went background these no longer serialise on a
+    // blocked event loop: two calls for the same destination would both be accepted and race,
+    // interleaving copyFile() writes into the same files.
+    const inFlight = [...importJobs.values()].find(j => j.status === 'running' && j.destination === destination);
+    if (inFlight) {
+      audit('agent_api_seedbox_import_force', { ...agentActor(req), ok: false, reason: 'already_running', folder, destination, jobId: inFlight.jobId });
+      return res.status(409).json({
+        error: `An import into \`${destination}\` is already running (job ${inFlight.jobId}, started ${inFlight.started}). Poll /api/v1/seedbox/import-status?jobId=${encodeURIComponent(inFlight.jobId)} instead of starting another.`,
+        jobId: inFlight.jobId,
+        status: inFlight.status,
+        started: inFlight.started,
+      });
+    }
+
+    // Run as a background job so the API stays responsive during large copies: a multi-GB
+    // season blocked the event loop for minutes under the old synchronous copy, stalling
+    // Discord, /health and every other route with it. fs.promises keeps the loop free.
+    // Resolve the audited actor now rather than inside the worker, so a long-running job
+    // holds a small string instead of the whole request object.
+    const actor = agentActor(req);
+    const jobId = `import-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const job = {
+      jobId, folder, destination, target,
+      status: 'running', started: new Date().toISOString(),
+      copied: 0, chowned: 0, chownFailed: false, error: null, errorCode: null, message: null,
+    };
+    importJobs.set(jobId, job);
+    // Keep only the most recent jobs. A Map iterates in insertion order, so the oldest keys
+    // are at the front.
+    if (importJobs.size > IMPORT_JOB_HISTORY) {
+      for (const key of [...importJobs.keys()].slice(0, importJobs.size - IMPORT_JOB_HISTORY)) {
+        importJobs.delete(key);
+      }
+    }
+
+    // Background worker — deliberately not awaited. Every path it touches is either the job
+    // object or `destination`, which the containment check above already resolved.
+    (async () => {
+      try {
+        await fs.promises.mkdir(destination, { recursive: true });
+        const files = await fs.promises.readdir(srcPath);
+        // Optional ownership fix: if MEDIA_UID/MEDIA_GID are set, chown copied files so the
+        // arr containers (e.g. Sonarr running as abc:users) can manage them. Best-effort: a
+        // chown failure still leaves the files world-readable (644) for the arr to import.
+        // config parses these to integers or null, so 0 (root) is a real value rather than
+        // reading as unset — and a chown needs both halves, hence the pair check.
+        const mediaUid = Number.isInteger(config.MEDIA_UID) ? config.MEDIA_UID : null;
+        const mediaGid = Number.isInteger(config.MEDIA_GID) ? config.MEDIA_GID : null;
+        const wantChown = mediaUid !== null && mediaGid !== null;
+        for (const file of files) {
+          const srcFile = path.join(srcPath, file);
+          const destFile = path.join(destination, file);
+          const stat = await fs.promises.stat(srcFile);
+          if (stat.isFile()) {
+            await fs.promises.copyFile(srcFile, destFile);
+            // Ensure world-readable so the arr can import regardless of ownership.
+            try { await fs.promises.chmod(destFile, 0o644); } catch {}
+            if (wantChown) {
+              try {
+                await fs.promises.chown(destFile, mediaUid, mediaGid);
+                job.chowned++;
+              } catch {
+                job.chownFailed = true;
+              }
+            }
+            job.copied++;
+          }
+        }
+        // Also chown the destination directory itself so the arr can write into it.
+        if (wantChown) {
+          try {
+            await fs.promises.chown(destination, mediaUid, mediaGid);
+            try { await fs.promises.chmod(destination, 0o755); } catch {}
+          } catch {
+            job.chownFailed = true;
+          }
+        }
+        audit('agent_api_seedbox_import_force', { ...actor, ok: true, folder, destination, copied: job.copied, target, chowned: job.chowned, chownFailed: job.chownFailed, jobId });
+        // Trigger Sonarr rescan if target is sonarr
+        let scanResult = null;
+        if (target === 'sonarr' && config.SONARR_URL && config.SONARR_API_KEY) {
+          try {
+            const sonarrBase = config.SONARR_URL.replace(/\/$/, '');
+            const headers = { 'X-Api-Key': config.SONARR_API_KEY };
+            // Match the series by path only: the destination has to sit inside the series
+            // folder. There is deliberately no title fallback — the previous `=== 'bleach'`
+            // one meant any unmatched destination rescanned that one series.
+            const seriesRes = await httpClient.get(`${sonarrBase}/api/v3/series`, { headers, timeout: 15000 });
+            const allSeries = seriesRes.data || [];
+            // Path containment, not a bare string prefix: a series at /media/Show must not
+            // claim a destination under /media/ShowOther.
+            const series = allSeries.find(s => s.path
+              && (destination === s.path || destination.startsWith(String(s.path).replace(/\/$/, '') + path.sep)));
+            if (series) {
+              // Trigger RescanSeries to pick up the new files from disk
+              await httpClient.post(`${sonarrBase}/api/v3/command`, {
+                name: 'RescanSeries',
+                seriesId: series.id,
+              }, { headers, timeout: 15000 });
+              scanResult = `Triggered Sonarr rescan for "${series.title}" (ID ${series.id}).`;
+            } else {
+              scanResult = 'Files copied. Could not find matching series in Sonarr; trigger Refresh & Scan manually.';
+            }
+          } catch (_err) {
+            // The copy already landed, so a failed rescan is a note on the job rather than a
+            // failed job. No upstream detail: an arr error can carry its URL and request.
+            scanResult = 'Files copied, but the Sonarr rescan call failed; trigger Refresh & Scan manually.';
+          }
+        }
+        let message = `Copied ${job.copied} files to ${destination}.`;
+        if (wantChown) {
+          message += job.chownFailed
+            ? ' Ownership fix partially failed (bot lacks chown permission); files are world-readable.'
+            : ` Ownership set to ${mediaUid}:${mediaGid} (${job.chowned} files).`;
+        }
+        if (scanResult) message += ` ${scanResult}`;
+        job.message = message.trim();
+        job.status = 'done';
+        job.finished = new Date().toISOString();
+      } catch (err) {
+        // The job object is readable over HTTP, so it carries a fixed message plus the errno
+        // (ENOSPC / EACCES / ...) that a caller can actually branch on. Raw err.message
+        // embeds absolute paths and upstream detail; that stays in the audit log, which only
+        // operators read — the same rule `guarded` applies to the synchronous routes.
+        job.status = 'failed';
+        job.errorCode = typeof err?.code === 'string' ? err.code.slice(0, 40) : 'UNKNOWN';
+        job.error = `Import failed (${job.errorCode})`;
+        job.finished = new Date().toISOString();
+        // This worker is detached, so nothing above it can catch a throw from here: audit() is a
+        // synchronous SQLite write, and an unhandled rejection would take the process down.
+        try {
+          audit('agent_api_seedbox_import_force', { ...actor, ok: false, folder, destination, jobId, code: job.errorCode, error: err?.message });
+        } catch { /* the job already records the failure for the caller */ }
+      }
+    })();
+
+    // 202 like /seedbox/sync: accepted, not finished. The caller polls /import-status.
+    return res.status(202).json({
+      ok: true,
+      jobId,
+      status: job.status,
+      folder,
+      destination,
+      message: `Import started in background. Poll GET /api/v1/seedbox/import-status?jobId=${jobId} for progress.`,
+    });
+  }));
+
+  // Status of one background import job, or the recent job list when no jobId is given.
+  // readLimiter like every other GET on this surface: polling is the intended access pattern,
+  // so it shares the same read budget rather than being the one unbounded route here.
+  app.get('/api/v1/seedbox/import-status', auth, readLimiter, requireRead, guarded(async (req, res) => {
+    const jobId = String(req.query?.jobId || '').trim();
+    if (jobId) {
+      const job = importJobs.get(jobId);
+      if (!job) {
+        return res.status(404).json({ error: 'No import job with that id (jobs are in-memory and reset when the bot restarts)' });
+      }
+      return res.json({ ok: true, ...job });
+    }
+    return res.json({ ok: true, jobs: [...importJobs.values()].slice(-IMPORT_JOB_HISTORY).reverse() });
+  }));
+
+  // v1.2 discovery: the command surface the bridge will accept, straight from the live
+  // SlashCommandBuilder definitions. Without this a client has to hardcode every command and
+  // its options, and drifts silently the moment one changes — the failure only showing up as a
+  // 400 from /discord/exec. `invocable` mirrors the validator's own rules, so a command listed
+  // as callable is one /discord/exec will actually accept. Read-only, so readLimiter like every
+  // other GET here.
+  app.get('/api/v1/discord/commands', auth, readLimiter, requireRead, guarded(async (_req, res) => {
+    if (!getDiscordCommandDefs) return res.status(503).json({ error: 'Discord command definitions are unavailable' });
+    const commands = describeCommandsForApi(getDiscordCommandDefs());
+    if (!commands.length) return res.status(503).json({ error: 'Discord command definitions are unavailable' });
+    res.json({
+      ok: true,
+      count: commands.length,
+      invocable: commands.filter(c => c.invocable).length,
+      commands,
+    });
   }));
 
   // v1.2 Discord command bridge: invoke a slash command headlessly through the same
@@ -785,7 +1234,7 @@ function registerAgentApiRoutes(app, deps) {
   // and returned — interactive follow-ups (buttons, selects, modals) and DMs are not
   // supported headless; see docs/agent-api.md. Every invocation is audited inside the
   // executor as agent:<token-label> with the command + args.
-  app.post('/api/v1/discord/exec', auth, writeLimiter, guarded(async (req, res) => {
+  app.post('/api/v1/discord/exec', auth, writeLimiter, requireDiscord, guarded(async (req, res) => {
     if (!discordExec) return res.status(503).json({ error: 'Discord command bridge is unavailable' });
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const command = String(body.command || '').trim();
@@ -798,6 +1247,11 @@ function registerAgentApiRoutes(app, deps) {
     if (typeof options !== 'object' || Array.isArray(options)) {
       audit('agent_api_discord_exec', { ...agentActor(req), ok: false, reason: 'invalid_options' });
       return res.status(400).json({ error: 'options must be an object of option-name -> value' });
+    }
+    // Checked before dispatch, and before the command is even validated: a token that may not
+    // run /downsize should learn nothing about it, not even whether its options were well formed.
+    if (!allowedDiscordAction(req, command)) {
+      return denyDiscordAction(req, res, audit, command, 'command');
     }
     try {
       const result = await discordExec({
@@ -821,13 +1275,19 @@ function registerAgentApiRoutes(app, deps) {
   // `buttons: [{ custom_id, label, style }]` for discovery. The admin gate inside
   // handleButton still runs (the synthetic actor is admin-privileged, same as the exec
   // bridge), and every press is audited as agent:<token-label>, including failures.
-  app.post('/api/v1/discord/interact', auth, writeLimiter, guarded(async (req, res) => {
+  app.post('/api/v1/discord/interact', auth, writeLimiter, requireDiscord, guarded(async (req, res) => {
     if (!discordInteract) return res.status(503).json({ error: 'Discord interaction bridge is unavailable' });
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     const customId = typeof body.custom_id === 'string' ? body.custom_id.trim() : '';
     if (!customId) {
       audit('agent_api_discord_interact', { ...agentActor(req), custom_id: '', ok: false, reason: 'missing_custom_id' });
       return res.status(400).json({ error: 'custom_id is required' });
+    }
+    // handleButton dispatches on the part before the first ':', so that is the unit the
+    // allowlist names. Everything after it is the button's own payload.
+    const buttonAction = customId.split(':')[0];
+    if (!allowedDiscordAction(req, buttonAction)) {
+      return denyDiscordAction(req, res, audit, buttonAction, 'button');
     }
     try {
       const result = await discordInteract({
@@ -844,4 +1304,4 @@ function registerAgentApiRoutes(app, deps) {
   }));
 }
 
-module.exports = { registerAgentApiRoutes, createAgentApiAuth, createAgentApiReadLimiter, createAgentApiWriteLimiter };
+module.exports = { registerAgentApiRoutes, createAgentApiAuth, createAgentApiReadLimiter, createAgentApiWriteLimiter, agentRateLimitKey, importDestinationRoots, resolveSafeImportDestination };
