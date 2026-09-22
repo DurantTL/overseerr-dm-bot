@@ -607,15 +607,31 @@ function renderAgentApiTokens(tokens, { legacyConfigured = false } = {}) {
   const fmtWhen = ms => (ms ? new Date(ms).toISOString().slice(0, 19).replace('T', ' ') + ' UTC' : 'never');
   const rows = tokens.length ? tokens.map(token => {
     const revoked = !!token.revoked;
+    const scopes = Array.isArray(token.scopes) ? token.scopes : [];
+    const actions = Array.isArray(token.discordActions) ? token.discordActions : [];
+    // A wildcard is a token that predates scopes, still at full reach. Say so plainly rather
+    // than printing "*" and leaving an operator to work out what it means.
+    const reach = actions.includes('*')
+      ? ' · Discord: <strong>every action</strong> (pre-scopes token)'
+      : (actions.length ? ` · Discord: ${escapeHtml(actions.join(', '))}` : '');
+    const scopeLine = `Scopes: ${escapeHtml(scopes.join(', ') || 'none')}${reach}`;
     return `<div class="setting" data-agent-token="${token.id}">
-    <div class="setting-main"><div class="setting-name">${escapeHtml(token.label)}</div><div class="setting-help">Created ${escapeHtml(fmtWhen(token.createdAt))} · last used ${escapeHtml(fmtWhen(token.lastUsedAt))}${revoked ? ' · <strong>revoked</strong>' : ''}</div></div>
+    <div class="setting-main"><div class="setting-name">${escapeHtml(token.label)}</div><div class="setting-help">${scopeLine}</div><div class="setting-help">Created ${escapeHtml(fmtWhen(token.createdAt))} · last used ${escapeHtml(fmtWhen(token.lastUsedAt))}${revoked ? ' · <strong>revoked</strong>' : ''}</div></div>
     <div class="setting-ctl">${revoked ? '<span class="muted">revoked</span>' : '<button class="btn danger" type="button" data-agent-token-revoke>Revoke</button>'}</div>
   </div>`;
   }).join('') : '<p class="muted">No API tokens yet.</p>';
   return `<div class="card" id="agent-api-tokens">
     <h2>Agent API tokens<span class="sub">Machine access for the read-only agent API. One token per client — copy it once, revoke anytime.${legacyConfigured ? ' The legacy AGENT_API_TOKEN env var stays active alongside these.' : ''}</span></h2>
     ${rows}
-    <div class="setting-foot"><input type="text" id="agent-token-label" maxlength="64" placeholder="Label, e.g. Edith" aria-label="New token label"><button class="btn primary" type="button" id="agent-token-create" aria-describedby="agent-token-note">Create token</button><span class="save-note" id="agent-token-note" role="status" aria-live="polite"></span></div>
+    <div class="setting-foot"><input type="text" id="agent-token-label" maxlength="64" placeholder="Label, e.g. Edith" aria-label="New token label"></div>
+    <div class="setting-foot">
+      <label><input type="checkbox" id="agent-scope-read" checked> read</label>
+      <label><input type="checkbox" id="agent-scope-write"> write</label>
+      <label><input type="checkbox" id="agent-scope-discord"> discord</label>
+    </div>
+    <div class="setting-foot"><input type="text" id="agent-token-actions" placeholder="Discord actions, comma separated — e.g. queue, season, adopt_do" aria-label="Allowed Discord actions" style="min-width:22rem;"></div>
+    <p class="setting-help">A token reaches only what it is given. With the <strong>discord</strong> scope, list the slash commands and button actions it may drive — there is no "everything" shortcut, by design. <code>GET /api/v1/discord/commands</code> lists them all, and flags the three that hand out, rotate or revoke a credential.</p>
+    <div class="setting-foot"><button class="btn primary" type="button" id="agent-token-create" aria-describedby="agent-token-note">Create token</button><span class="save-note" id="agent-token-note" role="status" aria-live="polite"></span></div>
     <div id="agent-token-once" hidden>
       <p><strong>Copy this token now — it will not be shown again.</strong></p>
       <p><code id="agent-token-value" style="word-break:break-all;user-select:all;"></code> <button class="btn" type="button" id="agent-token-copy">Copy</button></p>

@@ -639,6 +639,25 @@ const MIGRATIONS = [
       `);
     },
   },
+  {
+    version: 5,
+    run(db) {
+      // Per-token grants for the agent API. Both are JSON arrays kept as TEXT: the set is small,
+      // read once per request, and edited by hand often enough that a readable column beats a
+      // join table. `discord_actions` holds slash-command names and button action prefixes —
+      // the two things POST /discord/exec and /discord/interact dispatch on.
+      ensureColumn('agent_api_tokens', 'scopes', 'TEXT');
+      ensureColumn('agent_api_tokens', 'discord_actions', 'TEXT');
+      // Every token that already exists predates scopes and is in use right now, so it is
+      // grandfathered at full access: all scopes, and the '*' wildcard rather than the 58
+      // command names as they stand today. Enumerating here would freeze the list, so a command
+      // added next week would silently stop working for a token that used to reach everything —
+      // the opposite of "nothing breaks". New tokens don't get the wildcard.
+      db.prepare(`UPDATE agent_api_tokens
+         SET scopes = COALESCE(scopes, '["read","write","discord"]'),
+             discord_actions = COALESCE(discord_actions, '["*"]')`).run();
+    },
+  },
 ];
 
 // The highest version this build's ledger knows about — what an up-to-date database's
@@ -1603,17 +1622,86 @@ const getTierAgentTokenHash = node => db.prepare('SELECT token_hash FROM tier_ag
 // Dashboard-managed Agent API tokens. Same show-once policy as tier-agent tokens and download
 // links: the raw token is returned exactly once at creation and only its sha256 is stored, so a
 // database read alone can never impersonate a client.
-function createAgentApiToken(label) {
+const AGENT_API_SCOPES = ['read', 'write', 'discord'];
+// '*' means "every discord action, including ones added later". Only grandfathered tokens carry
+// it: a new token names what it may reach, so widening is a deliberate edit rather than a
+// default nobody chose.
+const AGENT_API_ACTION_WILDCARD = '*';
+
+// Validate and normalize a token's grants. `allowWildcard` is false for anything an operator
+// mints today — the wildcard exists to keep pre-scopes tokens working, not as a shortcut.
+function normalizeAgentApiGrants({ scopes, discordActions } = {}, { allowWildcard = false } = {}) {
+  const wanted = [...new Set((Array.isArray(scopes) ? scopes : []).map(s => String(s).trim().toLowerCase()).filter(Boolean))];
+  if (!wanted.length) throw new Error('A token needs at least one scope (read, write, discord)');
+  const unknown = wanted.filter(s => !AGENT_API_SCOPES.includes(s));
+  if (unknown.length) throw new Error(`Unknown scope(s): ${unknown.join(', ')}. Valid scopes: ${AGENT_API_SCOPES.join(', ')}`);
+  const ordered = AGENT_API_SCOPES.filter(s => wanted.includes(s));
+
+  if (!ordered.includes('discord')) return { scopes: ordered, discordActions: [] };
+
+  const raw = [...new Set((Array.isArray(discordActions) ? discordActions : [])
+    .map(a => String(a).trim().toLowerCase()).filter(Boolean))];
+  if (!raw.length) {
+    throw new Error('The discord scope needs an explicit action list — the commands and button actions this token may use');
+  }
+  if (raw.includes(AGENT_API_ACTION_WILDCARD)) {
+    if (!allowWildcard) {
+      throw new Error('"*" is only carried by tokens that predate scopes; list the actions this token may use');
+    }
+    return { scopes: ordered, discordActions: [AGENT_API_ACTION_WILDCARD] };
+  }
+  const bad = raw.filter(a => !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(a));
+  if (bad.length) throw new Error(`Invalid discord action name(s): ${bad.slice(0, 5).join(', ')}`);
+  return { scopes: ordered, discordActions: raw.sort() };
+}
+
+function readGrants(row) {
+  const parse = (value, fallback) => {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.map(v => String(v)) : fallback;
+    } catch { return fallback; }
+  };
+  // A row written before migration 5, or one whose JSON was hand-edited into something
+  // unparseable, reads as full access — it is the state those tokens were created under, and
+  // silently narrowing a live token's reach would be a worse surprise than leaving it wide.
+  return {
+    scopes: parse(row?.scopes, [...AGENT_API_SCOPES]),
+    discordActions: parse(row?.discord_actions, [AGENT_API_ACTION_WILDCARD]),
+  };
+}
+
+function createAgentApiToken(label, grants = {}) {
   const clean = String(label || '').trim();
   if (!clean || clean.length > 64) throw new Error('Token label must be between 1 and 64 characters');
+  const normalized = normalizeAgentApiGrants(grants);
   const rawToken = crypto.randomBytes(32).toString('hex');
-  const info = db.prepare('INSERT INTO agent_api_tokens (label, token_hash) VALUES (?, ?)').run(clean, sha256(rawToken));
-  return { id: Number(info.lastInsertRowid), label: clean, token: rawToken };
+  const info = db.prepare('INSERT INTO agent_api_tokens (label, token_hash, scopes, discord_actions) VALUES (?, ?, ?, ?)')
+    .run(clean, sha256(rawToken), JSON.stringify(normalized.scopes), JSON.stringify(normalized.discordActions));
+  return { id: Number(info.lastInsertRowid), label: clean, token: rawToken, ...normalized };
+}
+
+// Tightening (or widening) a live token: a row edit, never a re-mint, so the client keeps its
+// credential. The wildcard is allowed here only to leave a grandfathered token as it was.
+function setAgentApiTokenGrants(id, grants) {
+  const current = db.prepare('SELECT scopes, discord_actions FROM agent_api_tokens WHERE id = ? AND revoked_at IS NULL').get(Number(id));
+  if (!current) return null;
+  const keepingWildcard = readGrants(current).discordActions.includes(AGENT_API_ACTION_WILDCARD);
+  const normalized = normalizeAgentApiGrants(grants, { allowWildcard: keepingWildcard });
+  db.prepare('UPDATE agent_api_tokens SET scopes = ?, discord_actions = ? WHERE id = ?')
+    .run(JSON.stringify(normalized.scopes), JSON.stringify(normalized.discordActions), Number(id));
+  return normalized;
+}
+
+// What a presented token may do. Null when the hash matches nothing live.
+function getAgentApiTokenGrants(hash) {
+  const row = db.prepare('SELECT scopes, discord_actions FROM agent_api_tokens WHERE token_hash = ? AND revoked_at IS NULL').get(hash);
+  return row ? readGrants(row) : null;
 }
 
 // Never returns hashes — the list is for display and revocation only.
 const listAgentApiTokens = () => db.prepare(
-  `SELECT id, label,
+  `SELECT id, label, scopes, discord_actions,
           strftime('%s', created_at) * 1000 AS createdAt,
           strftime('%s', last_used_at) * 1000 AS lastUsedAt,
           revoked_at IS NOT NULL AS revoked
@@ -1624,6 +1712,7 @@ const listAgentApiTokens = () => db.prepare(
   createdAt: row.createdAt,
   lastUsedAt: row.lastUsedAt,
   revoked: !!row.revoked,
+  ...readGrants(row),
 }));
 
 function revokeAgentApiToken(id) {
@@ -2194,7 +2283,7 @@ function findPendingRequestNonce(discordId, mediaType, tmdbId, is4k, seasonsKey)
   return null;
 }
 
-module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, MIGRATIONS, SCHEMA_VERSION, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, createAgentApiToken, listAgentApiTokens, revokeAgentApiToken, getAgentApiTokenHashes, getAgentApiTokenLabel, touchAgentApiTokenUse, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, recordTierFolderCompletion, countAuditActionsSince, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, createSupportCase, getSupportCaseById, getSupportCaseByReference, listSupportCases, listSupportCasesForRequester, listSupportCasesNeedingNotifyRetry, recordSupportCaseNotifyResult, recordSupportCaseMemberNotifyResult, assignSupportCase, acknowledgeSupportCase, resolveSupportCase, reopenSupportCase, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, recordTierPlayPin, getTierPlayPin, listActiveTierPlayPins, countActiveTierPlayPinsForViewer, pruneExpiredTierPlayPins, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
+module.exports = { db, DB_PATH, ensureColumn, runMigrations, schemaVersion, MIGRATIONS, SCHEMA_VERSION, audit, upsertTierNode, getTierNode, listTierNodes, setTierNodeEnabled, addTierNodeMember, removeTierNodeMember, listTierNodeMembers, listTierNodeFolders, addTierNodeFolder, removeTierNodeFolder, replaceTierNodeFolders, setTierAgentToken, getTierAgentTokenHash, createAgentApiToken, listAgentApiTokens, revokeAgentApiToken, getAgentApiTokenHashes, getAgentApiTokenLabel, touchAgentApiTokenUse, getAgentApiTokenGrants, setAgentApiTokenGrants, normalizeAgentApiGrants, AGENT_API_SCOPES, AGENT_API_ACTION_WILDCARD, replaceTierNodeFiles, listTierNodeFiles, listRequestsByRequesters, getTierPlan, setTierPublishedPlan, markTierPlanConverged, recordTierAgentReport, recordTierAgentHeartbeat, recordTierErrorAlertState, recordTierMergedMountDiagnostics, recordTierFolderCompletion, countAuditActionsSince, storeUserEmail, linkUserToEmail, findConflictingRealUser, getUserByDiscordId, getUserByCanonicalEmail, markUserInvited, markOverseerrCreated, removeUser, upsertRequest, addToKeepList, isInKeepList, recordPendingDeletion, markPendingDeletion, postponePendingDeletion, recordEscalationWatch, getWatchingEscalations, getEscalationById, setEscalationState, setEscalationTvdbId, setEscalationAvistazFit, markEscalationArrMissingAlerted, touchEscalationApprovedAt, resolveEscalationForMediaKey, createSupportCase, getSupportCaseById, getSupportCaseByReference, listSupportCases, listSupportCasesForRequester, listSupportCasesNeedingNotifyRetry, recordSupportCaseNotifyResult, recordSupportCaseMemberNotifyResult, assignSupportCase, acknowledgeSupportCase, resolveSupportCase, reopenSupportCase, recordGrabJob, setGrabJobIdentity, getGrabJob, getGrabJobByHash, getGrabJobByRelease, listActiveGrabJobs, nextTransferableGrabJob, setGrabJobState, countGrabJobsToday, requeueGrabTransfer, resetInterruptedGrabTransfers, stashGrabOffer, takeGrabOffer, restashGrabOffer, listAdoptedGrabJobs, setAdoptIgnored, clearAdoptIgnored, isAdoptIgnored, listAdoptIgnored, markAdoptOffered, isAdoptOffered, clearAdoptOffered, listAdoptOfferedHashes, getSeasonSearchTimes, getSeasonSearchStalls, recordSeasonSearch, listRecentSeasonSearches, listSeriesIdsWithSeasonSearches, listRequestedTvdbIds, setUserHomeServer, enqueueStageJob, getStageJob, nextQueuedStageJob, listActiveStageJobs, markStageJobCopying, finishStageJob, requeueStageJob, resetInterruptedStageJobs, recordStagedItem, getStagedItem, listStagedItems, removeStagedItem, touchStagedItem, setStagedItemPinned, countRecentPromotions, recordPromotion, recordTierPlayPin, getTierPlayPin, listActiveTierPlayPins, countActiveTierPlayPinsForViewer, pruneExpiredTierPlayPins, createDownloadToken, getDownloadRecordByRawToken, revokeAllDownloadLinks, cleanExpiredTokens, takePersistentRateLimit, getAlertedAt, setAlertedAt, listAlertCooldowns, clearAlertCooldown, pruneAlertCooldowns, getSeasonAlertState, recordSeasonNoGrab, clearSeasonAlertState, listSeasonAlertStates, getRatioWatch, upsertRatioWatch, deleteRatioWatch, pruneRatioWatch, getSetting, setSetting, deleteSetting, listPasskeys, getPasskey, savePasskey, updatePasskeyUse, renamePasskey, revokePasskey, listMediaPriority, mediaPriorityMap, setMediaPriority, clearMediaPriority, stashPendingRequest, takePendingRequest, restashPendingRequest, setPendingRequestNotice, listPendingRequests, findPendingRequestNonce, recordWebhookEvent, forgetWebhookEvent, pruneWebhookEvents, addRequestSubscriber, listRequestSubscribers, countRequestSubscribers, clearRequestSubscribers, pruneRequestSubscribers, getTrustScore, bumpTrustScore, resetTrustScore };
 module.exports.reconcileRequestStatuses = reconcileRequestStatuses;
 Object.assign(module.exports, {
   recordPackRejections,
