@@ -43,6 +43,23 @@ const SUPPORTED_OPTION_TYPES = {
   [ApplicationCommandOptionType.Number]: 'number',
 };
 
+// Readable names for every Discord option type, including the ones the bridge can't serve: a
+// client discovering this API needs to see that an option exists and is out of reach, rather
+// than not see it at all and wonder why its call keeps failing.
+const OPTION_TYPE_NAMES = {
+  [ApplicationCommandOptionType.Subcommand]: 'subcommand',
+  [ApplicationCommandOptionType.SubcommandGroup]: 'subcommand-group',
+  [ApplicationCommandOptionType.String]: 'string',
+  [ApplicationCommandOptionType.Integer]: 'integer',
+  [ApplicationCommandOptionType.Boolean]: 'boolean',
+  [ApplicationCommandOptionType.User]: 'user',
+  [ApplicationCommandOptionType.Channel]: 'channel',
+  [ApplicationCommandOptionType.Role]: 'role',
+  [ApplicationCommandOptionType.Mentionable]: 'mentionable',
+  [ApplicationCommandOptionType.Number]: 'number',
+  [ApplicationCommandOptionType.Attachment]: 'attachment',
+};
+
 const MAX_REPLY_TEXT = 4000;
 const MAX_AUDIT_VALUE = 120;
 const MAX_CUSTOM_ID = 100; // Discord's own custom_id length limit.
@@ -105,6 +122,91 @@ function commandDefsToMetadata(builders) {
       };
     })
     .filter(m => m.name);
+}
+
+// GET /api/v1/discord/commands: the live command surface, described for a machine caller so it
+// doesn't hardcode 55 commands and drift silently as they change. Built from the same
+// SlashCommandBuilder definitions validateExecInput() checks against, and its `invocable` flags
+// mirror that function's rules exactly — an endpoint that advertises a call the validator then
+// rejects is worse than no endpoint at all. Separate from commandDefsToMetadata() because the
+// validator wants the raw numeric types and no prose, while a caller wants the descriptions.
+function describeOption(o) {
+  const described = {
+    name: String(o.name || ''),
+    description: String(o.description || ''),
+    type: OPTION_TYPE_NAMES[o.type] || `unknown(${o.type})`,
+    required: !!o.required,
+    // Whether the bridge can carry this option at all. An unsupported *optional* option is
+    // merely off-limits; an unsupported *required* one makes the command uncallable.
+    supported: Boolean(SUPPORTED_OPTION_TYPES[o.type]),
+  };
+  const choices = Array.isArray(o.choices) ? o.choices.map(c => c.value) : [];
+  if (choices.length) described.choices = choices;
+  if (o.min_value != null) described.min = o.min_value;
+  if (o.max_value != null) described.max = o.max_value;
+  // Autocomplete never runs headless, so the caller supplies a raw value the command's own
+  // lookup has to accept — not one of a fixed set. Worth flagging; it is not a choices list.
+  if (o.autocomplete) described.autocomplete = true;
+  return described;
+}
+
+function blockingOption(options) {
+  return options.find(o => o.required && !o.supported) || null;
+}
+
+function blockedReason(option) {
+  return `requires a ${option.type} option ("${option.name}") the bridge cannot supply`;
+}
+
+function describeCommandsForApi(builders) {
+  return (builders || [])
+    .map(b => (b && typeof b.toJSON === 'function' ? b.toJSON() : b))
+    .filter(json => json && String(json.name || '').trim())
+    .map(json => {
+      const all = Array.isArray(json.options) ? json.options : [];
+      const subs = all.filter(o => o.type === ApplicationCommandOptionType.Subcommand);
+      const groups = all.filter(o => o.type === ApplicationCommandOptionType.SubcommandGroup);
+      const described = {
+        name: String(json.name || '').toLowerCase(),
+        description: String(json.description || ''),
+      };
+
+      // Order matters: validateExecInput takes the subcommand path first and only rejects
+      // groups when there are no subcommands, so a command carrying both is still callable.
+      if (subs.length) {
+        described.subcommands = subs.map(s => {
+          const options = (s.options || []).map(describeOption);
+          const blocker = blockingOption(options);
+          const sub = {
+            name: String(s.name || '').toLowerCase(),
+            description: String(s.description || ''),
+            options,
+            invocable: !blocker,
+          };
+          if (blocker) sub.reason = blockedReason(blocker);
+          return sub;
+        });
+        described.invocable = described.subcommands.some(s => s.invocable);
+        if (!described.invocable) {
+          described.reason = 'every subcommand requires an option type the bridge cannot supply';
+        }
+        return described;
+      }
+      if (groups.length) {
+        described.invocable = false;
+        described.reason = 'uses subcommand groups, which the bridge does not support';
+        return described;
+      }
+      const options = all
+        .filter(o => o.type !== ApplicationCommandOptionType.Subcommand
+          && o.type !== ApplicationCommandOptionType.SubcommandGroup)
+        .map(describeOption);
+      const blocker = blockingOption(options);
+      described.options = options;
+      described.invocable = !blocker;
+      if (blocker) described.reason = blockedReason(blocker);
+      return described;
+    });
 }
 
 function typeError(optPath, expected, value) {
@@ -564,6 +666,7 @@ module.exports = {
   createDiscordInteract,
   DiscordExecError,
   commandDefsToMetadata,
+  describeCommandsForApi,
   validateExecInput,
   buildHeadlessInteraction,
   buildHeadlessButtonInteraction,

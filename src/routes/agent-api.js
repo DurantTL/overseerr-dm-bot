@@ -6,6 +6,7 @@ const axios = require('axios');
 const { spawn } = require('child_process');
 const { rateLimit } = require('express-rate-limit');
 const { createAgentApiAuth } = require('./agent-api-auth');
+const { describeCommandsForApi } = require('../discord-exec');
 const { statusFromSeerrRequest } = require('../request-tracking');
 const { mergeFleetDisks } = require('../fleet-disks');
 const { pad } = require('../util');
@@ -315,6 +316,9 @@ function registerAgentApiRoutes(app, deps) {
     // v1.2 Discord button bridge: headless button-press executor built in index.js
     // around the real handleButton dispatch. Null in tests that don't wire it (-> 503).
     discordInteract = null,
+    // v1.2 discovery: the live slash-command definitions (index.js's slashCommands). Null in
+    // tests that don't wire it (-> 503), same as the two bridges.
+    getDiscordCommandDefs = null,
     auth = createAgentApiAuth({ getAgentApiTokenHashes, getAgentApiTokenLabel, legacyTokenHash, touchAgentApiTokenUse, sha256, safeEqual, audit }),
     readLimiter = createAgentApiReadLimiter({ limit: config.AGENT_API_READ_MAX_PER_MINUTE, keyGenerator: httpRateLimitKey }),
     writeLimiter = createAgentApiWriteLimiter({ limit: config.AGENT_API_WRITE_MAX_PER_MINUTE || 10, keyGenerator: httpRateLimitKey }),
@@ -1130,6 +1134,24 @@ function registerAgentApiRoutes(app, deps) {
       return res.json({ ok: true, ...job });
     }
     return res.json({ ok: true, jobs: [...importJobs.values()].slice(-IMPORT_JOB_HISTORY).reverse() });
+  }));
+
+  // v1.2 discovery: the command surface the bridge will accept, straight from the live
+  // SlashCommandBuilder definitions. Without this a client has to hardcode every command and
+  // its options, and drifts silently the moment one changes — the failure only showing up as a
+  // 400 from /discord/exec. `invocable` mirrors the validator's own rules, so a command listed
+  // as callable is one /discord/exec will actually accept. Read-only, so readLimiter like every
+  // other GET here.
+  app.get('/api/v1/discord/commands', auth, readLimiter, guarded(async (_req, res) => {
+    if (!getDiscordCommandDefs) return res.status(503).json({ error: 'Discord command definitions are unavailable' });
+    const commands = describeCommandsForApi(getDiscordCommandDefs());
+    if (!commands.length) return res.status(503).json({ error: 'Discord command definitions are unavailable' });
+    res.json({
+      ok: true,
+      count: commands.length,
+      invocable: commands.filter(c => c.invocable).length,
+      commands,
+    });
   }));
 
   // v1.2 Discord command bridge: invoke a slash command headlessly through the same
