@@ -28,6 +28,8 @@ const REQUEST_STATUS_FILTERS = ['pending', 'approved', 'available', 'declined', 
 const MAX_RESULTS = 25;
 const MAX_REQUESTS = 200;
 const HEALTH_CACHE_MS = 30000;
+// How many finished/running import jobs /api/v1/seedbox/import-status keeps in memory.
+const IMPORT_JOB_HISTORY = 20;
 
 // Roots that POST /api/v1/seedbox/import-force is allowed to copy into. The endpoint takes a
 // caller-supplied absolute `destination`, mkdir -p's it, and overwrites files inside it, so the
@@ -865,6 +867,9 @@ function registerAgentApiRoutes(app, deps) {
   // Unlike import-scan (which relies on Sonarr's DownloadedEpisodesScan), this actually copies the files.
   // Body: { folder: "Season 4", destination: "/share/media/Tv Shows/Bleach/Season 4", target: "sonarr" }
   // The destination must be an absolute path accessible from the bot container.
+  // In-memory import job tracker (resets on restart; jobs are best-effort)
+  const importJobs = new Map();
+
   app.post('/api/v1/seedbox/import-force', auth, writeLimiter, guarded(async (req, res) => {
     const stagingPath = (config.GRAB_STAGING_PATH || '').replace(/\/$/, '');
     if (!stagingPath) {
@@ -902,97 +907,150 @@ function registerAgentApiRoutes(app, deps) {
     if (!fs.existsSync(srcPath)) {
       return res.status(404).json({ error: `Staging folder not found: ${srcPath}` });
     }
-    // Copy files (not directories) from staging to destination
-    try {
-      fs.mkdirSync(destination, { recursive: true });
-      const files = fs.readdirSync(srcPath);
-      // Optional ownership fix: if MEDIA_UID/MEDIA_GID are set, chown copied files
-      // so the arr containers (e.g. Sonarr running as abc:users) can manage them.
-      // Best-effort: if chown fails (no permission), log and continue — the files
-      // are still world-readable (644) so the arr can import them.
-      const mediaUid = config.MEDIA_UID ? parseInt(config.MEDIA_UID, 10) : null;
-      const mediaGid = config.MEDIA_GID ? parseInt(config.MEDIA_GID, 10) : null;
-      const wantChown = Number.isInteger(mediaUid) && Number.isInteger(mediaGid);
-      let chowned = 0;
-      let chownFailed = false;
-      let copied = 0;
-      for (const file of files) {
-        const srcFile = path.join(srcPath, file);
-        const destFile = path.join(destination, file);
-        if (fs.statSync(srcFile).isFile()) {
-          fs.copyFileSync(srcFile, destFile);
-          // Ensure world-readable so the arr can import regardless of ownership
-          try { fs.chmodSync(destFile, 0o644); } catch {}
-          if (wantChown) {
-            try {
-              fs.chownSync(destFile, mediaUid, mediaGid);
-              chowned++;
-            } catch {
-              chownFailed = true;
-            }
-          }
-          copied++;
-        }
+    // Run as a background job so the API stays responsive during large copies: a multi-GB
+    // season blocked the event loop for minutes under the old synchronous copy, stalling
+    // Discord, /health and every other route with it. fs.promises keeps the loop free.
+    // Resolve the audited actor now rather than inside the worker, so a long-running job
+    // holds a small string instead of the whole request object.
+    const actor = agentActor(req);
+    const jobId = `import-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const job = {
+      jobId, folder, destination, target,
+      status: 'running', started: new Date().toISOString(),
+      copied: 0, chowned: 0, chownFailed: false, error: null, errorCode: null, message: null,
+    };
+    importJobs.set(jobId, job);
+    // Keep only the most recent jobs. A Map iterates in insertion order, so the oldest keys
+    // are at the front.
+    if (importJobs.size > IMPORT_JOB_HISTORY) {
+      for (const key of [...importJobs.keys()].slice(0, importJobs.size - IMPORT_JOB_HISTORY)) {
+        importJobs.delete(key);
       }
-      // Also chown the destination directory itself so the arr can write into it
-      if (wantChown) {
-        try {
-          fs.chownSync(destination, mediaUid, mediaGid);
-          try { fs.chmodSync(destination, 0o755); } catch {}
-        } catch {
-          chownFailed = true;
-        }
-      }
-      audit('agent_api_seedbox_import_force', { ...agentActor(req), ok: true, folder, destination, copied, target, chowned, chownFailed });
-      // Trigger Sonarr rescan if target is sonarr
-      let scanResult = null;
-      if (target === 'sonarr' && config.SONARR_URL && config.SONARR_API_KEY) {
-        try {
-          const sonarrBase = config.SONARR_URL.replace(/\/$/, '');
-          const headers = { 'X-Api-Key': config.SONARR_API_KEY };
-          // Match the series by path only: the destination has to sit inside the series folder.
-          // There is deliberately no title fallback — the previous `=== 'bleach'` one meant any
-          // unmatched destination rescanned that one series.
-          const seriesRes = await httpClient.get(`${sonarrBase}/api/v3/series`, { headers, timeout: 15000 });
-          const allSeries = seriesRes.data || [];
-          // Path containment, not a bare string prefix: a series at /media/Show must not claim a
-          // destination under /media/ShowOther.
-          const series = allSeries.find(s => s.path
-            && (destination === s.path || destination.startsWith(String(s.path).replace(/\/$/, '') + path.sep)));
-          if (series) {
-            // Trigger RescanSeries to pick up the new files from disk
-            await httpClient.post(`${sonarrBase}/api/v3/command`, {
-              name: 'RescanSeries',
-              seriesId: series.id,
-            }, { headers, timeout: 15000 });
-            scanResult = `Triggered Sonarr rescan for "${series.title}" (ID ${series.id}).`;
-          } else {
-            scanResult = 'Files copied. Could not find matching series in Sonarr; trigger Refresh & Scan manually.';
-          }
-        } catch (err) {
-          scanResult = `Files copied. Sonarr rescan failed: ${err.message?.slice(0, 100)}; trigger manually.`;
-        }
-      }
-      let message = `Copied ${copied} files to ${destination}.`;
-      if (wantChown) {
-        message += chownFailed
-          ? ` Ownership fix partially failed (bot lacks chown permission); files are world-readable.`
-          : ` Ownership set to ${mediaUid}:${mediaGid} (${chowned} files).`;
-      }
-      if (scanResult) message += ` ${scanResult}`;
-      return res.json({
-        ok: true,
-        folder,
-        destination,
-        copied,
-        chowned,
-        chownFailed,
-        message: message.trim(),
-      });
-    } catch (err) {
-      audit('agent_api_seedbox_import_force', { ...agentActor(req), ok: false, folder, destination, error: err.message?.slice(0, 200) });
-      return res.status(500).json({ error: `Force import failed: ${err.message}` });
     }
+
+    // Background worker — deliberately not awaited. Every path it touches is either the job
+    // object or `destination`, which the containment check above already resolved.
+    (async () => {
+      try {
+        await fs.promises.mkdir(destination, { recursive: true });
+        const files = await fs.promises.readdir(srcPath);
+        // Optional ownership fix: if MEDIA_UID/MEDIA_GID are set, chown copied files so the
+        // arr containers (e.g. Sonarr running as abc:users) can manage them. Best-effort: a
+        // chown failure still leaves the files world-readable (644) for the arr to import.
+        const mediaUid = config.MEDIA_UID ? parseInt(config.MEDIA_UID, 10) : null;
+        const mediaGid = config.MEDIA_GID ? parseInt(config.MEDIA_GID, 10) : null;
+        const wantChown = Number.isInteger(mediaUid) && Number.isInteger(mediaGid);
+        for (const file of files) {
+          const srcFile = path.join(srcPath, file);
+          const destFile = path.join(destination, file);
+          const stat = await fs.promises.stat(srcFile);
+          if (stat.isFile()) {
+            await fs.promises.copyFile(srcFile, destFile);
+            // Ensure world-readable so the arr can import regardless of ownership.
+            try { await fs.promises.chmod(destFile, 0o644); } catch {}
+            if (wantChown) {
+              try {
+                await fs.promises.chown(destFile, mediaUid, mediaGid);
+                job.chowned++;
+              } catch {
+                job.chownFailed = true;
+              }
+            }
+            job.copied++;
+          }
+        }
+        // Also chown the destination directory itself so the arr can write into it.
+        if (wantChown) {
+          try {
+            await fs.promises.chown(destination, mediaUid, mediaGid);
+            try { await fs.promises.chmod(destination, 0o755); } catch {}
+          } catch {
+            job.chownFailed = true;
+          }
+        }
+        audit('agent_api_seedbox_import_force', { ...actor, ok: true, folder, destination, copied: job.copied, target, chowned: job.chowned, chownFailed: job.chownFailed, jobId });
+        // Trigger Sonarr rescan if target is sonarr
+        let scanResult = null;
+        if (target === 'sonarr' && config.SONARR_URL && config.SONARR_API_KEY) {
+          try {
+            const sonarrBase = config.SONARR_URL.replace(/\/$/, '');
+            const headers = { 'X-Api-Key': config.SONARR_API_KEY };
+            // Match the series by path only: the destination has to sit inside the series
+            // folder. There is deliberately no title fallback — the previous `=== 'bleach'`
+            // one meant any unmatched destination rescanned that one series.
+            const seriesRes = await httpClient.get(`${sonarrBase}/api/v3/series`, { headers, timeout: 15000 });
+            const allSeries = seriesRes.data || [];
+            // Path containment, not a bare string prefix: a series at /media/Show must not
+            // claim a destination under /media/ShowOther.
+            const series = allSeries.find(s => s.path
+              && (destination === s.path || destination.startsWith(String(s.path).replace(/\/$/, '') + path.sep)));
+            if (series) {
+              // Trigger RescanSeries to pick up the new files from disk
+              await httpClient.post(`${sonarrBase}/api/v3/command`, {
+                name: 'RescanSeries',
+                seriesId: series.id,
+              }, { headers, timeout: 15000 });
+              scanResult = `Triggered Sonarr rescan for "${series.title}" (ID ${series.id}).`;
+            } else {
+              scanResult = 'Files copied. Could not find matching series in Sonarr; trigger Refresh & Scan manually.';
+            }
+          } catch (_err) {
+            // The copy already landed, so a failed rescan is a note on the job rather than a
+            // failed job. No upstream detail: an arr error can carry its URL and request.
+            scanResult = 'Files copied, but the Sonarr rescan call failed; trigger Refresh & Scan manually.';
+          }
+        }
+        let message = `Copied ${job.copied} files to ${destination}.`;
+        if (wantChown) {
+          message += job.chownFailed
+            ? ' Ownership fix partially failed (bot lacks chown permission); files are world-readable.'
+            : ` Ownership set to ${mediaUid}:${mediaGid} (${job.chowned} files).`;
+        }
+        if (scanResult) message += ` ${scanResult}`;
+        job.message = message.trim();
+        job.status = 'done';
+        job.finished = new Date().toISOString();
+      } catch (err) {
+        // The job object is readable over HTTP, so it carries a fixed message plus the errno
+        // (ENOSPC / EACCES / ...) that a caller can actually branch on. Raw err.message
+        // embeds absolute paths and upstream detail; that stays in the audit log, which only
+        // operators read — the same rule `guarded` applies to the synchronous routes.
+        job.status = 'failed';
+        job.errorCode = typeof err?.code === 'string' ? err.code.slice(0, 40) : 'UNKNOWN';
+        job.error = `Import failed (${job.errorCode})`;
+        job.finished = new Date().toISOString();
+        // This worker is detached, so nothing above it can catch a throw from here: audit() is a
+        // synchronous SQLite write, and an unhandled rejection would take the process down.
+        try {
+          audit('agent_api_seedbox_import_force', { ...actor, ok: false, folder, destination, jobId, code: job.errorCode, error: err?.message });
+        } catch { /* the job already records the failure for the caller */ }
+      }
+    })();
+
+    // 202 like /seedbox/sync: accepted, not finished. The caller polls /import-status.
+    return res.status(202).json({
+      ok: true,
+      jobId,
+      status: job.status,
+      folder,
+      destination,
+      message: `Import started in background. Poll GET /api/v1/seedbox/import-status?jobId=${jobId} for progress.`,
+    });
+  }));
+
+  // Status of one background import job, or the recent job list when no jobId is given.
+  // readLimiter like every other GET on this surface: polling is the intended access pattern,
+  // so it shares the same read budget rather than being the one unbounded route here.
+  app.get('/api/v1/seedbox/import-status', auth, readLimiter, guarded(async (req, res) => {
+    const jobId = String(req.query?.jobId || '').trim();
+    if (jobId) {
+      const job = importJobs.get(jobId);
+      if (!job) {
+        return res.status(404).json({ error: 'No import job with that id (jobs are in-memory and reset when the bot restarts)' });
+      }
+      return res.json({ ok: true, ...job });
+    }
+    return res.json({ ok: true, jobs: [...importJobs.values()].slice(-IMPORT_JOB_HISTORY).reverse() });
   }));
 
   // v1.2 Discord command bridge: invoke a slash command headlessly through the same
