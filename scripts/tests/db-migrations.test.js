@@ -249,7 +249,7 @@ test('v6 repairs tier_play_pins on databases that migrated past v1 before the ta
   const { db, runMigrations, schemaVersion } = handle;
   try {
     runMigrations();
-    assert.strictEqual(schemaVersion(), 6);
+    assert.strictEqual(schemaVersion(), 7);
 
     // Simulate the production state seen live Sep 2026: v1 ran before PR #286 added
     // tier_play_pins to its body, so the table is missing even though the recorded
@@ -261,7 +261,7 @@ test('v6 repairs tier_play_pins on databases that migrated past v1 before the ta
     assert.throws(() => db.prepare('SELECT COUNT(*) FROM tier_play_pins').get(), /no such table/);
 
     runMigrations();
-    assert.strictEqual(schemaVersion(), 6);
+    assert.strictEqual(schemaVersion(), 7);
     const row = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tier_play_pins'").get();
     assert.ok(row, 'the repair migration creates tier_play_pins');
     const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'tier_play_pins'").all().map(r => r.name);
@@ -270,7 +270,37 @@ test('v6 repairs tier_play_pins on databases that migrated past v1 before the ta
 
     // And the step is a no-op on a healthy database that already has the table.
     runMigrations();
+    assert.strictEqual(schemaVersion(), 7);
+  } finally {
+    cleanup(handle);
+  }
+});
+
+test('v7 repairs the monitor_only column on databases that migrated past v1 before it existed', () => {
+  const handle = freshDb();
+  const { db, runMigrations, schemaVersion } = handle;
+  try {
+    runMigrations();
+    assert.strictEqual(schemaVersion(), 7);
+    const cols = () => db.prepare('PRAGMA table_info(tier_nodes)').all().map(c => c.name);
+    assert.ok(cols().includes('monitor_only'));
+
+    // Simulate the production state seen live Sep 2026: v1 ran before PR #305 added
+    // the monitor_only column to its body, so the column is missing even though the
+    // recorded version covers v1..v6 — /tier-node add ... monitor_only:True failed
+    // with "no such column: monitor_only".
+    db.exec('ALTER TABLE tier_nodes DROP COLUMN monitor_only');
+    db.pragma('user_version = 6');
     assert.strictEqual(schemaVersion(), 6);
+    assert.ok(!cols().includes('monitor_only'));
+
+    runMigrations();
+    assert.strictEqual(schemaVersion(), 7);
+    assert.ok(cols().includes('monitor_only'), 'the repair migration re-adds monitor_only');
+
+    // And the step is a no-op on a healthy database that already has the column.
+    runMigrations();
+    assert.strictEqual(schemaVersion(), 7);
   } finally {
     cleanup(handle);
   }
