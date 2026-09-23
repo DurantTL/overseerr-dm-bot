@@ -213,7 +213,7 @@ test('dashboard-render: tier install command is complete and shell quoted', () =
     mountMarker: '.mounted',
   });
   assert.match(command, /export TIER_AGENT_TOKEN='secret-token'/);
-  assert.strictEqual(command.match(/secret-token/g).length, 1);
+  assert.strictEqual(command.match(/secret-token/g).length, 2, 'token appears in both the export and the sudo env line');
   assert.match(command, /SYNCTHING_API_KEY='api-key'/);
   assert.match(command, /TIER_FOLDERS=/);
   assert.doesNotMatch(command, /TIER_FOLDER_ROOT|SYNCTHING_FOLDER_ID/);
