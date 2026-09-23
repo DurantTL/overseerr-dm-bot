@@ -415,12 +415,12 @@ function tierInstallCommand({ botUrl, node, token, folders, folderRoot, syncthin
   // the token, TIER_MONITOR_ONLY=1, and the watched path (TIER_FOLDER_ROOT).
   if (monitorOnly) {
     const env = [
-      `TIER_AGENT_TOKEN="$TIER_AGENT_TOKEN"`,
+      `TIER_AGENT_TOKEN=${shellQuote(token)}`,
       `TIER_MONITOR_ONLY=1`,
       `TIER_FOLDER_ROOT=${shellQuote(monitorPath || folderRoot || '/mnt/backup')}`,
     ];
     return [
-      `export TIER_AGENT_TOKEN="$TIER_AGENT_TOKEN"`,
+      `export TIER_AGENT_TOKEN=${shellQuote(token)}`,
       `curl -fsSL -H "Authorization: Bearer $TIER_AGENT_TOKEN" ${shellQuote(`${botUrl}/agent/install/${node}`)} \\`,
       `  | sudo -E env ${env.join(' ')} sh`,
       'unset TIER_AGENT_TOKEN',
@@ -428,7 +428,7 @@ function tierInstallCommand({ botUrl, node, token, folders, folderRoot, syncthin
   }
   const normalizedFolders = normalizeTierFolders(folders || [{ id: syncthingFolderId, path: folderRoot }]);
   const env = [
-    `TIER_AGENT_TOKEN="$TIER_AGENT_TOKEN"`,
+    `TIER_AGENT_TOKEN=${shellQuote(token)}`,
     `SYNCTHING_API_KEY=${shellQuote(syncthingApiKey)}`,
     `TIER_FOLDERS=${shellQuote(serializeTierFolders(normalizedFolders))}`,
   ];
