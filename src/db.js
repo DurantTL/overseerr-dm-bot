@@ -681,6 +681,17 @@ const MIGRATIONS = [
       `);
     },
   },
+  // Repair for databases that recorded user_version >= 1 before PR #305 added the
+  // monitor_only column inline to the v1 body — the same trap v6 fixed for
+  // tier_play_pins. Those databases skipped v1 forever, so /tier-node add ...
+  // monitor_only:True failed with "no such column: monitor_only" (seen live Sep 2026).
+  // A full audit of the v1 body confirmed these two are the only post-ledger additions.
+  {
+    version: 7,
+    run() {
+      ensureColumn('tier_nodes', 'monitor_only', 'INTEGER');
+    },
+  },
 ];
 
 // The highest version this build's ledger knows about — what an up-to-date database's
