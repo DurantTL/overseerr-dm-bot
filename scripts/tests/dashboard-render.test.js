@@ -371,3 +371,17 @@ test('dashboard-render: renderDirectorPanel handles no health data', () => {
   assert.match(html, /No disks reported/);
   assert.match(html, /d-status warn">UNKNOWN/);
 });
+
+// A degraded service must not disappear into the unconfigured count.
+test('dashboard-render: Director distinguishes warnings from unconfigured services', () => {
+  const html = renderDirectorPanel({
+    overall: 'ok',
+    services: [{ state: 'warn', title: 'Backup', right: 'overdue' }, { state: 'skip', title: 'Optional service' }],
+    disks: [],
+    totalFreeLabel: null,
+  });
+  assert.match(html, /<strong>1<\/strong><span>Warnings<\/span>/);
+  assert.match(html, /<strong>1<\/strong><span>Not configured<\/span>/);
+  assert.match(html, /d-status warn">1 warning/);
+  assert.doesNotMatch(html, /All systems go/);
+});

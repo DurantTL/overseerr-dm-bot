@@ -18,11 +18,13 @@ const DASHBOARD_CSS = `
   @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
   :root { --bg:#101114; --panel:#1b1d22; --panel2:#24262d; --panel3:#2d3038; --accent:#f2a617; --accent-strong:#ffc04b; --text:#f4f4f2; --muted:#a9b1bf; --border:#363942; --ok:#36d284; --warn:#f59e0b; --down:#ff6969; --skip:#818996; --focus:#79b9ff; }
   * { box-sizing: border-box; }
-  html { -webkit-text-size-adjust:100%; }
+  html { -webkit-text-size-adjust:100%; color-scheme:dark; }
+  .skip-link { position:fixed; top:8px; left:16px; z-index:30; transform:translateY(-160%); padding:10px 14px; border-radius:8px; background:var(--accent); color:#191303; font-weight:600; }
+  .skip-link:focus { transform:translateY(0); }
   body { margin:0; font-family:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); line-height:1.45; padding-bottom:env(safe-area-inset-bottom); }
   button, input, select, textarea { font:inherit; }
   header.hdr { position:sticky; top:0; z-index:20; background:color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px); border-bottom:1px solid var(--border); padding-top:env(safe-area-inset-top); }
-  .topbar { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 16px 8px; }
+  .topbar { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:16px 24px 12px; max-width:1280px; margin:0 auto; }
   .topbar h1 { margin:0; font-size:16px; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .topbar .brand { color:var(--accent); }
   .topbar-search { flex:1 1 280px; max-width:480px; display:flex; gap:8px; }
@@ -33,7 +35,12 @@ const DASHBOARD_CSS = `
   .chip:hover, .chip:active { color:var(--text); }
   :focus-visible { outline:3px solid color-mix(in srgb, var(--focus) 65%, transparent); outline-offset:2px; }
   .chip:focus-visible { outline-offset:0; }
-  .container { max-width:1100px; margin:0 auto; padding:16px; }
+  .container { max-width:1280px; margin:0 auto; padding:24px; }
+  .container, .card, .setting-ctl, .setting-foot { min-width:0; }
+  .setting-foot input[type=text] { max-width:100%; }
+  #agent-token-actions { width:100%; min-width:0; }
+  .btn:disabled { opacity:.5; cursor:not-allowed; }
+  @media (min-width:1280px) { .nav { max-width:1232px; margin-left:auto; margin-right:auto; } }
   .card { background:var(--panel); border:1px solid var(--border); border-radius:13px; box-shadow:0 1px 0 color-mix(in srgb, var(--text) 4%, transparent); padding:16px 18px; margin-bottom:14px; scroll-margin-top:110px; }
   .card h2 { margin:0 0 10px; font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
   .overall { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:baseline; justify-content:space-between; padding:12px 16px; border-radius:14px; margin-bottom:14px; font-size:14px; }
@@ -174,9 +181,13 @@ const DASHBOARD_CSS = `
   .d-status.ok { color:var(--ok); background:rgba(34,197,94,.10); border-color:rgba(34,197,94,.45); }
   .d-status.warn { color:var(--warn); background:rgba(245,158,11,.10); border-color:rgba(245,158,11,.45); }
   .d-status.bad { color:var(--down); background:rgba(239,68,68,.12); border-color:rgba(239,68,68,.5); }
-  .d-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:0 0 14px; }
+  .d-metrics { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin:0 0 20px; }
   .d-metric { padding:14px; border:1px solid var(--border); background:var(--panel); border-radius:12px; }
   .d-metric strong { display:block; color:var(--accent-strong); font:600 22px/1.1 "IBM Plex Mono",ui-monospace,SFMono-Regular,monospace; }
+  .d-metric.attention strong { color:var(--warn); }
+  .d-metric.critical strong { color:var(--down); }
+  .d-grid { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(0,1fr); gap:20px; align-items:start; }
+  .d-grid > .card { min-width:0; }
   .d-metric span { display:block; margin-top:6px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.035em; }
   .d-callout { display:flex; align-items:flex-start; gap:10px; padding:12px 14px; border:1px solid rgba(229,160,13,.5); border-radius:10px; background:rgba(229,160,13,.08); color:var(--text); font-size:13px; margin:0 0 14px; }
   .d-callout svg { flex:0 0 auto; width:17px; height:17px; color:var(--accent); margin-top:1px; }
@@ -196,6 +207,7 @@ const DASHBOARD_CSS = `
   .d-node-right { font:500 12px "IBM Plex Mono",ui-monospace,SFMono-Regular,monospace; color:var(--muted); text-align:right; white-space:nowrap; }
   .d-progress { height:5px; overflow:hidden; margin-top:8px; border-radius:999px; background:var(--panel2); }
   .d-progress > span { display:block; height:100%; border-radius:inherit; background:var(--accent); }
+  @media (max-width:900px) { .d-grid { grid-template-columns:1fr; gap:0; } }
   @media (max-width:640px) {
     .d-page-lead { grid-template-columns:1fr; align-items:start; gap:10px; }
     .d-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
@@ -210,7 +222,7 @@ const DASHBOARD_CSS = `
 // script runs). The active tab lives in location.hash so the 60s auto-refresh comes back to it.
 function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, searchQuery = '', nav = [], autoRefresh = false, tabs = false } = {}) {
   const navHtml = nav.length
-    ? `<nav class="nav" role="tablist">${nav.map(([id, label]) => (tabs
+    ? `<nav class="nav" aria-label="Dashboard sections"${tabs ? ' role="tablist"' : ''}>${nav.map(([id, label]) => (tabs
       ? `<button class="chip tab" role="tab" type="button" data-tab="${escapeHtml(id)}" aria-selected="false">${escapeHtml(label)}</button>`
       : `<a class="chip" href="#${escapeHtml(id)}">${escapeHtml(label)}</a>`)).join('')}</nav>`
     : '';
@@ -285,6 +297,7 @@ function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, s
   <meta name="theme-color" content="#101114">
   <title>${escapeHtml(title)} — Durant Media Server</title>
   <style>${DASHBOARD_CSS}</style></head><body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
   <header class="hdr">
     <div class="topbar">
       <h1><span class="brand">Durant</span> Media Server</h1>
@@ -293,7 +306,7 @@ function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, s
     </div>
     ${navHtml}
   </header>
-  <div class="container">${bodyHtml}</div>
+  <main class="container" id="main-content" tabindex="-1">${bodyHtml}</main>
   ${tabScript}
   ${refreshScript}
   </body></html>`;
@@ -350,12 +363,13 @@ function shellQuote(value) {
 // `totalFreeLabel`: preformatted free-space total, or null.
 function renderDirectorPanel({ overall, services, disks, totalFreeLabel }) {
   const list = Array.isArray(services) ? services : [];
-  const counts = { ok: 0, down: 0, skip: 0 };
-  for (const s of list) counts[['ok', 'down', 'skip'].includes(s.state) ? s.state : 'skip']++;
-  const status = counts.down > 0 ? 'bad' : overall === 'ok' ? 'ok' : 'warn';
+  const counts = { ok: 0, down: 0, warn: 0, skip: 0 };
+  for (const s of list) counts[Object.hasOwn(counts, s.state) ? s.state : 'warn']++;
+  const status = counts.down > 0 ? 'bad' : counts.warn > 0 ? 'warn' : overall === 'ok' ? 'ok' : 'warn';
   const statusText = counts.down > 0
     ? `${counts.down} down`
-    : overall === 'ok' ? 'All systems go' : String(overall || 'unknown').toUpperCase();
+    : counts.warn > 0 ? `${counts.warn} warning${counts.warn === 1 ? '' : 's'}`
+      : overall === 'ok' ? 'All systems go' : String(overall || 'unknown').toUpperCase();
   const dotClass = state => (state === 'down' ? 'down' : state === 'warn' ? 'warn' : state === 'skip' ? 'skip' : '');
   const downServices = list.filter(s => s.state === 'down');
   const callout = downServices.length ? `
@@ -384,17 +398,19 @@ function renderDirectorPanel({ overall, services, disks, totalFreeLabel }) {
         <div>
           <div class="d-eyebrow">FLEET / LIVE</div>
           <h1 class="d-h1">The whole stack, one glance.</h1>
-          <p class="d-lead-copy">Every service the media server runs — health and disk in one place. Auto-refreshes with the page. “Not configured” means the URL or API key isn’t set; nothing is alarming.</p>
+          <p class="d-lead-copy">Service health and storage capacity, together. Refreshes every minute while you are not editing.</p>
         </div>
         <span class="d-status ${status}">${escapeHtml(statusText)}</span>
       </div>
       <div class="d-metrics">
         <div class="d-metric"><strong>${counts.ok}</strong><span>Services healthy</span></div>
-        <div class="d-metric"><strong>${counts.down}</strong><span>Down</span></div>
+        <div class="d-metric${counts.down ? ' critical' : ''}"><strong>${counts.down}</strong><span>Down</span></div>
+        <div class="d-metric${counts.warn ? ' attention' : ''}"><strong>${counts.warn}</strong><span>Warnings</span></div>
         <div class="d-metric"><strong>${counts.skip}</strong><span>Not configured</span></div>
         <div class="d-metric"><strong>${totalFreeLabel ? escapeHtml(totalFreeLabel) : '—'}</strong><span>Disk free · all volumes</span></div>
       </div>
       ${callout}
+      <div class="d-grid">
       <div class="card d-card">
         <div class="d-card-head">
           <div><h2>Fleet status</h2><p>Plex, the *arrs, downloaders, and the bot’s own vitals.</p></div>
@@ -407,6 +423,7 @@ function renderDirectorPanel({ overall, services, disks, totalFreeLabel }) {
           <div><h2>Disk space</h2><p>Free space and usage per volume.</p></div>
         </div>
         <div class="d-card-body">${diskRows}</div>
+      </div>
       </div>`;
 }
 
@@ -629,7 +646,7 @@ function renderAgentApiTokens(tokens, { legacyConfigured = false } = {}) {
       <label><input type="checkbox" id="agent-scope-write"> write</label>
       <label><input type="checkbox" id="agent-scope-discord"> discord</label>
     </div>
-    <div class="setting-foot"><input type="text" id="agent-token-actions" placeholder="Discord actions, comma separated — e.g. queue, season, adopt_do" aria-label="Allowed Discord actions" style="min-width:22rem;"></div>
+    <div class="setting-foot"><input type="text" id="agent-token-actions" placeholder="Discord actions, comma separated — e.g. queue, season, adopt_do" aria-label="Allowed Discord actions"></div>
     <p class="setting-help">A token reaches only what it is given. With the <strong>discord</strong> scope, list the slash commands and button actions it may drive — there is no "everything" shortcut, by design. <code>GET /api/v1/discord/commands</code> lists them all, and flags the three that hand out, rotate or revoke a credential.</p>
     <div class="setting-foot"><button class="btn primary" type="button" id="agent-token-create" aria-describedby="agent-token-note">Create token</button><span class="save-note" id="agent-token-note" role="status" aria-live="polite"></span></div>
     <div id="agent-token-once" hidden>
