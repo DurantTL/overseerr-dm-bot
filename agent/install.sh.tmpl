@@ -8,6 +8,9 @@
 #
 # Monitor-only nodes (backup boxes — TIER_MONITOR_ONLY=1) need only the token and the
 # watched path; the /tier-node token command for a monitor-only node generates that form.
+# Re-running the installer updates the agent in place: settings already in the node's env
+# file are kept unless the environment overrides them, so an update needs only the fresh
+# TIER_AGENT_TOKEN — SYNCTHING_API_KEY etc. don't have to be re-supplied every time.
 # Config comes from the environment, never from prompts: stdin is the script itself when piped,
 # so an interactive `read` would silently consume the rest of this file instead of waiting.
 set -eu
@@ -22,6 +25,31 @@ say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" = 0 ] || die "run as root (pipe to 'sudo -E sh', and keep -E so your env vars survive)"
+
+# Re-runs keep the node's existing config: every known setting already in the env file
+# survives unless the current environment overrides it with a non-empty value. Updating
+# a node is then just the fresh TIER_AGENT_TOKEN from /tier-node token — SYNCTHING_API_KEY
+# (and the folder settings) no longer have to be re-supplied every time.
+_PRESERVE_VARS="TIER_AGENT_TOKEN SYNCTHING_URL SYNCTHING_API_KEY TIER_FOLDER_ROOT SYNCTHING_FOLDER_ID TIER_FOLDERS TIER_MOUNT_ROOT TIER_MOUNT_MARKER TIER_EXPECTED_UUID TIER_REPORT_INVENTORY TIER_SMART_DEVICES TIER_MONITOR_ONLY"
+if [ -f "$ENV_FILE" ]; then
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    case "$_line" in ''|\#*) continue ;; esac
+    case "$_line" in *=*) ;; *) continue ;; esac
+    _k=${_line%%=*}
+    _v=${_line#*=}
+    # The installer writes TIER_FOLDERS double-quoted; strip that one layer.
+    case "$_v" in '"'*'"') _v=${_v#\"}; _v=${_v%\"} ;; esac
+    case " $_PRESERVE_VARS " in *" $_k "*) ;; *) continue ;; esac
+    eval "_cur=\${$_k:-}"
+    if [ -z "$_cur" ]; then
+      _q=$(printf '%s' "$_v" | sed "s/'/'\\\\''/g")
+      eval "$_k='$_q'"
+    fi
+  done < "$ENV_FILE"
+  unset _line _k _v _cur _q
+  say "→ keeping existing config from $ENV_FILE for values not supplied now"
+fi
+unset _PRESERVE_VARS
 
 missing=''
 if [ "${TIER_MONITOR_ONLY:-0}" = "1" ]; then
@@ -176,7 +204,7 @@ TIER_NODE=$NODE_NAME
 TIER_AGENT_TOKEN=$TIER_AGENT_TOKEN
 TIER_STATE_DIR=$STATE_DIR
 SYNCTHING_URL=${SYNCTHING_URL:-http://127.0.0.1:8384}
-SYNCTHING_API_KEY=$SYNCTHING_API_KEY
+SYNCTHING_API_KEY=${SYNCTHING_API_KEY:-}
 ENVEOF
 [ -z "${TIER_FOLDERS:-}" ] || node -e 'process.stdout.write(`TIER_FOLDERS=${JSON.stringify(process.env.TIER_FOLDERS)}\n`)' >> "$ENV_FILE.new"
 [ -n "${TIER_FOLDERS:-}" ] || {
@@ -237,7 +265,7 @@ systemctl enable --now tier-agent.timer >/dev/null
 say "→ first run"
 if systemctl start tier-agent.service; then
   say ""
-  if [ "$TIER_MONITOR_ONLY" = "1" ]; then
+  if [ "${TIER_MONITOR_ONLY:-0}" = "1" ]; then
     say "Installed (monitor-only). First heartbeat reported successfully — the node should now"
     say "show a recent check-in in /tier-node list and on the dashboard."
   else

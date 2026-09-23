@@ -118,7 +118,7 @@ test('migration 5 grandfathers every pre-scopes token at full access', () => {
       .run('pre-existing', sha256('legacy-raw-token'));
 
     handle.runMigrations();
-    assert.strictEqual(handle.schemaVersion(), 5);
+    assert.strictEqual(handle.schemaVersion(), 6, 'migrations 5 and 6 both run from version 4');
 
     const grants = handle.getAgentApiTokenGrants(sha256('legacy-raw-token'));
     assert.deepStrictEqual(grants.scopes, ['read', 'write', 'discord'], 'every scope, as before');

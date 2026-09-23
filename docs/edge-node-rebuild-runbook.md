@@ -177,6 +177,11 @@ Run it on the node itself (not inside the bot's container). It installs the agen
 systemd timer, and runs once immediately so a misconfiguration shows up right away instead of
 15 minutes later.
 
+Re-running the same command later updates the agent in place: settings already in
+`/etc/tier-agent.env` are kept unless the new command overrides them, so a routine update
+needs only the fresh `TIER_AGENT_TOKEN` — `SYNCTHING_API_KEY`, folder paths, and mount-guard
+settings carry forward automatically.
+
 Recommended: on the first run, set `TIER_DRY_RUN=1` in `/etc/tier-agent.env`, run
 `systemctl start tier-agent.service`, and read `journalctl -u tier-agent` before letting the
 timer loose unattended. Remove `TIER_DRY_RUN` once you're satisfied.

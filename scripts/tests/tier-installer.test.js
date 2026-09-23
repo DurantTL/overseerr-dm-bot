@@ -79,6 +79,47 @@ test('tier installer: required-var validation branches on TIER_MONITOR_ONLY', ()
   assert.match(fullMissing.stdout, /MISSING:.*SYNCTHING_API_KEY/);
 });
 
+test('tier installer: re-run preserves existing env values unless overridden', () => {
+  const startMarker = '# Re-runs keep the node\'s existing config';
+  const start = installer.indexOf(startMarker);
+  assert.ok(start >= 0, 'preserve block found');
+  const validationStart = installer.indexOf("missing=''", start);
+  assert.ok(validationStart > start, 'validation block found after preserve block');
+  const validationEnd = installer.indexOf('\nfi\n', validationStart);
+  const block = `say() { printf '%s\\n' "$*"; }\n${installer.slice(start, validationEnd + '\nfi'.length)}\n[ -z "$missing" ] || echo "MISSING:$missing"\necho "KEY=$SYNCTHING_API_KEY"\necho "ROOT=$TIER_FOLDER_ROOT"\necho "TOKEN=$TIER_AGENT_TOKEN"\necho OK\n`;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tier-env-'));
+  try {
+    const envFile = path.join(dir, 'tier-agent.env');
+    fs.writeFileSync(envFile, [
+      'TIER_AGENT_TOKEN=oldtoken',
+      'SYNCTHING_API_KEY=oldkey',
+      'TIER_FOLDER_ROOT=/mnt/old media/Movies',
+      'SYNCTHING_FOLDER_ID=oldfolder',
+      '',
+    ].join('\n'));
+    const run = env => spawnSync('sh', ['-c', block], {
+      encoding: 'utf8', env: { ...process.env, ENV_FILE: envFile, ...env },
+    });
+    // Re-run with only a fresh token: old key/root survive, validation passes.
+    const kept = run({ TIER_AGENT_TOKEN: 'newtoken' });
+    assert.strictEqual(kept.status, 0, kept.stderr);
+    assert.match(kept.stdout, /KEY=oldkey/);
+    assert.match(kept.stdout, /ROOT=\/mnt\/old media\/Movies/);
+    assert.match(kept.stdout, /TOKEN=newtoken/);
+    assert.match(kept.stdout, /keeping existing config/);
+    assert.doesNotMatch(kept.stdout, /MISSING/);
+    // Explicit environment wins over preserved values.
+    const overridden = run({ TIER_AGENT_TOKEN: 'newtoken', SYNCTHING_API_KEY: 'newkey' });
+    assert.strictEqual(overridden.status, 0, overridden.stderr);
+    assert.match(overridden.stdout, /KEY=newkey/);
+    // Fresh install (no env file) still requires the key.
+    const fresh = run({ TIER_AGENT_TOKEN: 'x', ENV_FILE: path.join(dir, 'does-not-exist') });
+    assert.match(fresh.stdout, /MISSING:.*SYNCTHING_API_KEY/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('tier installer: monitor-only install reports the first heartbeat result', () => {
   assert.match(installer, /Installed \(monitor-only\)\. First heartbeat reported successfully/);
 });
@@ -98,4 +139,18 @@ test('tier installer: monitor-only watched-path validation rejects a missing dir
   });
   assert.strictEqual(bad.status, 1);
   assert.match(bad.stderr, /watched path problem/);
+});
+
+test('tier installer: no bare variable references that crash under set -u', () => {
+  // The script runs under `set -eu`. TIER_MONITOR_ONLY is unset on fresh full-node installs
+  // (crashed the first-run message Sep 2026) and SYNCTHING_API_KEY is unset on monitor-only
+  // installs (crashed the env write) — every reference to either must carry a default.
+  for (const name of ['TIER_MONITOR_ONLY', 'SYNCTHING_API_KEY']) {
+    const refs = [...installer.matchAll(new RegExp(`\\$${name}\\b|\\$\\{${name}([^}]*)\\}`, 'g'))];
+    assert.ok(refs.length > 0, `${name} is referenced in the installer`);
+    for (const ref of refs) {
+      assert.ok(ref[0].startsWith('${') && ref[1].startsWith(':-'),
+        `bare $${name} reference would crash under set -u: ${ref[0]}`);
+    }
+  }
 });
