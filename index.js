@@ -70,7 +70,7 @@ const { decideRatioRemoval, describeDeletionSafety } = require('./src/ratio-clea
 const { runBackup, rotateBackups, backupState, rehearseLatestBackup } = require('./scripts/backup-db');
 const { recordDiskSamples, pruneDiskSamples, forecastDisks, pathIsOnRoot, forecastLabel } = require('./src/capacity');
 const { webhookEventKey } = require('./src/webhook-events');
-const { createWebhookHandlers, requireWebhookSecret } = require('./src/routes/webhooks');
+const { createWebhookHandlers, requireWebhookSecret, requireGitHubSignature } = require('./src/routes/webhooks');
 const { registerTierAgentRoutes } = require('./src/routes/tier-agent');
 const { registerAgentApiRoutes } = require('./src/routes/agent-api');
 const { createRtorrentControl } = require('./src/rtorrent-control');
@@ -10429,7 +10429,7 @@ function startExpressServer() {
   // src/app.js factory so it can be exercised with real HTTP requests on an ephemeral port
   // without booting Discord — see scripts/tests/app-factory.test.js. Route registration below is
   // unchanged; only the app's own setup moved.
-  const app = createApp({ trustProxy: !!CONFIG.TRUST_PROXY, skipJsonPaths: ['/agent/', '/webhook/tautulli', '/webhook/overseerr'] });
+  const app = createApp({ trustProxy: !!CONFIG.TRUST_PROXY, skipJsonPaths: ['/agent/', '/webhook/tautulli', '/webhook/overseerr', '/webhook/github'] });
   const upload = multer({ limits: { fileSize: 5 * 1024 * 1024, files: 5 } });
   const tautulliJsonParser = bodyParser.json({ limit: '1mb' });
   // M3: Overseerr sends JSON — parse only after the secret + concurrency checks, like tautulli.
@@ -10463,6 +10463,10 @@ function startExpressServer() {
     handleOverseerrWebhook,
     handlePlexWebhook,
     handleTautulliWebhook,
+    notifyCiFailure: detail => dmUser(CONFIG.ADMIN_USER_ID, { embeds: [brandedEmbed(COLORS.DANGER)
+      .setTitle('⚠️ CI failed — hold the merge')
+      .setDescription(`**${detail.workflow}** concluded **${detail.conclusion}** on ${detail.prs} (${detail.branch}@${detail.sha}).`)
+      .addFields({ name: 'Run', value: detail.url ? `[view logs](${detail.url})` : 'no run URL' })] }),
     log,
   });
   app.post('/webhook/overseerr', requireWebhookSecret(() => CONFIG.WEBHOOK_SECRET), webhookBodyConcurrencyLimiter, overseerrJsonParser, upload.any(), webhookHandlers.overseerr);
@@ -10477,6 +10481,14 @@ function startExpressServer() {
     webhookBodyConcurrencyLimiter,
     tautulliJsonParser,
     webhookHandlers.tautulli);
+
+  // GitHub signs the raw body (X-Hub-Signature-256), so the signature middleware does its
+  // own bounded raw read before the concurrency limiter; /webhook/github is excluded from
+  // the global JSON parser above. Unconfigured (no GITHUB_WEBHOOK_SECRET) → 503, never open.
+  app.post('/webhook/github',
+    requireGitHubSignature(() => CONFIG.GITHUB_WEBHOOK_SECRET),
+    webhookBodyConcurrencyLimiter,
+    webhookHandlers.github);
 
   registerTierAgentRoutes(app, {
     config: CONFIG,

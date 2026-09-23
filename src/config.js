@@ -410,6 +410,9 @@ const CONFIG = (() => {
   PATH_REMAP_FROM: process.env.PATH_REMAP_FROM || '',
   PATH_REMAP_TO: process.env.PATH_REMAP_TO || process.env.RAID_PATH || '/mnt/raid',
   TAUTULLI_WEBHOOK_SECRET: process.env.TAUTULLI_WEBHOOK_SECRET || '',
+  // Signs GitHub workflow_run deliveries to /webhook/github (HMAC-SHA256). Empty leaves
+  // the endpoint refusing everything with 503 — it must never accept unsigned payloads.
+  GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET || '',
   // Only the hash is ever kept: the raw token is hashed here at startup and the plaintext
   // is never stored on CONFIG. Empty disables the agent API entirely (routes are not mounted).
   AGENT_API_TOKEN_HASH: process.env.AGENT_API_TOKEN ? sha256(process.env.AGENT_API_TOKEN) : '',
