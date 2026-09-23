@@ -140,3 +140,17 @@ test('tier installer: monitor-only watched-path validation rejects a missing dir
   assert.strictEqual(bad.status, 1);
   assert.match(bad.stderr, /watched path problem/);
 });
+
+test('tier installer: no bare variable references that crash under set -u', () => {
+  // The script runs under `set -eu`. TIER_MONITOR_ONLY is unset on fresh full-node installs
+  // (crashed the first-run message Sep 2026) and SYNCTHING_API_KEY is unset on monitor-only
+  // installs (crashed the env write) — every reference to either must carry a default.
+  for (const name of ['TIER_MONITOR_ONLY', 'SYNCTHING_API_KEY']) {
+    const refs = [...installer.matchAll(new RegExp(`\\$${name}\\b|\\$\\{${name}([^}]*)\\}`, 'g'))];
+    assert.ok(refs.length > 0, `${name} is referenced in the installer`);
+    for (const ref of refs) {
+      assert.ok(ref[0].startsWith('${') && ref[1].startsWith(':-'),
+        `bare $${name} reference would crash under set -u: ${ref[0]}`);
+    }
+  }
+});

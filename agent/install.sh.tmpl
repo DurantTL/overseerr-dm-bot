@@ -204,7 +204,7 @@ TIER_NODE=$NODE_NAME
 TIER_AGENT_TOKEN=$TIER_AGENT_TOKEN
 TIER_STATE_DIR=$STATE_DIR
 SYNCTHING_URL=${SYNCTHING_URL:-http://127.0.0.1:8384}
-SYNCTHING_API_KEY=$SYNCTHING_API_KEY
+SYNCTHING_API_KEY=${SYNCTHING_API_KEY:-}
 ENVEOF
 [ -z "${TIER_FOLDERS:-}" ] || node -e 'process.stdout.write(`TIER_FOLDERS=${JSON.stringify(process.env.TIER_FOLDERS)}\n`)' >> "$ENV_FILE.new"
 [ -n "${TIER_FOLDERS:-}" ] || {
@@ -265,7 +265,7 @@ systemctl enable --now tier-agent.timer >/dev/null
 say "→ first run"
 if systemctl start tier-agent.service; then
   say ""
-  if [ "$TIER_MONITOR_ONLY" = "1" ]; then
+  if [ "${TIER_MONITOR_ONLY:-0}" = "1" ]; then
     say "Installed (monitor-only). First heartbeat reported successfully — the node should now"
     say "show a recent check-in in /tier-node list and on the dashboard."
   else

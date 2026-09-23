@@ -243,3 +243,35 @@ test('recordEscalationWatch returns the row so a per-title action can address it
     cleanup(fixture);
   }
 });
+
+test('v6 repairs tier_play_pins on databases that migrated past v1 before the table existed', () => {
+  const handle = freshDb();
+  const { db, runMigrations, schemaVersion } = handle;
+  try {
+    runMigrations();
+    assert.strictEqual(schemaVersion(), 6);
+
+    // Simulate the production state seen live Sep 2026: v1 ran before PR #286 added
+    // tier_play_pins to its body, so the table is missing even though the recorded
+    // version covers v1..v5. The versioned ledger skips recorded steps, so only a new
+    // step can create it.
+    db.exec('DROP TABLE IF EXISTS tier_play_pins');
+    db.pragma('user_version = 5');
+    assert.strictEqual(schemaVersion(), 5);
+    assert.throws(() => db.prepare('SELECT COUNT(*) FROM tier_play_pins').get(), /no such table/);
+
+    runMigrations();
+    assert.strictEqual(schemaVersion(), 6);
+    const row = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tier_play_pins'").get();
+    assert.ok(row, 'the repair migration creates tier_play_pins');
+    const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'tier_play_pins'").all().map(r => r.name);
+    assert.ok(indexes.includes('idx_tier_play_pins_node'));
+    assert.ok(indexes.includes('idx_tier_play_pins_viewer'));
+
+    // And the step is a no-op on a healthy database that already has the table.
+    runMigrations();
+    assert.strictEqual(schemaVersion(), 6);
+  } finally {
+    cleanup(handle);
+  }
+});

@@ -658,6 +658,29 @@ const MIGRATIONS = [
              discord_actions = COALESCE(discord_actions, '["*"]')`).run();
     },
   },
+  // Repair for databases that recorded user_version >= 1 before PR #286 added tier_play_pins
+  // inline to the v1 body: the versioned ledger only invokes steps newer than the recorded
+  // version, so those databases skipped v1 forever and tier planning failed with
+  // "no such table: tier_play_pins" (seen live Sep 2026). This stays its own versioned step
+  // rather than relying on the v1 copy, per the convention documented above v2.
+  {
+    version: 6,
+    run(db) {
+      db.exec(`
+    CREATE TABLE IF NOT EXISTS tier_play_pins (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      node TEXT NOT NULL,
+      media_id TEXT NOT NULL,
+      viewer_id TEXT,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      UNIQUE(node, media_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_tier_play_pins_node ON tier_play_pins(node, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_tier_play_pins_viewer ON tier_play_pins(node, viewer_id, expires_at);
+      `);
+    },
+  },
 ];
 
 // The highest version this build's ledger knows about — what an up-to-date database's
