@@ -361,3 +361,29 @@ break-glass fallback kept in your password manager.
 The scoped `/api/v1/rtorrent/torrents` API provides torrent listing/detail and fixed start, stop,
 pause, resume, recheck, label and magnet-add operations. See [rTorrent control API](rtorrent-control-api.md)
 for routes, EvoSeedbox configuration, error semantics and Sonarr matching limitations.
+
+## Library file status
+
+The read-only `/api/v1/arr/*` routes let an agent verify that an import actually landed in
+a *arr library — the import endpoints can copy bytes and trigger a rescan, but never see what
+the library holds afterwards. All routes require the `read` token scope and the standard
+read rate limit. No new environment variables: they reuse the existing `SONARR_URL`,
+`RADARR_URL` and `RADARR_4K_URL` configuration.
+
+- `GET /api/v1/arr/sources` — which *arr instances are configured:
+  `{ "sources": [{ "label": "sonarr", "kind": "tv", "configured": true }, ...] }`
+- `GET /api/v1/arr/sonarr/series?title=Bleach` — series matching a title (1-200 chars), or
+  `?tvdbId=12345` for an exact lookup. Returns `{ "series": [{ "id", "title", "tvdbId",
+  "year", "path", "monitored", "seasonCount", "episodeCount", "episodeFileCount" }] }`.
+- `GET /api/v1/arr/sonarr/series/:id/episodes?seasonNumber=16` — episodes with per-episode
+  `hasFile` and the joined episode file (`quality`, `qualityRevision`, `size`, `path`,
+  `dateAdded`, or `null`). Returns `{ "seriesId", "seasonNumber", "episodeCount", "episodes" }`.
+- `GET /api/v1/arr/radarr/movies?tmdbId=438631` — movies matching a TMDB id or `?title=`,
+  across both Radarr instances unless `?source=radarr` / `?source=radarr-4k` narrows it.
+  Returns `{ "movies": [{ "id", "title", "year", "tmdbId", "hasFile", "monitored", "source",
+  "file" }] }` with the same file shape as episodes.
+
+Error semantics: `400` for invalid input (bad ids, title too long, unknown source, movie
+search with neither `tmdbId` nor `title`), `404` when a series lookup matches nothing,
+`503` when the instance isn't configured, and `502` with a fixed message for upstream
+failures — API keys, upstream URLs and fault strings never enter responses or audit logs.
