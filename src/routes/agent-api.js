@@ -11,6 +11,7 @@ const { statusFromSeerrRequest } = require('../request-tracking');
 const { mergeFleetDisks } = require('../fleet-disks');
 const { pad } = require('../util');
 const { registerAgentRtorrentRoutes } = require('./agent-rtorrent');
+const { registerAgentArrRoutes } = require('./agent-arr');
 
 // Machine API for the Plex Director agent (v1.1).
 // Auth: `Authorization: Bearer <token>`, hash-compared like the tier-agent tokens; the matched
@@ -397,6 +398,10 @@ function registerAgentApiRoutes(app, deps) {
   const requireWrite = requireScope('write', audit);
   const requireDiscord = requireScope('discord', audit);
   registerAgentRtorrentRoutes(app, { service: deps.rtorrentControl, auth, readLimiter, writeLimiter, requireRead, requireWrite, audit });
+  // Read-only *arr library file status: lets the Director verify an import landed instead of
+  // trusting the copy + rescan. The production service is injectable for tests and otherwise
+  // builds lazily from src/arr.js on the first request, matching the rtorrentControl pattern.
+  registerAgentArrRoutes(app, { service: deps.arrService, auth, readLimiter, requireRead, audit });
 
   // gatherHealth() fans out to every integration; cache briefly like the public /health does so
   // a polling agent can't multiply upstream traffic.
