@@ -143,9 +143,10 @@ test('tier installer: monitor-only watched-path validation rejects a missing dir
 
 test('tier installer: no bare variable references that crash under set -u', () => {
   // The script runs under `set -eu`. TIER_MONITOR_ONLY is unset on fresh full-node installs
-  // (crashed the first-run message Sep 2026) and SYNCTHING_API_KEY is unset on monitor-only
-  // installs (crashed the env write) — every reference to either must carry a default.
-  for (const name of ['TIER_MONITOR_ONLY', 'SYNCTHING_API_KEY']) {
+  // (crashed the first-run message Sep 2026), SYNCTHING_API_KEY is unset on monitor-only
+  // installs, and SYNCTHING_FOLDER_ID / TIER_FOLDER_ROOT are unset on monitor-only installs
+  // (crashed the env write Sep 23 2026) — every reference to any of these must carry a default.
+  for (const name of ['TIER_MONITOR_ONLY', 'SYNCTHING_API_KEY', 'SYNCTHING_FOLDER_ID', 'TIER_FOLDER_ROOT']) {
     const refs = [...installer.matchAll(new RegExp(`\\$${name}\\b|\\$\\{${name}([^}]*)\\}`, 'g'))];
     assert.ok(refs.length > 0, `${name} is referenced in the installer`);
     for (const ref of refs) {
@@ -153,4 +154,34 @@ test('tier installer: no bare variable references that crash under set -u', () =
         `bare $${name} reference would crash under set -u: ${ref[0]}`);
     }
   }
+});
+
+test('tier installer: monitor-only env write skips Syncthing vars instead of crashing', () => {
+  // Regression: Sep 23 2026, the env-write block referenced $SYNCTHING_FOLDER_ID bare, so
+  // every monitor-only install died with "SYNCTHING_FOLDER_ID: parameter not set" under set -u.
+  const start = installer.indexOf('umask 077');
+  const end = installer.indexOf('umask 022', start) + 'umask 022'.length;
+  assert.ok(start >= 0 && end > start, 'env-write block found');
+  const block = '#!/bin/sh\nset -eu\n' + installer.slice(start, end) + '\necho BLOCK_OK\n';
+  const envFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tier-env-')), 'tier-agent.env');
+  const result = spawnSync('sh', ['-c', block], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      ENV_FILE: envFile,
+      BOT_URL: 'https://bot.example',
+      NODE_NAME: 'southcentral',
+      STATE_DIR: '/tmp',
+      TIER_AGENT_TOKEN: 'tok',
+      TIER_MONITOR_ONLY: '1',
+      TIER_FOLDER_ROOT: '/mnt/storage',
+      // SYNCTHING_* and TIER_FOLDERS deliberately unset, as on a monitor-only box.
+    },
+  });
+  assert.strictEqual(result.status, 0, `env-write block must not crash: ${result.stderr}`);
+  assert.match(result.stdout, /BLOCK_OK/);
+  const written = fs.readFileSync(envFile, 'utf8');
+  assert.match(written, /TIER_FOLDER_ROOT=\/mnt\/storage/);
+  assert.match(written, /TIER_MONITOR_ONLY=1/);
+  assert.doesNotMatch(written, /SYNCTHING_FOLDER_ID/);
 });
