@@ -37,6 +37,11 @@ function webhookEventKey(source, body, userKey) {
     }
     return `tautulli:${body.event}:${body.machine_id || ''}:${mediaId}:${body.user_email || ''}${body.is_4k ? ':4k' : ''}`;
   }
+  if (source === 'github') {
+    // The handler passes a reduced { run_id, conclusion } object. A re-run gets a new
+    // run id, so redeliveries of the same completed run dedupe while genuine re-runs alert.
+    return `github:workflow_run:${body.run_id || ''}:${body.conclusion || ''}`;
+  }
   return `${source}:unknown`;
 }
 
