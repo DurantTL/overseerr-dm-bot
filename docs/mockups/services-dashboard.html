@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Durant Server</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #08080d;
+    --glass: rgba(255,255,255,.045);
+    --glass-line: rgba(255,255,255,.09);
+    --ink: rgba(255,255,255,.92);
+    --ink-2: rgba(255,255,255,.55);
+    --ink-3: rgba(255,255,255,.32);
+    --accent: #e97a4f;
+    --accent-soft: rgba(233,122,79,.14);
+    --green: #34d399;
+    --green-soft: rgba(52,211,153,.14);
+  }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* ambient orbs */
+  .orb { position: fixed; border-radius: 50%; filter: blur(90px); pointer-events: none; z-index: 0; opacity: .5; }
+  .orb-1 { width: 420px; height: 420px; background: radial-gradient(circle, rgba(233,122,79,.16), transparent 70%); top: -120px; left: -100px; animation: drift1 26s ease-in-out infinite alternate; }
+  .orb-2 { width: 380px; height: 380px; background: radial-gradient(circle, rgba(64,150,180,.12), transparent 70%); bottom: -140px; right: -100px; animation: drift2 32s ease-in-out infinite alternate; }
+  @keyframes drift1 { to { transform: translate(70px, 50px) scale(1.12); } }
+  @keyframes drift2 { to { transform: translate(-60px, -40px) scale(1.08); } }
+
+  .wrap { position: relative; z-index: 1; max-width: 1060px; margin: 0 auto; padding: calc(env(safe-area-inset-top) + 20px) 18px calc(env(safe-area-inset-bottom) + 40px); }
+
+  /* header */
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; opacity: 0; animation: fadeDown .7s ease forwards; }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand-mark { width: 40px; height: 40px; border-radius: 13px; background: linear-gradient(135deg, var(--accent), #c85a2e); display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 20px rgba(233,122,79,.35); }
+  .brand-mark svg { width: 22px; height: 22px; stroke: #fff; }
+  .brand h1 { font-size: 17px; font-weight: 700; letter-spacing: .14em; }
+  .brand p { font-size: 11px; color: var(--ink-3); letter-spacing: .08em; margin-top: 2px; }
+  .clock { text-align: right; }
+  .clock .time { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+  .clock .date { font-size: 11px; color: var(--ink-3); letter-spacing: .06em; margin-top: 2px; }
+  .net-pill { display: inline-block; margin-top: 7px; font-size: 10px; font-weight: 700; letter-spacing: .1em; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--glass-line); background: var(--glass); color: var(--ink-2); cursor: pointer; transition: border-color .2s, color .2s; user-select: none; }
+  .net-pill.local { color: var(--green); border-color: rgba(52,211,153,.35); background: var(--green-soft); }
+  .net-pill.tail { color: var(--accent); border-color: rgba(233,122,79,.35); background: var(--accent-soft); }
+  @keyframes fadeDown { from { opacity: 0; transform: translateY(-14px); } to { opacity: 1; transform: none; } }
+
+  /* status banner */
+  .status-banner {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--glass); border: 1px solid var(--glass-line);
+    border-radius: 18px; padding: 14px 18px; margin-bottom: 20px;
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    opacity: 0; animation: fadeUp .7s .1s ease forwards;
+  }
+  .pulse-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--green); position: relative; flex: none; }
+  .pulse-dot::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 2px solid var(--green); opacity: 0; animation: ping 2s ease-out infinite; }
+  @keyframes ping { 0% { transform: scale(.5); opacity: .8; } 100% { transform: scale(1.4); opacity: 0; } }
+  .status-banner .t { font-size: 14px; font-weight: 600; }
+  .status-banner .s { font-size: 12px; color: var(--ink-2); margin-top: 1px; }
+  .status-banner .pill { margin-left: auto; font-size: 11px; font-weight: 700; letter-spacing: .08em; color: var(--green); background: var(--green-soft); border: 1px solid rgba(52,211,153,.25); padding: 6px 12px; border-radius: 999px; flex: none; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+
+  /* hero stats */
+  .hero { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 26px; }
+  .stat {
+    background: var(--glass); border: 1px solid var(--glass-line); border-radius: 18px;
+    padding: 16px 14px; text-align: center; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    opacity: 0; animation: fadeUp .7s ease forwards;
+  }
+  .stat:nth-child(1) { animation-delay: .15s; } .stat:nth-child(2) { animation-delay: .22s; }
+  .stat:nth-child(3) { animation-delay: .29s; } .stat:nth-child(4) { animation-delay: .36s; }
+  .stat .v { font-size: 21px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  .stat .v small { font-size: 12px; font-weight: 500; color: var(--ink-2); }
+  .stat .l { font-size: 10px; color: var(--ink-3); letter-spacing: .1em; text-transform: uppercase; margin-top: 5px; }
+  .stat.hot .v { color: var(--accent); }
+
+  /* groups */
+  .group { margin-bottom: 26px; }
+  .group-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; padding: 0 4px; opacity: 0; animation: fadeUp .6s ease forwards; }
+  .group-head h2 { font-size: 13px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-2); }
+  .group-head .count { font-size: 11px; color: var(--ink-3); background: var(--glass); border: 1px solid var(--glass-line); padding: 2px 9px; border-radius: 999px; }
+  .group-head .line { flex: 1; height: 1px; background: linear-gradient(90deg, var(--glass-line), transparent); }
+
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .card {
+    background: var(--glass); border: 1px solid var(--glass-line); border-radius: 18px;
+    padding: 16px 14px; position: relative; overflow: hidden;
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    transition: transform .25s ease, border-color .25s ease, box-shadow .25s ease;
+    opacity: 0; animation: fadeUp .6s ease forwards;
+    cursor: pointer; text-decoration: none; color: inherit; display: block;
+    -webkit-touch-callout: none; user-select: none; -webkit-user-select: none;
+  }
+  .card:hover { transform: translateY(-3px); border-color: rgba(233,122,79,.35); box-shadow: 0 10px 30px rgba(0,0,0,.35), 0 0 0 1px rgba(233,122,79,.12); }
+  .card:active { transform: translateY(-1px) scale(.99); }
+  .card .top { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .icon { width: 36px; height: 36px; border-radius: 11px; display: flex; align-items: center; justify-content: center; flex: none; background: var(--accent-soft); border: 1px solid rgba(233,122,79,.2); }
+  .icon svg { width: 19px; height: 19px; stroke: var(--accent); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .icon.cool { background: rgba(64,150,180,.12); border-color: rgba(64,150,180,.22); }
+  .icon.cool svg { stroke: #6cb8d6; }
+  .icon.green { background: var(--green-soft); border-color: rgba(52,211,153,.22); }
+  .icon.green svg { stroke: var(--green); }
+  .card .name { font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
+  .card .desc { font-size: 11.5px; color: var(--ink-2); line-height: 1.45; margin-bottom: 10px; min-height: 32px; }
+  .dot { position: absolute; top: 14px; right: 14px; width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px rgba(52,211,153,.8); animation: dotPulse 2.4s ease-in-out infinite; }
+  @keyframes dotPulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+
+  /* widget rows */
+  .widget { display: flex; gap: 6px; margin-top: 4px; }
+  .metric { flex: 1; background: rgba(0,0,0,.28); border: 1px solid rgba(255,255,255,.06); border-radius: 10px; padding: 8px 6px; text-align: center; }
+  .metric .mv { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .metric .ml { font-size: 9px; color: var(--ink-3); letter-spacing: .08em; text-transform: uppercase; margin-top: 2px; }
+  .metric.good .mv { color: var(--green); }
+  .metric.hot .mv { color: var(--accent); }
+
+  /* speedtest bars */
+  .bar-row { margin-top: 8px; }
+  .bar-row .bl { display: flex; justify-content: space-between; font-size: 10px; color: var(--ink-2); margin-bottom: 4px; letter-spacing: .04em; }
+  .bar-row .bl b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .bar { height: 5px; border-radius: 99px; background: rgba(255,255,255,.07); overflow: hidden; }
+  .bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--accent), #f5a623); width: 0; animation: fillBar 1.6s .5s cubic-bezier(.2,.8,.2,1) forwards; }
+  @keyframes fillBar { to { width: var(--w); } }
+
+  /* compact cards for background services */
+  .cards.compact { grid-template-columns: repeat(4, 1fr); }
+  .card.mini { padding: 13px 10px; text-align: center; }
+  .card.mini .icon { width: 30px; height: 30px; margin: 0 auto 7px; border-radius: 10px; }
+  .card.mini .icon svg { width: 16px; height: 16px; }
+  .card.mini .name { font-size: 12px; }
+  .card.mini .dot { top: 10px; right: 10px; width: 7px; height: 7px; }
+
+  .card.wide { grid-column: span 2; }
+  @media (max-width: 560px) { .card.wide { grid-column: span 1; } }
+
+  /* now playing */
+  .now-playing {
+    display: flex; align-items: center; gap: 14px;
+    background: var(--glass); border: 1px solid var(--glass-line); border-radius: 18px;
+    padding: 14px 16px; margin-bottom: 22px;
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    opacity: 0; animation: fadeUp .7s .38s ease forwards;
+  }
+  .np-poster { width: 52px; height: 76px; border-radius: 10px; flex: none; background: linear-gradient(135deg, #1a1a24, #2a2a38); border: 1px solid var(--glass-line); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .np-poster svg { width: 22px; height: 22px; stroke: var(--ink-3); fill: none; stroke-width: 1.6; }
+  .np-info { flex: 1; min-width: 0; }
+  .np-kicker { font-size: 10px; letter-spacing: .14em; color: var(--accent); font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+  .np-kicker .eq { display: inline-flex; gap: 2px; align-items: flex-end; height: 12px; }
+  .np-kicker .eq i { width: 3px; background: var(--accent); border-radius: 2px; animation: eq 1.1s ease-in-out infinite; }
+  .np-kicker .eq i:nth-child(1) { height: 60%; animation-delay: 0s; }
+  .np-kicker .eq i:nth-child(2) { height: 100%; animation-delay: .2s; }
+  .np-kicker .eq i:nth-child(3) { height: 40%; animation-delay: .4s; }
+  @keyframes eq { 0%,100% { transform: scaleY(.4); } 50% { transform: scaleY(1); } }
+  .np-title { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .np-sub { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+  .np-progress { height: 4px; border-radius: 99px; background: rgba(255,255,255,.08); margin-top: 9px; overflow: hidden; }
+  .np-progress i { display: block; height: 100%; width: 62%; border-radius: 99px; background: var(--accent); animation: npSlide 30s linear infinite; }
+  @keyframes npSlide { from { width: 62%; } to { width: 68%; } }
+  .np-time { font-size: 10px; color: var(--ink-3); margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+  /* queue badges */
+  .qbadge { position: absolute; top: 10px; right: 26px; font-size: 10px; font-weight: 700; background: var(--accent); color: #fff; min-width: 20px; height: 20px; line-height: 20px; text-align: center; border-radius: 999px; padding: 0 6px; box-shadow: 0 2px 10px rgba(233,122,79,.5); }
+
+  /* usage bar */
+  .usage { margin-top: 8px; }
+  .usage .bl { display: flex; justify-content: space-between; font-size: 10px; color: var(--ink-2); margin-bottom: 4px; }
+  .usage .bl b { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+  footer { text-align: center; padding: 26px 0 10px; color: var(--ink-3); font-size: 11px; letter-spacing: .1em; }
+
+  /* action sheet */
+  .sheet-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.55); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 50; }
+  .sheet-backdrop.open { opacity: 1; pointer-events: auto; }
+  .sheet {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 51;
+    background: rgba(20,20,28,.92); backdrop-filter: blur(30px); -webkit-backdrop-filter: blur(30px);
+    border-top: 1px solid var(--glass-line); border-radius: 24px 24px 0 0;
+    padding: 12px 20px calc(env(safe-area-inset-bottom) + 24px);
+    transform: translateY(105%); transition: transform .32s cubic-bezier(.2,.9,.25,1);
+    max-width: 560px; margin: 0 auto;
+  }
+  .sheet.open { transform: none; }
+  .sheet-grab { width: 40px; height: 5px; border-radius: 99px; background: rgba(255,255,255,.18); margin: 4px auto 14px; }
+  .sheet-title { font-size: 16px; font-weight: 700; margin-bottom: 2px; }
+  .sheet-sub { font-size: 12px; color: var(--ink-2); margin-bottom: 14px; font-variant-numeric: tabular-nums; }
+  .sheet-btn {
+    display: flex; align-items: center; gap: 13px; width: 100%;
+    background: var(--glass); border: 1px solid var(--glass-line); border-radius: 15px;
+    padding: 14px 16px; margin-bottom: 9px; color: var(--ink);
+    font-size: 15px; font-weight: 500; cursor: pointer; text-align: left;
+    transition: background .15s, transform .1s;
+  }
+  .sheet-btn:active { transform: scale(.98); background: rgba(255,255,255,.08); }
+  .sheet-btn svg { width: 20px; height: 20px; stroke: var(--accent); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+  .sheet-btn.danger svg { stroke: #f87171; }
+  .sheet-btn .spin { width: 20px; height: 20px; border: 2.5px solid rgba(233,122,79,.25); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; flex: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .sheet-btn .ok { color: var(--green); font-weight: 700; margin-left: auto; }
+  .toast {
+    position: fixed; bottom: calc(env(safe-area-inset-bottom) + 30px); left: 50%; transform: translateX(-50%) translateY(20px);
+    background: rgba(20,20,28,.95); border: 1px solid var(--glass-line); border-radius: 999px;
+    padding: 11px 20px; font-size: 13px; font-weight: 600; z-index: 60;
+    opacity: 0; pointer-events: none; transition: opacity .25s, transform .25s;
+    display: flex; align-items: center; gap: 8px; white-space: nowrap;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%); }
+  .toast .tdot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+  .smart-tag { font-size: 9px; font-weight: 700; letter-spacing: .1em; color: var(--accent); background: var(--accent-soft); border: 1px solid rgba(233,122,79,.25); padding: 3px 8px; border-radius: 999px; }
+
+  /* UPS battery */
+  .batt-wrap { display: flex; align-items: center; gap: 14px; margin-top: 6px; }
+  .batt { width: 64px; height: 32px; border: 2px solid rgba(255,255,255,.25); border-radius: 8px; position: relative; flex: none; padding: 3px; }
+  .batt::after { content: ""; position: absolute; right: -8px; top: 8px; width: 5px; height: 12px; border-radius: 0 3px 3px 0; background: rgba(255,255,255,.25); }
+  .batt i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--green), #6ee7b7); width: 0; animation: fillBar 1.8s .6s cubic-bezier(.2,.8,.2,1) forwards; }
+  .batt-info .bv { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .batt-info .bl2 { font-size: 10px; color: var(--ink-3); letter-spacing: .08em; text-transform: uppercase; margin-top: 1px; }
+  .mains { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; letter-spacing: .06em; color: var(--green); background: var(--green-soft); border: 1px solid rgba(52,211,153,.25); padding: 5px 11px; border-radius: 999px; margin-top: 10px; }
+  .mains .mdot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px rgba(52,211,153,.9); animation: dotPulse 2.4s ease-in-out infinite; }
+
+  /* network / unifi */
+  .tput { position: relative; height: 92px; margin-top: 8px; border-radius: 12px; overflow: hidden; background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.05); }
+  .tput canvas { width: 100%; height: 100%; display: block; }
+  .tput-legend { display: flex; gap: 14px; margin-top: 8px; font-size: 11px; color: var(--ink-2); }
+  .tput-legend b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .tput-legend .sw { display: inline-block; width: 8px; height: 8px; border-radius: 3px; margin-right: 5px; }
+  .donut-wrap { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
+  .donut { width: 74px; height: 74px; flex: none; transform: rotate(-90deg); }
+  .donut .bg { stroke: rgba(255,255,255,.08); }
+  .donut .fg1 { stroke: var(--accent); stroke-linecap: round; }
+  .donut .fg2 { stroke: var(--cool); stroke-linecap: round; }
+  .donut-c { font-size: 11px; color: var(--ink-2); }
+  .donut-c b { color: var(--ink); font-size: 15px; font-variant-numeric: tabular-nums; display: block; }
+  .talkers { margin-top: 10px; display: flex; flex-direction: column; gap: 9px; }
+  .talker { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; font-size: 12px; }
+  .talker .tn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .talker .tv { color: var(--ink-2); font-variant-numeric: tabular-nums; font-size: 11px; }
+  .talker .tbar { grid-column: 1 / -1; height: 4px; border-radius: 99px; background: rgba(255,255,255,.07); overflow: hidden; }
+  .talker .tbar i { display: block; height: 100%; border-radius: 99px; background: var(--accent); width: 0; animation: fillBar 1.6s .5s cubic-bezier(.2,.8,.2,1) forwards; }
+  .unifi-tag { font-size: 9px; font-weight: 700; letter-spacing: .1em; color: var(--cool); background: rgba(56,189,248,.1); border: 1px solid rgba(56,189,248,.25); padding: 3px 8px; border-radius: 999px; }
+
+  @media (max-width: 720px) {
+    .cards { grid-template-columns: repeat(2, 1fr); }
+    .cards.compact { grid-template-columns: repeat(3, 1fr); }
+    .hero { grid-template-columns: repeat(2, 1fr); }
+    .card .desc { min-height: 0; }
+  }
+  @media (max-width: 400px) {
+    .cards.compact { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    .card, .stat, header, .status-banner, .group-head { opacity: 1 !important; }
+  }
+</style>
+</head>
+<body>
+<div class="orb orb-1"></div>
+<div class="orb orb-2"></div>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><circle cx="6.5" cy="6.5" r=".8" fill="currentColor"/><circle cx="6.5" cy="17.5" r=".8" fill="currentColor"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="3"/><path d="M10 9.5v5l4.5-2.5z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></symbol>
+    <symbol id="i-tv" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="13" rx="2"/><path d="M9 21h6"/></symbol>
+    <symbol id="i-film" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M7 4v16M17 4v16M2 9h5M2 15h5M17 9h5M17 15h5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></symbol>
+    <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M17.5 19a4.5 4.5 0 0 0 .4-8.98A6 6 0 0 0 6.2 8.6 4.8 4.8 0 0 0 7 19z"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m0 0l-4.5-4.5M12 15l4.5-4.5M4 19h16"/></symbol>
+    <symbol id="i-sync" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M12 15l4-6"/><path d="M4 15a8 8 0 1 1 16 0"/><path d="M4 19h16"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></symbol>
+    <symbol id="i-disk" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2L4 14h6l-1 8 9-12h-6z"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.7 3.8 9S14.5 18.4 12 21c-2.5-2.6-3.8-5.7-3.8-9S9.5 5.6 12 3z"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="M21 8l-9-5-9 5v8l9 5 9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M2.5 9a15 15 0 0 1 19 0M5.5 12.5a10 10 0 0 1 13 0M8.6 16a5 5 0 0 1 6.8 0"/><circle cx="12" cy="19" r="1" fill="currentColor"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1.5 1.5M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1.5-1.5"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M10.3 21a2 2 0 0 0 3.4 0"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.9 2.9l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.9-2.9l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.9-2.9l.1.1a1.7 1.7 0 0 0 1.9.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5h0a1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.9 2.9l-.1.1a1.7 1.7 0 0 0-.3 1.9v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+  </defs>
+</svg>
+
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="brand-mark"><svg><use href="#i-server"/></svg></div>
+      <div><h1>DURANT SERVER</h1><p>PLEX DIRECTOR · SERVICES</p></div>
+    </div>
+    <div class="clock"><div class="time" id="clock">--:--</div><div class="date" id="date">---</div>
+      <div class="net-pill" id="netPill" title="Tap to override">DETECTING…</div></div>
+  </header>
+
+  <div class="status-banner">
+    <div class="pulse-dot"></div>
+    <div><div class="t">All systems operational</div><div class="s">33 services reporting · UPS on mains · UDR7 online · last check 12s ago</div></div>
+    <div class="pill">ONLINE</div>
+  </div>
+
+  <div class="hero">
+    <div class="stat"><div class="v"><span class="count" data-to="33">0</span><small>/33</small></div><div class="l">Services Up</div></div>
+    <div class="stat hot"><div class="v"><span class="count" data-to="932.7" data-dec="1">0</span><small> Mbps</small></div><div class="l">Download</div></div>
+    <div class="stat"><div class="v"><span class="count" data-to="99.98" data-dec="2">0</span><small>%</small></div><div class="l">24h Uptime</div></div>
+    <div class="stat"><div class="v"><span class="count" data-to="34">0</span><small>°C</small></div><div class="l">System SSD</div></div>
+  </div>
+
+  <div class="now-playing">
+    <div class="np-poster"><svg><use href="#i-film"/></svg></div>
+    <div class="np-info">
+      <div class="np-kicker"><span class="eq"><i></i><i></i><i></i></span>NOW PLAYING · PLEX</div>
+      <div class="np-title">Dune: Part Two (2024)</div>
+      <div class="np-sub">Living Room · Direct Play 4K</div>
+      <div class="np-progress"><i></i></div>
+      <div class="np-time">1:34:12 remaining</div>
+    </div>
+  </div>
+
+  <div class="group">
+    <div class="group-head" style="animation-delay:.4s"><h2>System Health</h2><span class="count">5</span><div class="line"></div></div>
+    <div class="cards">
+      <a class="card" style="animation-delay:.42s">
+        <div class="dot"></div>
+        <div class="top"><div class="icon green"><svg><use href="#i-globe"/></svg></div><div class="name">Internet Health</div></div>
+        <div class="desc">24-hour internet availability</div>
+        <div class="widget">
+          <div class="metric good"><div class="mv">99.98%</div><div class="ml">Uptime</div></div>
+          <div class="metric good"><div class="mv">Up</div><div class="ml">Status</div></div>
+        </div>
+      </a>
+      <a class="card" style="animation-delay:.48s">
+        <div class="dot"></div>
+        <div class="top"><div class="icon"><svg><use href="#i-gauge"/></svg></div><div class="name">Speedtest</div></div>
+        <div class="desc">Local connection test history</div>
+        <div class="bar-row"><div class="bl"><span>Download</span><b>932.7 Mbps</b></div><div class="bar"><i style="--w:93%"></i></div></div>
+        <div class="bar-row"><div class="bl"><span>Upload</span><b>932.4 Mbps</b></div><div class="bar"><i style="--w:93%"></i></div></div>
+        <div class="widget" style="margin-top:8px"><div class="metric"><div class="mv">4.9<small style="font-size:10px;color:var(--ink-2)"> ms</small></div><div class="ml">Ping</div></div></div>
+      </a>
+      <a class="card" style="animation-delay:.54s">
+        <div class="dot"></div>
+        <div class="top"><div class="icon green"><svg><use href="#i-disk"/></svg></div><div class="name">ZFS Pool</div></div>
+        <div class="desc">RAID health and scrub status</div>
+        <div class="widget">
+          <div class="metric good"><div class="mv">ONLINE</div><div class="ml">Health</div></div>
+          <div class="metric good"><div class="mv">0</div><div class="ml">Issues</div></div>
+        </div>
+        <div class="usage"><div class="bl"><span>Pool usage</span><b>5.4 / 8 TB</b></div><div class="bar"><i style="--w:68%"></i></div></div>
+      </a>
+      <a class="card" style="animation-delay:.6s">
+        <div class="dot"></div>
+        <div class="top"><div class="icon cool"><svg><use href="#i-cpu"/></svg></div><div class="name">System SSD</div></div>
+        <div class="desc">Operating-system drive temperature</div>
+        <div class="widget"><div class="metric"><div class="mv">34<small style="font-size:10px;color:var(--ink-2)">°C</small></div><div class="ml">Temp</div></div></div>
+      </a>
+      <a class="card" style="animation-delay:.66s">
+        <div class="dot"></div>
+        <div class="top"><div class="icon green"><svg><use href="#i-bolt"/></svg></div><div class="name">UPS Power</div></div>
+        <div class="desc">CyberPower 1175VA · USB</div>
+        <div class="batt-wrap">
+          <div class="batt"><i style="--w:100%"></i></div>
+          <div class="batt-info"><div class="bv">100%</div><div class="bl2">Battery</div></div>
+        </div>
+        <div class="widget" style="margin-top:10px">
+          <div class="metric"><div class="mv">42<small style="font-size:10px;color:var(--ink-2)"> min</small></div><div class="ml">Runtime</div></div>
+          <div class="metric"><div class="mv">22<small style="font-size:10px;color:var(--ink-2)">%</small></div><div class="ml">Load</div></div>
+        </div>
+        <div class="mains"><div class="mdot"></div>ON MAINS POWER</div>
+      </a>
+    </div>
+  </div>
+
+  <div class="group">
+    <div class="group-head" style="animation-delay:.62s"><h2>Network</h2><span class="count">4</span><span class="unifi-tag">UDR7</span><div class="line"></div></div>
+    <div class="cards">
+      <a class="card" style="animation-delay:.66s">
+        <div class="dot"></div>
+        <div class="top"><div class="icon green"><svg><use href="#i-globe"/></svg></div><div class="name">WAN Status</div></div>
+        <div class="desc">Mediacom · DHCP</div>
+        <div class="widget">
+          <div class="metric good"><div class="mv">6<small style="font-size:10px;color:var(--ink-2)"> ms</small></div><div class="ml">Latency</div></div>
+          <div class="metric"><div class="mv">14<small style="font-size:10px;color:var(--ink-2)"> d</small></div><div class="ml">Uptime</div></div>
+        </div>
+        <div class="kv" style="margin-top:8px"><span>WAN IP</span><b style="font-variant-numeric:tabular-nums">73.XX.XXX.XX</b></div>
+      </a>
+      <a class="card wide" style="animation-delay:.72s">
+        <div class="dot"></div>
+        <div class="top"><div class="icon"><svg><use href="#i-zap"/></svg></div><div class="name">Live Throughput</div></div>
+        <div class="desc">Real-time WAN bandwidth</div>
+        <div class="tput"><canvas id="tputCanvas"></canvas></div>
+        <div class="tput-legend">
+          <span><span class="sw" style="background:var(--accent)"></span>Down <b id="tputDown">842 Mbps</b></span>
+          <span><span class="sw" style="background:var(--cool)"></span>Up <b id="tputUp">38 Mbps</b></span>
+        </div>
+      </a>
+      <a class="card" style="animation-delay:.78s">
+        <div class="dot"></div>
+        <div class="top"><div class="icon cool"><svg><use href="#i-box"/></svg></div><div class="name">Clients</div></div>
+        <div class="desc">Devices on the network</div>
+        <div class="donut-wrap">
+          <svg class="donut" viewBox="0 0 80 80">
+            <circle class="bg" cx="40" cy="40" r="34" fill="none" stroke-width="9"/>
+            <circle class="fg1" cx="40" cy="40" r="34" fill="none" stroke-width="9" stroke-dasharray="142 214" stroke-dashoffset="0"/>
+            <circle class="fg2" cx="40" cy="40" r="34" fill="none" stroke-width="9" stroke-dasharray="62 214" stroke-dashoffset="-142"/>
+          </svg>
+          <div class="donut-c"><b>27</b>devices online<div style="margin-top:6px">18 WiFi · 9 wired</div></div>
+        </div>
+      </a>
+      <a class="card" style="animation-delay:.84s">
+        <div class="dot"></div>
+        <div class="top"><div class="icon"><svg><use href="#i-chart"/></svg></div><div class="name">Top Talkers</div></div>
+        <div class="desc">Bandwidth by device right now</div>
+        <div class="talkers">
+          <div class="talker"><span class="tn">durant-server</span><span class="tv">612 Mbps</span><div class="tbar"><i style="--w:92%"></i></div></div>
+          <div class="talker"><span class="tn">Living Room TV</span><span class="tv">88 Mbps</span><div class="tbar"><i style="--w:34%"></i></div></div>
+          <div class="talker"><span class="tn">Caleb's iPhone</span><span class="tv">21 Mbps</span><div class="tbar"><i style="--w:12%"></i></div></div>
+        </div>
+      </a>
+    </div>
+  </div>
+
+  <div class="group">
+    <div class="group-head" style="animation-delay:.68s"><h2>Media</h2><span class="count">4</span><div class="line"></div></div>
+    <div class="cards">
+      <a class="card" style="animation-delay:.64s" data-svc="plex"><div class="dot"></div><div class="top"><div class="icon"><svg><use href="#i-play"/></svg></div><div class="name">Plex</div></div><div class="desc">Movies, television, and streaming</div></a>
+      <a class="card" style="animation-delay:.7s" data-svc="tautulli"><div class="dot"></div><div class="top"><div class="icon cool"><svg><use href="#i-chart"/></svg></div><div class="name">Tautulli</div></div><div class="desc">Plex activity and viewing statistics</div></a>
+      <a class="card" style="animation-delay:.76s" data-svc="seerr"><div class="dot"></div><div class="top"><div class="icon"><svg><use href="#i-search"/></svg></div><div class="name">Seerr</div></div><div class="desc">Media requests and availability</div></a>
+      <a class="card" style="animation-delay:.82s"><div class="dot"></div><div class="top"><div class="icon green"><svg><use href="#i-bolt"/></svg></div><div class="name">Plex Director</div></div><div class="desc">Request bot and automation director</div></a>
+    </div>
+  </div>
+
+  <div class="group">
+    <div class="group-head" style="animation-delay:.84s"><h2>Automation</h2><span class="count">5</span><div class="line"></div></div>
+    <div class="cards">
+      <a class="card" style="animation-delay:.86s" data-svc="sonarr"><div class="dot"></div><div class="qbadge">3</div><div class="top"><div class="icon cool"><svg><use href="#i-tv"/></svg></div><div class="name">Sonarr</div></div><div class="desc">Television library automation</div></a>
+      <a class="card" style="animation-delay:.92s" data-svc="radarr"><div class="dot"></div><div class="qbadge">1</div><div class="top"><div class="icon"><svg><use href="#i-film"/></svg></div><div class="name">Radarr</div></div><div class="desc">Movie library automation</div></a>
+      <a class="card" style="animation-delay:.98s" data-svc="radarr4k"><div class="dot"></div><div class="top"><div class="icon"><svg><use href="#i-film"/></svg></div><div class="name">Radarr 4K</div></div><div class="desc">4K movie library automation</div></a>
+      <a class="card" style="animation-delay:1.04s" data-svc="prowlarr"><div class="dot"></div><div class="top"><div class="icon"><svg><use href="#i-search"/></svg></div><div class="name">Prowlarr</div></div><div class="desc">Indexer management and sync</div></a>
+      <a class="card" style="animation-delay:1.1s"><div class="dot"></div><div class="top"><div class="icon green"><svg><use href="#i-cloud"/></svg></div><div class="name">Premiumizearr</div></div><div class="desc">Premiumize download automation</div></a>
+    </div>
+  </div>
+
+  <div class="group">
+    <div class="group-head" style="animation-delay:1.12s"><h2>Downloads &amp; Files</h2><span class="count">3</span><div class="line"></div></div>
+    <div class="cards">
+      <a class="card" style="animation-delay:1.14s" data-svc="seedbox"><div class="dot"></div><div class="top"><div class="icon"><svg><use href="#i-download"/></svg></div><div class="name">Seedbox</div></div><div class="desc">EvoSeedbox torrent downloads</div></a>
+      <a class="card" style="animation-delay:1.2s" data-svc="syncthing"><div class="dot"></div><div class="top"><div class="icon cool"><svg><use href="#i-sync"/></svg></div><div class="name">Syncthing</div></div><div class="desc">Server-to-server file sync</div></a>
+      <a class="card" style="animation-delay:1.26s" data-svc="filebrowser"><div class="dot"></div><div class="top"><div class="icon cool"><svg><use href="#i-folder"/></svg></div><div class="name">File Browser</div></div><div class="desc">Browse and manage server files</div></a>
+    </div>
+  </div>
+
+  <div class="group">
+    <div class="group-head" style="animation-delay:1.28s"><h2>Monitoring</h2><span class="count">6</span><div class="line"></div></div>
+    <div class="cards">
+      <a class="card" style="animation-delay:1.3s" data-svc="grafana"><div class="dot"></div><div class="top"><div class="icon"><svg><use href="#i-chart"/></svg></div><div class="name">Grafana</div></div><div class="desc">Metrics dashboards and alerting</div></a>
+      <a class="card" style="animation-delay:1.36s" data-svc="glances"><div class="dot"></div><div class="top"><div class="icon green"><svg><use href="#i-cpu"/></svg></div><div class="name">Glances</div></div><div class="desc">Host performance and processes</div></a>
+      <a class="card" style="animation-delay:1.42s" data-svc="scrutiny">
+        <div class="dot"></div>
+        <div class="top"><div class="icon cool"><svg><use href="#i-eye"/></svg></div><div class="name">Scrutiny</div></div>
+        <div class="desc">SMART drive health tracking</div>
+        <div class="widget">
+          <div class="metric good"><div class="mv">4</div><div class="ml">Passed</div></div>
+          <div class="metric good"><div class="mv">0</div><div class="ml">Failed</div></div>
+          <div class="metric"><div class="mv">0</div><div class="ml">Unknown</div></div>
+        </div>
+      </a>
+      <a class="card" style="animation-delay:1.48s"><div class="dot"></div><div class="top"><div class="icon"><svg><use href="#i-gauge"/></svg></div><div class="name">Durant Speedtest</div></div><div class="desc">Local connection test history</div></a>
+      <a class="card" style="animation-delay:1.54s" data-svc="prometheus"><div class="dot"></div><div class="top"><div class="icon"><svg><use href="#i-bell"/></svg></div><div class="name">Prometheus</div></div><div class="desc">Internal metrics collection</div></a>
+      <a class="card" style="animation-delay:1.6s" data-svc="portainer"><div class="dot"></div><div class="top"><div class="icon cool"><svg><use href="#i-box"/></svg></div><div class="name">Portainer</div></div><div class="desc">Containers and Docker admin</div></a>
+    </div>
+  </div>
+
+  <div class="group">
+    <div class="group-head" style="animation-delay:1.62s"><h2>Background Services</h2><span class="count">8</span><div class="line"></div></div>
+    <div class="cards compact">
+      <a class="card mini" style="animation-delay:1.64s"><div class="dot"></div><div class="icon cool"><svg><use href="#i-wifi"/></svg></div><div class="name">Tailscale</div></a>
+      <a class="card mini" style="animation-delay:1.68s"><div class="dot"></div><div class="icon"><svg><use href="#i-cloud"/></svg></div><div class="name">Cloudflare</div></a>
+      <a class="card mini" style="animation-delay:1.72s"><div class="dot"></div><div class="icon green"><svg><use href="#i-sync"/></svg></div><div class="name">Watchtower</div></a>
+      <a class="card mini" data-svc="dashdot" style="animation-delay:1.76s"><div class="dot"></div><div class="icon cool"><svg><use href="#i-gauge"/></svg></div><div class="name">Dashdot</div></a>
+      <a class="card mini" style="animation-delay:1.8s"><div class="dot"></div><div class="icon"><svg><use href="#i-chart"/></svg></div><div class="name">Node Exp.</div></a>
+      <a class="card mini" style="animation-delay:1.84s"><div class="dot"></div><div class="icon green"><svg><use href="#i-cpu"/></svg></div><div class="name">NVIDIA Exp.</div></a>
+      <a class="card mini" style="animation-delay:1.88s"><div class="dot"></div><div class="icon"><svg><use href="#i-play"/></svg></div><div class="name">Plex Exp.</div></a>
+      <a class="card mini" style="animation-delay:1.92s"><div class="dot"></div><div class="icon"><svg><use href="#i-search"/></svg></div><div class="name">Radarr Srch.</div></a>
+    </div>
+  </div>
+
+  <footer>MOCKUP · PLEX DIRECTOR SERVICES TAB · LONG-PRESS A CARD</footer>
+</div>
+
+<div class="sheet-backdrop" id="sheetBg"></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true">
+  <div class="sheet-grab"></div>
+  <div class="sheet-title" id="sheetTitle">Service</div>
+  <div class="sheet-sub" id="sheetSub"></div>
+  <button class="sheet-btn" id="btnOpen"><svg><use href="#i-link"/></svg>Open</button>
+  <button class="sheet-btn" id="btnRestart"><svg><use href="#i-sync"/></svg>Restart container</button>
+  <button class="sheet-btn" id="btnLogs"><svg><use href="#i-eye"/></svg>View logs</button>
+  <button class="sheet-btn danger" id="btnCopy"><svg><use href="#i-box"/></svg>Copy link</button>
+</div>
+<div class="toast" id="toast"><div class="tdot"></div><span id="toastMsg"></span></div>
+
+<script>
+  // live clock
+  function tick() {
+    const n = new Date();
+    let h = n.getHours(), m = String(n.getMinutes()).padStart(2, '0');
+    const ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
+    document.getElementById('clock').textContent = h + ':' + m + ' ' + ap;
+    document.getElementById('date').textContent = n.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }).toUpperCase();
+  }
+  tick(); setInterval(tick, 15000);
+
+  // count-up stats
+  document.querySelectorAll('.count[data-to]').forEach(el => {
+    const to = parseFloat(el.dataset.to), dec = parseInt(el.dataset.dec || '0');
+    const t0 = performance.now(), dur = 1600;
+    (function step(t) {
+      const p = Math.min((t - t0) / dur, 1), e = 1 - Math.pow(1 - p, 3);
+      el.textContent = (to * e).toFixed(dec);
+      if (p < 1) requestAnimationFrame(step);
+    })(t0);
+  });
+
+  // subtle parallax on orbs with device tilt / mouse
+  const o1 = document.querySelector('.orb-1'), o2 = document.querySelector('.orb-2');
+  addEventListener('pointermove', e => {
+    const x = (e.clientX / innerWidth - .5), y = (e.clientY / innerHeight - .5);
+    o1.style.translate = `${x * 24}px ${y * 24}px`;
+    o2.style.translate = `${x * -18}px ${y * -18}px`;
+  }, { passive: true });
+
+  // ---- smart network detection: local LAN vs Tailscale ----
+  // Tailscale hands out 100.64.0.0/10. If WebRTC sees one, the tailnet is up.
+  const TAIL_BASE = 'http://100.91.15.98';   // durant-server tailnet IP
+  const LAN_BASE  = 'http://192.168.50.122';  // durant-server LAN IP
+  const PORTS = { plex:32400, tautulli:8181, seerr:5055, sonarr:8989, radarr:7878, radarr4k:7879, prowlarr:9696, seedbox:8080, syncthing:8384, filebrowser:8081, grafana:3000, glances:61208, scrutiny:8080, portainer:9000, prometheus:9090, dashdot:3001 };
+  let mode = 'detecting', manual = null;
+  const pill = document.getElementById('netPill');
+
+  function applyMode(m) {
+    mode = m;
+    pill.textContent = m === 'local' ? '● LOCAL NETWORK' : m === 'tail' ? '● TAILSCALE' : 'DETECTING…';
+    pill.className = 'net-pill' + (m === 'local' ? ' local' : m === 'tail' ? ' tail' : '');
+    const base = m === 'local' ? LAN_BASE : TAIL_BASE;
+    document.querySelectorAll('[data-svc]').forEach(a => {
+      const p = PORTS[a.dataset.svc];
+      if (p) a.href = base + ':' + p;
+    });
+  }
+  pill.addEventListener('click', () => {
+    manual = mode === 'local' ? 'tail' : 'local';
+    applyMode(manual);
+  });
+
+  function detectNet() {
+    try {
+      const pc = new RTCPeerConnection({ iceServers: [] });
+      const ips = new Set();
+      pc.onicecandidate = e => {
+        if (!e.candidate) {
+          pc.close();
+          let m = 'tail'; // default: tailnet URLs work anywhere Tailscale is up
+          for (const ip of ips) {
+            if (/^192\.168\.|^10\.|^172\.(1[6-9]|2\d|3[01])\./.test(ip) && !ip.startsWith('100.')) { m = 'local'; break; }
+          }
+          if (!manual) applyMode(m);
+          return;
+        }
+        const m = /([0-9]{1,3}(\.[0-9]{1,3}){3})/.exec(e.candidate.candidate);
+        if (m) ips.add(m[1]);
+      };
+      pc.createDataChannel('x');
+      pc.createOffer().then(o => pc.setLocalDescription(o));
+      setTimeout(() => { if (mode === 'detecting' && !manual) applyMode('tail'); }, 3500);
+    } catch (err) { if (!manual) applyMode('tail'); }
+  }
+  detectNet();
+
+  // ---- smart sort: most-tapped floats up within its group ----
+  const TAPS_KEY = 'svc-taps-v1';
+  let taps = {};
+  try { taps = JSON.parse(localStorage.getItem(TAPS_KEY) || '{}'); } catch (e) {}
+  // seed demo data so the effect is visible (File Browser jumps up in Downloads)
+  if (!localStorage.getItem(TAPS_KEY)) {
+    taps = { plex: 14, sonarr: 9, radarr: 6, filebrowser: 11, grafana: 4, tautulli: 3 };
+    try { localStorage.setItem(TAPS_KEY, JSON.stringify(taps)); } catch (e) {}
+  }
+  document.querySelectorAll('.cards').forEach(group => {
+    const cards = [...group.querySelectorAll('.card')];
+    cards.sort((a, b) => (taps[b.dataset.svc] || 0) - (taps[a.dataset.svc] || 0));
+    cards.forEach(c => group.appendChild(c));
+  });
+  // mark groups that were reordered
+  document.querySelectorAll('.group-head').forEach(h => {
+    const group = h.nextElementSibling;
+    if (!group) return;
+    const cards = [...group.querySelectorAll('.card')];
+    const order = cards.map(c => c.dataset.svc || '?');
+    const sorted = [...order].sort();
+    // if first card has taps and isn't the DOM-original first, it's smart-sorted
+    if ((taps[cards[0].dataset.svc] || 0) > 0) {
+      const tag = document.createElement('span');
+      tag.className = 'smart-tag'; tag.textContent = 'SMART SORT';
+      h.appendChild(tag);
+    }
+  });
+  document.querySelectorAll('.card[data-svc]').forEach(card => {
+    card.addEventListener('click', () => {
+      const k = card.dataset.svc;
+      taps[k] = (taps[k] || 0) + 1;
+      try { localStorage.setItem(TAPS_KEY, JSON.stringify(taps)); } catch (e) {}
+    });
+  });
+
+  // ---- long-press action sheet ----
+  const sheet = document.getElementById('sheet'), sheetBg = document.getElementById('sheetBg');
+  const sheetTitle = document.getElementById('sheetTitle'), sheetSub = document.getElementById('sheetSub');
+  const toast = document.getElementById('toast'), toastMsg = document.getElementById('toastMsg');
+  let pressTimer = null, sheetSvc = null, sheetName = '';
+
+  function showToast(msg) {
+    toastMsg.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(() => toast.classList.remove('show'), 2200);
+  }
+  function openSheet(card) {
+    sheetSvc = card.dataset.svc; sheetName = card.querySelector('.name').textContent;
+    sheetTitle.textContent = sheetName;
+    const base = mode === 'local' ? LAN_BASE : TAIL_BASE;
+    const p = PORTS[sheetSvc];
+    sheetSub.textContent = p ? base + ':' + p : 'No direct URL configured';
+    // reset restart button
+    const rb = document.getElementById('btnRestart');
+    rb.innerHTML = '<svg><use href="#i-sync"/></svg>Restart container';
+    sheet.classList.add('open'); sheetBg.classList.add('open');
+  }
+  function closeSheet() { sheet.classList.remove('open'); sheetBg.classList.remove('open'); }
+  sheetBg.addEventListener('click', closeSheet);
+
+  document.querySelectorAll('.card').forEach(card => {
+    let sx = 0, sy = 0;
+    const start = e => {
+      const t = e.touches ? e.touches[0] : e;
+      sx = t.clientX; sy = t.clientY;
+      pressTimer = setTimeout(() => { pressTimer = null; openSheet(card); }, 550);
+    };
+    const move = e => {
+      if (!pressTimer) return;
+      const t = e.touches ? e.touches[0] : e;
+      if (Math.hypot(t.clientX - sx, t.clientY - sy) > 12) { clearTimeout(pressTimer); pressTimer = null; }
+    };
+    const cancel = () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } };
+    card.addEventListener('touchstart', start, { passive: true });
+    card.addEventListener('touchend', cancel);
+    card.addEventListener('touchcancel', cancel);
+    card.addEventListener('touchmove', move, { passive: true });
+    card.addEventListener('mousedown', start);
+    card.addEventListener('mouseup', cancel);
+    card.addEventListener('mouseleave', cancel);
+    card.addEventListener('contextmenu', e => { e.preventDefault(); });
+  });
+
+  document.getElementById('btnOpen').addEventListener('click', () => {
+    const base = mode === 'local' ? LAN_BASE : TAIL_BASE;
+    const p = PORTS[sheetSvc];
+    closeSheet();
+    if (p) location.href = base + ':' + p;
+  });
+  document.getElementById('btnRestart').addEventListener('click', function () {
+    this.innerHTML = '<div class="spin"></div>Restarting…';
+    setTimeout(() => {
+      this.innerHTML = '<svg><use href="#i-sync"/></svg>Restart container<span class="ok">✓ Done</span>';
+      showToast(sheetName + ' restarted');
+      setTimeout(closeSheet, 700);
+    }, 1600);
+  });
+  document.getElementById('btnLogs').addEventListener('click', () => {
+    closeSheet(); showToast('Logs for ' + sheetName + ' — in the real build');
+  });
+  document.getElementById('btnCopy').addEventListener('click', () => {
+    const base = mode === 'local' ? LAN_BASE : TAIL_BASE;
+    const p = PORTS[sheetSvc];
+    if (p && navigator.clipboard) navigator.clipboard.writeText(base + ':' + p).catch(() => {});
+    closeSheet(); showToast('Link copied');
+  });
+
+  // ---- live throughput chart (mock data) ----
+  (function () {
+    const cv = document.getElementById('tputCanvas');
+    if (!cv) return;
+    const ctx = cv.getContext('2d');
+    const N = 60, down = [], up = [];
+    let d = 700, u = 35, dT = 700, uT = 35;
+    for (let i = 0; i < N; i++) { down.push(d); up.push(u); }
+    const elD = document.getElementById('tputDown'), elU = document.getElementById('tputUp');
+    function size() {
+      const r = cv.getBoundingClientRect(), pr = devicePixelRatio || 1;
+      cv.width = r.width * pr; cv.height = r.height * pr;
+      ctx.setTransform(pr, 0, 0, pr, 0, 0);
+    }
+    size(); addEventListener('resize', size);
+    function tick() {
+      // smooth drift: target wanders slowly, value eases toward it
+      dT += (Math.random() - .5) * 70; dT = Math.max(250, Math.min(920, dT));
+      uT += (Math.random() - .5) * 10; uT = Math.max(12, Math.min(55, uT));
+      d += (dT - d) * .22; u += (uT - u) * .22;
+      down.push(d); down.shift(); up.push(u); up.shift();
+      const W = cv.getBoundingClientRect().width, H = cv.getBoundingClientRect().height, max = 1000;
+      ctx.clearRect(0, 0, W, H);
+      const line = (arr, color, fill) => {
+        ctx.beginPath();
+        arr.forEach((v, i) => {
+          const x = i / (N - 1) * W, y = H - (v / max) * (H - 8) - 4;
+          i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+        });
+        ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+        if (fill) {
+          ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
+          const g = ctx.createLinearGradient(0, 0, 0, H);
+          g.addColorStop(0, fill); g.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = g; ctx.fill();
+        }
+      };
+      line(down, '#e97a4f', 'rgba(233,122,79,.22)');
+      line(up, '#38bdf8', 'rgba(56,189,248,.14)');
+      if (elD) elD.textContent = Math.round(d) + ' Mbps';
+      if (elU) elU.textContent = Math.round(u) + ' Mbps';
+    }
+    setInterval(tick, 1000); tick();
+  })();
+</script>
+</body>
+</html>
