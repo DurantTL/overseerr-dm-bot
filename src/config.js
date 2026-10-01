@@ -135,6 +135,32 @@ const CONFIG = (() => {
   CLEANUPARR_URL: (process.env.CLEANUPARR_URL || '').replace(/\/$/, ''),
   SYNCTHING_URL: (process.env.SYNCTHING_URL || '').replace(/\/$/, ''),
   TAUTULLI_URL: (process.env.TAUTULLI_URL || '').replace(/\/$/, ''),
+  // ---- Services tab: optional service URLs, smart-network hosts, and adapters ----
+  // Standalone web UIs probed for liveness on the Services tab. Empty = card hidden.
+  FILEBROWSER_URL: (process.env.FILEBROWSER_URL || '').replace(/\/$/, ''),
+  GRAFANA_URL: (process.env.GRAFANA_URL || '').replace(/\/$/, ''),
+  GLANCES_URL: (process.env.GLANCES_URL || '').replace(/\/$/, ''),
+  SCRUTINY_URL: (process.env.SCRUTINY_URL || '').replace(/\/$/, ''),
+  PORTAINER_URL: (process.env.PORTAINER_URL || '').replace(/\/$/, ''),
+  // Smart network: the Services tab detects LAN vs Tailscale client-side and
+  // builds service URLs from the matching host + each service's port.
+  DASHBOARD_LAN_HOST: process.env.DASHBOARD_LAN_HOST || '192.168.50.122',
+  DASHBOARD_TAIL_HOST: process.env.DASHBOARD_TAIL_HOST || '100.91.15.98',
+  // NUT (UPS) adapter: host running upsd, UPS name as in ups.conf.
+  NUT_HOST: process.env.NUT_HOST || '',
+  NUT_PORT: process.env.NUT_PORT || '3493',
+  NUT_UPS_NAME: process.env.NUT_UPS_NAME || '',
+  NUT_USERNAME: process.env.NUT_USERNAME || '',
+  NUT_PASSWORD: process.env.NUT_PASSWORD || '',
+  // ZFS pool health JSON (e.g. http://host.docker.internal:9911/health).
+  ZFS_HEALTH_URL: (process.env.ZFS_HEALTH_URL || '').replace(/\/$/, ''),
+  // Speedtest tracker for the latest result.
+  SPEEDTEST_URL: (process.env.SPEEDTEST_URL || '').replace(/\/$/, ''),
+  // Container restart for long-press actions: Docker socket path ('' disables),
+  // or Portainer API as fallback.
+  DOCKER_SOCKET: process.env.DOCKER_SOCKET !== undefined ? process.env.DOCKER_SOCKET : '/var/run/docker.sock',
+  PORTAINER_API_KEY: process.env.PORTAINER_API_KEY || '',
+  PORTAINER_ENDPOINT_ID: process.env.PORTAINER_ENDPOINT_ID || '',
   TAUTULLI_API_KEY: process.env.TAUTULLI_API_KEY || '',
   PLAYBACK_CHECK_MINUTES: Number.parseInt(process.env.PLAYBACK_CHECK_MINUTES || '5', 10),
   TRANSCODE_ALERT_COOLDOWN_MINUTES: Number.parseInt(process.env.TRANSCODE_ALERT_COOLDOWN_MINUTES || '60', 10),
