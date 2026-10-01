@@ -55,6 +55,7 @@ function registerDashboardReadRoutes(app, deps) {
     renderAutomationRegistry = () => '',
     renderAgentApiTokens = () => '',
     renderDirectorPanel = () => '',
+    renderServicesPanel = () => '',
     renderHealthBadges,
     renderItemList,
     renderPage,
@@ -405,7 +406,7 @@ function registerDashboardReadRoutes(app, deps) {
       return { state, title: healthLabel(k), sub, right: String(value) };
     });
 
-    const nav = [['director', 'Director'], ['overview', 'Overview'], ['operations', 'Operations'], ['automation', 'Automation'], ['edge', 'Edge'], ['people', 'People'], ['logs', 'Logs']];
+    const nav = [['director', 'Director'], ['services', 'Services'], ['overview', 'Overview'], ['operations', 'Operations'], ['automation', 'Automation'], ['edge', 'Edge'], ['people', 'People'], ['logs', 'Logs']];
     const settingsGroups = runtimeSettings.describeRuntimeSettings({ config: CONFIG, store: settingsStore });
     const overriddenCount = settingsGroups.reduce((n, g) => n + g.settings.filter(x => x.overridden).length, 0);
 
@@ -423,6 +424,10 @@ function registerDashboardReadRoutes(app, deps) {
           disks: disks === null ? null : diskItems,
           totalFreeLabel: (disks === null || (disks || []).length === 0) ? null : fmtSpace(disks.reduce((n, d) => n + (d.freeSpace || 0), 0)),
         })}
+      </section>
+
+      <section class="panel" data-panel="services">
+        ${renderServicesPanel()}
       </section>
 
       <section class="panel" data-panel="overview">
@@ -1176,6 +1181,42 @@ function registerDashboardReadRoutes(app, deps) {
     legacyHeaders: false,
     handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many dashboard requests. Wait a moment and try again.' }),
   }), dashboardAuth, async (_req, res) => res.json(await gatherHealth()));
+  // Services tab: one JSON payload backing the card board — service states,
+  // UPS/ZFS/Speedtest adapters, Plex now-playing, and smart-network hosts.
+  // Cached per source so a 30s client poll doesn't multiply upstream traffic.
+  const { gatherServicesBoard } = require('../services-board');
+  const { restartCapable } = require('../docker-control');
+  app.get('/admin/api/services', rateLimit({
+    windowMs: 15 * 60000,
+    limit: 300,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many dashboard requests. Wait a moment and try again.' }),
+  }), dashboardAuth, async (_req, res) => {
+    const now = Date.now();
+    try {
+      const [healthEntry, sessionsEntry, queueEntry] = await Promise.all([
+        dashboardCache.get('health', 15000, gatherHealth).catch(() => ({ value: null, fetchedAt: now, stale: true })),
+        tautulliConfigured()
+          ? dashboardCache.get('tautulli-activity', 10000, () => tautulliApi('get_activity').then(d => d?.sessions || [])).catch(() => ({ value: null, fetchedAt: now, stale: true }))
+          : Promise.resolve({ value: null, fetchedAt: now, stale: false }),
+        arrSources().length
+          ? dashboardCache.get('arr-queues', 15000, fetchArrQueues).catch(() => ({ value: [], fetchedAt: now, stale: true }))
+          : Promise.resolve({ value: [], fetchedAt: now, stale: false }),
+      ]);
+      const board = await gatherServicesBoard({
+        config: CONFIG,
+        health: healthEntry.value,
+        queues: queueEntry.value || [],
+        sessions: sessionsEntry.value || [],
+        canRestart: !!restartCapable(CONFIG),
+      });
+      res.json({ ok: true, ...board });
+    } catch (_err) {
+      res.status(500).json({ ok: false, error: 'Services board unavailable.' });
+    }
+  });
   app.get('/admin/doctor', rateLimit({
     windowMs: 15 * 60000,
     limit: 300,

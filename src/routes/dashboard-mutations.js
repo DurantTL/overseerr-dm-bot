@@ -726,6 +726,38 @@ function registerDashboardMutationRoutes(app, deps) {
     return res.json({ ok: true, message: removed ? `Member removed from "${name}".` : `That user was not a member of "${name}".` });
   });
 
+  // Services tab: restart a container from the long-press action sheet.
+  // Allowlisted to container names the services board advertises; audited.
+  const { SERVICES } = require('../services-board');
+  const { restartContainer, restartCapable } = require('../docker-control');
+  const RESTARTABLE = new Set(SERVICES.filter(s => s.container).map(s => s.container));
+  app.post('/admin/api/services/restart', rateLimit({
+    windowMs: 60000,
+    limit: 10,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many restart requests. Wait a moment and try again.' }),
+  }), dashboardAuth, discordReadyGuard, async (req, res) => {
+    const container = String(req.body?.container || '').trim();
+    if (!container || !RESTARTABLE.has(container)) {
+      audit('dashboard_service_restart', { ...dashboardActor(req), ok: false, container: container || null, reason: 'not_allowlisted' });
+      return res.status(400).json({ ok: false, error: 'Unknown or non-restartable service.' });
+    }
+    if (!restartCapable(CONFIG)) {
+      audit('dashboard_service_restart', { ...dashboardActor(req), ok: false, container, reason: 'not_configured' });
+      return res.status(400).json({ ok: false, error: 'Container restart is not configured.' });
+    }
+    try {
+      await restartContainer(CONFIG, container);
+      audit('dashboard_service_restart', { ...dashboardActor(req), ok: true, container });
+      return res.json({ ok: true, message: `${container} restarting.` });
+    } catch (err) {
+      audit('dashboard_service_restart', { ...dashboardActor(req), ok: false, container, reason: String(err.message || err).slice(0, 120) });
+      return res.status(500).json({ ok: false, error: dashboardActionError(err) });
+    }
+  });
+
   app.use(router);
 }
 
