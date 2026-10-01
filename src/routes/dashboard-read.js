@@ -1212,7 +1212,7 @@ function registerDashboardReadRoutes(app, deps) {
         sessions: sessionsEntry.value || [],
         canRestart: !!restartCapable(CONFIG),
       });
-      res.json({ ok: true, ...board });
+      res.json({ ok: true, ageSeconds: Math.max(0, Math.round((Date.now() - now) / 1000)), ...board });
     } catch (_err) {
       res.status(500).json({ ok: false, error: 'Services board unavailable.' });
     }

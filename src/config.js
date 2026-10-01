@@ -153,9 +153,9 @@ const CONFIG = (() => {
   NUT_USERNAME: process.env.NUT_USERNAME || '',
   NUT_PASSWORD: process.env.NUT_PASSWORD || '',
   // ZFS pool health JSON (e.g. http://host.docker.internal:9911/health).
-  ZFS_HEALTH_URL: (process.env.ZFS_HEALTH_URL || '').replace(/\/$/, ''),
+  ZFS_HEALTH_URL: (process.env.ZFS_HEALTH_URL || 'http://host.docker.internal:9911/health').replace(/\/$/, ''),
   // Speedtest tracker for the latest result.
-  SPEEDTEST_URL: (process.env.SPEEDTEST_URL || '').replace(/\/$/, ''),
+  SPEEDTEST_URL: (process.env.SPEEDTEST_URL || 'http://speedtest-tracker/api/speedtest/latest').replace(/\/$/, ''),
   // Container restart for long-press actions: Docker socket path ('' disables),
   // or Portainer API as fallback.
   DOCKER_SOCKET: process.env.DOCKER_SOCKET !== undefined ? process.env.DOCKER_SOCKET : '/var/run/docker.sock',

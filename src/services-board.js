@@ -22,34 +22,35 @@ const GROUPS = Object.freeze([
 // (into gatherHealth()), config URL key (into CONFIG), container name for
 // restart, and icon id for the client.
 const SERVICES = Object.freeze([
-  // System Health — special cards backed by dedicated adapters, not URLs.
-  { key: 'ups', name: 'UPS Power', group: 'System Health', special: 'ups', icon: 'bolt' },
-  { key: 'zfs', name: 'ZFS Pool', group: 'System Health', special: 'zfs', icon: 'disk' },
-  { key: 'speedtest', name: 'Speedtest', group: 'System Health', special: 'speedtest', icon: 'gauge' },
   // Media
-  { key: 'plex', name: 'Plex', group: 'Media', healthKey: 'plex', port: 32400, path: '/web', icon: 'play' },
-  { key: 'tautulli', name: 'Tautulli', group: 'Media', urlKey: 'TAUTULLI_URL', icon: 'chart', container: 'tautulli' },
-  { key: 'seerr', name: 'Seerr', group: 'Media', healthKey: 'overseerr', urlKey: 'OVERSEERR_URL', icon: 'search', container: 'seerr' },
+  { key: 'plex', name: 'Plex', desc: 'Movies, television, and streaming', icon: 'play', group: 'Media', urlKey: 'PLEX_URL', healthKey: 'plex', container: 'plex', defaultPort: 32400 },
+  { key: 'tautulli', name: 'Tautulli', desc: 'Plex activity and viewing statistics', icon: 'chart', group: 'Media', urlKey: 'TAUTULLI_URL', healthKey: 'tautulli', defaultPort: 8181 },
+  { key: 'seerr', name: 'Seerr', desc: 'Media requests and availability', icon: 'search', group: 'Media', urlKey: 'OVERSEERR_URL', healthKey: 'overseerr', defaultPort: 5055 },
+  { key: 'director', name: 'Plex Director', desc: 'Request bot and automation director', icon: 'bolt', group: 'Media', self: true, healthKey: null },
+
   // Automation
-  { key: 'sonarr', name: 'Sonarr', group: 'Automation', healthKey: 'sonarr', urlKey: 'SONARR_URL', icon: 'tv', container: 'sonarr', queue: 'sonarr' },
-  { key: 'radarr', name: 'Radarr', group: 'Automation', healthKey: 'radarr', urlKey: 'RADARR_URL', icon: 'film', container: 'radarr', queue: 'radarr' },
-  { key: 'radarr4k', name: 'Radarr 4K', group: 'Automation', healthKey: 'radarr4k', urlKey: 'RADARR_4K_URL', icon: 'film', container: 'radarr-4k', queue: 'radarr-4k' },
-  { key: 'prowlarr', name: 'Prowlarr', group: 'Automation', healthKey: 'prowlarr', urlKey: 'PROWLARR_URL', icon: 'layers', container: 'prowlarr' },
+  { key: 'sonarr', name: 'Sonarr', desc: 'Television library automation', icon: 'tv', group: 'Automation', urlKey: 'SONARR_URL', healthKey: 'sonarr', container: 'sonarr', defaultPort: 8989, queueLabel: 'sonarr' },
+  { key: 'radarr', name: 'Radarr', desc: 'Movie library automation', icon: 'film', group: 'Automation', urlKey: 'RADARR_URL', healthKey: 'radarr', container: 'radarr', defaultPort: 7878, queueLabel: 'radarr' },
+  { key: 'radarr4k', name: 'Radarr 4K', desc: '4K movie library automation', icon: 'film', group: 'Automation', urlKey: 'RADARR_4K_URL', healthKey: 'radarr4k', container: 'radarr-4k', defaultPort: 7879, queueLabel: 'radarr-4k' },
+  { key: 'prowlarr', name: 'Prowlarr', desc: 'Indexer management and sync', icon: 'search', group: 'Automation', urlKey: 'PROWLARR_URL', healthKey: 'prowlarr', container: 'prowlarr', defaultPort: 9696 },
+
   // Downloads & Files
-  { key: 'rtorrent', name: 'rTorrent', group: 'Downloads & Files', healthKey: 'rtorrent', urlKey: 'RTORRENT_URL', icon: 'download', container: 'rtorrent' },
-  { key: 'premiumize', name: 'Premiumize', group: 'Downloads & Files', healthKey: 'premiumize', icon: 'cloud' },
-  { key: 'syncthing', name: 'Syncthing', group: 'Downloads & Files', healthKey: 'syncthing', urlKey: 'SYNCTHING_URL', icon: 'sync', container: 'syncthing' },
-  { key: 'filebrowser', name: 'File Browser', group: 'Downloads & Files', urlKey: 'FILEBROWSER_URL', port: 8081, icon: 'folder', container: 'filebrowser' },
+  { key: 'rtorrent', name: 'rTorrent', desc: 'Torrent client and downloads', icon: 'download', group: 'Downloads & Files', urlKey: 'RTORRENT_URL', healthKey: 'rtorrent', defaultPort: 8080 },
+  { key: 'premiumize', name: 'Premiumize', desc: 'Cloud downloads and debrid', icon: 'cloud', group: 'Downloads & Files', external: 'https://www.premiumize.me', healthKey: 'premiumize' },
+  { key: 'syncthing', name: 'Syncthing', desc: 'Server-to-server file sync', icon: 'sync', group: 'Downloads & Files', urlKey: 'SYNCTHING_URL', healthKey: 'syncthing', defaultPort: 8384 },
+  { key: 'filebrowser', name: 'File Browser', desc: 'Browse and manage server files', icon: 'folder', group: 'Downloads & Files', urlKey: 'FILEBROWSER_URL', healthKey: 'filebrowser', defaultPort: 8081 },
+
   // Monitoring
-  { key: 'grafana', name: 'Grafana', group: 'Monitoring', urlKey: 'GRAFANA_URL', port: 3000, icon: 'chart', container: 'grafana' },
-  { key: 'glances', name: 'Glances', group: 'Monitoring', urlKey: 'GLANCES_URL', port: 61208, icon: 'cpu', container: 'glances' },
-  { key: 'scrutiny', name: 'Scrutiny', group: 'Monitoring', urlKey: 'SCRUTINY_URL', port: 8080, path: '/web', icon: 'disk', container: 'scrutiny' },
-  { key: 'portainer', name: 'Portainer', group: 'Monitoring', urlKey: 'PORTAINER_URL', port: 9000, icon: 'box', container: 'portainer' },
-  // Background Services
-  { key: 'huntarr', name: 'Huntarr', group: 'Background Services', healthKey: 'huntarr', urlKey: 'HUNTARR_URL', icon: 'search', container: 'huntarr' },
-  { key: 'recyclarr', name: 'Recyclarr', group: 'Background Services', healthKey: 'recyclarr', urlKey: 'RECYCLARR_URL', icon: 'sync', container: 'recyclarr' },
-  { key: 'cleanuparr', name: 'Cleanuparr', group: 'Background Services', healthKey: 'cleanuparr', urlKey: 'CLEANUPARR_URL', icon: 'trash', container: 'cleanuparr' },
-  { key: 'byparr', name: 'Byparr', group: 'Background Services', healthKey: 'byparr', urlKey: 'BYPARR_URL', icon: 'shield', container: 'byparr' },
+  { key: 'grafana', name: 'Grafana', desc: 'Metrics dashboards and alerting', icon: 'chart', group: 'Monitoring', urlKey: 'GRAFANA_URL', healthKey: 'grafana', defaultPort: 3000 },
+  { key: 'glances', name: 'Glances', desc: 'Host performance and processes', icon: 'cpu', group: 'Monitoring', urlKey: 'GLANCES_URL', healthKey: 'glances', defaultPort: 61208 },
+  { key: 'scrutiny', name: 'Scrutiny', desc: 'SMART drive health tracking', icon: 'shield', group: 'Monitoring', urlKey: 'SCRUTINY_URL', healthKey: 'scrutiny', defaultPort: 8080 },
+  { key: 'portainer', name: 'Portainer', desc: 'Containers and Docker admin', icon: 'box', group: 'Monitoring', urlKey: 'PORTAINER_URL', healthKey: 'portainer', defaultPort: 9000 },
+
+  // Background Services (compact mini cards)
+  { key: 'huntarr', name: 'Huntarr', desc: 'Missing and upgrade hunting', icon: 'search', group: 'Background Services', urlKey: 'HUNTARR_URL', healthKey: 'huntarr', compact: true, defaultPort: 9705 },
+  { key: 'recyclarr', name: 'Recyclarr', desc: 'Quality profile sync', icon: 'sync', group: 'Background Services', urlKey: 'RECYCLARR_URL', healthKey: 'recyclarr', compact: true },
+  { key: 'cleanuparr', name: 'Cleanuparr', desc: 'Stalled download cleanup', icon: 'trash', group: 'Background Services', urlKey: 'CLEANUPARR_URL', healthKey: 'cleanuparr', compact: true, defaultPort: 11011 },
+  { key: 'byparr', name: 'Byparr', desc: 'Captcha solving for indexers', icon: 'shield', group: 'Background Services', urlKey: 'BYPARR_URL', healthKey: 'byparr', compact: true, defaultPort: 8191 },
 ]);
 
 function portFromUrl(url, fallback) {
@@ -75,7 +76,7 @@ async function probeUrl(url, timeoutMs = 4000) {
 async function fetchSpeedtest(config) {
   if (!config.SPEEDTEST_URL) return null;
   try {
-    const res = await axios.get(`${config.SPEEDTEST_URL.replace(/\/$/, '')}/api/speedtest/latest`, { timeout: 6000 });
+    const res = await axios.get(config.SPEEDTEST_URL, { timeout: 6000 });
     const d = res.data?.data || res.data || {};
     return {
       downloadMbps: Number(d.download) || null,
@@ -124,9 +125,6 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
   for (const svc of SERVICES) {
     if (svc.special) continue; // handled as dedicated cards below
     const url = svc.urlKey ? config[svc.urlKey] : null;
-    // Without a configured URL and without a health key, there is nothing to
-    // show — skip the card entirely (no dead cards).
-    if (!url && !svc.healthKey) continue;
 
     let state = 'skip';
     if (svc.healthKey && health) {
@@ -138,21 +136,30 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
     // A configured URL that fails its health check but answers HTTP is still
     // reachable — prefer the probe for URL-less health misses.
     if (state === 'skip' && url) state = await probeUrl(url);
+    // External links and the dashboard itself are always "up" from here.
+    if ((svc.external || svc.self) && state === 'skip') state = 'ok';
+
+    // No dead cards: without a URL (or external/self link) and without a
+    // down-state worth flagging, there is nothing actionable to show.
+    if (!url && !svc.external && !svc.self && state !== 'down') continue;
 
     const entry = {
       key: svc.key,
       name: svc.name,
+      desc: svc.desc || '',
       group: svc.group,
       icon: svc.icon,
       state,
       port: portFromUrl(url, svc.port),
       path: svc.path || '',
+      external: svc.external || null,
+      self: !!svc.self,
+      compact: !!svc.compact,
       canRestart: !!(canRestart && svc.container),
       container: svc.container || null,
     };
-    if (svc.queue && queueCounts[svc.queue]) {
-      entry.queue = queueCounts[svc.queue];
-      entry.detail = `${queueCounts[svc.queue]} downloading`;
+    if (svc.queueLabel && queueCounts[svc.queueLabel]) {
+      entry.queue = queueCounts[svc.queueLabel];
     }
     if (state === 'down' && health?.errors?.[svc.healthKey]) entry.detail = String(health.errors[svc.healthKey]).slice(0, 120);
     services.push(entry);

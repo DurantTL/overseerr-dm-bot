@@ -57,6 +57,7 @@ test('services-board: portFromUrl extracts ports', () => {
 
 test('services-board: gatherServicesBoard maps health and skips unconfigured', async () => {
   const config = {
+    PLEX_URL: 'http://plex:32400',
     OVERSEERR_URL: 'http://seerr:5055',
     SONARR_URL: 'http://sonarr:8989',
     DASHBOARD_LAN_HOST: '192.168.50.122',
@@ -73,6 +74,10 @@ test('services-board: gatherServicesBoard maps health and skips unconfigured', a
   // Not configured and no health key -> no card (no dead cards).
   assert.ok(!byKey.grafana, 'grafana should be hidden without GRAFANA_URL');
   assert.ok(!byKey.filebrowser, 'filebrowser should be hidden without FILEBROWSER_URL');
+  // Premiumize links out even without a self-hosted URL; the Director links to itself.
+  assert.ok(byKey.premiumize, 'premiumize should show via external link');
+  assert.ok(byKey.director, 'director should show via self link');
+  assert.strictEqual(byKey.premiumize.external, 'https://www.premiumize.me');
   // Ports come from configured URLs.
   assert.strictEqual(byKey.seerr.port, 5055);
   assert.strictEqual(byKey.sonarr.port, 8989);
