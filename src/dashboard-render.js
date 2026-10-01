@@ -498,6 +498,30 @@ function renderServicesPanel() {
   opacity: 0; pointer-events: none; transition: all .3s ease; z-index: 70; }
 .svc-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .svc-sort-tag { font-size: 9px; font-weight: 700; letter-spacing: .1em; color: var(--svc-accent); margin-left: 6px; }
+.svc-banner { display: flex; align-items: center; gap: 12px; background: var(--svc-glass); border: 1px solid var(--svc-line);
+  border-radius: 16px; padding: 13px 16px; margin-bottom: 14px; }
+.svc-banner .pulse-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--svc-green); flex: none;
+  box-shadow: 0 0 12px rgba(52,211,153,.9); animation: svcPulse 2.2s ease-in-out infinite; }
+.svc-banner.warn .pulse-dot { background: var(--svc-amber); box-shadow: 0 0 12px rgba(251,191,36,.9); }
+.svc-banner .t { font-weight: 700; font-size: 14px; }
+.svc-banner .s { font-size: 12px; color: var(--svc-ink2); margin-top: 2px; }
+.svc-banner .pill { margin-left: auto; flex: none; font-size: 10px; font-weight: 800; letter-spacing: .12em;
+  color: var(--svc-green); background: rgba(52,211,153,.1); border: 1px solid rgba(52,211,153,.3);
+  padding: 5px 12px; border-radius: 999px; }
+.svc-banner.warn .pill { color: var(--svc-amber); background: rgba(251,191,36,.1); border-color: rgba(251,191,36,.3); }
+.svc-hero { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 22px; }
+.svc-hero .stat { background: var(--svc-glass); border: 1px solid var(--svc-line); border-radius: 14px; padding: 12px 8px; text-align: center; }
+.svc-hero .stat .v { font-size: 20px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.svc-hero .stat .v small { font-size: 11px; font-weight: 500; color: var(--svc-ink2); }
+.svc-hero .stat .l { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--svc-ink3); margin-top: 4px; }
+.svc-hero .stat.hot .v { color: var(--svc-accent); }
+.svc-card.mini { display: flex; align-items: center; gap: 10px; padding: 12px 14px; }
+.svc-card.mini .svc-dot { top: 10px; right: 10px; }
+.svc-card.mini .svc-icon { width: 30px; height: 30px; font-size: 15px; border-radius: 9px; }
+.svc-card.mini .svc-name { font-size: 13px; }
+.svc-qbadge { position: absolute; top: 10px; left: 12px; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px;
+  background: rgba(233,122,79,.15); border: 1px solid rgba(233,122,79,.35); color: var(--svc-accent);
+  font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) {
   .svc-card, .svc-dot, .svc-np .eq i { animation: none !important; transition: none !important; }
   .svc-sheet .panel { animation: none; }
@@ -567,6 +591,8 @@ function renderServicesPanel() {
   });
 
   function svcUrl(s) {
+    if (s.external) return s.external; // direct link, no network rewriting
+    if (s.self) return './'; // the dashboard itself
     if (!s.port) return null;
     var host = mode === 'lan' ? LAN : TAIL;
     return 'http://' + host + ':' + s.port + (s.path || '');
@@ -590,14 +616,20 @@ function renderServicesPanel() {
   function cardHtml(s) {
     var url = svcUrl(s);
     var dot = s.state === 'down' ? 'down' : s.state === 'skip' ? 'skip' : '';
-    var badge = s.queue ? '<span class="svc-badge">' + s.queue + ' downloading</span>' : '';
-    var desc = s.detail ? esc(s.detail) : (url ? '' : 'not configured');
     var smart = (taps[s.key] || 0) >= 3 ? '<span class="svc-sort-tag">SMART SORT</span>' : '';
-    return '<a class="svc-card" data-key="' + esc(s.key) + '"' + (url ? ' data-url="' + esc(url) + '"' : '') +
-      ' data-name="' + esc(s.name) + '" data-container="' + esc(s.container || '') + '" data-canrestart="' + (s.canRestart ? '1' : '') + '">' +
+    var attrs = ' data-key="' + esc(s.key) + '"' + (url ? ' data-url="' + esc(url) + '"' : '') +
+      ' data-name="' + esc(s.name) + '" data-container="' + esc(s.container || '') + '" data-canrestart="' + (s.canRestart ? '1' : '') + '"';
+    if (s.compact) {
+      // Mini card: icon + name only, like the mockup's background-services row.
+      return '<a class="svc-card mini"' + attrs + '><div class="svc-dot ' + dot + '"></div>' +
+        '<div class="svc-icon">' + iconFor(s.icon) + '</div><div class="svc-name">' + esc(s.name) + '</div></a>';
+    }
+    var qbadge = s.queue ? '<div class="svc-qbadge">' + s.queue + '</div>' : '';
+    var desc = s.detail ? esc(s.detail) : esc(s.desc || '');
+    return '<a class="svc-card"' + attrs + '>' + qbadge +
       '<div class="svc-dot ' + dot + '"></div>' +
       '<div class="svc-top"><div class="svc-icon">' + iconFor(s.icon) + '</div><div class="svc-name">' + esc(s.name) + smart + '</div></div>' +
-      '<div class="svc-desc">' + desc + '</div>' + badge + '</a>';
+      (desc ? '<div class="svc-desc">' + desc + '</div>' : '') + '</a>';
   }
 
   function specialCards(d) {
@@ -649,6 +681,25 @@ function renderServicesPanel() {
       byGroup[g].sort(function (a, b) { return (taps[b.key] || 0) - (taps[a.key] || 0); });
     });
     var html = '';
+    // Status banner + hero — real data only.
+    var all = d.services || [];
+    var up = all.filter(function (x) { return x.state !== 'down'; }).length;
+    var downs = all.filter(function (x) { return x.state === 'down'; });
+    var upsNote = d.ups ? (d.ups.onBattery ? 'UPS on battery' : 'UPS on mains') : '';
+    var bannerSub = [up + '/' + all.length + ' services up', upsNote, 'last check ' + (d.ageSeconds != null ? d.ageSeconds + 's' : 'just now') + ' ago']
+      .filter(Boolean).join(' · ');
+    var bannerTitle = downs.length ? downs.length + ' service' + (downs.length > 1 ? 's' : '') + ' need attention'
+      : 'All systems operational';
+    html += '<div class="svc-banner' + (downs.length ? ' warn' : '') + '"><div class="pulse-dot"></div>' +
+      '<div><div class="t">' + esc(bannerTitle) + '</div><div class="s">' + esc(bannerSub) + '</div></div>' +
+      '<div class="pill">' + (downs.length ? 'DEGRADED' : 'ONLINE') + '</div></div>';
+    var sp = d.speedtest || {};
+    html += '<div class="svc-hero">' +
+      '<div class="stat"><div class="v">' + up + '<small>/' + all.length + '</small></div><div class="l">Services Up</div></div>' +
+      '<div class="stat hot"><div class="v">' + (sp.downloadMbps != null ? Math.round(sp.downloadMbps * 10) / 10 : '—') + '<small> Mbps</small></div><div class="l">Download</div></div>' +
+      '<div class="stat"><div class="v">' + (sp.uploadMbps != null ? Math.round(sp.uploadMbps * 10) / 10 : '—') + '<small> Mbps</small></div><div class="l">Upload</div></div>' +
+      '<div class="stat"><div class="v">' + (sp.pingMs != null ? Number(sp.pingMs).toFixed(1) : '—') + '<small> ms</small></div><div class="l">Ping</div></div>' +
+      '</div>';
     (d.groups || []).forEach(function (g) {
       var items = byGroup[g] || [];
       var special = g === 'System Health' ? specialCards(d) : '';
