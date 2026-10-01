@@ -213,7 +213,7 @@ test('dashboard-render: tier install command is complete and shell quoted', () =
     mountMarker: '.mounted',
   });
   assert.match(command, /export TIER_AGENT_TOKEN='secret-token'/);
-  assert.strictEqual(command.match(/secret-token/g).length, 1);
+  assert.strictEqual(command.match(/secret-token/g).length, 2, 'token appears in both the export and the sudo env line');
   assert.match(command, /SYNCTHING_API_KEY='api-key'/);
   assert.match(command, /TIER_FOLDERS=/);
   assert.doesNotMatch(command, /TIER_FOLDER_ROOT|SYNCTHING_FOLDER_ID/);
@@ -370,4 +370,18 @@ test('dashboard-render: renderDirectorPanel handles no health data', () => {
   assert.match(html, /No health data yet/);
   assert.match(html, /No disks reported/);
   assert.match(html, /d-status warn">UNKNOWN/);
+});
+
+// A degraded service must not disappear into the unconfigured count.
+test('dashboard-render: Director distinguishes warnings from unconfigured services', () => {
+  const html = renderDirectorPanel({
+    overall: 'ok',
+    services: [{ state: 'warn', title: 'Backup', right: 'overdue' }, { state: 'skip', title: 'Optional service' }],
+    disks: [],
+    totalFreeLabel: null,
+  });
+  assert.match(html, /<strong>1<\/strong><span>Warnings<\/span>/);
+  assert.match(html, /<strong>1<\/strong><span>Not configured<\/span>/);
+  assert.match(html, /d-status warn">1 warning/);
+  assert.doesNotMatch(html, /All systems go/);
 });

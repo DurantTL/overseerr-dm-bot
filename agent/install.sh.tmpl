@@ -135,7 +135,7 @@ try {
   process.exit(1);
 }
 process.stdout.write(`ReadOnlyPaths=${JSON.stringify(root)}\n`);
-') || die "TIER_FOLDER_ROOT is not a usable directory: $TIER_FOLDER_ROOT"
+') || die "TIER_FOLDER_ROOT is not a usable directory: ${TIER_FOLDER_ROOT:-}"
 else
 FOLDER_UNIT_LINES=$(node -e '
 try {
@@ -207,10 +207,13 @@ SYNCTHING_URL=${SYNCTHING_URL:-http://127.0.0.1:8384}
 SYNCTHING_API_KEY=${SYNCTHING_API_KEY:-}
 ENVEOF
 [ -z "${TIER_FOLDERS:-}" ] || node -e 'process.stdout.write(`TIER_FOLDERS=${JSON.stringify(process.env.TIER_FOLDERS)}\n`)' >> "$ENV_FILE.new"
-[ -n "${TIER_FOLDERS:-}" ] || {
-  printf 'TIER_FOLDER_ROOT=%s\n' "$TIER_FOLDER_ROOT" >> "$ENV_FILE.new"
-  printf 'SYNCTHING_FOLDER_ID=%s\n' "$SYNCTHING_FOLDER_ID" >> "$ENV_FILE.new"
-}
+if [ "${TIER_MONITOR_ONLY:-0}" = "1" ]; then
+  # Monitor-only: the watched path only — no Syncthing on these boxes.
+  printf 'TIER_FOLDER_ROOT=%s\n' "${TIER_FOLDER_ROOT:-}" >> "$ENV_FILE.new"
+elif [ -z "${TIER_FOLDERS:-}" ]; then
+  printf 'TIER_FOLDER_ROOT=%s\n' "${TIER_FOLDER_ROOT:-}" >> "$ENV_FILE.new"
+  printf 'SYNCTHING_FOLDER_ID=%s\n' "${SYNCTHING_FOLDER_ID:-}" >> "$ENV_FILE.new"
+fi
 [ -z "${TIER_MOUNT_ROOT:-}" ] || printf 'TIER_MOUNT_ROOT=%s\n' "$TIER_MOUNT_ROOT" >> "$ENV_FILE.new"
 [ -z "${TIER_MOUNT_MARKER:-}" ] || printf 'TIER_MOUNT_MARKER=%s\n' "$TIER_MOUNT_MARKER" >> "$ENV_FILE.new"
 [ -z "${TIER_EXPECTED_UUID:-}" ] || printf 'TIER_EXPECTED_UUID=%s\n' "$TIER_EXPECTED_UUID" >> "$ENV_FILE.new"
