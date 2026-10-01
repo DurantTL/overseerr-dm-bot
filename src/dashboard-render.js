@@ -427,6 +427,324 @@ function renderDirectorPanel({ overall, services, disks, totalFreeLabel }) {
       </div>`;
 }
 
+function renderServicesPanel() {
+  // Client-rendered Services board. The server ships the shell; the browser
+  // fetches /admin/api/services and renders cards from live data. Scoped
+  // styles use the svc- prefix to avoid colliding with dashboard CSS.
+  return `
+<style>
+.svc-wrap { --svc-accent: #e97a4f; --svc-ink: #f2ede6; --svc-ink2: #b8b2a8; --svc-ink3: #7a766e;
+  --svc-glass: rgba(255,255,255,.045); --svc-line: rgba(255,255,255,.09);
+  --svc-green: #34d399; --svc-red: #f87171; --svc-amber: #fbbf24; --svc-cool: #38bdf8; }
+.svc-head { display: flex; align-items: baseline; gap: 10px; margin: 0 0 12px; padding: 0 4px; }
+.svc-head h2 { font-size: 13px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: var(--svc-ink2); margin: 0; }
+.svc-head .count { font-size: 11px; color: var(--svc-ink3); background: var(--svc-glass); border: 1px solid var(--svc-line); padding: 2px 9px; border-radius: 999px; }
+.svc-head .line { flex: 1; height: 1px; background: linear-gradient(90deg, var(--svc-line), transparent); }
+.svc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 28px; }
+.svc-card { position: relative; display: block; text-decoration: none; color: inherit; background: var(--svc-glass);
+  border: 1px solid var(--svc-line); border-radius: 18px; padding: 16px 14px; overflow: hidden;
+  transition: transform .25s ease, border-color .25s ease, box-shadow .25s ease; cursor: pointer;
+  -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
+.svc-card:hover { transform: translateY(-3px); border-color: rgba(233,122,79,.35); box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+.svc-card:active { transform: translateY(-1px) scale(.99); }
+.svc-dot { position: absolute; top: 12px; right: 12px; width: 8px; height: 8px; border-radius: 50%; background: var(--svc-green);
+  box-shadow: 0 0 10px rgba(52,211,153,.8); animation: svcPulse 2.2s ease-in-out infinite; }
+.svc-dot.down { background: var(--svc-red); box-shadow: 0 0 10px rgba(248,113,113,.8); }
+.svc-dot.skip { background: var(--svc-ink3); box-shadow: none; animation: none; }
+@keyframes svcPulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .55; transform: scale(.8); } }
+.svc-top { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.svc-icon { width: 36px; height: 36px; border-radius: 11px; display: flex; align-items: center; justify-content: center; flex: none;
+  background: rgba(233,122,79,.12); border: 1px solid rgba(233,122,79,.2); color: var(--svc-accent); font-size: 18px; }
+.svc-icon.cool { background: rgba(56,189,248,.1); border-color: rgba(56,189,248,.2); color: var(--svc-cool); }
+.svc-icon.green { background: rgba(52,211,153,.1); border-color: rgba(52,211,153,.2); color: var(--svc-green); }
+.svc-name { font-weight: 650; font-size: 14px; }
+.svc-desc { font-size: 11.5px; color: var(--svc-ink2); margin-bottom: 6px; min-height: 16px; }
+.svc-badge { display: inline-block; font-size: 10.5px; font-weight: 700; color: var(--svc-accent);
+  background: rgba(233,122,79,.12); border: 1px solid rgba(233,122,79,.25); padding: 2px 8px; border-radius: 999px; margin-top: 4px; }
+.svc-metrics { display: flex; gap: 14px; margin-top: 8px; }
+.svc-metric .v { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.svc-metric .v small { font-size: 11px; font-weight: 500; color: var(--svc-ink2); }
+.svc-metric .l { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--svc-ink3); margin-top: 2px; }
+.svc-np { display: flex; align-items: center; gap: 12px; background: var(--svc-glass); border: 1px solid var(--svc-line);
+  border-radius: 16px; padding: 12px 16px; margin-bottom: 24px; }
+.svc-np .art { width: 44px; height: 44px; border-radius: 10px; background: rgba(233,122,79,.12);
+  border: 1px solid rgba(233,122,79,.2); display: flex; align-items: center; justify-content: center; font-size: 20px; flex: none; }
+.svc-np .t { font-weight: 650; font-size: 14px; }
+.svc-np .s { font-size: 12px; color: var(--svc-ink2); }
+.svc-np .eq { margin-left: auto; display: flex; gap: 3px; align-items: flex-end; height: 22px; flex: none; }
+.svc-np .eq i { width: 4px; border-radius: 2px; background: var(--svc-accent); animation: svcEq 1.1s ease-in-out infinite; }
+.svc-np .eq i:nth-child(2) { animation-delay: .25s; } .svc-np .eq i:nth-child(3) { animation-delay: .5s; }
+@keyframes svcEq { 0%,100% { height: 8px; } 50% { height: 20px; } }
+.svc-netmode { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700; letter-spacing: .08em;
+  padding: 6px 12px; border-radius: 999px; border: 1px solid var(--svc-line); background: var(--svc-glass);
+  color: var(--svc-ink2); cursor: pointer; margin-bottom: 16px; }
+.svc-netmode .mdot { width: 7px; height: 7px; border-radius: 50%; background: var(--svc-cool); box-shadow: 0 0 8px rgba(56,189,248,.9); }
+.svc-loading { color: var(--svc-ink2); font-size: 13px; padding: 24px; text-align: center; }
+.svc-sheet { position: fixed; inset: 0; z-index: 60; display: none; align-items: flex-end; justify-content: center; }
+.svc-sheet.open { display: flex; }
+.svc-sheet .scrim { position: absolute; inset: 0; background: rgba(0,0,0,.55); backdrop-filter: blur(4px); }
+.svc-sheet .panel { position: relative; width: 100%; max-width: 420px; background: #1c1a17; border: 1px solid var(--svc-line);
+  border-bottom: none; border-radius: 20px 20px 0 0; padding: 12px 16px 28px; animation: svcSlideUp .28s cubic-bezier(.2,.9,.25,1.1); }
+@keyframes svcSlideUp { from { transform: translateY(60px); opacity: 0; } }
+.svc-sheet .grab { width: 40px; height: 4px; border-radius: 99px; background: rgba(255,255,255,.18); margin: 0 auto 14px; }
+.svc-sheet .stitle { font-weight: 700; font-size: 16px; margin-bottom: 12px; }
+.svc-action { display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px 10px; border: none; background: none;
+  color: var(--svc-ink); font-size: 15px; border-radius: 12px; cursor: pointer; text-align: left; }
+.svc-action:hover { background: rgba(255,255,255,.06); }
+.svc-action.danger { color: var(--svc-red); }
+.svc-action:disabled { opacity: .4; cursor: default; }
+.svc-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: #2a2723;
+  border: 1px solid var(--svc-line); color: var(--svc-ink); padding: 10px 18px; border-radius: 999px; font-size: 13.5px;
+  opacity: 0; pointer-events: none; transition: all .3s ease; z-index: 70; }
+.svc-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.svc-sort-tag { font-size: 9px; font-weight: 700; letter-spacing: .1em; color: var(--svc-accent); margin-left: 6px; }
+@media (prefers-reduced-motion: reduce) {
+  .svc-card, .svc-dot, .svc-np .eq i { animation: none !important; transition: none !important; }
+  .svc-sheet .panel { animation: none; }
+}
+</style>
+<div class="svc-wrap">
+  <div style="margin-bottom:4px">
+    <div style="font-size:11px;font-weight:700;letter-spacing:.16em;color:var(--svc-ink2)">SERVICES / LIVE</div>
+    <h1 style="font-size:24px;margin:4px 0 2px">Every service, one tap away.</h1>
+    <p style="color:var(--svc-ink2);font-size:13px;margin:0 0 12px">Long-press a card for quick actions. Links automatically use your LAN or Tailscale address.</p>
+  </div>
+  <button class="svc-netmode" id="svcNetMode" type="button"><span class="mdot"></span><span id="svcNetLabel">DETECTING NETWORK…</span></button>
+  <div id="svcNowPlaying"></div>
+  <div id="svcBoard"><div class="svc-loading">Loading services…</div></div>
+</div>
+<div class="svc-sheet" id="svcSheet" role="dialog" aria-modal="true">
+  <div class="scrim" id="svcScrim"></div>
+  <div class="panel">
+    <div class="grab"></div>
+    <div class="stitle" id="svcSheetTitle"></div>
+    <button class="svc-action" id="svcOpen">Open</button>
+    <button class="svc-action danger" id="svcRestart">Restart container</button>
+    <button class="svc-action" id="svcCopy">Copy link</button>
+  </div>
+</div>
+<div class="svc-toast" id="svcToast"></div>
+<script>
+(function () {
+  var board = document.getElementById('svcBoard');
+  var np = document.getElementById('svcNowPlaying');
+  if (!board) return;
+  var LAN = '', TAIL = '', mode = 'tail', manualMode = null;
+  var taps = {};
+  try { taps = JSON.parse(localStorage.getItem('svcTaps') || '{}'); } catch (e) { taps = {}; }
+
+  function toast(msg) {
+    var t = document.getElementById('svcToast');
+    t.textContent = msg; t.classList.add('show');
+    setTimeout(function () { t.classList.remove('show'); }, 2200);
+  }
+
+  function detectNetwork() {
+    try { manualMode = localStorage.getItem('svcNetMode'); } catch (e) {}
+    if (manualMode === 'lan' || manualMode === 'tail') { setMode(manualMode); return; }
+    var found = false;
+    try {
+      var pc = new (window.RTCPeerConnection || window.webkitRTCPeerConnection)({ iceServers: [] });
+      pc.createDataChannel('x');
+      pc.onicecandidate = function (e) {
+        if (found || !e.candidate) return;
+        var m = /([0-9]{1,3}(\\.[0-9]{1,3}){3})/.exec(e.candidate.candidate);
+        if (m && /^(192\\.168\\.|10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.)/.test(m[1])) { found = true; setMode('lan'); }
+      };
+      pc.createOffer().then(function (o) { pc.setLocalDescription(o); }).catch(function () {});
+      setTimeout(function () { if (!found) setMode('tail'); try { pc.close(); } catch (e) {} }, 3500);
+    } catch (e) { setMode('tail'); }
+  }
+  function setMode(m) {
+    mode = m;
+    var label = document.getElementById('svcNetLabel');
+    if (label) label.textContent = m === 'lan' ? 'LOCAL NETWORK' : 'TAILSCALE';
+  }
+  document.getElementById('svcNetMode').addEventListener('click', function () {
+    var next = mode === 'lan' ? 'tail' : 'lan';
+    try { localStorage.setItem('svcNetMode', next); } catch (e) {}
+    manualMode = next; setMode(next); toast(next === 'lan' ? 'Using LAN addresses' : 'Using Tailscale addresses');
+  });
+
+  function svcUrl(s) {
+    if (!s.port) return null;
+    var host = mode === 'lan' ? LAN : TAIL;
+    return 'http://' + host + ':' + s.port + (s.path || '');
+  }
+
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+
+  function fmtRuntime(sec) {
+    if (sec == null) return '—';
+    var m = Math.round(sec / 60);
+    return m >= 60 ? Math.floor(m / 60) + 'h ' + (m % 60) + 'm' : m + ' min';
+  }
+
+  var ICONS = {
+    bolt: '&#9889;', disk: '&#128190;', gauge: '&#128246;', play: '&#9654;', chart: '&#128202;', search: '&#128269;',
+    tv: '&#128250;', film: '&#127916;', layers: '&#128450;', download: '&#11015;', cloud: '&#9729;', sync: '&#128260;',
+    folder: '&#128193;', cpu: '&#128421;', box: '&#128230;', trash: '&#128465;', shield: '&#128737;'
+  };
+  function iconFor(id) { return ICONS[id] || '&#9642;'; }
+
+  function cardHtml(s) {
+    var url = svcUrl(s);
+    var dot = s.state === 'down' ? 'down' : s.state === 'skip' ? 'skip' : '';
+    var badge = s.queue ? '<span class="svc-badge">' + s.queue + ' downloading</span>' : '';
+    var desc = s.detail ? esc(s.detail) : (url ? '' : 'not configured');
+    var smart = (taps[s.key] || 0) >= 3 ? '<span class="svc-sort-tag">SMART SORT</span>' : '';
+    return '<a class="svc-card" data-key="' + esc(s.key) + '"' + (url ? ' data-url="' + esc(url) + '"' : '') +
+      ' data-name="' + esc(s.name) + '" data-container="' + esc(s.container || '') + '" data-canrestart="' + (s.canRestart ? '1' : '') + '">' +
+      '<div class="svc-dot ' + dot + '"></div>' +
+      '<div class="svc-top"><div class="svc-icon">' + iconFor(s.icon) + '</div><div class="svc-name">' + esc(s.name) + smart + '</div></div>' +
+      '<div class="svc-desc">' + desc + '</div>' + badge + '</a>';
+  }
+
+  function specialCards(d) {
+    var out = '';
+    if (d.ups) {
+      var u = d.ups;
+      var dot = u.lowBattery ? 'down' : '';
+      var label = u.onBattery ? 'ON BATTERY' : 'ON MAINS POWER';
+      var mainsColor = u.onBattery ? 'var(--svc-amber)' : 'var(--svc-green)';
+      out += '<div class="svc-card" data-key="ups"><div class="svc-dot ' + dot + '"></div>' +
+        '<div class="svc-top"><div class="svc-icon green">' + iconFor('bolt') + '</div><div class="svc-name">UPS Power</div></div>' +
+        '<div class="svc-desc">' + esc(u.model || 'UPS') + '</div>' +
+        '<div class="svc-metrics">' +
+        '<div class="svc-metric"><div class="v">' + (u.batteryPercent != null ? u.batteryPercent + '<small>%</small>' : '—') + '</div><div class="l">Battery</div></div>' +
+        '<div class="svc-metric"><div class="v">' + fmtRuntime(u.runtimeSeconds) + '</div><div class="l">Runtime</div></div>' +
+        '<div class="svc-metric"><div class="v">' + (u.loadPercent != null ? u.loadPercent + '<small>%</small>' : '—') + '</div><div class="l">Load</div></div>' +
+        '</div><div class="svc-desc" style="margin-top:8px;color:' + mainsColor + ';font-weight:700">' + label + '</div></div>';
+    }
+    if (d.zfs) {
+      var z = d.zfs;
+      var healthy = z.health === 'ONLINE';
+      out += '<div class="svc-card" data-key="zfs"><div class="svc-dot' + (healthy ? '' : ' down') + '"></div>' +
+        '<div class="svc-top"><div class="svc-icon">' + iconFor('disk') + '</div><div class="svc-name">ZFS Pool</div></div>' +
+        '<div class="svc-desc">Pool ' + esc(z.pool || '') + ' · ' + esc(z.health) + '</div>' +
+        '<div class="svc-desc">' + (z.lastScrub && z.lastScrub !== 'unknown' ? 'Last scrub: ' + esc(z.lastScrub) : 'Last scrub: unknown') + '</div>' +
+        (z.issueCount ? '<span class="svc-badge">' + z.issueCount + ' issues</span>' : '') + '</div>';
+    }
+    if (d.speedtest) {
+      var sp = d.speedtest;
+      out += '<div class="svc-card" data-key="speedtest"><div class="svc-dot"></div>' +
+        '<div class="svc-top"><div class="svc-icon cool">' + iconFor('gauge') + '</div><div class="svc-name">Speedtest</div></div>' +
+        '<div class="svc-desc">Latest result' + (sp.ranAt ? ' · ' + esc(String(sp.ranAt).slice(0, 10)) : '') + '</div>' +
+        '<div class="svc-metrics">' +
+        '<div class="svc-metric"><div class="v">' + (sp.downloadMbps != null ? Math.round(sp.downloadMbps) + '<small> Mb/s</small>' : '—') + '</div><div class="l">Down</div></div>' +
+        '<div class="svc-metric"><div class="v">' + (sp.uploadMbps != null ? Math.round(sp.uploadMbps) + '<small> Mb/s</small>' : '—') + '</div><div class="l">Up</div></div>' +
+        '<div class="svc-metric"><div class="v">' + (sp.pingMs != null ? Number(sp.pingMs).toFixed(1) + '<small> ms</small>' : '—') + '</div><div class="l">Ping</div></div>' +
+        '</div></div>';
+    }
+    return out;
+  }
+
+  function render(d) {
+    LAN = d.netHosts.lan; TAIL = d.netHosts.tail;
+    var services = d.services || [];
+    var byGroup = {};
+    (d.groups || []).forEach(function (g) { byGroup[g] = []; });
+    services.forEach(function (s) { (byGroup[s.group] = byGroup[s.group] || []).push(s); });
+    Object.keys(byGroup).forEach(function (g) {
+      byGroup[g].sort(function (a, b) { return (taps[b.key] || 0) - (taps[a.key] || 0); });
+    });
+    var html = '';
+    (d.groups || []).forEach(function (g) {
+      var items = byGroup[g] || [];
+      var special = g === 'System Health' ? specialCards(d) : '';
+      if (!items.length && !special) return;
+      var specialCount = (d.ups ? 1 : 0) + (d.zfs ? 1 : 0) + (d.speedtest ? 1 : 0);
+      html += '<div class="svc-head"><h2>' + esc(g) + '</h2><span class="count">' + (items.length + (g === 'System Health' ? specialCount : 0)) + '</span><div class="line"></div></div>';
+      html += '<div class="svc-grid">' + special + items.map(cardHtml).join('') + '</div>';
+    });
+    board.innerHTML = html || '<div class="svc-loading">No services configured yet.</div>';
+    if (d.nowPlaying && d.nowPlaying.length) {
+      np.innerHTML = d.nowPlaying.map(function (s) {
+        return '<div class="svc-np"><div class="art">' + iconFor('play') + '</div><div><div class="t">' + esc(s.title) + '</div>' +
+          '<div class="s">' + esc([s.subtitle, s.user].filter(Boolean).join(' · ')) + '</div></div>' +
+          '<div class="eq"><i></i><i></i><i></i></div></div>';
+      }).join('');
+    } else { np.innerHTML = ''; }
+    wireCards();
+  }
+
+  var sheet = document.getElementById('svcSheet');
+  var sheetKey = null, sheetUrl = null, sheetName = '', sheetContainer = '', sheetCanRestart = false;
+  var pressTimer = null;
+  function openSheet(card) {
+    sheetKey = card.dataset.key; sheetUrl = card.dataset.url || null;
+    sheetName = card.dataset.name; sheetContainer = card.dataset.container || '';
+    sheetCanRestart = card.dataset.canrestart === '1';
+    document.getElementById('svcSheetTitle').textContent = sheetName;
+    document.getElementById('svcOpen').disabled = !sheetUrl;
+    document.getElementById('svcRestart').disabled = !sheetCanRestart || !sheetContainer;
+    sheet.classList.add('open');
+  }
+  function closeSheet() { sheet.classList.remove('open'); }
+  document.getElementById('svcScrim').addEventListener('click', closeSheet);
+  document.getElementById('svcOpen').addEventListener('click', function () {
+    if (sheetUrl) {
+      taps[sheetKey] = (taps[sheetKey] || 0) + 1;
+      try { localStorage.setItem('svcTaps', JSON.stringify(taps)); } catch (e) {}
+      window.open(sheetUrl, '_blank', 'noopener');
+    }
+    closeSheet();
+  });
+  document.getElementById('svcRestart').addEventListener('click', function () {
+    if (!sheetCanRestart || !sheetContainer) { closeSheet(); return; }
+    var btn = this; btn.disabled = true; btn.textContent = 'Restarting…';
+    fetch('/admin/api/services/restart', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ container: sheetContainer }),
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      toast(j.ok ? j.message : ('Restart failed: ' + (j.error || 'unknown')));
+    }).catch(function () { toast('Restart failed: network error'); })
+    .then(function () { btn.disabled = false; btn.textContent = 'Restart container'; closeSheet(); });
+  });
+  document.getElementById('svcCopy').addEventListener('click', function () {
+    if (sheetUrl && navigator.clipboard) navigator.clipboard.writeText(sheetUrl).catch(function () {});
+    closeSheet(); toast('Link copied');
+  });
+
+  function wireCards() {
+    board.querySelectorAll('.svc-card[data-key]').forEach(function (card) {
+      var sx = 0, sy = 0;
+      card.addEventListener('touchstart', function (e) {
+        var t = e.touches[0]; sx = t.clientX; sy = t.clientY;
+        pressTimer = setTimeout(function () { pressTimer = null; openSheet(card); }, 550);
+      }, { passive: true });
+      card.addEventListener('touchmove', function (e) {
+        if (!pressTimer) return;
+        var t = e.touches[0];
+        if (Math.hypot(t.clientX - sx, t.clientY - sy) > 12) { clearTimeout(pressTimer); pressTimer = null; }
+      }, { passive: true });
+      card.addEventListener('touchend', function () { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } });
+      card.addEventListener('touchcancel', function () { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } });
+      card.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+      card.addEventListener('click', function () {
+        var url = card.dataset.url;
+        if (!url) return;
+        taps[card.dataset.key] = (taps[card.dataset.key] || 0) + 1;
+        try { localStorage.setItem('svcTaps', JSON.stringify(taps)); } catch (e) {}
+        window.open(url, '_blank', 'noopener');
+      });
+    });
+  }
+
+  function load() {
+    fetch('/admin/api/services', { headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { if (d.ok) render(d); else board.innerHTML = '<div class="svc-loading">Services unavailable.</div>'; })
+      .catch(function () { board.innerHTML = '<div class="svc-loading">Could not reach the services API.</div>'; });
+  }
+  detectNetwork();
+  load();
+  setInterval(load, 30000);
+})();
+</script>`;
+}
+
+
 function tierInstallCommand({ botUrl, node, token, folders, folderRoot, syncthingApiKey, syncthingFolderId, mountRoot, mountMarker, monitorOnly = false, monitorPath }) {
   // Monitor-only nodes (backup boxes): no Syncthing, no tier plan — the installer only needs
   // the token, TIER_MONITOR_ONLY=1, and the watched path (TIER_FOLDER_ROOT).
@@ -785,4 +1103,5 @@ module.exports = {
   renderPasskeySetupBanner,
   renderAgentApiTokens,
   renderDirectorPanel,
+  renderServicesPanel,
 };
