@@ -148,26 +148,40 @@ async function fetchZfsHealth(config, http = axios) {
   }
 }
 
-// SSD temperature via Prometheus (node_exporter hwmon). Picks the NVMe
-// composite sensor, falling back to drivetemp/ata. Returns { tempC, sensor,
+// SSD temperature via Prometheus. Prefers the SMART textfile metric
+// (node_drive_temp_celsius, written on the host by drive-temp-collector.sh),
+// picking the drive whose model names an SSD; falls back to node_exporter
+// hwmon (NVMe composite, then drivetemp/ata). Returns { tempC, sensor,
 // instance } or { error } — never a fabricated reading.
 async function fetchSsdTemp(config, http = axios) {
   if (!config.PROMETHEUS_URL) return null;
   try {
-    const res = await http.get(config.PROMETHEUS_URL + '/api/v1/query', {
-      params: { query: 'node_hwmon_temp_celsius' }, timeout: 8000,
-    });
-    const results = res.data?.data?.result || [];
-    const chipOf = (r) => String(r.metric?.chip || '');
-    let cands = results.filter((r) => /nvme/i.test(chipOf(r)));
-    if (!cands.length) cands = results.filter((r) => /drivetemp|ata/i.test(chipOf(r)));
-    let best = null;
-    for (const r of cands) {
-      const v = Number(r.value?.[1]);
-      if (!Number.isFinite(v)) continue;
-      if (!best || v > best.tempC) {
-        best = { tempC: v, sensor: r.metric?.sensor || chipOf(r), instance: r.metric?.instance || '' };
+    const query = (q) => http.get(config.PROMETHEUS_URL + '/api/v1/query', {
+      params: { query: q }, timeout: 8000,
+    }).then((r) => r.data?.data?.result || []).catch(() => []);
+    const [driveTemps, hwmon] = await Promise.all([
+      query('node_drive_temp_celsius'),
+      query('node_hwmon_temp_celsius'),
+    ]);
+    const val = (r) => { const v = Number(r.value?.[1]); return Number.isFinite(v) ? v : null; };
+    const pick = (results, label) => {
+      let best = null;
+      for (const r of results) {
+        const v = val(r);
+        if (v == null) continue;
+        if (!best || v > best.tempC) best = { tempC: v, sensor: label(r), instance: r.metric?.instance || '' };
       }
+      return best;
+    };
+    // 1. SMART textfile: the SSD-labelled drive (never an HDD on this card).
+    const ssdDrives = driveTemps.filter((r) => /ssd/i.test(String(r.metric?.model || '')));
+    let best = pick(ssdDrives, (r) => String(r.metric?.model || r.metric?.device || 'ssd'));
+    // 2. hwmon: NVMe composite, then drivetemp/ata.
+    if (!best) {
+      const chipOf = (r) => String(r.metric?.chip || '');
+      let cands = hwmon.filter((r) => /nvme/i.test(chipOf(r)));
+      if (!cands.length) cands = hwmon.filter((r) => /drivetemp|ata/i.test(chipOf(r)));
+      best = pick(cands, (r) => String(r.metric?.sensor || chipOf(r)));
     }
     if (!best) return { error: 'no_ssd_sensor' };
     return { tempC: Math.round(best.tempC * 10) / 10, sensor: best.sensor, instance: best.instance };

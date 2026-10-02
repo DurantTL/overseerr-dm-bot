@@ -217,15 +217,19 @@ test('services-board: fetchZfsHealth passes through pool space when the endpoint
 
 test('services-board: fetchSsdTemp picks the NVMe sensor from Prometheus', async () => {
   const { fetchSsdTemp } = require('../../src/services-board');
+  const byQuery = {
+    node_drive_temp_celsius: [],
+    node_hwmon_temp_celsius: [
+      { metric: { chip: 'k10temp', sensor: 'Tctl', instance: 'x:9100' }, value: [1, '45.5'] },
+      { metric: { chip: 'nvme', sensor: 'Composite', instance: 'x:9100' }, value: [1, '34.2'] },
+      { metric: { chip: 'nvme', sensor: 'Sensor 1', instance: 'x:9100' }, value: [1, '31.0'] },
+    ],
+  };
   const http = {
     get: async (url, opts) => {
       assert.ok(url.endsWith('/api/v1/query'), 'hits the Prometheus query API');
-      assert.strictEqual(opts.params.query, 'node_hwmon_temp_celsius');
-      return { data: { status: 'success', data: { resultType: 'vector', result: [
-        { metric: { chip: 'k10temp', sensor: 'Tctl', instance: 'x:9100' }, value: [1, '45.5'] },
-        { metric: { chip: 'nvme', sensor: 'Composite', instance: 'x:9100' }, value: [1, '34.2'] },
-        { metric: { chip: 'nvme', sensor: 'Sensor 1', instance: 'x:9100' }, value: [1, '31.0'] },
-      ] } } };
+      assert.ok(opts.params.query in byQuery, 'queries a known metric');
+      return { data: { status: 'success', data: { resultType: 'vector', result: byQuery[opts.params.query] } } };
     },
   };
   const r = await fetchSsdTemp({ PROMETHEUS_URL: 'http://prom:9090' }, http);
@@ -236,4 +240,38 @@ test('services-board: fetchSsdTemp picks the NVMe sensor from Prometheus', async
   const none = await fetchSsdTemp({ PROMETHEUS_URL: 'http://prom:9090' },
     { get: async () => ({ data: { data: { result: [] } } }) });
   assert.strictEqual(none.error, 'no_ssd_sensor');
+});
+
+test('services-board: fetchSsdTemp prefers the SSD from the SMART textfile metric', async () => {
+  const { fetchSsdTemp } = require('../../src/services-board');
+  const byQuery = {
+    node_drive_temp_celsius: [
+      { metric: { device: '/dev/sda', model: 'WDC_WD40EFRX', instance: 'x:9100' }, value: [1, '37'] },
+      { metric: { device: '/dev/sdd', model: 'Samsung_SSD_840', instance: 'x:9100' }, value: [1, '28'] },
+    ],
+    node_hwmon_temp_celsius: [
+      { metric: { chip: 'nvme', sensor: 'Composite', instance: 'x:9100' }, value: [1, '34.2'] },
+    ],
+  };
+  const http = {
+    get: async (url, opts) => ({
+      data: { status: 'success', data: { resultType: 'vector', result: byQuery[opts.params.query] || [] } },
+    }),
+  };
+  const r = await fetchSsdTemp({ PROMETHEUS_URL: 'http://prom:9090' }, http);
+  assert.strictEqual(r.tempC, 28);
+  assert.strictEqual(r.sensor, 'Samsung_SSD_840');
+  // HDD-only textfile data must not land on the System SSD card: falls back
+  // to hwmon rather than showing a spinning disk's temp as the SSD.
+  const hddOnly = {
+    get: async (url, opts) => ({
+      data: { status: 'success', data: { resultType: 'vector', result:
+        opts.params.query === 'node_drive_temp_celsius'
+          ? [{ metric: { device: '/dev/sda', model: 'WDC_WD40EFRX' }, value: [1, '37'] }]
+          : byQuery.node_hwmon_temp_celsius } },
+    }),
+  };
+  const r2 = await fetchSsdTemp({ PROMETHEUS_URL: 'http://prom:9090' }, hddOnly);
+  assert.strictEqual(r2.tempC, 34.2);
+  assert.strictEqual(r2.sensor, 'Composite');
 });
