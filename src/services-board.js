@@ -119,12 +119,26 @@ async function fetchZfsHealth(config, http = axios) {
   try {
     const res = await http.get(config.ZFS_HEALTH_URL, { timeout: 6000 });
     const d = res.data || {};
+    // Optional space fields the endpoint may serve (e.g. from `zfs list -Hpo used,avail <pool>`):
+    // used_bytes, avail_bytes (or available_bytes), total_bytes. Rendered as a usage bar when
+    // present; absent means no bar — never a fabricated percentage.
+    const num = (v) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : null; };
+    const usedBytes = num(d.used_bytes);
+    const availBytes = num(d.avail_bytes != null ? d.avail_bytes : d.available_bytes);
+    const totalBytes = num(d.total_bytes) ?? (usedBytes != null && availBytes != null ? usedBytes + availBytes : null);
+    const space = (usedBytes != null && totalBytes) ? {
+      usedBytes,
+      availBytes,
+      totalBytes,
+      usedPct: Math.min(100, Math.round(usedBytes / totalBytes * 100)),
+    } : null;
     return {
       pool: d.pool || null,
       health: d.health || 'UNKNOWN',
       lastScrub: d.last_scrub || null,
       errors: d.errors || null,
       issueCount: Number(d.issue_count) || 0,
+      space,
     };
   } catch (err) {
     // Surface the failure instead of null: an unreachable exporter is a
@@ -225,4 +239,4 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
   };
 }
 
-module.exports = { GROUPS, SERVICES, gatherServicesBoard, portFromUrl, fetchSpeedtest };
+module.exports = { GROUPS, SERVICES, gatherServicesBoard, portFromUrl, fetchSpeedtest, fetchZfsHealth };

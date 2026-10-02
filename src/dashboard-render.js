@@ -733,6 +733,9 @@ function renderServicesPanel() {
         '<div class="metric' + (healthy ? ' good' : '') + '"><div class="mv">' + esc(z.health) + '</div><div class="ml">Health</div></div>' +
         '<div class="metric' + (z.issueCount ? '' : ' good') + '"><div class="mv">' + (z.issueCount || 0) + '</div><div class="ml">Issues</div></div>' +
         '</div>' +
+        (z.space ? '<div class="svc-bar-row"><div class="bl"><span>Pool usage</span><b>' + z.space.usedPct + '%</b></div>' +
+        '<div class="svc-bar"><i style="--w:' + z.space.usedPct + '%;' + (z.space.usedPct >= 90 ? 'background:linear-gradient(90deg,#f87171,#ef4444);' : '') + '"></i></div></div>' +
+        '<div class="svc-kv"><span>Used</span><b>' + fmtBytes(z.space.usedBytes) + ' of ' + fmtBytes(z.space.totalBytes) + '</b></div>' : '') +
         '<div class="svc-desc" style="margin-top:8px">' + (z.lastScrub && z.lastScrub !== 'unknown' ? 'Last scrub: ' + esc(z.lastScrub) : 'Last scrub: unknown') + '</div>' +
         (z.issueCount ? '<span class="svc-badge">' + z.issueCount + ' issues</span>' : '') + '</div>';
       }
@@ -761,6 +764,13 @@ function renderServicesPanel() {
   function fmtMbps(v) {
     if (v == null) return '—';
     return (Math.round(v * 10) / 10) + '<small> Mb/s</small>';
+  }
+
+  function fmtBytes(b) {
+    if (b == null) return '—';
+    var units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'], i = 0, n = b;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (Math.round(n * 10) / 10) + ' ' + units[i];
   }
 
   // Network group: live UDR7 data in the mockup's 4-card layout — WAN status,

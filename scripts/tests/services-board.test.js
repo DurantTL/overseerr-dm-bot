@@ -196,3 +196,21 @@ test('services-board: gatherServicesBoard adds Network group from UDR7', async (
   assert.strictEqual(board.network.wan.isp, 'Mediacom');
   assert.strictEqual(board.network.clients.total, 1);
 });
+
+test('services-board: fetchZfsHealth passes through pool space when the endpoint serves it', async () => {
+  const { fetchZfsHealth } = require('../../src/services-board');
+  const http = { get: async () => ({ data: {
+    pool: 'raid', health: 'ONLINE', last_scrub: '2026-09-01', issue_count: 0,
+    used_bytes: 5400000000000, avail_bytes: 2600000000000,
+  } }) };
+  const z = await fetchZfsHealth({ ZFS_HEALTH_URL: 'http://x:9911/health' }, http);
+  assert.strictEqual(z.pool, 'raid');
+  assert.ok(z.space, 'space should be present');
+  assert.strictEqual(z.space.usedBytes, 5400000000000);
+  assert.strictEqual(z.space.totalBytes, 8000000000000);
+  assert.strictEqual(z.space.usedPct, 68);
+  // No space fields: no bar, never a fabricated percentage.
+  const http2 = { get: async () => ({ data: { pool: 'raid', health: 'ONLINE' } }) };
+  const z2 = await fetchZfsHealth({ ZFS_HEALTH_URL: 'http://x:9911/health' }, http2);
+  assert.strictEqual(z2.space, null);
+});
