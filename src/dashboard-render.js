@@ -435,12 +435,23 @@ function renderServicesPanel() {
 <style>
 .svc-wrap { --svc-accent: #e97a4f; --svc-ink: #f2ede6; --svc-ink2: #b8b2a8; --svc-ink3: #7a766e;
   --svc-glass: rgba(255,255,255,.045); --svc-line: rgba(255,255,255,.09);
-  --svc-green: #34d399; --svc-red: #f87171; --svc-amber: #fbbf24; --svc-cool: #38bdf8; }
+  --svc-green: #34d399; --svc-red: #f87171; --svc-amber: #fbbf24; --svc-cool: #38bdf8;
+  position: relative; max-width: 1060px; margin: 0 auto; }
+.svc-orb { position: fixed; border-radius: 50%; filter: blur(90px); pointer-events: none; z-index: 0; opacity: .45; }
+.svc-orb-1 { width: 420px; height: 420px; background: radial-gradient(circle, rgba(233,122,79,.14), transparent 70%); top: -120px; left: -100px; animation: svcDrift1 26s ease-in-out infinite alternate; }
+.svc-orb-2 { width: 380px; height: 380px; background: radial-gradient(circle, rgba(56,189,248,.10), transparent 70%); bottom: -140px; right: -100px; animation: svcDrift2 32s ease-in-out infinite alternate; }
+@keyframes svcDrift1 { to { transform: translate(70px, 50px) scale(1.12); } }
+@keyframes svcDrift2 { to { transform: translate(-60px, -40px) scale(1.08); } }
+@keyframes svcFadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+.svc-enter { opacity: 0; animation: svcFadeUp .6s ease forwards; }
 .svc-head { display: flex; align-items: baseline; gap: 10px; margin: 0 0 12px; padding: 0 4px; }
 .svc-head h2 { font-size: 13px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: var(--svc-ink2); margin: 0; }
 .svc-head .count { font-size: 11px; color: var(--svc-ink3); background: var(--svc-glass); border: 1px solid var(--svc-line); padding: 2px 9px; border-radius: 999px; }
 .svc-head .line { flex: 1; height: 1px; background: linear-gradient(90deg, var(--svc-line), transparent); }
-.svc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 28px; }
+.svc-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 28px; }
+@media (max-width: 720px) { .svc-grid { grid-template-columns: repeat(2, 1fr); } .svc-hero { grid-template-columns: repeat(2, 1fr); } }
+.svc-card.wide { grid-column: span 2; }
+@media (max-width: 720px) { .svc-card.wide { grid-column: span 1; } }
 .svc-card { position: relative; display: block; text-decoration: none; color: inherit; background: var(--svc-glass);
   border: 1px solid var(--svc-line); border-radius: 18px; padding: 16px 14px; overflow: hidden;
   transition: transform .25s ease, border-color .25s ease, box-shadow .25s ease; cursor: pointer;
@@ -465,16 +476,27 @@ function renderServicesPanel() {
 .svc-metric .v { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .svc-metric .v small { font-size: 11px; font-weight: 500; color: var(--svc-ink2); }
 .svc-metric .l { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--svc-ink3); margin-top: 2px; }
-.svc-np { display: flex; align-items: center; gap: 12px; background: var(--svc-glass); border: 1px solid var(--svc-line);
-  border-radius: 16px; padding: 12px 16px; margin-bottom: 24px; }
-.svc-np .art { width: 44px; height: 44px; border-radius: 10px; background: rgba(233,122,79,.12);
-  border: 1px solid rgba(233,122,79,.2); display: flex; align-items: center; justify-content: center; font-size: 20px; flex: none; }
-.svc-np .t { font-weight: 650; font-size: 14px; }
-.svc-np .s { font-size: 12px; color: var(--svc-ink2); }
-.svc-np .eq { margin-left: auto; display: flex; gap: 3px; align-items: flex-end; height: 22px; flex: none; }
-.svc-np .eq i { width: 4px; border-radius: 2px; background: var(--svc-accent); animation: svcEq 1.1s ease-in-out infinite; }
-.svc-np .eq i:nth-child(2) { animation-delay: .25s; } .svc-np .eq i:nth-child(3) { animation-delay: .5s; }
-@keyframes svcEq { 0%,100% { height: 8px; } 50% { height: 20px; } }
+.svc-spark { width: 100%; height: 48px; display: block; margin: 8px 0 2px; }
+.svc-np { display: flex; align-items: center; gap: 14px; background: var(--svc-glass); border: 1px solid var(--svc-line);
+  border-radius: 18px; padding: 14px 16px; margin-bottom: 22px; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+.svc-np .np-poster { width: 52px; height: 76px; border-radius: 10px; flex: none;
+  background: linear-gradient(135deg, rgba(233,122,79,.14), rgba(233,122,79,.04));
+  border: 1px solid var(--svc-line); display: flex; align-items: center; justify-content: center;
+  font-size: 22px; overflow: hidden; }
+.svc-np .np-info { flex: 1; min-width: 0; }
+.svc-np .np-kicker { font-size: 10px; letter-spacing: .14em; color: var(--svc-accent); font-weight: 700;
+  margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+.svc-np .np-kicker .eq { display: inline-flex; gap: 2px; align-items: flex-end; height: 12px; }
+.svc-np .np-kicker .eq i { width: 3px; background: var(--svc-accent); border-radius: 2px; animation: svcEq 1.1s ease-in-out infinite; }
+.svc-np .np-kicker .eq i:nth-child(1) { height: 60%; }
+.svc-np .np-kicker .eq i:nth-child(2) { height: 100%; animation-delay: .2s; }
+.svc-np .np-kicker .eq i:nth-child(3) { height: 40%; animation-delay: .4s; }
+.svc-np .np-title { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.svc-np .np-sub { font-size: 12px; color: var(--svc-ink2); margin-top: 2px; }
+.svc-np .np-progress { height: 4px; border-radius: 99px; background: rgba(255,255,255,.08); margin-top: 9px; overflow: hidden; }
+.svc-np .np-progress i { display: block; height: 100%; border-radius: 99px; background: var(--svc-accent); }
+.svc-np .np-time { font-size: 10px; color: var(--svc-ink3); margin-top: 4px; font-variant-numeric: tabular-nums; }
+@keyframes svcEq { 0%,100% { transform: scaleY(.5); } 50% { transform: scaleY(1); } }
 .svc-netmode { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700; letter-spacing: .08em;
   padding: 6px 12px; border-radius: 999px; border: 1px solid var(--svc-line); background: var(--svc-glass);
   color: var(--svc-ink2); cursor: pointer; margin-bottom: 16px; }
@@ -487,15 +509,22 @@ function renderServicesPanel() {
   border-bottom: none; border-radius: 20px 20px 0 0; padding: 12px 16px 28px; animation: svcSlideUp .28s cubic-bezier(.2,.9,.25,1.1); }
 @keyframes svcSlideUp { from { transform: translateY(60px); opacity: 0; } }
 .svc-sheet .grab { width: 40px; height: 4px; border-radius: 99px; background: rgba(255,255,255,.18); margin: 0 auto 14px; }
-.svc-sheet .stitle { font-weight: 700; font-size: 16px; margin-bottom: 12px; }
-.svc-action { display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px 10px; border: none; background: none;
-  color: var(--svc-ink); font-size: 15px; border-radius: 12px; cursor: pointer; text-align: left; }
-.svc-action:hover { background: rgba(255,255,255,.06); }
-.svc-action.danger { color: var(--svc-red); }
+.svc-sheet .stitle { font-weight: 750; font-size: 16px; margin: 2px 0 2px; text-align: center; }
+.svc-sheet .ssub { font-size: 12px; color: var(--svc-ink2); margin-bottom: 14px; text-align: center; word-break: break-all; }
+.svc-action .a-ic { font-size: 16px; }
+.svc-action span:last-child { font-size: 14px; }
+.svc-action { display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px 16px; margin-top: 8px;
+  border: 1px solid var(--svc-line); background: rgba(255,255,255,.05); color: var(--svc-ink);
+  font-size: 15px; font-weight: 600; border-radius: 14px; cursor: pointer; text-align: left; backdrop-filter: blur(8px); }
+.svc-action:active { transform: scale(.98); }
+.svc-action.danger { color: #fca5a5; border-color: rgba(248,113,113,.3); }
 .svc-action:disabled { opacity: .4; cursor: default; }
-.svc-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: #2a2723;
-  border: 1px solid var(--svc-line); color: var(--svc-ink); padding: 10px 18px; border-radius: 999px; font-size: 13.5px;
-  opacity: 0; pointer-events: none; transition: all .3s ease; z-index: 70; }
+.svc-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: rgba(42,39,35,.92);
+  border: 1px solid var(--svc-line); color: var(--svc-ink); padding: 10px 18px 10px 14px; border-radius: 999px; font-size: 13.5px;
+  font-weight: 600; opacity: 0; pointer-events: none; transition: all .3s ease; z-index: 70;
+  display: flex; align-items: center; gap: 9px; backdrop-filter: blur(12px); max-width: 92vw; }
+.svc-toast::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--svc-green);
+  box-shadow: 0 0 8px rgba(52,211,153,.9); flex: none; }
 .svc-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .svc-sort-tag { font-size: 9px; font-weight: 700; letter-spacing: .1em; color: var(--svc-accent); margin-left: 6px; }
 .svc-banner { display: flex; align-items: center; gap: 12px; background: var(--svc-glass); border: 1px solid var(--svc-line);
@@ -522,12 +551,57 @@ function renderServicesPanel() {
 .svc-qbadge { position: absolute; top: 10px; left: 12px; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px;
   background: rgba(233,122,79,.15); border: 1px solid rgba(233,122,79,.35); color: var(--svc-accent);
   font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
+.svc-widget { display: flex; gap: 6px; margin-top: 8px; }
+.svc-widget .metric { flex: 1; background: rgba(0,0,0,.28); border: 1px solid rgba(255,255,255,.06); border-radius: 10px; padding: 8px 6px; text-align: center; }
+.svc-widget .metric .mv { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.svc-widget .metric .ml { font-size: 9px; color: var(--svc-ink3); letter-spacing: .08em; text-transform: uppercase; margin-top: 2px; }
+.svc-widget .metric.good .mv { color: var(--svc-green); }
+.svc-widget .metric.hot .mv { color: var(--svc-accent); }
+.svc-bar-row { margin-top: 8px; }
+.svc-bar-row .bl { display: flex; justify-content: space-between; font-size: 10px; color: var(--svc-ink2); margin-bottom: 4px; letter-spacing: .04em; }
+.svc-bar-row .bl b { color: var(--svc-ink); font-variant-numeric: tabular-nums; }
+.svc-bar { height: 5px; border-radius: 99px; background: rgba(255,255,255,.07); overflow: hidden; }
+.svc-bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--svc-accent), #f5a623); width: 0; animation: svcFillBar 1.4s .4s cubic-bezier(.2,.8,.2,1) forwards; }
+@keyframes svcFillBar { to { width: var(--w); } }
+.svc-batt-wrap { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
+.svc-batt { width: 64px; height: 32px; border: 2px solid rgba(255,255,255,.25); border-radius: 8px; position: relative; flex: none; padding: 3px; }
+.svc-batt::after { content: ""; position: absolute; right: -8px; top: 8px; width: 5px; height: 12px; border-radius: 0 3px 3px 0; background: rgba(255,255,255,.25); }
+.svc-batt i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--svc-green), #6ee7b7); width: 0; animation: svcFillBar 1.6s .5s cubic-bezier(.2,.8,.2,1) forwards; }
+.svc-batt-info .bv { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.svc-batt-info .bl2 { font-size: 10px; color: var(--svc-ink3); letter-spacing: .08em; text-transform: uppercase; margin-top: 1px; }
+.svc-mains { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; letter-spacing: .06em; color: var(--svc-green); background: rgba(52,211,153,.1); border: 1px solid rgba(52,211,153,.25); padding: 5px 11px; border-radius: 999px; margin-top: 10px; }
+.svc-mains.amber { color: var(--svc-amber); background: rgba(251,191,36,.1); border-color: rgba(251,191,36,.3); }
+.svc-mains .mdot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; animation: svcPulse 2.2s ease-in-out infinite; }
+.svc-donut-wrap { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
+.svc-donut { width: 74px; height: 74px; flex: none; transform: rotate(-90deg); }
+.svc-donut .bg { stroke: rgba(255,255,255,.08); }
+.svc-donut .fg1 { stroke: var(--svc-accent); stroke-linecap: round; }
+.svc-donut .fg2 { stroke: var(--svc-cool); stroke-linecap: round; }
+.svc-donut-c { font-size: 11px; color: var(--svc-ink2); }
+.svc-donut-c b { color: var(--svc-ink); font-size: 15px; font-variant-numeric: tabular-nums; display: block; }
+.svc-talkers { margin-top: 10px; display: flex; flex-direction: column; gap: 9px; }
+.svc-talker { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; font-size: 12px; }
+.svc-talker .tn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.svc-talker .tv { color: var(--svc-ink2); font-variant-numeric: tabular-nums; font-size: 11px; }
+.svc-talker .tbar { grid-column: 1 / -1; height: 4px; border-radius: 99px; background: rgba(255,255,255,.07); overflow: hidden; }
+.svc-talker .tbar i { display: block; height: 100%; border-radius: 99px; background: var(--svc-accent); width: 0; animation: svcFillBar 1.4s .4s cubic-bezier(.2,.8,.2,1) forwards; }
+.svc-kv { display: flex; justify-content: space-between; font-size: 11px; color: var(--svc-ink2); margin-top: 8px; }
+.svc-kv b { color: var(--svc-ink); font-variant-numeric: tabular-nums; }
+.svc-tput { position: relative; height: 92px; margin-top: 8px; border-radius: 12px; overflow: hidden; background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.05); }
+.svc-tput canvas { width: 100%; height: 100%; display: block; }
+.svc-tput-legend { display: flex; gap: 14px; margin-top: 8px; font-size: 11px; color: var(--svc-ink2); }
+.svc-tput-legend b { color: var(--svc-ink); font-variant-numeric: tabular-nums; }
+.svc-tput-legend .sw { display: inline-block; width: 8px; height: 8px; border-radius: 3px; margin-right: 5px; }
+.svc-unifi-tag { font-size: 9px; font-weight: 700; letter-spacing: .1em; color: var(--svc-cool); background: rgba(56,189,248,.1); border: 1px solid rgba(56,189,248,.25); padding: 3px 8px; border-radius: 999px; }
 @media (prefers-reduced-motion: reduce) {
-  .svc-card, .svc-dot, .svc-np .eq i { animation: none !important; transition: none !important; }
+  .svc-card, .svc-dot, .svc-np .eq i, .svc-orb, .svc-bar i, .svc-batt i, .svc-talker .tbar i, .svc-mains .mdot { animation: none !important; transition: none !important; }
   .svc-sheet .panel { animation: none; }
+  .svc-enter { opacity: 1 !important; }
 }
 </style>
 <div class="svc-wrap">
+  <div class="svc-orb svc-orb-1"></div>
+  <div class="svc-orb svc-orb-2"></div>
   <div style="margin-bottom:4px">
     <div style="font-size:11px;font-weight:700;letter-spacing:.16em;color:var(--svc-ink2)">SERVICES / LIVE</div>
     <h1 style="font-size:24px;margin:4px 0 2px">Every service, one tap away.</h1>
@@ -542,9 +616,10 @@ function renderServicesPanel() {
   <div class="panel">
     <div class="grab"></div>
     <div class="stitle" id="svcSheetTitle"></div>
-    <button class="svc-action" id="svcOpen">Open</button>
-    <button class="svc-action danger" id="svcRestart">Restart container</button>
-    <button class="svc-action" id="svcCopy">Copy link</button>
+    <div class="ssub" id="svcSheetSub"></div>
+    <button class="svc-action" id="svcOpen"><span class="a-ic">&#127760;</span><span>Open</span></button>
+    <button class="svc-action danger" id="svcRestart"><span class="a-ic">&#128260;</span><span>Restart container</span></button>
+    <button class="svc-action" id="svcCopy"><span class="a-ic">&#128279;</span><span>Copy link</span></button>
   </div>
 </div>
 <div class="svc-toast" id="svcToast"></div>
@@ -609,7 +684,8 @@ function renderServicesPanel() {
   var ICONS = {
     bolt: '&#9889;', disk: '&#128190;', gauge: '&#128246;', play: '&#9654;', chart: '&#128202;', search: '&#128269;',
     tv: '&#128250;', film: '&#127916;', layers: '&#128450;', download: '&#11015;', cloud: '&#9729;', sync: '&#128260;',
-    folder: '&#128193;', cpu: '&#128421;', box: '&#128230;', trash: '&#128465;', shield: '&#128737;'
+    folder: '&#128193;', cpu: '&#128421;', box: '&#128230;', trash: '&#128465;', shield: '&#128737;',
+    globe: '&#127760;', wifi: '&#128225;'
   };
   function iconFor(id) { return ICONS[id] || '&#9642;'; }
 
@@ -637,42 +713,168 @@ function renderServicesPanel() {
     if (d.ups) {
       var u = d.ups;
       var dot = u.lowBattery ? 'down' : '';
-      var label = u.onBattery ? 'ON BATTERY' : 'ON MAINS POWER';
-      var mainsColor = u.onBattery ? 'var(--svc-amber)' : 'var(--svc-green)';
-      out += '<div class="svc-card" data-key="ups"><div class="svc-dot ' + dot + '"></div>' +
+      var onBatt = !!u.onBattery;
+      var pct = u.batteryPercent != null ? Math.max(0, Math.min(100, u.batteryPercent)) : 0;
+      out += '<div class="svc-card" data-key="ups" data-nosheet="1"><div class="svc-dot ' + dot + '"></div>' +
         '<div class="svc-top"><div class="svc-icon green">' + iconFor('bolt') + '</div><div class="svc-name">UPS Power</div></div>' +
         '<div class="svc-desc">' + esc(u.model || 'UPS') + '</div>' +
-        '<div class="svc-metrics">' +
-        '<div class="svc-metric"><div class="v">' + (u.batteryPercent != null ? u.batteryPercent + '<small>%</small>' : '—') + '</div><div class="l">Battery</div></div>' +
-        '<div class="svc-metric"><div class="v">' + fmtRuntime(u.runtimeSeconds) + '</div><div class="l">Runtime</div></div>' +
-        '<div class="svc-metric"><div class="v">' + (u.loadPercent != null ? u.loadPercent + '<small>%</small>' : '—') + '</div><div class="l">Load</div></div>' +
-        '</div><div class="svc-desc" style="margin-top:8px;color:' + mainsColor + ';font-weight:700">' + label + '</div></div>';
+        '<div class="svc-batt-wrap"><div class="svc-batt"><i style="--w:' + pct + '%"></i></div>' +
+        '<div class="svc-batt-info"><div class="bv">' + (u.batteryPercent != null ? u.batteryPercent + '%' : '—') + '</div><div class="bl2">Battery</div></div></div>' +
+        '<div class="svc-widget">' +
+        '<div class="metric"><div class="mv">' + esc(fmtRuntime(u.runtimeSeconds)) + '</div><div class="ml">Runtime</div></div>' +
+        '<div class="metric"><div class="mv">' + (u.loadPercent != null ? u.loadPercent + '<small style="font-size:10px;color:var(--svc-ink2)">%</small>' : '—') + '</div><div class="ml">Load</div></div>' +
+        '</div>' +
+        '<div class="svc-mains' + (onBatt ? ' amber' : '') + '"><span class="mdot"></span>' + (onBatt ? 'ON BATTERY' : 'ON MAINS POWER') + '</div></div>';
     }
     if (d.zfs) {
       var z = d.zfs;
+      if (z.error) {
+        // Exporter unreachable: a deployment/networking problem, not a pool
+        // failure — neutral dot and the reason, never a red herring.
+        out += '<div class="svc-card" data-key="zfs" data-nosheet="1"><div class="svc-dot skip"></div>' +
+          '<div class="svc-top"><div class="svc-icon">' + iconFor('disk') + '</div><div class="svc-name">ZFS Pool</div></div>' +
+          '<div class="svc-desc">Health check unreachable: ' + esc(z.error) + '</div></div>';
+      } else {
       var healthy = z.health === 'ONLINE';
-      out += '<div class="svc-card" data-key="zfs"><div class="svc-dot' + (healthy ? '' : ' down') + '"></div>' +
+      out += '<div class="svc-card" data-key="zfs" data-nosheet="1"><div class="svc-dot' + (healthy ? '' : ' down') + '"></div>' +
         '<div class="svc-top"><div class="svc-icon">' + iconFor('disk') + '</div><div class="svc-name">ZFS Pool</div></div>' +
         '<div class="svc-desc">Pool ' + esc(z.pool || '') + ' · ' + esc(z.health) + '</div>' +
-        '<div class="svc-desc">' + (z.lastScrub && z.lastScrub !== 'unknown' ? 'Last scrub: ' + esc(z.lastScrub) : 'Last scrub: unknown') + '</div>' +
+        '<div class="svc-widget">' +
+        '<div class="metric' + (healthy ? ' good' : '') + '"><div class="mv">' + esc(z.health) + '</div><div class="ml">Health</div></div>' +
+        '<div class="metric' + (z.issueCount ? '' : ' good') + '"><div class="mv">' + (z.issueCount || 0) + '</div><div class="ml">Issues</div></div>' +
+        '</div>' +
+        (z.space ? '<div class="svc-bar-row"><div class="bl"><span>Pool usage</span><b>' + z.space.usedPct + '%</b></div>' +
+        '<div class="svc-bar"><i style="--w:' + z.space.usedPct + '%;' + (z.space.usedPct >= 90 ? 'background:linear-gradient(90deg,#f87171,#ef4444);' : '') + '"></i></div></div>' +
+        '<div class="svc-kv"><span>Used</span><b>' + fmtBytes(z.space.usedBytes) + ' of ' + fmtBytes(z.space.totalBytes) + '</b></div>' : '') +
+        '<div class="svc-desc" style="margin-top:8px">' + (z.lastScrub && z.lastScrub !== 'unknown' ? 'Last scrub: ' + esc(z.lastScrub) : 'Last scrub: unknown') + '</div>' +
         (z.issueCount ? '<span class="svc-badge">' + z.issueCount + ' issues</span>' : '') + '</div>';
+      }
     }
     if (d.speedtest) {
       var sp = d.speedtest;
-      out += '<div class="svc-card" data-key="speedtest"><div class="svc-dot"></div>' +
-        '<div class="svc-top"><div class="svc-icon cool">' + iconFor('gauge') + '</div><div class="svc-name">Speedtest</div></div>' +
-        '<div class="svc-desc">Latest result' + (sp.ranAt ? ' · ' + esc(String(sp.ranAt).slice(0, 10)) : '') + '</div>' +
-        '<div class="svc-metrics">' +
-        '<div class="svc-metric"><div class="v">' + (sp.downloadMbps != null ? Math.round(sp.downloadMbps) + '<small> Mb/s</small>' : '—') + '</div><div class="l">Down</div></div>' +
-        '<div class="svc-metric"><div class="v">' + (sp.uploadMbps != null ? Math.round(sp.uploadMbps) + '<small> Mb/s</small>' : '—') + '</div><div class="l">Up</div></div>' +
-        '<div class="svc-metric"><div class="v">' + (sp.pingMs != null ? Number(sp.pingMs).toFixed(1) + '<small> ms</small>' : '—') + '</div><div class="l">Ping</div></div>' +
-        '</div></div>';
+      if (sp.error) {
+        out += '<div class="svc-card" data-key="speedtest" data-nosheet="1"><div class="svc-dot skip"></div>' +
+          '<div class="svc-top"><div class="svc-icon">' + iconFor('gauge') + '</div><div class="svc-name">Speedtest</div></div>' +
+          '<div class="svc-desc">Last check failed: ' + esc(sp.error) + '</div></div>';
+      } else {
+        var dl = sp.downloadMbps, ul = sp.uploadMbps;
+        var dlW = dl != null ? Math.min(100, Math.round(dl / 10)) : 0;
+        var ulW = ul != null ? Math.min(100, Math.round(ul / 10)) : 0;
+        out += '<div class="svc-card" data-key="speedtest" data-nosheet="1"><div class="svc-dot"></div>' +
+          '<div class="svc-top"><div class="svc-icon">' + iconFor('gauge') + '</div><div class="svc-name">Speedtest</div></div>' +
+          '<div class="svc-desc">Local connection test history' + (sp.ranAt ? ' · ' + esc(String(sp.ranAt).slice(0, 10)) : '') + '</div>' +
+          '<div class="svc-bar-row"><div class="bl"><span>Download</span><b>' + (dl != null ? Math.round(dl) + ' Mbps' : '—') + '</b></div><div class="svc-bar"><i style="--w:' + dlW + '%"></i></div></div>' +
+          '<div class="svc-bar-row"><div class="bl"><span>Upload</span><b>' + (ul != null ? Math.round(ul) + ' Mbps' : '—') + '</b></div><div class="svc-bar"><i style="--w:' + ulW + '%"></i></div></div>' +
+          '<div class="svc-widget"><div class="metric"><div class="mv">' + (sp.pingMs != null ? Number(sp.pingMs).toFixed(1) + '<small style="font-size:10px;color:var(--svc-ink2)"> ms</small>' : '—') + '</div><div class="ml">Ping</div></div></div></div>';
+      }
     }
     return out;
   }
 
+  function fmtMbps(v) {
+    if (v == null) return '—';
+    return (Math.round(v * 10) / 10) + '<small> Mb/s</small>';
+  }
+
+  function fmtHMS(ms) {
+    var t = Math.max(0, Math.round(ms / 1000));
+    var h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), sec = t % 60;
+    return h + ':' + ('0' + m).slice(-2) + ':' + ('0' + sec).slice(-2);
+  }
+
+  function fmtBytes(b) {
+    if (b == null) return '—';
+    var units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'], i = 0, n = b;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (Math.round(n * 10) / 10) + ' ' + units[i];
+  }
+
+  // Network group: live UDR7 data in the mockup's 4-card layout — WAN status,
+  // wide live-throughput graph, client donut, and top talkers with animated
+  // bars. Error state renders the reason instead of fake numbers.
+  function networkCards(d) {
+    var out = '';
+    var n = d.network;
+    if (!n) return out;
+    if (n.error) {
+      return '<div class="svc-card" data-key="unifi" data-nosheet="1"><div class="svc-dot skip"></div>' +
+        '<div class="svc-top"><div class="svc-icon">' + iconFor('wifi') + '</div><div class="svc-name">Network</div></div>' +
+        '<div class="svc-desc">UDR7 unreachable: ' + esc(n.error) + '</div></div>';
+    }
+    var w = n.wan || {};
+    out += '<div class="svc-card" data-key="unifi-wan" data-nosheet="1"><div class="svc-dot' + (w.up === false ? ' down' : '') + '"></div>' +
+      '<div class="svc-top"><div class="svc-icon green">' + iconFor('globe') + '</div><div class="svc-name">WAN Status</div></div>' +
+      '<div class="svc-desc">' + esc(w.isp || 'Internet uplink') + '</div>' +
+      '<div class="svc-widget">' +
+      '<div class="metric' + (w.up !== false ? ' good' : '') + '"><div class="mv">' + (w.latencyMs != null ? Math.round(w.latencyMs) + '<small style="font-size:10px;color:var(--svc-ink2)"> ms</small>' : '—') + '</div><div class="ml">Latency</div></div>' +
+      '<div class="metric"><div class="mv">' + (w.capacityDownMbps != null ? Math.round(w.capacityDownMbps) : '—') + '</div><div class="ml">Down cap.</div></div>' +
+      '</div>' +
+      (w.ip ? '<div class="svc-kv"><span>WAN IP</span><b>' + esc(w.ip) + '</b></div>' : '') + '</div>';
+    var t = n.throughput || {};
+    out += '<div class="svc-card wide" data-key="unifi-tput" data-nosheet="1"><div class="svc-dot"></div>' +
+      '<div class="svc-top"><div class="svc-icon">' + iconFor('gauge') + '</div><div class="svc-name">Live Throughput</div></div>' +
+      '<div class="svc-desc">Real-time LAN bandwidth, updated every refresh</div>' +
+      '<div class="svc-tput"><canvas id="netSpark"></canvas></div>' +
+      '<div class="svc-tput-legend">' +
+      '<span><span class="sw" style="background:#e8a33d"></span>Down <b>' + fmtMbps(t.downMbps).replace(/<[^>]+>/g, '') + '</b> Mbps Mbps</span>' +
+      '<span><span class="sw" style="background:rgba(255,255,255,.35)"></span>Up <b>' + fmtMbps(t.upMbps).replace(/<[^>]+>/g, '') + '</b> Mbps Mbps</span>' +
+      '</div></div>';
+    var c = n.clients || {};
+    var total = c.total || 0;
+    var wiredPct = total ? Math.round((c.wired || 0) / total * 100) : 0;
+    var circ = 2 * Math.PI * 34;
+    var wLen = (circ * wiredPct / 100).toFixed(1);
+    out += '<div class="svc-card" data-key="unifi-clients" data-nosheet="1"><div class="svc-dot"></div>' +
+      '<div class="svc-top"><div class="svc-icon cool">' + iconFor('wifi') + '</div><div class="svc-name">Clients</div></div>' +
+      '<div class="svc-desc">Devices on the network</div>' +
+      '<div class="svc-donut-wrap">' +
+      '<svg class="svc-donut" viewBox="0 0 80 80"><circle class="bg" cx="40" cy="40" r="34" fill="none" stroke-width="9"/>' +
+      '<circle class="fg1" cx="40" cy="40" r="34" fill="none" stroke-width="9" stroke-dasharray="' + wLen + ' ' + circ.toFixed(1) + '"/>' +
+      '<circle class="fg2" cx="40" cy="40" r="34" fill="none" stroke-width="9" stroke-dasharray="' + (circ - wLen).toFixed(1) + ' ' + circ.toFixed(1) + '" stroke-dashoffset="' + (-wLen) + '"/></svg>' +
+      '<div class="svc-donut-c"><b>' + total + '</b>devices online<div style="margin-top:6px">' + (c.wireless || 0) + ' WiFi · ' + (c.wired || 0) + ' wired</div></div>' +
+      '</div></div>';
+    var talkers = c.top || [];
+    var topRate = 0;
+    talkers.forEach(function (x) { topRate = Math.max(topRate, (x.downMbps || 0) + (x.upMbps || 0)); });
+    out += '<div class="svc-card" data-key="unifi-talkers" data-nosheet="1"><div class="svc-dot"></div>' +
+      '<div class="svc-top"><div class="svc-icon">' + iconFor('chart') + '</div><div class="svc-name">Top Talkers</div></div>' +
+      '<div class="svc-desc">Bandwidth by device right now</div>' +
+      '<div class="svc-talkers">' + talkers.map(function (x) {
+        var rate = (x.downMbps || 0) + (x.upMbps || 0);
+        var pct = topRate > 0 ? Math.max(4, Math.round(rate / topRate * 100)) : 0;
+        return '<div class="svc-talker"><span class="tn">' + esc(x.name || x.ip || 'unknown') + '</span>' +
+          '<span class="tv">' + fmtMbps(rate).replace(/<[^>]+>/g, '') + ' Mbps</span>' +
+          '<div class="tbar"><i style="--w:' + pct + '%"></i></div></div>';
+      }).join('') + '</div></div>';
+    return out;
+  }
+
+  function drawSparkline(cv, hist) {
+    var dpr = window.devicePixelRatio || 1;
+    var W = cv.clientWidth || 260, H = cv.clientHeight || 48;
+    cv.width = W * dpr; cv.height = H * dpr;
+    var ctx = cv.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+    var max = 1;
+    hist.forEach(function (p) { max = Math.max(max, p.downMbps || 0, p.upMbps || 0); });
+    function line(key, color) {
+      ctx.beginPath();
+      hist.forEach(function (p, i) {
+        var x = (i / (hist.length - 1)) * W;
+        var y = H - 4 - ((p[key] || 0) / max) * (H - 10);
+        if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+      });
+      ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    line('downMbps', '#e8a33d');
+    line('upMbps', 'rgba(255,255,255,.35)');
+  }
+
+  var firstRender = true;
   function render(d) {
     LAN = d.netHosts.lan; TAIL = d.netHosts.tail;
+    var entCls = firstRender ? ' svc-enter' : '';
     var services = d.services || [];
     var byGroup = {};
     (d.groups || []).forEach(function (g) { byGroup[g] = []; });
@@ -686,57 +888,84 @@ function renderServicesPanel() {
     var up = all.filter(function (x) { return x.state !== 'down'; }).length;
     var downs = all.filter(function (x) { return x.state === 'down'; });
     var upsNote = d.ups ? (d.ups.onBattery ? 'UPS on battery' : 'UPS on mains') : '';
-    var bannerSub = [up + '/' + all.length + ' services up', upsNote, 'last check ' + (d.ageSeconds != null ? d.ageSeconds + 's' : 'just now') + ' ago']
+    var netNote = d.network && !d.network.error ? 'UDR7 online' : '';
+    var bannerSub = [up + '/' + all.length + ' services up', upsNote, netNote, 'last check ' + (d.ageSeconds != null ? d.ageSeconds + 's' : 'just now') + ' ago']
       .filter(Boolean).join(' · ');
     var bannerTitle = downs.length ? downs.length + ' service' + (downs.length > 1 ? 's' : '') + ' need attention'
       : 'All systems operational';
-    html += '<div class="svc-banner' + (downs.length ? ' warn' : '') + '"><div class="pulse-dot"></div>' +
+    html += '<div class="svc-banner' + entCls + (downs.length ? ' warn' : '') + '"><div class="pulse-dot"></div>' +
       '<div><div class="t">' + esc(bannerTitle) + '</div><div class="s">' + esc(bannerSub) + '</div></div>' +
       '<div class="pill">' + (downs.length ? 'DEGRADED' : 'ONLINE') + '</div></div>';
     var sp = d.speedtest || {};
     html += '<div class="svc-hero">' +
-      '<div class="stat"><div class="v">' + up + '<small>/' + all.length + '</small></div><div class="l">Services Up</div></div>' +
-      '<div class="stat hot"><div class="v">' + (sp.downloadMbps != null ? Math.round(sp.downloadMbps * 10) / 10 : '—') + '<small> Mbps</small></div><div class="l">Download</div></div>' +
-      '<div class="stat"><div class="v">' + (sp.uploadMbps != null ? Math.round(sp.uploadMbps * 10) / 10 : '—') + '<small> Mbps</small></div><div class="l">Upload</div></div>' +
-      '<div class="stat"><div class="v">' + (sp.pingMs != null ? Number(sp.pingMs).toFixed(1) : '—') + '<small> ms</small></div><div class="l">Ping</div></div>' +
+      '<div class="stat' + entCls + '"><div class="v">' + up + '<small>/' + all.length + '</small></div><div class="l">Services Up</div></div>' +
+      '<div class="stat hot' + entCls + '"><div class="v">' + (sp.downloadMbps != null ? Math.round(sp.downloadMbps * 10) / 10 : '—') + '<small> Mbps</small></div><div class="l">Download</div></div>' +
+      '<div class="stat' + entCls + '"><div class="v">' + (sp.uploadMbps != null ? Math.round(sp.uploadMbps * 10) / 10 : '—') + '<small> Mbps</small></div><div class="l">Upload</div></div>' +
+      '<div class="stat' + entCls + '"><div class="v">' + (sp.pingMs != null ? Number(sp.pingMs).toFixed(1) : '—') + '<small> ms</small></div><div class="l">Ping</div></div>' +
       '</div>';
     (d.groups || []).forEach(function (g) {
       var items = byGroup[g] || [];
-      var special = g === 'System Health' ? specialCards(d) : '';
+      var special = g === 'System Health' ? specialCards(d) : (g === 'Network' ? networkCards(d) : '');
       if (!items.length && !special) return;
       var specialCount = (d.ups ? 1 : 0) + (d.zfs ? 1 : 0) + (d.speedtest ? 1 : 0);
-      html += '<div class="svc-head"><h2>' + esc(g) + '</h2><span class="count">' + (items.length + (g === 'System Health' ? specialCount : 0)) + '</span><div class="line"></div></div>';
-      html += '<div class="svc-grid">' + special + items.map(cardHtml).join('') + '</div>';
+      var netCount = d.network ? (d.network.error ? 1 : 4) : 0;
+      html += '<div class="svc-head' + entCls + '"><h2>' + esc(g) + '</h2><span class="count">' + (items.length + (g === 'System Health' ? specialCount : 0) + (g === 'Network' ? netCount : 0)) + '</span><div class="line"></div></div>';
+      html += '<div class="svc-grid' + entCls + '">' + special + items.map(cardHtml).join('') + '</div>';
     });
     board.innerHTML = html || '<div class="svc-loading">No services configured yet.</div>';
+    var spark = document.getElementById('netSpark');
+    if (spark && d.network && d.network.history && d.network.history.length > 1) {
+      drawSparkline(spark, d.network.history);
+    }
+    // Entrance motion: staggered fade-up on banner, hero stats, and groups.
+    var ents = board.querySelectorAll('.svc-enter');
+    for (var ei = 0; ei < ents.length; ei++) {
+      ents[ei].style.animationDelay = Math.min(ei * 60, 600) + 'ms';
+    }
     if (d.nowPlaying && d.nowPlaying.length) {
       np.innerHTML = d.nowPlaying.map(function (s) {
-        return '<div class="svc-np"><div class="art">' + iconFor('play') + '</div><div><div class="t">' + esc(s.title) + '</div>' +
-          '<div class="s">' + esc([s.subtitle, s.user].filter(Boolean).join(' · ')) + '</div></div>' +
-          '<div class="eq"><i></i><i></i><i></i></div></div>';
+        var pct = s.duration > 0 ? Math.min(100, Math.round(s.viewOffset / s.duration * 100)) : 0;
+        var rem = s.duration > s.viewOffset ? fmtHMS(s.duration - s.viewOffset) + ' remaining' : '';
+        return '<div class="svc-np"><div class="np-poster">' + iconFor('film') + '</div><div class="np-info">' +
+          '<div class="np-kicker"><span class="eq"><i></i><i></i><i></i></span>NOW PLAYING  · PLEX</div>' +
+          '<div class="np-title">' + esc(s.title) + '</div>' +
+          '<div class="np-sub">' + esc([s.player, s.user].filter(Boolean).join(' · ')) + '</div>' +
+          (s.duration > 0 ? '<div class="np-progress"><i style="width:' + pct + '%"></i></div>' +
+            (rem ? '<div class="np-time">' + rem + '</div>' : '') : '') +
+          '</div></div>';
       }).join('');
     } else { np.innerHTML = ''; }
     wireCards();
+    firstRender = false;
   }
 
   var sheet = document.getElementById('svcSheet');
   var sheetKey = null, sheetUrl = null, sheetName = '', sheetContainer = '', sheetCanRestart = false;
-  var pressTimer = null;
+  var pressTimer = null, suppressClick = false;
   function openSheet(card) {
     sheetKey = card.dataset.key; sheetUrl = card.dataset.url || null;
     sheetName = card.dataset.name; sheetContainer = card.dataset.container || '';
     sheetCanRestart = card.dataset.canrestart === '1';
     document.getElementById('svcSheetTitle').textContent = sheetName;
+    document.getElementById('svcSheetSub').textContent = sheetUrl || (sheetContainer ? 'container: ' + sheetContainer : '');
     document.getElementById('svcOpen').disabled = !sheetUrl;
     document.getElementById('svcRestart').disabled = !sheetCanRestart || !sheetContainer;
+    document.getElementById('svcCopy').disabled = !sheetUrl;
     sheet.classList.add('open');
   }
-  function closeSheet() { sheet.classList.remove('open'); }
+  function closeSheet() {
+    sheet.classList.remove('open');
+    // The long-press flag is consumed by the card's click handler, but the
+    // sheet may cover the card by the time the finger lifts (so no click
+    // fires). Reset here too so the next tap is never swallowed.
+    suppressClick = false;
+  }
   document.getElementById('svcScrim').addEventListener('click', closeSheet);
   document.getElementById('svcOpen').addEventListener('click', function () {
     if (sheetUrl) {
       taps[sheetKey] = (taps[sheetKey] || 0) + 1;
       try { localStorage.setItem('svcTaps', JSON.stringify(taps)); } catch (e) {}
+      resort();
       window.open(sheetUrl, '_blank', 'noopener');
     }
     closeSheet();
@@ -752,17 +981,63 @@ function renderServicesPanel() {
     }).catch(function () { toast('Restart failed: network error'); })
     .then(function () { btn.disabled = false; btn.textContent = 'Restart container'; closeSheet(); });
   });
+  // navigator.clipboard needs a secure context; the dashboard is usually plain
+  // http on LAN/Tailscale, so fall back to the execCommand path there.
+  function copyText(t) {
+    function legacy() {
+      return new Promise(function (resolve, reject) {
+        var ta = document.createElement('textarea');
+        ta.value = t;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed'; ta.style.top = '-9999px'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+          if (document.execCommand('copy')) resolve();
+          else reject(new Error('execCommand_copy_false'));
+        } catch (e) { reject(e); }
+        document.body.removeChild(ta);
+      });
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(t).catch(function () { return legacy(); });
+    }
+    return legacy();
+  }
   document.getElementById('svcCopy').addEventListener('click', function () {
-    if (sheetUrl && navigator.clipboard) navigator.clipboard.writeText(sheetUrl).catch(function () {});
-    closeSheet(); toast('Link copied');
+    if (!sheetUrl) { closeSheet(); toast('No link for this service'); return; }
+    copyText(sheetUrl).then(function () { closeSheet(); toast('Link copied'); })
+      .catch(function () { closeSheet(); toast('Copy failed'); });
   });
 
+  // Smart sort: re-float the most-tapped cards to the top of their group
+  // immediately after a tap, instead of waiting for the next 30s refresh.
+  // Special cards (UPS/ZFS/Speedtest) stay pinned at the top of System Health.
+  function resort() {
+    document.querySelectorAll('#svcBoard .svc-grid').forEach(function (grid) {
+      var cards = Array.prototype.slice.call(
+        grid.querySelectorAll('.svc-card[data-key]:not([data-nosheet])'));
+      cards.sort(function (a, b) { return (taps[b.dataset.key] || 0) - (taps[a.dataset.key] || 0); });
+      cards.forEach(function (c) {
+        var name = c.querySelector('.svc-name');
+        if ((taps[c.dataset.key] || 0) >= 3 && name && !c.querySelector('.svc-sort-tag')) {
+          var tag = document.createElement('span');
+          tag.className = 'svc-sort-tag'; tag.textContent = 'SMART SORT';
+          name.appendChild(tag);
+        }
+        grid.appendChild(c);
+      });
+    });
+  }
+
   function wireCards() {
-    board.querySelectorAll('.svc-card[data-key]').forEach(function (card) {
+    // Special cards (UPS/ZFS/Speedtest) carry data-nosheet: they have no
+    // actions, so a long-press must not open an empty action sheet.
+    board.querySelectorAll('.svc-card[data-key]:not([data-nosheet])').forEach(function (card) {
       var sx = 0, sy = 0;
       card.addEventListener('touchstart', function (e) {
         var t = e.touches[0]; sx = t.clientX; sy = t.clientY;
-        pressTimer = setTimeout(function () { pressTimer = null; openSheet(card); }, 550);
+        pressTimer = setTimeout(function () { pressTimer = null; suppressClick = true; openSheet(card); }, 550);
       }, { passive: true });
       card.addEventListener('touchmove', function (e) {
         if (!pressTimer) return;
@@ -773,10 +1048,15 @@ function renderServicesPanel() {
       card.addEventListener('touchcancel', function () { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } });
       card.addEventListener('contextmenu', function (e) { e.preventDefault(); });
       card.addEventListener('click', function () {
+        // A long-press opens the action sheet; the finger lifting afterwards
+        // synthesizes a click on the card — swallow it so the card's link
+        // does not also open.
+        if (suppressClick) { suppressClick = false; return; }
         var url = card.dataset.url;
         if (!url) return;
         taps[card.dataset.key] = (taps[card.dataset.key] || 0) + 1;
         try { localStorage.setItem('svcTaps', JSON.stringify(taps)); } catch (e) {}
+        resort();
         window.open(url, '_blank', 'noopener');
       });
     });
