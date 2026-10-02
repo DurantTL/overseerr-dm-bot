@@ -893,7 +893,7 @@ function renderServicesPanel() {
       .filter(Boolean).join(' · ');
     var bannerTitle = downs.length ? downs.length + ' service' + (downs.length > 1 ? 's' : '') + ' need attention'
       : 'All systems operational';
-    html += '<div class="svc-banner' + entCls + '' + (downs.length ? ' warn' : '') + '"><div class="pulse-dot"></div>' +
+    html += '<div class="svc-banner' + entCls + (downs.length ? ' warn' : '') + '"><div class="pulse-dot"></div>' +
       '<div><div class="t">' + esc(bannerTitle) + '</div><div class="s">' + esc(bannerSub) + '</div></div>' +
       '<div class="pill">' + (downs.length ? 'DEGRADED' : 'ONLINE') + '</div></div>';
     var sp = d.speedtest || {};
