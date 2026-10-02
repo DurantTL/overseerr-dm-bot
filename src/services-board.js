@@ -7,10 +7,12 @@
 
 const axios = require('axios');
 const { fetchUpsStatus, nutConfigured } = require('./nut');
+const { fetchUnifiNetwork } = require('./unifi');
 
 // Groups in display order.
 const GROUPS = Object.freeze([
   'System Health',
+  'Network',
   'Media',
   'Automation',
   'Downloads & Files',
@@ -142,10 +144,11 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
     if (label in queueCounts) queueCounts[label]++;
   }
 
-  const [ups, zfs, speedtest] = await Promise.all([
+  const [ups, zfs, speedtest, network] = await Promise.all([
     nutConfigured(config) ? fetchUpsStatus(config).catch(() => null) : Promise.resolve(null),
     fetchZfsHealth(config, http).catch(() => null),
     fetchSpeedtest(config, http).catch(() => null),
+    fetchUnifiNetwork(config, http).catch(() => null),
   ]);
 
   const services = [];
@@ -207,10 +210,11 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
 
   return {
     services,
-    groups: GROUPS.filter(g => services.some(s => s.group === g) || (g === 'System Health' && (ups || zfs || speedtest))),
+    groups: GROUPS.filter(g => services.some(s => s.group === g) || (g === 'System Health' && (ups || zfs || speedtest)) || (g === 'Network' && network)),
     ups,
     zfs,
     speedtest,
+    network,
     nowPlaying,
     // Smart-network hosts for the client: it picks LAN vs Tailscale via WebRTC.
     netHosts: {

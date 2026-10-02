@@ -465,6 +465,7 @@ function renderServicesPanel() {
 .svc-metric .v { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .svc-metric .v small { font-size: 11px; font-weight: 500; color: var(--svc-ink2); }
 .svc-metric .l { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--svc-ink3); margin-top: 2px; }
+.svc-spark { width: 100%; height: 48px; display: block; margin: 8px 0 2px; }
 .svc-np { display: flex; align-items: center; gap: 12px; background: var(--svc-glass); border: 1px solid var(--svc-line);
   border-radius: 16px; padding: 12px 16px; margin-bottom: 24px; }
 .svc-np .art { width: 44px; height: 44px; border-radius: 10px; background: rgba(233,122,79,.12);
@@ -609,7 +610,8 @@ function renderServicesPanel() {
   var ICONS = {
     bolt: '&#9889;', disk: '&#128190;', gauge: '&#128246;', play: '&#9654;', chart: '&#128202;', search: '&#128269;',
     tv: '&#128250;', film: '&#127916;', layers: '&#128450;', download: '&#11015;', cloud: '&#9729;', sync: '&#128260;',
-    folder: '&#128193;', cpu: '&#128421;', box: '&#128230;', trash: '&#128465;', shield: '&#128737;'
+    folder: '&#128193;', cpu: '&#128421;', box: '&#128230;', trash: '&#128465;', shield: '&#128737;',
+    globe: '&#127760;', wifi: '&#128225;'
   };
   function iconFor(id) { return ICONS[id] || '&#9642;'; }
 
@@ -681,6 +683,73 @@ function renderServicesPanel() {
     return out;
   }
 
+  function fmtMbps(v) {
+    if (v == null) return '—';
+    return (Math.round(v * 10) / 10) + '<small> Mb/s</small>';
+  }
+
+  // Network group: live UDR7 data. WAN status, throughput with a sparkline of
+  // recent samples, and the client mix with top talkers. Error state renders
+  // the reason (usually auth or reachability) instead of fake numbers.
+  function networkCards(d) {
+    var out = '';
+    var n = d.network;
+    if (!n) return out;
+    if (n.error) {
+      return '<div class="svc-card" data-key="unifi" data-nosheet="1"><div class="svc-dot skip"></div>' +
+        '<div class="svc-top"><div class="svc-icon">' + iconFor('wifi') + '</div><div class="svc-name">Network</div></div>' +
+        '<div class="svc-desc">UDR7 unreachable: ' + esc(n.error) + '</div></div>';
+    }
+    var w = n.wan || {};
+    out += '<div class="svc-card" data-key="unifi-wan" data-nosheet="1"><div class="svc-dot' + (w.up === false ? ' down' : '') + '"></div>' +
+      '<div class="svc-top"><div class="svc-icon green">' + iconFor('globe') + '</div><div class="svc-name">WAN</div></div>' +
+      '<div class="svc-desc">' + esc(w.isp || 'Internet uplink') + (w.ip ? ' · ' + esc(w.ip) : '') + '</div>' +
+      '<div class="svc-metrics">' +
+      '<div class="svc-metric"><div class="v">' + (w.latencyMs != null ? Math.round(w.latencyMs) + '<small> ms</small>' : '—') + '</div><div class="l">Latency</div></div>' +
+      '<div class="svc-metric"><div class="v">' + (w.capacityDownMbps != null ? Math.round(w.capacityDownMbps) + '<small> Mb/s</small>' : '—') + '</div><div class="l">Down cap.</div></div>' +
+      '<div class="svc-metric"><div class="v">' + (w.capacityUpMbps != null ? Math.round(w.capacityUpMbps) + '<small> Mb/s</small>' : '—') + '</div><div class="l">Up cap.</div></div>' +
+      '</div></div>';
+    var t = n.throughput || {};
+    out += '<div class="svc-card" data-key="unifi-tput" data-nosheet="1"><div class="svc-dot"></div>' +
+      '<div class="svc-top"><div class="svc-icon cool">' + iconFor('gauge') + '</div><div class="svc-name">Throughput</div></div>' +
+      '<div class="svc-desc">Live, summed across clients</div>' +
+      '<canvas class="svc-spark" id="netSpark"></canvas>' +
+      '<div class="svc-metrics">' +
+      '<div class="svc-metric"><div class="v">' + fmtMbps(t.downMbps) + '</div><div class="l">Down</div></div>' +
+      '<div class="svc-metric"><div class="v">' + fmtMbps(t.upMbps) + '</div><div class="l">Up</div></div>' +
+      '</div></div>';
+    var c = n.clients || {};
+    out += '<div class="svc-card" data-key="unifi-clients" data-nosheet="1"><div class="svc-dot"></div>' +
+      '<div class="svc-top"><div class="svc-icon">' + iconFor('wifi') + '</div><div class="svc-name">Clients</div></div>' +
+      '<div class="svc-desc">' + (c.total || 0) + ' connected · ' + (c.wired || 0) + ' wired · ' + (c.wireless || 0) + ' wireless</div>' +
+      (c.top || []).map(function (x) {
+        return '<div class="svc-desc">↓ ' + fmtMbps(x.downMbps) + ' ↑ ' + fmtMbps(x.upMbps) + ' — ' + esc(x.name || x.ip || 'unknown') + '</div>';
+      }).join('') + '</div>';
+    return out;
+  }
+
+  function drawSparkline(cv, hist) {
+    var dpr = window.devicePixelRatio || 1;
+    var W = cv.clientWidth || 260, H = cv.clientHeight || 48;
+    cv.width = W * dpr; cv.height = H * dpr;
+    var ctx = cv.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+    var max = 1;
+    hist.forEach(function (p) { max = Math.max(max, p.downMbps || 0, p.upMbps || 0); });
+    function line(key, color) {
+      ctx.beginPath();
+      hist.forEach(function (p, i) {
+        var x = (i / (hist.length - 1)) * W;
+        var y = H - 4 - ((p[key] || 0) / max) * (H - 10);
+        if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+      });
+      ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    line('downMbps', '#e8a33d');
+    line('upMbps', 'rgba(255,255,255,.35)');
+  }
+
   function render(d) {
     LAN = d.netHosts.lan; TAIL = d.netHosts.tail;
     var services = d.services || [];
@@ -712,13 +781,18 @@ function renderServicesPanel() {
       '</div>';
     (d.groups || []).forEach(function (g) {
       var items = byGroup[g] || [];
-      var special = g === 'System Health' ? specialCards(d) : '';
+      var special = g === 'System Health' ? specialCards(d) : (g === 'Network' ? networkCards(d) : '');
       if (!items.length && !special) return;
       var specialCount = (d.ups ? 1 : 0) + (d.zfs ? 1 : 0) + (d.speedtest ? 1 : 0);
-      html += '<div class="svc-head"><h2>' + esc(g) + '</h2><span class="count">' + (items.length + (g === 'System Health' ? specialCount : 0)) + '</span><div class="line"></div></div>';
+      var netCount = d.network ? (d.network.error ? 1 : 3) : 0;
+      html += '<div class="svc-head"><h2>' + esc(g) + '</h2><span class="count">' + (items.length + (g === 'System Health' ? specialCount : 0) + (g === 'Network' ? netCount : 0)) + '</span><div class="line"></div></div>';
       html += '<div class="svc-grid">' + special + items.map(cardHtml).join('') + '</div>';
     });
     board.innerHTML = html || '<div class="svc-loading">No services configured yet.</div>';
+    var spark = document.getElementById('netSpark');
+    if (spark && d.network && d.network.history && d.network.history.length > 1) {
+      drawSparkline(spark, d.network.history);
+    }
     if (d.nowPlaying && d.nowPlaying.length) {
       np.innerHTML = d.nowPlaying.map(function (s) {
         return '<div class="svc-np"><div class="art">' + iconFor('play') + '</div><div><div class="t">' + esc(s.title) + '</div>' +
