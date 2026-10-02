@@ -54,6 +54,13 @@ services:
       # identically); set PREMIUMIZE_STAGING_PATH and PREMIUMIZE_IMPORT_PATH to that path too.
       # - ${PREMIUMIZE_DOWNLOADS_HOST_PATH:-/share/downloads}:/share/downloads
     restart: unless-stopped
+    networks:
+      # Keep the stack's default network, plus the monitoring network so the
+      # bot can resolve speedtest-tracker (and Prometheus) by container name.
+      # Declared here, the attachment survives redeploys — no manual
+      # `docker network connect` needed ever again.
+      - default
+      - monitoring
     healthcheck:
       # Reads PORT from inside the container, so it follows env_file (which compose-level
       # interpolation cannot see).
@@ -74,3 +81,7 @@ services:
 
 volumes:
   durant_bot_data:
+
+networks:
+  monitoring:
+    external: true
