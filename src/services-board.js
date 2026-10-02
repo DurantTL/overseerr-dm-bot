@@ -73,26 +73,49 @@ async function probeUrl(url, timeoutMs = 4000) {
   }
 }
 
-async function fetchSpeedtest(config) {
+// Speedtest Tracker response shapes:
+// - legacy /api/speedtest/latest: { data: { download, upload } } in Mbps, { ping } in ms
+// - v1 /api/v1/results/latest: { data: { download_bits, upload_bits, ping } }
+// Prefer the explicit *_bits fields when present; otherwise the legacy fields
+// are already Mbps. Never invent values: unparseable or failed results surface
+// as { error } so the UI can say why instead of showing silent dashes.
+function speedtestMbps(d) {
+  const bits = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n / 1e6 : null; };
+  const mbps = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : null; };
+  return {
+    downloadMbps: d.download_bits != null ? bits(d.download_bits) : mbps(d.download),
+    uploadMbps: d.upload_bits != null ? bits(d.upload_bits) : mbps(d.upload),
+  };
+}
+
+async function fetchSpeedtest(config, http = axios) {
   if (!config.SPEEDTEST_URL) return null;
   try {
-    const res = await axios.get(config.SPEEDTEST_URL, { timeout: 6000 });
+    const res = await http.get(config.SPEEDTEST_URL, { timeout: 6000 });
     const d = res.data?.data || res.data || {};
+    if (d.failed === true || d.status === 'failed') {
+      return { error: 'last_result_failed', ranAt: d.created_at || d.updated_at || null };
+    }
+    const { downloadMbps, uploadMbps } = speedtestMbps(d);
+    if (downloadMbps == null && uploadMbps == null) {
+      return { error: 'empty_result', ranAt: d.created_at || null };
+    }
+    const ping = Number(d.ping);
     return {
-      downloadMbps: Number(d.download) || null,
-      uploadMbps: Number(d.upload) || null,
-      pingMs: Number(d.ping) || null,
+      downloadMbps,
+      uploadMbps,
+      pingMs: Number.isFinite(ping) && ping > 0 ? ping : null,
       ranAt: d.created_at || null,
     };
-  } catch {
-    return null;
+  } catch (err) {
+    return { error: String((err && err.code) || (err && err.message) || 'fetch_failed').slice(0, 80) };
   }
 }
 
-async function fetchZfsHealth(config) {
+async function fetchZfsHealth(config, http = axios) {
   if (!config.ZFS_HEALTH_URL) return null;
   try {
-    const res = await axios.get(config.ZFS_HEALTH_URL, { timeout: 6000 });
+    const res = await http.get(config.ZFS_HEALTH_URL, { timeout: 6000 });
     const d = res.data || {};
     return {
       pool: d.pool || null,
@@ -101,14 +124,18 @@ async function fetchZfsHealth(config) {
       errors: d.errors || null,
       issueCount: Number(d.issue_count) || 0,
     };
-  } catch {
-    return null;
+  } catch (err) {
+    // Surface the failure instead of null: an unreachable exporter is a
+    // deployment/networking problem, not a pool problem, and the UI should
+    // say which. The card renders this as a neutral warning, not a red dot.
+    return { error: String(err.code || err.message || 'fetch_failed').slice(0, 80) };
   }
 }
 
 // Main entry: gather everything the Services tab needs. `deps` supplies the
-// already-wired functions from the bot (health, queues, tautulli).
-async function gatherServicesBoard({ config, health, queues, sessions, canRestart }) {
+// already-wired functions from the bot (health, queues, tautulli). `http` is
+// an optional axios-compatible client for the ZFS/speedtest fetches (tests).
+async function gatherServicesBoard({ config, health, queues, sessions, canRestart, http }) {
   const queueCounts = { sonarr: 0, radarr: 0, 'radarr-4k': 0 };
   for (const q of queues || []) {
     const label = q.source?.label;
@@ -117,8 +144,8 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
 
   const [ups, zfs, speedtest] = await Promise.all([
     nutConfigured(config) ? fetchUpsStatus(config).catch(() => null) : Promise.resolve(null),
-    fetchZfsHealth(config).catch(() => null),
-    fetchSpeedtest(config).catch(() => null),
+    fetchZfsHealth(config, http).catch(() => null),
+    fetchSpeedtest(config, http).catch(() => null),
   ]);
 
   const services = [];
@@ -194,4 +221,4 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
   };
 }
 
-module.exports = { GROUPS, SERVICES, gatherServicesBoard, portFromUrl };
+module.exports = { GROUPS, SERVICES, gatherServicesBoard, portFromUrl, fetchSpeedtest };

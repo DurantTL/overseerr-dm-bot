@@ -130,3 +130,56 @@ test('docker-control: restartCapable prefers socket when accessible', () => {
   assert.ok(cap && cap.via === 'socket');
   fs.unlinkSync(sock);
 });
+
+test('services-board: fetchSpeedtest parses legacy shape as Mbps', async () => {
+  const { fetchSpeedtest } = require('../../src/services-board');
+  const http = { get: async () => ({ data: { message: 'ok', data: {
+    id: 1, ping: 4.912, download: 932.69, upload: 932.39, failed: false,
+    created_at: '2026-10-01T18:33:02',
+  } } }) };
+  const r = await fetchSpeedtest({ SPEEDTEST_URL: 'http://x/api/speedtest/latest' }, http);
+  assert.strictEqual(r.error, undefined);
+  assert.strictEqual(r.downloadMbps, 932.69);
+  assert.strictEqual(r.uploadMbps, 932.39);
+  assert.strictEqual(r.pingMs, 4.912);
+  assert.strictEqual(r.ranAt, '2026-10-01T18:33:02');
+});
+
+test('services-board: fetchSpeedtest converts v1 download_bits to Mbps', async () => {
+  const { fetchSpeedtest } = require('../../src/services-board');
+  const http = { get: async () => ({ data: { data: {
+    download_bits: 1338167752, upload_bits: 927076552, ping: 7.448, status: 'completed',
+  } } }) };
+  const r = await fetchSpeedtest({ SPEEDTEST_URL: 'http://x/api/v1/results/latest' }, http);
+  assert.ok(Math.abs(r.downloadMbps - 1338.167752) < 1e-6);
+  assert.ok(Math.abs(r.uploadMbps - 927.076552) < 1e-6);
+});
+
+test('services-board: fetchSpeedtest surfaces failures as error objects, never silent null', async () => {
+  const { fetchSpeedtest } = require('../../src/services-board');
+  const netFail = { get: async () => { const e = new Error('getaddrinfo ENOTFOUND speedtest-tracker'); e.code = 'ENOTFOUND'; throw e; } };
+  const r = await fetchSpeedtest({ SPEEDTEST_URL: 'http://speedtest-tracker/api/speedtest/latest' }, netFail);
+  assert.strictEqual(r.error, 'ENOTFOUND');
+  assert.strictEqual(r.downloadMbps, undefined);
+  // A failed latest result is reported, not rendered as values.
+  const failedRes = { get: async () => ({ data: { data: { failed: true, created_at: '2026-10-01' } } }) };
+  const r2 = await fetchSpeedtest({ SPEEDTEST_URL: 'http://x/' }, failedRes);
+  assert.strictEqual(r2.error, 'last_result_failed');
+  // An empty result is reported, not rendered as zeros.
+  const emptyRes = { get: async () => ({ data: { data: {} } }) };
+  const r3 = await fetchSpeedtest({ SPEEDTEST_URL: 'http://x/' }, emptyRes);
+  assert.strictEqual(r3.error, 'empty_result');
+  // No URL configured: hide the card entirely (no dead cards).
+  assert.strictEqual(await fetchSpeedtest({}, netFail), null);
+});
+
+test('services-board: gatherServicesBoard keeps System Health group when speedtest errors', async () => {
+  const http = { get: async () => { const e = new Error('connect refused'); e.code = 'ECONNREFUSED'; throw e; } };
+  const board = await gatherServicesBoard({
+    config: { SPEEDTEST_URL: 'http://speedtest-tracker/api/speedtest/latest', ZFS_HEALTH_URL: 'http://x:9911/health' },
+    health: {}, queues: [], sessions: [], canRestart: false, http,
+  });
+  assert.ok(board.groups.includes('System Health'), 'System Health group should render with error cards');
+  assert.strictEqual(board.speedtest.error, 'ECONNREFUSED');
+  assert.strictEqual(board.zfs.error, 'ECONNREFUSED');
+});

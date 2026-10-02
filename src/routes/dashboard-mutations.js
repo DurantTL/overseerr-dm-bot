@@ -738,7 +738,13 @@ function registerDashboardMutationRoutes(app, deps) {
     standardHeaders: 'draft-8',
     legacyHeaders: false,
     handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many restart requests. Wait a moment and try again.' }),
-  }), dashboardAuth, discordReadyGuard, async (req, res) => {
+  }), dashboardAuth, async (req, res) => {
+    // No discordReadyGuard here: Discord readiness is unrelated to a
+    // Portainer/Docker container restart. Blocking restarts while Discord is
+    // disconnected would be a false dependency — and perverse, since a
+    // disconnected Discord is when you most need restart control. The route
+    // keeps dashboardAuth, rate limiting, the container allowlist,
+    // restartCapable, and audit logging.
     const container = String(req.body?.container || '').trim();
     if (!container || !RESTARTABLE.has(container)) {
       audit('dashboard_service_restart', { ...dashboardActor(req), ok: false, container: container || null, reason: 'not_allowlisted' });
