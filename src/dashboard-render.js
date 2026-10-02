@@ -465,6 +465,7 @@ function renderServicesPanel() {
 .svc-metric .v { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .svc-metric .v small { font-size: 11px; font-weight: 500; color: var(--svc-ink2); }
 .svc-metric .l { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--svc-ink3); margin-top: 2px; }
+.svc-spark { width: 100%; height: 48px; display: block; margin: 8px 0 2px; }
 .svc-np { display: flex; align-items: center; gap: 12px; background: var(--svc-glass); border: 1px solid var(--svc-line);
   border-radius: 16px; padding: 12px 16px; margin-bottom: 24px; }
 .svc-np .art { width: 44px; height: 44px; border-radius: 10px; background: rgba(233,122,79,.12);
@@ -609,7 +610,8 @@ function renderServicesPanel() {
   var ICONS = {
     bolt: '&#9889;', disk: '&#128190;', gauge: '&#128246;', play: '&#9654;', chart: '&#128202;', search: '&#128269;',
     tv: '&#128250;', film: '&#127916;', layers: '&#128450;', download: '&#11015;', cloud: '&#9729;', sync: '&#128260;',
-    folder: '&#128193;', cpu: '&#128421;', box: '&#128230;', trash: '&#128465;', shield: '&#128737;'
+    folder: '&#128193;', cpu: '&#128421;', box: '&#128230;', trash: '&#128465;', shield: '&#128737;',
+    globe: '&#127760;', wifi: '&#128225;'
   };
   function iconFor(id) { return ICONS[id] || '&#9642;'; }
 
@@ -639,7 +641,7 @@ function renderServicesPanel() {
       var dot = u.lowBattery ? 'down' : '';
       var label = u.onBattery ? 'ON BATTERY' : 'ON MAINS POWER';
       var mainsColor = u.onBattery ? 'var(--svc-amber)' : 'var(--svc-green)';
-      out += '<div class="svc-card" data-key="ups"><div class="svc-dot ' + dot + '"></div>' +
+      out += '<div class="svc-card" data-key="ups" data-nosheet="1"><div class="svc-dot ' + dot + '"></div>' +
         '<div class="svc-top"><div class="svc-icon green">' + iconFor('bolt') + '</div><div class="svc-name">UPS Power</div></div>' +
         '<div class="svc-desc">' + esc(u.model || 'UPS') + '</div>' +
         '<div class="svc-metrics">' +
@@ -650,18 +652,28 @@ function renderServicesPanel() {
     }
     if (d.zfs) {
       var z = d.zfs;
+      if (z.error) {
+        // Exporter unreachable: a deployment/networking problem, not a pool
+        // failure — neutral dot and the reason, never a red herring.
+        out += '<div class="svc-card" data-key="zfs" data-nosheet="1"><div class="svc-dot skip"></div>' +
+          '<div class="svc-top"><div class="svc-icon">' + iconFor('disk') + '</div><div class="svc-name">ZFS Pool</div></div>' +
+          '<div class="svc-desc">Health check unreachable: ' + esc(z.error) + '</div></div>';
+      } else {
       var healthy = z.health === 'ONLINE';
-      out += '<div class="svc-card" data-key="zfs"><div class="svc-dot' + (healthy ? '' : ' down') + '"></div>' +
+      out += '<div class="svc-card" data-key="zfs" data-nosheet="1"><div class="svc-dot' + (healthy ? '' : ' down') + '"></div>' +
         '<div class="svc-top"><div class="svc-icon">' + iconFor('disk') + '</div><div class="svc-name">ZFS Pool</div></div>' +
         '<div class="svc-desc">Pool ' + esc(z.pool || '') + ' · ' + esc(z.health) + '</div>' +
         '<div class="svc-desc">' + (z.lastScrub && z.lastScrub !== 'unknown' ? 'Last scrub: ' + esc(z.lastScrub) : 'Last scrub: unknown') + '</div>' +
         (z.issueCount ? '<span class="svc-badge">' + z.issueCount + ' issues</span>' : '') + '</div>';
+      }
     }
     if (d.speedtest) {
       var sp = d.speedtest;
-      out += '<div class="svc-card" data-key="speedtest"><div class="svc-dot"></div>' +
+      var spDesc = sp.error ? 'Last check failed: ' + esc(sp.error)
+        : 'Latest result' + (sp.ranAt ? ' · ' + esc(String(sp.ranAt).slice(0, 10)) : '');
+      out += '<div class="svc-card" data-key="speedtest" data-nosheet="1"><div class="svc-dot' + (sp.error ? ' skip' : '') + '"></div>' +
         '<div class="svc-top"><div class="svc-icon cool">' + iconFor('gauge') + '</div><div class="svc-name">Speedtest</div></div>' +
-        '<div class="svc-desc">Latest result' + (sp.ranAt ? ' · ' + esc(String(sp.ranAt).slice(0, 10)) : '') + '</div>' +
+        '<div class="svc-desc">' + spDesc + '</div>' +
         '<div class="svc-metrics">' +
         '<div class="svc-metric"><div class="v">' + (sp.downloadMbps != null ? Math.round(sp.downloadMbps) + '<small> Mb/s</small>' : '—') + '</div><div class="l">Down</div></div>' +
         '<div class="svc-metric"><div class="v">' + (sp.uploadMbps != null ? Math.round(sp.uploadMbps) + '<small> Mb/s</small>' : '—') + '</div><div class="l">Up</div></div>' +
@@ -669,6 +681,73 @@ function renderServicesPanel() {
         '</div></div>';
     }
     return out;
+  }
+
+  function fmtMbps(v) {
+    if (v == null) return '—';
+    return (Math.round(v * 10) / 10) + '<small> Mb/s</small>';
+  }
+
+  // Network group: live UDR7 data. WAN status, throughput with a sparkline of
+  // recent samples, and the client mix with top talkers. Error state renders
+  // the reason (usually auth or reachability) instead of fake numbers.
+  function networkCards(d) {
+    var out = '';
+    var n = d.network;
+    if (!n) return out;
+    if (n.error) {
+      return '<div class="svc-card" data-key="unifi" data-nosheet="1"><div class="svc-dot skip"></div>' +
+        '<div class="svc-top"><div class="svc-icon">' + iconFor('wifi') + '</div><div class="svc-name">Network</div></div>' +
+        '<div class="svc-desc">UDR7 unreachable: ' + esc(n.error) + '</div></div>';
+    }
+    var w = n.wan || {};
+    out += '<div class="svc-card" data-key="unifi-wan" data-nosheet="1"><div class="svc-dot' + (w.up === false ? ' down' : '') + '"></div>' +
+      '<div class="svc-top"><div class="svc-icon green">' + iconFor('globe') + '</div><div class="svc-name">WAN</div></div>' +
+      '<div class="svc-desc">' + esc(w.isp || 'Internet uplink') + (w.ip ? ' · ' + esc(w.ip) : '') + '</div>' +
+      '<div class="svc-metrics">' +
+      '<div class="svc-metric"><div class="v">' + (w.latencyMs != null ? Math.round(w.latencyMs) + '<small> ms</small>' : '—') + '</div><div class="l">Latency</div></div>' +
+      '<div class="svc-metric"><div class="v">' + (w.capacityDownMbps != null ? Math.round(w.capacityDownMbps) + '<small> Mb/s</small>' : '—') + '</div><div class="l">Down cap.</div></div>' +
+      '<div class="svc-metric"><div class="v">' + (w.capacityUpMbps != null ? Math.round(w.capacityUpMbps) + '<small> Mb/s</small>' : '—') + '</div><div class="l">Up cap.</div></div>' +
+      '</div></div>';
+    var t = n.throughput || {};
+    out += '<div class="svc-card" data-key="unifi-tput" data-nosheet="1"><div class="svc-dot"></div>' +
+      '<div class="svc-top"><div class="svc-icon cool">' + iconFor('gauge') + '</div><div class="svc-name">Throughput</div></div>' +
+      '<div class="svc-desc">Live, summed across clients</div>' +
+      '<canvas class="svc-spark" id="netSpark"></canvas>' +
+      '<div class="svc-metrics">' +
+      '<div class="svc-metric"><div class="v">' + fmtMbps(t.downMbps) + '</div><div class="l">Down</div></div>' +
+      '<div class="svc-metric"><div class="v">' + fmtMbps(t.upMbps) + '</div><div class="l">Up</div></div>' +
+      '</div></div>';
+    var c = n.clients || {};
+    out += '<div class="svc-card" data-key="unifi-clients" data-nosheet="1"><div class="svc-dot"></div>' +
+      '<div class="svc-top"><div class="svc-icon">' + iconFor('wifi') + '</div><div class="svc-name">Clients</div></div>' +
+      '<div class="svc-desc">' + (c.total || 0) + ' connected · ' + (c.wired || 0) + ' wired · ' + (c.wireless || 0) + ' wireless</div>' +
+      (c.top || []).map(function (x) {
+        return '<div class="svc-desc">↓ ' + fmtMbps(x.downMbps) + ' ↑ ' + fmtMbps(x.upMbps) + ' — ' + esc(x.name || x.ip || 'unknown') + '</div>';
+      }).join('') + '</div>';
+    return out;
+  }
+
+  function drawSparkline(cv, hist) {
+    var dpr = window.devicePixelRatio || 1;
+    var W = cv.clientWidth || 260, H = cv.clientHeight || 48;
+    cv.width = W * dpr; cv.height = H * dpr;
+    var ctx = cv.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+    var max = 1;
+    hist.forEach(function (p) { max = Math.max(max, p.downMbps || 0, p.upMbps || 0); });
+    function line(key, color) {
+      ctx.beginPath();
+      hist.forEach(function (p, i) {
+        var x = (i / (hist.length - 1)) * W;
+        var y = H - 4 - ((p[key] || 0) / max) * (H - 10);
+        if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+      });
+      ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    line('downMbps', '#e8a33d');
+    line('upMbps', 'rgba(255,255,255,.35)');
   }
 
   function render(d) {
@@ -702,13 +781,18 @@ function renderServicesPanel() {
       '</div>';
     (d.groups || []).forEach(function (g) {
       var items = byGroup[g] || [];
-      var special = g === 'System Health' ? specialCards(d) : '';
+      var special = g === 'System Health' ? specialCards(d) : (g === 'Network' ? networkCards(d) : '');
       if (!items.length && !special) return;
       var specialCount = (d.ups ? 1 : 0) + (d.zfs ? 1 : 0) + (d.speedtest ? 1 : 0);
-      html += '<div class="svc-head"><h2>' + esc(g) + '</h2><span class="count">' + (items.length + (g === 'System Health' ? specialCount : 0)) + '</span><div class="line"></div></div>';
+      var netCount = d.network ? (d.network.error ? 1 : 3) : 0;
+      html += '<div class="svc-head"><h2>' + esc(g) + '</h2><span class="count">' + (items.length + (g === 'System Health' ? specialCount : 0) + (g === 'Network' ? netCount : 0)) + '</span><div class="line"></div></div>';
       html += '<div class="svc-grid">' + special + items.map(cardHtml).join('') + '</div>';
     });
     board.innerHTML = html || '<div class="svc-loading">No services configured yet.</div>';
+    var spark = document.getElementById('netSpark');
+    if (spark && d.network && d.network.history && d.network.history.length > 1) {
+      drawSparkline(spark, d.network.history);
+    }
     if (d.nowPlaying && d.nowPlaying.length) {
       np.innerHTML = d.nowPlaying.map(function (s) {
         return '<div class="svc-np"><div class="art">' + iconFor('play') + '</div><div><div class="t">' + esc(s.title) + '</div>' +
@@ -721,7 +805,7 @@ function renderServicesPanel() {
 
   var sheet = document.getElementById('svcSheet');
   var sheetKey = null, sheetUrl = null, sheetName = '', sheetContainer = '', sheetCanRestart = false;
-  var pressTimer = null;
+  var pressTimer = null, suppressClick = false;
   function openSheet(card) {
     sheetKey = card.dataset.key; sheetUrl = card.dataset.url || null;
     sheetName = card.dataset.name; sheetContainer = card.dataset.container || '';
@@ -729,14 +813,22 @@ function renderServicesPanel() {
     document.getElementById('svcSheetTitle').textContent = sheetName;
     document.getElementById('svcOpen').disabled = !sheetUrl;
     document.getElementById('svcRestart').disabled = !sheetCanRestart || !sheetContainer;
+    document.getElementById('svcCopy').disabled = !sheetUrl;
     sheet.classList.add('open');
   }
-  function closeSheet() { sheet.classList.remove('open'); }
+  function closeSheet() {
+    sheet.classList.remove('open');
+    // The long-press flag is consumed by the card's click handler, but the
+    // sheet may cover the card by the time the finger lifts (so no click
+    // fires). Reset here too so the next tap is never swallowed.
+    suppressClick = false;
+  }
   document.getElementById('svcScrim').addEventListener('click', closeSheet);
   document.getElementById('svcOpen').addEventListener('click', function () {
     if (sheetUrl) {
       taps[sheetKey] = (taps[sheetKey] || 0) + 1;
       try { localStorage.setItem('svcTaps', JSON.stringify(taps)); } catch (e) {}
+      resort();
       window.open(sheetUrl, '_blank', 'noopener');
     }
     closeSheet();
@@ -752,17 +844,63 @@ function renderServicesPanel() {
     }).catch(function () { toast('Restart failed: network error'); })
     .then(function () { btn.disabled = false; btn.textContent = 'Restart container'; closeSheet(); });
   });
+  // navigator.clipboard needs a secure context; the dashboard is usually plain
+  // http on LAN/Tailscale, so fall back to the execCommand path there.
+  function copyText(t) {
+    function legacy() {
+      return new Promise(function (resolve, reject) {
+        var ta = document.createElement('textarea');
+        ta.value = t;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed'; ta.style.top = '-9999px'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+          if (document.execCommand('copy')) resolve();
+          else reject(new Error('execCommand_copy_false'));
+        } catch (e) { reject(e); }
+        document.body.removeChild(ta);
+      });
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(t).catch(function () { return legacy(); });
+    }
+    return legacy();
+  }
   document.getElementById('svcCopy').addEventListener('click', function () {
-    if (sheetUrl && navigator.clipboard) navigator.clipboard.writeText(sheetUrl).catch(function () {});
-    closeSheet(); toast('Link copied');
+    if (!sheetUrl) { closeSheet(); toast('No link for this service'); return; }
+    copyText(sheetUrl).then(function () { closeSheet(); toast('Link copied'); })
+      .catch(function () { closeSheet(); toast('Copy failed'); });
   });
 
+  // Smart sort: re-float the most-tapped cards to the top of their group
+  // immediately after a tap, instead of waiting for the next 30s refresh.
+  // Special cards (UPS/ZFS/Speedtest) stay pinned at the top of System Health.
+  function resort() {
+    document.querySelectorAll('#svcBoard .svc-grid').forEach(function (grid) {
+      var cards = Array.prototype.slice.call(
+        grid.querySelectorAll('.svc-card[data-key]:not([data-nosheet])'));
+      cards.sort(function (a, b) { return (taps[b.dataset.key] || 0) - (taps[a.dataset.key] || 0); });
+      cards.forEach(function (c) {
+        var name = c.querySelector('.svc-name');
+        if ((taps[c.dataset.key] || 0) >= 3 && name && !c.querySelector('.svc-sort-tag')) {
+          var tag = document.createElement('span');
+          tag.className = 'svc-sort-tag'; tag.textContent = 'SMART SORT';
+          name.appendChild(tag);
+        }
+        grid.appendChild(c);
+      });
+    });
+  }
+
   function wireCards() {
-    board.querySelectorAll('.svc-card[data-key]').forEach(function (card) {
+    // Special cards (UPS/ZFS/Speedtest) carry data-nosheet: they have no
+    // actions, so a long-press must not open an empty action sheet.
+    board.querySelectorAll('.svc-card[data-key]:not([data-nosheet])').forEach(function (card) {
       var sx = 0, sy = 0;
       card.addEventListener('touchstart', function (e) {
         var t = e.touches[0]; sx = t.clientX; sy = t.clientY;
-        pressTimer = setTimeout(function () { pressTimer = null; openSheet(card); }, 550);
+        pressTimer = setTimeout(function () { pressTimer = null; suppressClick = true; openSheet(card); }, 550);
       }, { passive: true });
       card.addEventListener('touchmove', function (e) {
         if (!pressTimer) return;
@@ -773,10 +911,15 @@ function renderServicesPanel() {
       card.addEventListener('touchcancel', function () { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } });
       card.addEventListener('contextmenu', function (e) { e.preventDefault(); });
       card.addEventListener('click', function () {
+        // A long-press opens the action sheet; the finger lifting afterwards
+        // synthesizes a click on the card — swallow it so the card's link
+        // does not also open.
+        if (suppressClick) { suppressClick = false; return; }
         var url = card.dataset.url;
         if (!url) return;
         taps[card.dataset.key] = (taps[card.dataset.key] || 0) + 1;
         try { localStorage.setItem('svcTaps', JSON.stringify(taps)); } catch (e) {}
+        resort();
         window.open(url, '_blank', 'noopener');
       });
     });

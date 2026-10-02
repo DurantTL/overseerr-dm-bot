@@ -156,6 +156,16 @@ const CONFIG = (() => {
   ZFS_HEALTH_URL: (process.env.ZFS_HEALTH_URL || 'http://host.docker.internal:9911/health').replace(/\/$/, ''),
   // Speedtest tracker for the latest result.
   SPEEDTEST_URL: (process.env.SPEEDTEST_URL || 'http://speedtest-tracker/api/speedtest/latest').replace(/\/$/, ''),
+  // UDR7 / UniFi OS local API for the Network group (WAN, throughput, clients).
+  // Create a local API key in the UniFi OS settings; the console uses a
+  // self-signed cert, so verification stays off unless UNIFI_VERIFY_SSL=1.
+  // The key is only ever sent to UNIFI_HOST, never logged.
+  UNIFI_HOST: process.env.UNIFI_HOST || '192.168.50.1',
+  UNIFI_API_KEY: process.env.UNIFI_API_KEY || '',
+  UNIFI_USER: process.env.UNIFI_USER || '',
+  UNIFI_PASSWORD: process.env.UNIFI_PASSWORD || '',
+  UNIFI_SITE: process.env.UNIFI_SITE || 'default',
+  UNIFI_VERIFY_SSL: process.env.UNIFI_VERIFY_SSL === '1',
   // Container restart for long-press actions: Docker socket path ('' disables),
   // or Portainer API as fallback.
   DOCKER_SOCKET: process.env.DOCKER_SOCKET !== undefined ? process.env.DOCKER_SOCKET : '/var/run/docker.sock',
