@@ -148,6 +148,34 @@ async function fetchZfsHealth(config, http = axios) {
   }
 }
 
+// SSD temperature via Prometheus (node_exporter hwmon). Picks the NVMe
+// composite sensor, falling back to drivetemp/ata. Returns { tempC, sensor,
+// instance } or { error } — never a fabricated reading.
+async function fetchSsdTemp(config, http = axios) {
+  if (!config.PROMETHEUS_URL) return null;
+  try {
+    const res = await http.get(config.PROMETHEUS_URL + '/api/v1/query', {
+      params: { query: 'node_hwmon_temp_celsius' }, timeout: 8000,
+    });
+    const results = res.data?.data?.result || [];
+    const chipOf = (r) => String(r.metric?.chip || '');
+    let cands = results.filter((r) => /nvme/i.test(chipOf(r)));
+    if (!cands.length) cands = results.filter((r) => /drivetemp|ata/i.test(chipOf(r)));
+    let best = null;
+    for (const r of cands) {
+      const v = Number(r.value?.[1]);
+      if (!Number.isFinite(v)) continue;
+      if (!best || v > best.tempC) {
+        best = { tempC: v, sensor: r.metric?.sensor || chipOf(r), instance: r.metric?.instance || '' };
+      }
+    }
+    if (!best) return { error: 'no_ssd_sensor' };
+    return { tempC: Math.round(best.tempC * 10) / 10, sensor: best.sensor, instance: best.instance };
+  } catch (err) {
+    return { error: String(err.code || err.message || 'fetch_failed').slice(0, 80) };
+  }
+}
+
 // Main entry: gather everything the Services tab needs. `deps` supplies the
 // already-wired functions from the bot (health, queues, tautulli). `http` is
 // an optional axios-compatible client for the ZFS/speedtest fetches (tests).
@@ -158,11 +186,12 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
     if (label in queueCounts) queueCounts[label]++;
   }
 
-  const [ups, zfs, speedtest, network] = await Promise.all([
+  const [ups, zfs, speedtest, network, ssdTemp] = await Promise.all([
     nutConfigured(config) ? fetchUpsStatus(config).catch(() => null) : Promise.resolve(null),
     fetchZfsHealth(config, http).catch(() => null),
     fetchSpeedtest(config, http).catch(() => null),
     fetchUnifiNetwork(config, http).catch(() => null),
+    fetchSsdTemp(config, http).catch(() => null),
   ]);
 
   const services = [];
@@ -224,11 +253,12 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
 
   return {
     services,
-    groups: GROUPS.filter(g => services.some(s => s.group === g) || (g === 'System Health' && (ups || zfs || speedtest)) || (g === 'Network' && network)),
+    groups: GROUPS.filter(g => services.some(s => s.group === g) || (g === 'System Health' && (ups || zfs || speedtest || ssdTemp || (network && !network.error))) || (g === 'Network' && network)),
     ups,
     zfs,
     speedtest,
     network,
+    ssdTemp,
     nowPlaying,
     // Smart-network hosts for the client: it picks LAN vs Tailscale via WebRTC.
     netHosts: {
@@ -239,4 +269,4 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
   };
 }
 
-module.exports = { GROUPS, SERVICES, gatherServicesBoard, portFromUrl, fetchSpeedtest, fetchZfsHealth };
+module.exports = { GROUPS, SERVICES, gatherServicesBoard, portFromUrl, fetchSpeedtest, fetchZfsHealth, fetchSsdTemp };

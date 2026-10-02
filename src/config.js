@@ -156,6 +156,8 @@ const CONFIG = (() => {
   ZFS_HEALTH_URL: (process.env.ZFS_HEALTH_URL || 'http://host.docker.internal:9911/health').replace(/\/$/, ''),
   // Speedtest tracker for the latest result.
   SPEEDTEST_URL: (process.env.SPEEDTEST_URL || 'http://speedtest-tracker/api/speedtest/latest').replace(/\/$/, ''),
+  // Prometheus for host sensors (SSD temp via node_exporter hwmon). Unset = no SSD card.
+  PROMETHEUS_URL: (process.env.PROMETHEUS_URL || '').replace(/\/$/, ''),
   // UDR7 / UniFi OS local API for the Network group (WAN, throughput, clients).
   // Create a local API key in the UniFi OS settings; the console uses a
   // self-signed cert, so verification stays off unless UNIFI_VERIFY_SSL=1.

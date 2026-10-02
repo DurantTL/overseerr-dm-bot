@@ -436,7 +436,7 @@ function renderServicesPanel() {
 .svc-wrap { --svc-accent: #e97a4f; --svc-ink: #f2ede6; --svc-ink2: #b8b2a8; --svc-ink3: #7a766e;
   --svc-glass: rgba(255,255,255,.045); --svc-line: rgba(255,255,255,.09);
   --svc-green: #34d399; --svc-red: #f87171; --svc-amber: #fbbf24; --svc-cool: #38bdf8;
-  position: relative; max-width: 1280px; margin: 0 auto; }
+  position: relative; max-width: 1060px; margin: 0 auto; }
 .svc-orb { position: fixed; border-radius: 50%; filter: blur(90px); pointer-events: none; z-index: 0; opacity: .45; }
 .svc-orb-1 { width: 420px; height: 420px; background: radial-gradient(circle, rgba(233,122,79,.14), transparent 70%); top: -120px; left: -100px; animation: svcDrift1 26s ease-in-out infinite alternate; }
 .svc-orb-2 { width: 380px; height: 380px; background: radial-gradient(circle, rgba(56,189,248,.10), transparent 70%); bottom: -140px; right: -100px; animation: svcDrift2 32s ease-in-out infinite alternate; }
@@ -453,7 +453,7 @@ function renderServicesPanel() {
 .svc-card.wide { grid-column: span 2; }
 @media (max-width: 720px) { .svc-card.wide { grid-column: span 1; } }
 .svc-card { position: relative; display: block; text-decoration: none; color: inherit; background: var(--svc-glass);
-  border: 1px solid var(--svc-line); border-radius: 18px; padding: 24px 22px; overflow: hidden;
+  border: 1px solid var(--svc-line); border-radius: 18px; padding: 16px 14px; overflow: hidden;
   transition: transform .25s ease, border-color .25s ease, box-shadow .25s ease; cursor: pointer;
   -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
 .svc-card:hover { transform: translateY(-3px); border-color: rgba(233,122,79,.35); box-shadow: 0 10px 30px rgba(0,0,0,.35); }
@@ -464,12 +464,12 @@ function renderServicesPanel() {
 .svc-dot.skip { background: var(--svc-ink3); box-shadow: none; animation: none; }
 @keyframes svcPulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .55; transform: scale(.8); } }
 .svc-top { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.svc-icon { width: 46px; height: 46px; border-radius: 13px; display: flex; align-items: center; justify-content: center; flex: none;
-  background: rgba(233,122,79,.12); border: 1px solid rgba(233,122,79,.2); color: var(--svc-accent); font-size: 23px; }
+.svc-icon { width: 36px; height: 36px; border-radius: 11px; display: flex; align-items: center; justify-content: center; flex: none;
+  background: rgba(233,122,79,.12); border: 1px solid rgba(233,122,79,.2); color: var(--svc-accent); font-size: 18px; }
 .svc-icon.cool { background: rgba(56,189,248,.1); border-color: rgba(56,189,248,.2); color: var(--svc-cool); }
 .svc-icon.green { background: rgba(52,211,153,.1); border-color: rgba(52,211,153,.2); color: var(--svc-green); }
-.svc-name { font-weight: 650; font-size: 16.5px; }
-.svc-desc { font-size: 13.5px; color: var(--svc-ink2); margin-bottom: 6px; min-height: 16px; }
+.svc-name { font-weight: 650; font-size: 14px; }
+.svc-desc { font-size: 11.5px; color: var(--svc-ink2); margin-bottom: 6px; min-height: 16px; }
 .svc-badge { display: inline-block; font-size: 10.5px; font-weight: 700; color: var(--svc-accent);
   background: rgba(233,122,79,.12); border: 1px solid rgba(233,122,79,.25); padding: 2px 8px; border-radius: 999px; margin-top: 4px; }
 .svc-metrics { display: flex; gap: 14px; margin-top: 8px; }
@@ -538,11 +538,11 @@ function renderServicesPanel() {
   color: var(--svc-green); background: rgba(52,211,153,.1); border: 1px solid rgba(52,211,153,.3);
   padding: 5px 12px; border-radius: 999px; }
 .svc-banner.warn .pill { color: var(--svc-amber); background: rgba(251,191,36,.1); border-color: rgba(251,191,36,.3); }
-.svc-hero { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 24px; }
-.svc-hero .stat { background: var(--svc-glass); border: 1px solid var(--svc-line); border-radius: 16px; padding: 20px 12px; text-align: center; }
-.svc-hero .stat .v { font-size: 27px; font-weight: 750; font-variant-numeric: tabular-nums; }
-.svc-hero .stat .v small { font-size: 13px; font-weight: 500; color: var(--svc-ink2); }
-.svc-hero .stat .l { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--svc-ink3); margin-top: 6px; }
+.svc-hero { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 22px; }
+.svc-hero .stat { background: var(--svc-glass); border: 1px solid var(--svc-line); border-radius: 14px; padding: 12px 8px; text-align: center; }
+.svc-hero .stat .v { font-size: 20px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.svc-hero .stat .v small { font-size: 11px; font-weight: 500; color: var(--svc-ink2); }
+.svc-hero .stat .l { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--svc-ink3); margin-top: 4px; }
 .svc-hero .stat.hot .v { color: var(--svc-accent); }
 .svc-card.mini { display: flex; align-items: center; gap: 10px; padding: 12px 14px; }
 .svc-card.mini .svc-dot { top: 10px; right: 10px; }
@@ -766,6 +766,31 @@ function renderServicesPanel() {
           '<div class="svc-bar-row"><div class="bl"><span>Download</span><b>' + (dl != null ? Math.round(dl) + ' Mbps' : '—') + '</b></div><div class="svc-bar"><i style="--w:' + dlW + '%"></i></div></div>' +
           '<div class="svc-bar-row"><div class="bl"><span>Upload</span><b>' + (ul != null ? Math.round(ul) + ' Mbps' : '—') + '</b></div><div class="svc-bar"><i style="--w:' + ulW + '%"></i></div></div>' +
           '<div class="svc-widget"><div class="metric"><div class="mv">' + (sp.pingMs != null ? Number(sp.pingMs).toFixed(1) + '<small style="font-size:10px;color:var(--svc-ink2)"> ms</small>' : '—') + '</div><div class="ml">Ping</div></div></div></div>';
+      }
+    }
+    if (d.network && !d.network.error && d.network.wan) {
+      var w = d.network.wan;
+      var wUp = w.up !== false;
+      out += '<div class="svc-card" data-key="internet" data-nosheet="1"><div class="svc-dot' + (wUp ? '' : ' down') + '"></div>' +
+        '<div class="svc-top"><div class="svc-icon green">' + iconFor('globe') + '</div><div class="svc-name">Internet Health</div></div>' +
+        '<div class="svc-desc">via UDR7' + (w.isp ? ' · ' + esc(w.isp) : '') + '</div>' +
+        '<div class="svc-widget">' +
+        '<div class="metric' + (wUp ? ' good' : '') + '"><div class="mv">' + (wUp ? 'Up' : 'Down') + '</div><div class="ml">Status</div></div>' +
+        '<div class="metric"><div class="mv">' + (w.latencyMs != null ? Math.round(w.latencyMs) + '<small style="font-size:10px;color:var(--svc-ink2)"> ms</small>' : '—') + '</div><div class="ml">Latency</div></div>' +
+        '</div></div>';
+    }
+    if (d.ssdTemp) {
+      var st = d.ssdTemp;
+      if (st.error) {
+        out += '<div class="svc-card" data-key="ssd" data-nosheet="1"><div class="svc-dot skip"></div>' +
+          '<div class="svc-top"><div class="svc-icon cool">' + iconFor('cpu') + '</div><div class="svc-name">System SSD</div></div>' +
+          '<div class="svc-desc">Temp check failed: ' + esc(st.error) + '</div></div>';
+      } else {
+        var hot = st.tempC >= 60;
+        out += '<div class="svc-card" data-key="ssd" data-nosheet="1"><div class="svc-dot' + (hot ? ' down' : '') + '"></div>' +
+          '<div class="svc-top"><div class="svc-icon cool">' + iconFor('cpu') + '</div><div class="svc-name">System SSD</div></div>' +
+          '<div class="svc-desc">Drive temperature via Prometheus' + (st.sensor ? ' · ' + esc(st.sensor) : '') + '</div>' +
+          '<div class="svc-widget"><div class="metric' + (hot ? '' : ' good') + '"><div class="mv">' + st.tempC + '<small style="font-size:10px;color:var(--svc-ink2)">°C</small></div><div class="ml">Temp</div></div></div></div>';
       }
     }
     return out;
