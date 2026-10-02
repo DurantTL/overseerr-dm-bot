@@ -183,3 +183,16 @@ test('services-board: gatherServicesBoard keeps System Health group when speedte
   assert.strictEqual(board.speedtest.error, 'ECONNREFUSED');
   assert.strictEqual(board.zfs.error, 'ECONNREFUSED');
 });
+
+test('services-board: gatherServicesBoard adds Network group from UDR7', async () => {
+  const HEALTH = { data: [{ subsystem: 'wan', up: true, wan_ip: '203.0.113.44', isp_name: 'Mediacom' }, { subsystem: 'www', latency: 9 }] };
+  const STA = { data: [{ mac: 'aa:1', hostname: 'box', is_wired: true, 'rx_bytes-r': 1000, 'tx_bytes-r': 500 }] };
+  const http = { get: async (url) => ({ data: url.endsWith('/stat/health') ? HEALTH : STA }) };
+  const board = await gatherServicesBoard({
+    config: { UNIFI_HOST: '192.168.50.1', UNIFI_API_KEY: 'k' },
+    health: {}, queues: [], sessions: [], canRestart: false, http,
+  });
+  assert.ok(board.groups.includes('Network'), 'Network group should render with UDR7 data');
+  assert.strictEqual(board.network.wan.isp, 'Mediacom');
+  assert.strictEqual(board.network.clients.total, 1);
+});
