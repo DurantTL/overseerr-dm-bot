@@ -477,16 +477,26 @@ function renderServicesPanel() {
 .svc-metric .v small { font-size: 11px; font-weight: 500; color: var(--svc-ink2); }
 .svc-metric .l { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--svc-ink3); margin-top: 2px; }
 .svc-spark { width: 100%; height: 48px; display: block; margin: 8px 0 2px; }
-.svc-np { display: flex; align-items: center; gap: 12px; background: var(--svc-glass); border: 1px solid var(--svc-line);
-  border-radius: 16px; padding: 12px 16px; margin-bottom: 24px; }
-.svc-np .art { width: 44px; height: 44px; border-radius: 10px; background: rgba(233,122,79,.12);
-  border: 1px solid rgba(233,122,79,.2); display: flex; align-items: center; justify-content: center; font-size: 20px; flex: none; }
-.svc-np .t { font-weight: 650; font-size: 14px; }
-.svc-np .s { font-size: 12px; color: var(--svc-ink2); }
-.svc-np .eq { margin-left: auto; display: flex; gap: 3px; align-items: flex-end; height: 22px; flex: none; }
-.svc-np .eq i { width: 4px; border-radius: 2px; background: var(--svc-accent); animation: svcEq 1.1s ease-in-out infinite; }
-.svc-np .eq i:nth-child(2) { animation-delay: .25s; } .svc-np .eq i:nth-child(3) { animation-delay: .5s; }
-@keyframes svcEq { 0%,100% { height: 8px; } 50% { height: 20px; } }
+.svc-np { display: flex; align-items: center; gap: 14px; background: var(--svc-glass); border: 1px solid var(--svc-line);
+  border-radius: 18px; padding: 14px 16px; margin-bottom: 22px; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+.svc-np .np-poster { width: 52px; height: 76px; border-radius: 10px; flex: none;
+  background: linear-gradient(135deg, rgba(233,122,79,.14), rgba(233,122,79,.04));
+  border: 1px solid var(--svc-line); display: flex; align-items: center; justify-content: center;
+  font-size: 22px; overflow: hidden; }
+.svc-np .np-info { flex: 1; min-width: 0; }
+.svc-np .np-kicker { font-size: 10px; letter-spacing: .14em; color: var(--svc-accent); font-weight: 700;
+  margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+.svc-np .np-kicker .eq { display: inline-flex; gap: 2px; align-items: flex-end; height: 12px; }
+.svc-np .np-kicker .eq i { width: 3px; background: var(--svc-accent); border-radius: 2px; animation: svcEq 1.1s ease-in-out infinite; }
+.svc-np .np-kicker .eq i:nth-child(1) { height: 60%; }
+.svc-np .np-kicker .eq i:nth-child(2) { height: 100%; animation-delay: .2s; }
+.svc-np .np-kicker .eq i:nth-child(3) { height: 40%; animation-delay: .4s; }
+.svc-np .np-title { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.svc-np .np-sub { font-size: 12px; color: var(--svc-ink2); margin-top: 2px; }
+.svc-np .np-progress { height: 4px; border-radius: 99px; background: rgba(255,255,255,.08); margin-top: 9px; overflow: hidden; }
+.svc-np .np-progress i { display: block; height: 100%; border-radius: 99px; background: var(--svc-accent); }
+.svc-np .np-time { font-size: 10px; color: var(--svc-ink3); margin-top: 4px; font-variant-numeric: tabular-nums; }
+@keyframes svcEq { 0%,100% { transform: scaleY(.5); } 50% { transform: scaleY(1); } }
 .svc-netmode { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700; letter-spacing: .08em;
   padding: 6px 12px; border-radius: 999px; border: 1px solid var(--svc-line); background: var(--svc-glass);
   color: var(--svc-ink2); cursor: pointer; margin-bottom: 16px; }
@@ -766,6 +776,12 @@ function renderServicesPanel() {
     return (Math.round(v * 10) / 10) + '<small> Mb/s</small>';
   }
 
+  function fmtHMS(ms) {
+    var t = Math.max(0, Math.round(ms / 1000));
+    var h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), sec = t % 60;
+    return h + ':' + ('0' + m).slice(-2) + ':' + ('0' + sec).slice(-2);
+  }
+
   function fmtBytes(b) {
     if (b == null) return '—';
     var units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'], i = 0, n = b;
@@ -872,7 +888,8 @@ function renderServicesPanel() {
     var up = all.filter(function (x) { return x.state !== 'down'; }).length;
     var downs = all.filter(function (x) { return x.state === 'down'; });
     var upsNote = d.ups ? (d.ups.onBattery ? 'UPS on battery' : 'UPS on mains') : '';
-    var bannerSub = [up + '/' + all.length + ' services up', upsNote, 'last check ' + (d.ageSeconds != null ? d.ageSeconds + 's' : 'just now') + ' ago']
+    var netNote = d.network && !d.network.error ? 'UDR7 online' : '';
+    var bannerSub = [up + '/' + all.length + ' services up', upsNote, netNote, 'last check ' + (d.ageSeconds != null ? d.ageSeconds + 's' : 'just now') + ' ago']
       .filter(Boolean).join(' · ');
     var bannerTitle = downs.length ? downs.length + ' service' + (downs.length > 1 ? 's' : '') + ' need attention'
       : 'All systems operational';
@@ -907,9 +924,15 @@ function renderServicesPanel() {
     }
     if (d.nowPlaying && d.nowPlaying.length) {
       np.innerHTML = d.nowPlaying.map(function (s) {
-        return '<div class="svc-np"><div class="art">' + iconFor('play') + '</div><div><div class="t">' + esc(s.title) + '</div>' +
-          '<div class="s">' + esc([s.subtitle, s.user].filter(Boolean).join(' · ')) + '</div></div>' +
-          '<div class="eq"><i></i><i></i><i></i></div></div>';
+        var pct = s.duration > 0 ? Math.min(100, Math.round(s.viewOffset / s.duration * 100)) : 0;
+        var rem = s.duration > s.viewOffset ? fmtHMS(s.duration - s.viewOffset) + ' remaining' : '';
+        return '<div class="svc-np"><div class="np-poster">' + iconFor('film') + '</div><div class="np-info">' +
+          '<div class="np-kicker"><span class="eq"><i></i><i></i><i></i></span>NOW PLAYING  · PLEX</div>' +
+          '<div class="np-title">' + esc(s.title) + '</div>' +
+          '<div class="np-sub">' + esc([s.player, s.user].filter(Boolean).join(' · ')) + '</div>' +
+          (s.duration > 0 ? '<div class="np-progress"><i style="width:' + pct + '%"></i></div>' +
+            (rem ? '<div class="np-time">' + rem + '</div>' : '') : '') +
+          '</div></div>';
       }).join('');
     } else { np.innerHTML = ''; }
     wireCards();
