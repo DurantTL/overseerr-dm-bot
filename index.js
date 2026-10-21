@@ -33,6 +33,7 @@ const { createSetupRequestUiFeature, requestModal } = require('./src/setup-reque
 const { createSetupDeviceStateFeature } = require('./src/setup-device-state');
 const { createSetupEnhancementsFeature } = require('./src/setup-discord-enhancements');
 const { createSetupExtensionFeature } = require('./src/setup-discord-extension');
+const { createCommandFallbackFeature } = require('./src/command-fallback');
 const { createViewerAuthKey, configured: tailscaleApiConfigured, provisionConfig } = require('./src/tailscale-provision');
 const { CONFIG, validateConfig, configWarnings } = require('./src/config');
 const runtimeSettings = require('./src/runtime-settings');
@@ -4962,6 +4963,29 @@ const setupExtensionFeature = createSetupExtensionFeature({
   log,
 });
 
+// Command fallback: rescues commands typed as plain text in watched channels
+// (see src/command-fallback.js). Off until cmdfb_enabled=1 with channels listed;
+// the LLM tier exists only when its env is configured.
+const commandFallbackFeature = createCommandFallbackFeature({
+  config: CONFIG,
+  getSetting,
+  getCommandDefs: () => slashCommands,
+  handleSlashCommand,
+  audit,
+  log,
+  llm: (process.env.COMMAND_FALLBACK_LLM_URL || '').trim()
+    ? {
+      url: process.env.COMMAND_FALLBACK_LLM_URL.trim(),
+      apiKey: process.env.COMMAND_FALLBACK_LLM_API_KEY || '',
+      model: process.env.COMMAND_FALLBACK_LLM_MODEL || '',
+    }
+    : null,
+});
+
+client.on('messageCreate', message => {
+  commandFallbackFeature.handleMessage(message).catch(err => log.error(`command-fallback: ${err.message}`));
+});
+
 client.on('interactionCreate', async interaction => {
   try {
     if (interaction.isAutocomplete()) return handleAutocomplete(interaction);
@@ -4976,6 +5000,7 @@ client.on('interactionCreate', async interaction => {
     if (await setupDeviceStateFeature.handleInteraction(interaction)) return;
     if (await setupEnhancementsFeature.handleInteraction(interaction)) return;
     if (await setupExtensionFeature.handleInteraction(interaction)) return;
+    if (await commandFallbackFeature.handleInteraction(interaction)) return;
     if (interaction.isChatInputCommand()) {
       await handleSlashCommand(interaction);
       return;
