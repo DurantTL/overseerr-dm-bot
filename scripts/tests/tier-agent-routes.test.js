@@ -26,7 +26,7 @@ function request(port, { method = 'GET', path = '/', token, body } = {}) {
 function setup() {
   const settings = new Map([['tier_manifest:edge', JSON.stringify({ planHash: 'current' })]]);
   const plans = new Map([['edge', { published: { planHash: 'current' }, lastTelemetryLevel: 'unknown' }]]);
-  const calls = { heartbeats: [], reports: [], inventories: [], converged: [], missing: 0, recovered: 0, errorAlerts: [], agentReports: [], telemetryTransitions: [], mergedMountDiagnostics: [] };
+  const calls = { heartbeats: [], reports: [], inventories: [], converged: [], missing: 0, recovered: 0, errorAlerts: [], skipAlerts: [], agentReports: [], telemetryTransitions: [], mergedMountDiagnostics: [] };
   const tokenHashes = new Map([['edge', sha256('valid')], ['edge2', sha256('valid2')]]);
   const app = createApp({ skipJsonPaths: ['/agent/'] });
   registerTierAgentRoutes(app, {
@@ -40,6 +40,10 @@ function setup() {
     recordTierErrorAlertState: (node, value) => {
       calls.errorAlerts.push({ node, value });
       plans.set(node, { ...(plans.get(node) || {}), errorAlert: value });
+    },
+    recordTierSkipAlertState: (node, value) => {
+      calls.skipAlerts.push({ node, value });
+      plans.set(node, { ...(plans.get(node) || {}), skipAlert: value });
     },
     recordTierMergedMountDiagnostics: (node, value) => {
       calls.mergedMountDiagnostics.push({ node, value });
@@ -154,6 +158,51 @@ test('tier-agent HTTP report backs off repeated identical errors and posts one r
     assert.strictEqual(calls.agentReports.length, 4);
     assert.strictEqual(calls.agentReports[3].recoveredFromErrors, true);
     assert.strictEqual(calls.agentReports[3].errors.length, 0);
+  } finally { await close(server); }
+});
+
+test('tier-agent HTTP report backs off repeated identical skips, resets on new text, and posts one recovery note', async () => {
+  const { app, calls } = setup();
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const report = body => request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { planHash: 'current', ...body } });
+    const syncing = ["folder 'mafyh-4dn5b': still syncing — retrying next cycle", "folder 'wg9fc-ntkc4': still syncing — retrying next cycle"];
+    for (let i = 0; i < 6; i++) await report({ skipped: i % 2 ? syncing : syncing.slice().reverse() });
+    // Order-insensitive fingerprint: attempts 1, 2, 4 alert, then stand down (5 and 6 silent).
+    assert.deepStrictEqual(calls.agentReports.map(r => r.skipAlert.attemptCount), [1, 2, 4]);
+    assert.strictEqual(calls.agentReports[2].skipAlert.stoodDown, true);
+    assert.strictEqual(calls.skipAlerts.at(-1).value.attemptCount, 6);
+
+    // Changed skip text is a new situation and alerts immediately.
+    await report({ skipped: [syncing[0]] });
+    assert.strictEqual(calls.agentReports.length, 4);
+    assert.strictEqual(calls.agentReports[3].skipAlert.attemptCount, 1);
+
+    // A successful prune always notifies, and closes out the skip sequence.
+    await report({ bytesFreed: 200619210928, dropped: ['a'] });
+    assert.strictEqual(calls.agentReports.length, 5);
+    assert.strictEqual(calls.agentReports[4].recoveredFromSkips, true);
+    assert.strictEqual(calls.skipAlerts.at(-1).value, null);
+
+    // Once cleared, a clean report stays quiet.
+    await report({ converged: true });
+    assert.strictEqual(calls.agentReports.length, 5);
+  } finally { await close(server); }
+});
+
+test('tier-agent HTTP report sends exactly one recovery note when stood-down skips clear', async () => {
+  const { app, calls } = setup();
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    for (let i = 0; i < 5; i++) await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { planHash: 'current', skipped: ['still syncing'] } });
+    assert.strictEqual(calls.agentReports.length, 3);
+    await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { planHash: 'current', converged: true } });
+    await request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { planHash: 'current', converged: true } });
+    assert.strictEqual(calls.agentReports.length, 4);
+    assert.strictEqual(calls.agentReports[3].recoveredFromSkips, true);
+    assert.strictEqual(calls.agentReports[3].skipped.length, 0);
   } finally { await close(server); }
 });
 
