@@ -33,7 +33,7 @@ function sanitizeFolderCompletion(raw) {
 function registerTierAgentRoutes(app, deps) {
   const {
     config, getTierAgentTokenHash, sha256, safeEqual, audit, getSetting, setSetting,
-    getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, recordTierErrorAlertState, recordTierMergedMountDiagnostics, recordTierFolderCompletion, markTierPlanConverged,
+    getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, recordTierErrorAlertState, recordTierSkipAlertState, recordTierMergedMountDiagnostics, recordTierFolderCompletion, markTierPlanConverged,
     getTierNode, listTierNodeFiles, replaceTierNodeFiles, parseAtimeMask, maskSuspectAtimes,
     notifyTelemetryTransition, notifyDriveMissing, notifyDriveRecovered, notifyAgentReport,
     fileSystem = fs, projectRoot = path.join(__dirname, '..', '..'),
@@ -144,16 +144,25 @@ function registerTierAgentRoutes(app, deps) {
     const errorAlert = errorFingerprint ? nextRepeatAlert(priorErrorAlert, { fingerprint: errorFingerprint }) : null;
     const recoveredFromErrors = !errorFingerprint && !!priorErrorAlert;
     recordTierErrorAlertState(node, errorAlert);
+    // Skips get the same backoff: a folder held in `syncing` is skipped with identical text every
+    // cycle until it idles, which would otherwise notify every ~15 min for hours.
+    const priorSkipAlert = getTierPlan(node)?.skipAlert || null;
+    const skipFingerprint = skipped.length ? skipped.slice().sort().join('\n') : null;
+    const skipAlert = skipFingerprint ? nextRepeatAlert(priorSkipAlert, { fingerprint: skipFingerprint }) : null;
+    const recoveredFromSkips = !skipFingerprint && !!priorSkipAlert;
+    recordTierSkipAlertState(node, skipAlert);
 
     recordTierAgentReport(node, { inventoryStored, errors, telemetry, telemetryLevel: telemetryHealth.level, agentVersion });
     emitTelemetry();
     const publishedHash = getTierPlan(node)?.published?.planHash || null;
     const converged = body.converged === true && errors.length === 0 && !!body.planHash && body.planHash === publishedHash;
     if (converged) markTierPlanConverged(node, { planHash: body.planHash });
-    audit('tier_agent_report', { node, planHash: body.planHash || null, publishedHash, converged, bytesFreed: body.bytesFreed || 0, droppedCount: (body.dropped || []).length, inventoryCount: Array.isArray(body.inventory) ? body.inventory.length : 0, errors: errors.join('; ').slice(0, 500) || undefined, skipped: skipped.join('; ').slice(0, 500) || undefined, errorAlertAttempt: errorAlert?.attemptCount, errorAlertStoodDown: errorAlert?.stoodDown });
+    audit('tier_agent_report', { node, planHash: body.planHash || null, publishedHash, converged, bytesFreed: body.bytesFreed || 0, droppedCount: (body.dropped || []).length, inventoryCount: Array.isArray(body.inventory) ? body.inventory.length : 0, errors: errors.join('; ').slice(0, 500) || undefined, skipped: skipped.join('; ').slice(0, 500) || undefined, errorAlertAttempt: errorAlert?.attemptCount, errorAlertStoodDown: errorAlert?.stoodDown, skipAlertAttempt: skipAlert?.attemptCount, skipAlertStoodDown: skipAlert?.stoodDown });
     const shouldNotifyErrors = errors.length > 0 && (!errorAlert || errorAlert.shouldAlert);
-    if ((body.bytesFreed || 0) > 0 || shouldNotifyErrors || skipped.length || recoveredFromErrors) {
-      notifyAgentReport({ node, body, errors, skipped, publishedHash, converged, telemetry, errorAlert, recoveredFromErrors });
+    const shouldNotifySkips = skipped.length > 0 && (!skipAlert || skipAlert.shouldAlert);
+    // bytesFreed stays unthrottled: the prune that finally runs must always notify.
+    if ((body.bytesFreed || 0) > 0 || shouldNotifyErrors || shouldNotifySkips || recoveredFromErrors || recoveredFromSkips) {
+      notifyAgentReport({ node, body, errors, skipped, publishedHash, converged, telemetry, errorAlert, skipAlert, recoveredFromErrors, recoveredFromSkips });
     }
     return res.json({ ok: true, converged });
   });
