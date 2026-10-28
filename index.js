@@ -10863,6 +10863,7 @@ function startExpressServer() {
 
     registerDashboardReadRoutes(app, {
       CONFIG,
+      rtorrentConfigured,
       PASSKEY_RP,
       arrSources,
       dashboardCache,
@@ -11000,6 +11001,21 @@ function startExpressServer() {
       upsertTierNode,
       usesDirectGrabEscalation,
       getAutomationRegistry: () => automationRegistry,
+      listPendingRequests,
+      listRtorrentTorrents,
+      rtorrentConfigured,
+      rtorrentControl: createRtorrentControl({ call: rtorrentCall, list: listRtorrentTorrents, configured: rtorrentConfigured }),
+      fetchArrQueues,
+      // Bulk "clear imported": drop the queue entry only. The torrent keeps seeding and nothing is
+      // blocklisted or deleted from disk.
+      removeQueueItem: async (source, queueId) => {
+        await axios.delete(`${source.url}/api/v3/queue/${queueId}`, {
+          params: { removeFromClient: false, blocklist: false },
+          headers: { 'X-Api-Key': source.key },
+          timeout: 15000,
+        });
+        return { ok: true };
+      },
     });
 
     registerMemberRoutes(app, {

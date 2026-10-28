@@ -91,6 +91,15 @@ advanced-infrastructure layer lives in `docs/`:
   scheduled database backup is still on. It posts when one goes bad and when it recovers. Read-only;
   `node scripts/backup-inventory.js --check` runs the same check by hand. The bot's own database
   backup is separate: set `BACKUP_INTERVAL_HOURS` to turn it on.
+- Dashboard Quick Actions: Director, Overview and Operations each open with a row of big buttons
+  for that tab. Director: **Run doctor** (the edge and origin checks, in a sheet) and **Check
+  backups**. Overview: **Pause downloads**, **Resume downloads** (rTorrent torrents still
+  downloading; seeding ones are never touched) and **Clear imported** (queue entries the *arr
+  already imported, removed from the queue only: the torrent keeps seeding, nothing is blocklisted
+  or deleted). Operations: **Approve all pending** (plain approve, one by one, never the AvistaZ
+  pre-authorised one), **Run episode recovery** and **Check stuck downloads**. Every bulk action
+  first shows exactly which items it will touch and which it leaves alone; it runs only if that
+  list hasn't changed since you looked, at most 50 items at a time, and each run is audited.
 - Admin dashboard (`/admin`) with health, pending items, and safe action endpoints. The
   **Director** tab is the fleet health board: every service the media server runs
   (Plex, *arrs, Prowlarr, Byparr, Huntarr, Recyclarr, Cleanuparr, rTorrent, Syncthing,

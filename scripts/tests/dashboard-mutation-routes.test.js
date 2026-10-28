@@ -336,3 +336,78 @@ test('agent API token routes require auth, validate input, and confirm revokes',
     assert.strictEqual((await post(port, '/admin/action/agent-api-token-revoke', { id: 99, confirmed: true })).statusCode, 401);
   } finally { await close(server); }
 });
+
+test('bulk actions: preview, run only on a matching list key, 409 when the list changed', async () => {
+  const H = n => String(n).repeat(40);
+  let torrents = [
+    { hash: H('a'), name: 'One', complete: false, sizeBytes: 10, doneBytes: 5 },
+    { hash: H('b'), name: 'Seeding', complete: true, sizeBytes: 10, doneBytes: 10 },
+  ];
+  const controlled = [];
+  const approved = [];
+  const removed = [];
+  const source = { label: 'Radarr', url: 'http://radarr', key: 'secret-key' };
+  const { app, state } = fixture({
+    rtorrentConfigured: () => true,
+    listRtorrentTorrents: async () => torrents,
+    rtorrentControl: { control: async (hash, action) => { controlled.push([hash, action]); return { ok: true }; } },
+    listPendingRequests: () => [{ nonce: 'aaaaaaaa', label: 'Dune' }, { nonce: 'bbbbbbbb', label: 'Arrival' }],
+    approveGatedRequest: async ({ nonce, azPreAuth }) => { approved.push([nonce, azPreAuth]); return nonce === 'bbbbbbbb' ? { ok: false, error: 'Seerr down' } : { ok: true }; },
+    dashboardGateResponse: result => result,
+    fetchArrQueues: async () => [{ source, queueId: 9, title: 'Movie', status: 'completed', trackedState: 'imported' }],
+    removeQueueItem: async (src, id) => { removed.push([src.label, id]); return { ok: true }; },
+  });
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const headers = { 'x-admin-token': 'secret' };
+
+    assert.strictEqual((await post(port, '/admin/action/bulk', { kind: 'pause-downloads' })).statusCode, 401);
+    assert.strictEqual((await post(port, '/admin/action/bulk', { kind: 'nope' }, headers)).statusCode, 400);
+
+    const preview = JSON.parse((await post(port, '/admin/action/bulk', { kind: 'pause-downloads' }, headers)).body);
+    assert.strictEqual(preview.preview, true);
+    assert.deepStrictEqual(preview.plan.items.map(i => i.label), ['One']);
+    assert.strictEqual(controlled.length, 0, 'a preview never acts');
+
+    assert.strictEqual((await post(port, '/admin/action/bulk', { kind: 'pause-downloads', listKey: 'wrong' }, headers)).statusCode, 409);
+    torrents = [...torrents, { hash: H('c'), name: 'New', complete: false }];
+    const changed = await post(port, '/admin/action/bulk', { kind: 'pause-downloads', listKey: preview.plan.listKey }, headers);
+    assert.strictEqual(changed.statusCode, 409);
+    assert.strictEqual(controlled.length, 0, 'a changed list is never acted on');
+
+    const fresh = JSON.parse(changed.body).plan;
+    const ran = JSON.parse((await post(port, '/admin/action/bulk', { kind: 'pause-downloads', listKey: fresh.listKey }, headers)).body);
+    assert.strictEqual(ran.ok, true);
+    assert.deepStrictEqual(controlled, [[H('a'), 'pause'], [H('c'), 'pause']]);
+
+    const pending = JSON.parse((await post(port, '/admin/action/bulk', { kind: 'approve-pending' }, headers)).body).plan;
+    const approveRun = await post(port, '/admin/action/bulk', { kind: 'approve-pending', listKey: pending.listKey }, headers);
+    const approveBody = JSON.parse(approveRun.body);
+    assert.strictEqual(approveBody.ok, false);
+    assert.deepStrictEqual(approveBody.result.failed, [{ label: 'Arrival', error: 'Seerr down' }]);
+    assert.deepStrictEqual(approved, [['aaaaaaaa', false], ['bbbbbbbb', false]], 'never the AvistaZ pre-authorised approve');
+
+    const queuePlan = await post(port, '/admin/action/bulk', { kind: 'clear-imported' }, headers);
+    assert.ok(!queuePlan.body.includes('secret-key'), 'the *arr API key never reaches the browser');
+    await post(port, '/admin/action/bulk', { kind: 'clear-imported', listKey: JSON.parse(queuePlan.body).plan.listKey }, headers);
+    assert.deepStrictEqual(removed, [['Radarr', 9]]);
+
+    assert.ok(state.audits.some(a => a.action === 'dashboard_bulk_action' && a.metadata.reason === 'plan_changed'));
+    assert.ok(state.audits.some(a => a.action === 'dashboard_bulk_action' && a.metadata.kind === 'approve-pending' && a.metadata.succeeded === 1));
+  } finally {
+    await close(server);
+  }
+});
+
+test('bulk download actions refuse cleanly when rTorrent is not configured', async () => {
+  const { app } = fixture();
+  const server = await listen(app, 0);
+  try {
+    const res = await post(server.address().port, '/admin/action/bulk', { kind: 'pause-downloads' }, { 'x-admin-token': 'secret' });
+    assert.strictEqual(res.statusCode, 400);
+    assert.match(JSON.parse(res.body).error, /rTorrent is not configured/);
+  } finally {
+    await close(server);
+  }
+});

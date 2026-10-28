@@ -279,6 +279,33 @@ const DASHBOARD_CSS = `
   body[data-tab="director"] .container > .overall, body[data-tab="director"] .container > .stats,
   body[data-tab="services"] .container > .overall, body[data-tab="services"] .container > .stats { display:none; }
   @media (prefers-reduced-motion: reduce) { .chip.tab::after { transition:none; } }
+  /* F14 per-tab Quick Actions: a row of big buttons; bulk ones open a confirm sheet listing exactly what they touch. */
+  .qa-bar { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 14px; }
+  .qa-bar .qa-btn { flex:1 1 150px; min-height:48px; padding:10px 14px; border-radius:12px; background:var(--panel2); color:var(--text); border:1px solid var(--border); font-size:14px; font-weight:650; cursor:pointer; text-align:center; }
+  .qa-bar .qa-btn:active { transform:scale(.98); }
+  .qa-bar .qa-btn:disabled { opacity:.45; cursor:not-allowed; }
+  .qa-bar .qa-btn .qa-n { display:inline-block; min-width:22px; margin-left:6px; padding:1px 7px; border-radius:99px; background:var(--panel3); font-size:12px; }
+  .qa-sheet { position:fixed; inset:0; z-index:70; display:none; align-items:flex-end; justify-content:center; }
+  .qa-sheet.open { display:flex; }
+  .qa-sheet .qa-scrim { position:absolute; inset:0; background:rgba(0,0,0,.55); }
+  .qa-sheet .qa-panel { position:relative; width:100%; max-width:520px; max-height:88vh; max-height:88dvh; display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--border); border-bottom:none; border-radius:20px 20px 0 0; padding:12px 16px calc(16px + env(safe-area-inset-bottom)); }
+  .qa-sheet .qa-grab { width:40px; height:4px; border-radius:99px; background:rgba(255,255,255,.18); margin:0 auto 12px; }
+  .qa-sheet h3 { margin:0 0 4px; font-size:17px; text-align:center; }
+  .qa-sheet .qa-sub { margin:0 0 12px; font-size:13px; color:var(--muted); text-align:center; }
+  .qa-sheet .qa-body { flex:1; min-height:0; overflow:auto; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; }
+  .qa-sheet ul { list-style:none; margin:0 0 12px; padding:0; border:1px solid var(--border); border-radius:12px; }
+  .qa-sheet li { padding:10px 12px; border-top:1px solid var(--border); font-size:14px; overflow-wrap:anywhere; }
+  .qa-sheet li:first-child { border-top:none; }
+  .qa-sheet li .qa-d { display:block; font-size:12px; color:var(--muted); }
+  .qa-sheet li.ok .qa-d { color:var(--ok); } .qa-sheet li.warn .qa-d { color:var(--warn); } .qa-sheet li.fail .qa-d { color:var(--down); }
+  .qa-sheet .qa-h { margin:4px 0 6px; font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--faint); }
+  .qa-sheet .qa-msg { margin:0 0 10px; font-size:14px; }
+  .qa-sheet .qa-msg.ok { color:var(--ok); } .qa-sheet .qa-msg.bad { color:var(--down); }
+  .qa-sheet .qa-foot { display:flex; gap:8px; padding-top:10px; }
+  .qa-sheet .qa-foot button { flex:1; min-height:48px; border-radius:12px; border:1px solid var(--border); background:var(--panel2); color:var(--text); font-size:15px; font-weight:650; cursor:pointer; }
+  .qa-sheet .qa-foot button.qa-go { background:var(--accent); color:var(--on-accent); border-color:var(--accent); }
+  .qa-sheet .qa-foot button:disabled { opacity:.45; cursor:not-allowed; }
+  @media (min-width: 721px) { .qa-sheet { align-items:center; } .qa-sheet .qa-panel { border-bottom:1px solid var(--border); border-radius:20px; } }
 `;
 
 // `tabs: true` turns the nav into panel switches rather than scroll anchors. The panels are all
@@ -2139,7 +2166,142 @@ function renderAutomationRegistry(items, { heartbeatIssues = [] } = {}) {
   return `<div class="card" id="automation-registry"><h2>Automation registry<span class="sub">Every scheduled worker, its effective source, persisted outcome, and safe manual policy.</span></h2>${issues}${rows || '<p class="muted">Registry is starting.</p>'}</div>`;
 }
 
+// F14 Quick Actions bar for one tab. Each action is one of:
+//   { label, bulk: kind, count }        opens the confirm sheet (preview from /admin/action/bulk)
+//   { label, doctor: true }              opens the sheet with /admin/doctor's checks
+//   { label, post: { url, body }, confirm } uses the shared [data-post] handler
+// A disabled action carries `reason`, shown as its tooltip and aria-description.
+function renderQuickActions(actions) {
+  const list = (actions || []).filter(Boolean);
+  if (!list.length) return '';
+  const button = a => {
+    const attrs = a.bulk ? ` data-bulk="${escapeHtml(a.bulk)}"`
+      : a.doctor ? ' data-doctor="1"'
+        : a.post ? ` data-post="${escapeHtml(a.post.url)}" data-body="${escapeHtml(JSON.stringify(a.post.body || {}))}"${a.confirm ? ` data-confirm="${escapeHtml(a.confirm)}"` : ''}` : '';
+    const count = Number.isFinite(a.count) ? `<span class="qa-n">${a.count}</span>` : '';
+    const why = a.disabled && a.reason ? ` title="${escapeHtml(a.reason)}" aria-description="${escapeHtml(a.reason)}"` : '';
+    return `<button type="button" class="qa-btn" data-title="${escapeHtml(a.label)}"${attrs}${a.disabled ? ' disabled' : ''}${why}>${escapeHtml(a.label)}${count}</button>`;
+  };
+  return `<div class="qa-bar" role="toolbar" aria-label="Quick actions">${list.map(button).join('')}</div>`;
+}
+
+// The one confirm sheet every tab's bulk and doctor buttons share. Rendered once, outside the
+// tab panels, so it shows whichever tab is active. All item text is set with textContent.
+function renderQuickActionSheet() {
+  return `
+<div class="qa-sheet" id="qaSheet" role="dialog" aria-modal="true" aria-labelledby="qaTitle">
+  <div class="qa-scrim" id="qaScrim"></div>
+  <div class="qa-panel">
+    <div class="qa-grab"></div>
+    <h3 id="qaTitle"></h3>
+    <p class="qa-sub" id="qaSub"></p>
+    <div class="qa-body" id="qaBody"></div>
+    <div class="qa-foot"><button type="button" id="qaCancel">Cancel</button><button type="button" class="qa-go" id="qaGo" hidden></button></div>
+  </div>
+</div>
+<script>
+(function () {
+  var sheet = document.getElementById('qaSheet');
+  if (!sheet) return;
+  var title = document.getElementById('qaTitle'), sub = document.getElementById('qaSub'), body = document.getElementById('qaBody');
+  var cancel = document.getElementById('qaCancel'), go = document.getElementById('qaGo');
+  var current = null, opener = null, isOpen = false, done = false;
+  function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
+  function list(heading, rows) {
+    var frag = document.createDocumentFragment();
+    if (heading) frag.appendChild(el('div', 'qa-h', heading));
+    var ul = el('ul');
+    rows.forEach(function (r) { var li = el('li', r.cls || ''); li.appendChild(document.createTextNode(r.label)); if (r.detail) li.appendChild(el('span', 'qa-d', r.detail)); ul.appendChild(li); });
+    frag.appendChild(ul);
+    return frag;
+  }
+  function msg(text, ok) { var p = el('p', 'qa-msg ' + (ok ? 'ok' : 'bad'), text); body.insertBefore(p, body.firstChild); }
+  function open(heading, btn) {
+    opener = btn; done = false; title.textContent = heading; sub.textContent = 'Loading…'; body.textContent = '';
+    go.hidden = true; go.disabled = false; cancel.textContent = 'Cancel'; cancel.disabled = false;
+    sheet.classList.add('open');
+    // An open sheet counts as an action in flight so the 60s auto-refresh never yanks it away.
+    if (!isOpen) { window.__actionsInFlight = (window.__actionsInFlight || 0) + 1; isOpen = true; }
+    cancel.focus();
+  }
+  function close() {
+    if (go.dataset.busy) return;
+    sheet.classList.remove('open');
+    if (isOpen) { window.__actionsInFlight = Math.max(0, (window.__actionsInFlight || 0) - 1); isOpen = false; }
+    if (done) { location.reload(); return; }
+    if (opener) opener.focus();
+  }
+  async function post(payload) {
+    var r = await fetch('/admin/action/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    var data = await r.json().catch(function () { return {}; });
+    return { status: r.status, data: data };
+  }
+  function showPlan(plan) {
+    current = plan; body.textContent = '';
+    var n = plan.items.length;
+    sub.textContent = n ? 'This will touch exactly the ' + n + ' item' + (n === 1 ? '' : 's') + ' below.' : 'Nothing to do right now.';
+    if (n) body.appendChild(list('Will ' + plan.verb.toLowerCase(), plan.items.map(function (i) { return { label: i.label, detail: i.detail }; })));
+    if (plan.truncated) body.appendChild(el('p', 'qa-sub', plan.truncated + ' more not included; run it again afterwards for the rest.'));
+    if (plan.skipped.length) body.appendChild(list('Left alone', plan.skipped.map(function (s) { return { label: s.label, detail: s.reason }; })));
+    go.hidden = !n; go.textContent = plan.verb + ' ' + n;
+  }
+  async function preview(kind) {
+    try {
+      var res = await post({ kind: kind });
+      if (!res.data.ok) { sub.textContent = ''; msg(res.data.error || 'Could not load the list (' + res.status + ').', false); return; }
+      showPlan(Object.assign({ verb: verbs[kind] || 'Run' }, res.data.plan));
+    } catch (err) { sub.textContent = ''; msg(String(err && err.message || err), false); }
+  }
+  var verbs = ${JSON.stringify({ 'approve-pending': 'Approve', 'pause-downloads': 'Pause', 'resume-downloads': 'Resume', 'clear-imported': 'Clear' })};
+  go.addEventListener('click', async function () {
+    if (!current) return;
+    go.disabled = true; cancel.disabled = true; go.dataset.busy = '1'; go.textContent = 'Working…';
+    try {
+      var res = await post({ kind: current.kind, listKey: current.listKey });
+      delete go.dataset.busy; cancel.disabled = false;
+      if (res.status === 409 && res.data.plan) {
+        showPlan(Object.assign({ verb: current.verb }, res.data.plan)); go.disabled = false;
+        msg(res.data.error, false); return;
+      }
+      var result = res.data.result;
+      done = !!result && result.succeeded > 0;
+      body.textContent = ''; go.hidden = true; cancel.textContent = 'Done'; sub.textContent = '';
+      if (result && result.failed.length) body.appendChild(list('Failed', result.failed.map(function (f) { return { label: f.label, detail: f.error, cls: 'fail' }; })));
+      msg(res.data.message || res.data.error || 'Request failed (' + res.status + ').', res.data.ok === true);
+    } catch (err) {
+      delete go.dataset.busy; cancel.disabled = false; go.disabled = false; go.textContent = current.verb + ' ' + current.items.length;
+      msg(String(err && err.message || err), false);
+    }
+  });
+  async function doctor() {
+    try {
+      var r = await fetch('/admin/doctor', { headers: { Accept: 'application/json' } });
+      var data = await r.json().catch(function () { return {}; });
+      if (!r.ok || !Array.isArray(data.checks)) { sub.textContent = ''; msg(data.error || 'Doctor failed (' + r.status + ').', false); return; }
+      var bad = data.checks.filter(function (c) { return c.status !== 'ok'; }).length;
+      sub.textContent = data.checks.length + ' checks · ' + (bad ? bad + ' need a look' : 'all passing');
+      var order = { fail: 0, warn: 1 };
+      var rows = data.checks.slice().sort(function (a, b) { return (order[a.status] ?? 2) - (order[b.status] ?? 2); })
+        .map(function (c) { return { label: c.name, detail: c.status.toUpperCase() + (c.detail ? ' · ' + c.detail : ''), cls: c.status }; });
+      body.appendChild(list('', rows));
+    } catch (err) { sub.textContent = ''; msg(String(err && err.message || err), false); }
+  }
+  document.querySelectorAll('[data-bulk]').forEach(function (btn) {
+    btn.addEventListener('click', function () { open(btn.dataset.title, btn); preview(btn.dataset.bulk); });
+  });
+  document.querySelectorAll('[data-doctor]').forEach(function (btn) {
+    btn.addEventListener('click', function () { open('Doctor', btn); cancel.textContent = 'Close'; doctor(); });
+  });
+  cancel.addEventListener('click', close);
+  document.getElementById('qaScrim').addEventListener('click', close);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && sheet.classList.contains('open')) close(); });
+})();
+</script>`;
+}
+
 module.exports = {
+  renderQuickActions,
+  renderQuickActionSheet,
   renderSettingsGroup,
   renderAutomationRegistry,
   DASHBOARD_CSS,
