@@ -367,7 +367,7 @@ function registerDashboardReadRoutes(app, deps) {
     const europeButtonsDisabled = (!europeScriptText || !europeConfig) ? ' disabled' : '';
     const europeSyncHtml = `
         <div class="card" id="europe-sync">
-          <h2>🇪🇺 Europe Node — Latest-Movies Sync<span class="sub">1TB curated box: full 4K + family films, no TV. Also the private-download seedbox.</span></h2>
+          <h2>Europe Node — Latest-Movies Sync<span class="sub">1TB curated box: full 4K + family films, no TV. Also the private-download seedbox.</span></h2>
           ${europeStatusLine}
           <button class="btn primary" type="button" data-post="/admin/action/europe-sync/preview" data-body="{}" data-inline="true"${europeButtonsDisabled}>Preview sync</button>
           <button class="btn danger" type="button" data-post="/admin/action/europe-sync/run" data-body="{}" data-inline="true"${europeButtonsDisabled} data-confirm="Run the Europe sync for real? New movies get hardlinked (no extra disk); aged-out titles leave the Europe library.">Run sync</button>
@@ -406,7 +406,7 @@ function registerDashboardReadRoutes(app, deps) {
       return { state, title: healthLabel(k), sub, right: String(value) };
     });
 
-    const nav = [['director', 'Director'], ['services', 'Services'], ['overview', 'Overview'], ['operations', 'Operations'], ['automation', 'Automation'], ['edge', 'Edge'], ['people', 'People'], ['logs', 'Logs']];
+    const nav = [['director', 'Director'], ['services', 'Services'], ['overview', 'Overview'], ['operations', 'Operations', approvalItems.length || 0], ['automation', 'Automation'], ['edge', 'Edge'], ['people', 'People'], ['logs', 'Logs']];
     const settingsGroups = runtimeSettings.describeRuntimeSettings({ config: CONFIG, store: settingsStore });
     const overriddenCount = settingsGroups.reduce((n, g) => n + g.settings.filter(x => x.overridden).length, 0);
 
@@ -440,11 +440,11 @@ function registerDashboardReadRoutes(app, deps) {
           ${Object.keys(health.errors || {}).length ? renderItemList(Object.entries(health.errors).map(([name, error]) => ({ state: 'down', title: name, sub: error })), '') : ''}
         </div>
         <div class="card">
-          <h2>▶️ Now Streaming</h2>
+          <h2>Now Streaming</h2>
           ${sessions === null ? unavailable('Tautulli') : renderItemList(nowPlayingItems, 'Nobody is streaming right now.')}
         </div>
         <div class="card">
-          <h2>⬇️ Downloading</h2>
+          <h2>Downloading</h2>
           ${queue === null ? unavailable('Radarr/Sonarr') : renderItemList(queueItems, 'Nothing in the download queues.')}
         </div>
       </section>
@@ -455,15 +455,15 @@ function registerDashboardReadRoutes(app, deps) {
           ${renderItemList(approvalItems, 'No requests are waiting for approval.')}
         </div>
         <div class="card">
-          <h2>🧩 Not Watchable Yet<span class="sub">Requests still missing content — including series Seerr already calls "available" but that are missing aired episodes. Worst first.</span></h2>
+          <h2>Not Watchable Yet<span class="sub">Requests still missing content — including series Seerr already calls "available" but that are missing aired episodes. Worst first.</span></h2>
           ${incomplete === null ? unavailable('Sonarr') : renderItemList(incomplete, 'Every request is complete — nothing missing.')}
         </div>
         <div class="card">
-          <h2>⚙️ Active Jobs</h2>
+          <h2>Active Jobs</h2>
           ${renderItemList(jobItems, 'No seedbox grabs or staging copies running.')}
         </div>
         <div class="card">
-          <h2>👀 Watching / Scheduled</h2>
+          <h2>Watching / Scheduled</h2>
           ${renderItemList(watchItems, 'No escalation watches or pending deletions.')}
         </div>
         <div class="card">
@@ -501,11 +501,11 @@ function registerDashboardReadRoutes(app, deps) {
 
       <section class="panel" data-panel="edge">
         <div class="card">
-          <h2>📦 Tier Nodes</h2>
+          <h2>Tier Nodes</h2>
           ${renderItemList(tierItems, 'No tier nodes registered yet.')}
         </div>
         <div class="card" id="tier-planning">
-          <h2>🗺️ Tier Planning<span class="sub">Dry-run the planner — shows keep/drop per node, writes nothing until you apply.</span></h2>
+          <h2>Tier Planning<span class="sub">Dry-run the planner — shows keep/drop per node, writes nothing until you apply.</span></h2>
           <div class="tier-plan-controls">
             <label>Node <select id="tier-plan-node"><option value="">All nodes</option>${tierPlanNodeOptions}</select></label>
             <button class="btn primary" type="button" id="tier-plan-preview">Preview plans</button>
@@ -515,7 +515,7 @@ function registerDashboardReadRoutes(app, deps) {
         </div>
         ${renderTierNodeSetup(tierNodes.map(node => ({ ...node, folders: listTierNodeFolders(node.name) })))}
         <div class="card" id="tier-node-manage">
-          <h2>🔧 Tier Node Management<span class="sub">Folders and restricted-node members. Changes apply immediately and are audited.</span></h2>
+          <h2>Tier Node Management<span class="sub">Folders and restricted-node members. Changes apply immediately and are audited.</span></h2>
           <h3 class="setup-subheading">Syncthing folders</h3>
           <form id="tier-folder-add-form">
             <div class="setup-grid">
@@ -540,14 +540,14 @@ function registerDashboardReadRoutes(app, deps) {
         </div>
         ${europeSyncHtml}
         <div class="card">
-          <h2>🩺 Edge Readiness</h2>
+          <h2>Edge Readiness</h2>
           ${renderItemList(edgeChecks.map(c => ({ state: c.status === 'fail' ? 'down' : c.status, title: c.name, sub: c.detail })), 'No edge checks available.')}
         </div>
       </section>
 
       <section class="panel" data-panel="people">
         <div class="card">
-          <h2>👥 Add User<span class="sub">Runs the real /link and /invite commands — same Plex + Seerr chain, same audits.</span></h2>
+          <h2>Add User<span class="sub">Runs the real /link and /invite commands — same Plex + Seerr chain, same audits.</span></h2>
           <div class="setup-grid">
             <form id="user-link-form">
               <h3 class="setup-subheading">Link</h3>
@@ -577,7 +577,7 @@ function registerDashboardReadRoutes(app, deps) {
           ${linkedUsersHtml}
         </div>
         <div class="card">
-          <h2>🔁 Reshare All<span class="sub">Re-push the Plex share to every invited user — e.g. after a server rebuild.</span></h2>
+          <h2>Reshare All<span class="sub">Re-push the Plex share to every invited user — e.g. after a server rebuild.</span></h2>
           <button class="btn" type="button" data-post="/admin/action/reshare-all" data-body='{"mode":"preview"}' data-inline="true">Preview</button>
           <button class="btn danger" type="button" data-post="/admin/action/reshare-all" data-body='{"mode":"apply"}' data-inline="true" data-confirm="Re-push the Plex share to EVERY invited user?">Apply</button>
           <span class="action-result" aria-live="polite"></span>

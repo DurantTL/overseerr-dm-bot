@@ -15,13 +15,18 @@ function escapeHtml(str) {
 // touch-friendly item rows with progress bars, and tables that collapse into labeled cards on
 // narrow screens. All inline, no build step, dark Plex/Overseerr look.
 const DASHBOARD_CSS = `
-  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
-  :root { --bg:#101114; --panel:#1b1d22; --panel2:#24262d; --panel3:#2d3038; --accent:#f2a617; --accent-strong:#ffc04b; --text:#f4f4f2; --muted:#a9b1bf; --border:#363942; --ok:#36d284; --warn:#f59e0b; --down:#ff6969; --skip:#818996; --focus:#79b9ff; }
+  @import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400..700&family=Instrument+Serif:ital@0;1&family=Space+Mono:wght@400;700&display=swap');
+  /* Durant Logic theme from the shared Durant Sites design system (DurantTL/Websites
+     shared/durant-design, theme "logic"): the same palette, type and glass as durantlogic.com. */
+  :root { --bg:#10232f; --panel:#173042; --panel2:#1d3a4e; --panel3:#24465c; --accent:#79d2d8; --accent-strong:#a9e4e8; --on-accent:#10232f;
+    --text:#f3f7f8; --muted:#bdcfd7; --faint:#8fa9b5; --border:#3a5767; --line-strong:#6a90a1; --edge:rgba(137,180,200,.32);
+    --glass:rgba(23,48,66,.42); --cool:#9cc27a; --ok:#5fd39a; --warn:#f2b94b; --down:#ff8a80; --skip:#8fa9b5; --focus:#79d2d8;
+    --sans:"Instrument Sans","Helvetica Neue",Arial,sans-serif; --serif:"Instrument Serif",Georgia,serif; --mono:"Space Mono",ui-monospace,SFMono-Regular,monospace; }
   * { box-sizing: border-box; }
   html { -webkit-text-size-adjust:100%; color-scheme:dark; }
-  .skip-link { position:fixed; top:8px; left:16px; z-index:30; transform:translateY(-160%); padding:10px 14px; border-radius:8px; background:var(--accent); color:#191303; font-weight:600; }
+  .skip-link { position:fixed; top:8px; left:16px; z-index:30; transform:translateY(-160%); padding:10px 14px; border-radius:8px; background:var(--accent); color:var(--on-accent); font-weight:600; }
   .skip-link:focus { transform:translateY(0); }
-  body { margin:0; font-family:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); line-height:1.45; padding-bottom:env(safe-area-inset-bottom); }
+  body { margin:0; font-family:var(--sans); background:var(--bg); color:var(--text); line-height:1.45; padding-bottom:env(safe-area-inset-bottom); }
   button, input, select, textarea { font:inherit; }
   header.hdr { position:sticky; top:0; z-index:20; background:color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px); border-bottom:1px solid var(--border); padding-top:env(safe-area-inset-top); }
   .topbar { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:16px 24px 12px; max-width:1280px; margin:0 auto; }
@@ -44,13 +49,13 @@ const DASHBOARD_CSS = `
   .card { background:var(--panel); border:1px solid var(--border); border-radius:13px; box-shadow:0 1px 0 color-mix(in srgb, var(--text) 4%, transparent); padding:16px 18px; margin-bottom:14px; scroll-margin-top:110px; }
   .card h2 { margin:0 0 10px; font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
   .overall { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:baseline; justify-content:space-between; padding:12px 16px; border-radius:14px; margin-bottom:14px; font-size:14px; }
-  .overall.ok { background:rgba(34,197,94,.10); border:1px solid rgba(34,197,94,.5); }
-  .overall.warn { background:rgba(245,158,11,.10); border:1px solid rgba(245,158,11,.5); }
-  .card.banner-warn { background:rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.55); }
+  .overall.ok { background:color-mix(in srgb, var(--ok) 10%, transparent); border:1px solid color-mix(in srgb, var(--ok) 50%, transparent); }
+  .overall.warn { background:color-mix(in srgb, var(--warn) 10%, transparent); border:1px solid color-mix(in srgb, var(--warn) 50%, transparent); }
+  .card.banner-warn { background:color-mix(in srgb, var(--warn) 8%, transparent); border:1px solid color-mix(in srgb, var(--warn) 55%, transparent); }
   .overall .updated { color:var(--muted); font-size:12px; }
   .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:10px; margin-bottom:14px; }
   .stat { background:var(--bg); border:1px solid var(--border); border-radius:10px; padding:14px; }
-  .stat .n { display:block; font-size:22px; font-weight:600; color:var(--accent-strong); font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,monospace; line-height:1.1; }
+  .stat .n { display:block; font-size:22px; font-weight:600; color:var(--accent-strong); font-family:var(--mono); line-height:1.1; }
   .stat .l { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin-top:2px; }
   .badges { display:flex; flex-wrap:wrap; gap:8px; }
   .badge { display:inline-flex; align-items:center; gap:6px; padding:7px 11px; border-radius:999px; font-size:12.5px; background:var(--panel2); border:1px solid var(--border); }
@@ -81,7 +86,7 @@ const DASHBOARD_CSS = `
   .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-height:42px; padding:9px 14px; border-radius:8px; background:var(--panel2); color:var(--text); border:1px solid var(--border); text-decoration:none; font-size:13px; font-weight:600; cursor:pointer; }
   .btn:hover { background:var(--panel3); }
   .btn.danger { border-color:color-mix(in srgb, var(--down) 56%, var(--border)); color:var(--down); background:transparent; }
-  .btn.primary { background:var(--accent); color:#191303; border-color:var(--accent); font-weight:600; }
+  .btn.primary { background:var(--accent); color:var(--on-accent); border-color:var(--accent); font-weight:600; }
   .btn.primary:hover { background:var(--accent-strong); border-color:var(--accent-strong); }
   form.logout { margin:0; }
   .login-wrap { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:16px; }
@@ -95,9 +100,9 @@ const DASHBOARD_CSS = `
   .login-card .btn.passkey { width:100%; margin-bottom:14px; }
   .login-divider { display:flex; align-items:center; gap:10px; color:var(--muted); font-size:11px; margin:0 0 14px; }
   .login-divider::before, .login-divider::after { content:''; flex:1; border-top:1px solid var(--border); }
-  .error { background:rgba(239,68,68,.12); border:1px solid var(--down); color:var(--down); padding:10px 12px; border-radius:10px; font-size:13px; margin-bottom:16px; }
+  .error { background:color-mix(in srgb, var(--down) 12%, transparent); border:1px solid var(--down); color:var(--down); padding:10px 12px; border-radius:10px; font-size:13px; margin-bottom:16px; }
   .chip.tab { cursor:pointer; font:inherit; font-size:13px; }
-  .chip.tab[aria-selected="true"] { background:var(--accent); color:#191303; font-weight:600; }
+  .chip.tab[aria-selected="true"] { background:var(--accent); color:var(--on-accent); font-weight:600; }
   .panel[hidden] { display:none; }
   .panel-intro { color:var(--muted); font-size:13px; margin:0 0 14px; }
   .card h2 .sub { display:block; text-transform:none; letter-spacing:0; font-weight:400; color:var(--muted); font-size:12px; margin-top:4px; }
@@ -118,7 +123,7 @@ const DASHBOARD_CSS = `
   .switch input { opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
   .switch .track { position:absolute; inset:0; border-radius:999px; background:var(--panel2); border:1px solid var(--border); pointer-events:none; transition:background .15s; }
   .switch .track::after { content:''; position:absolute; top:3px; left:3px; width:18px; height:18px; border-radius:50%; background:var(--muted); transition:transform .15s, background .15s; }
-  .switch input:checked + .track { background:rgba(229,160,13,.25); border-color:var(--accent); }
+  .switch input:checked + .track { background:color-mix(in srgb, var(--accent) 25%, transparent); border-color:var(--accent); }
   .switch input:checked + .track::after { transform:translateX(20px); background:var(--accent); }
   .tag { font-size:10.5px; text-transform:uppercase; letter-spacing:.04em; padding:3px 7px; border-radius:999px; border:1px solid var(--border); color:var(--muted); }
   .tag.on { border-color:var(--accent); color:var(--accent); }
@@ -171,25 +176,25 @@ const DASHBOARD_CSS = `
   }
   /* Director tab — prototype design language (page lead, metric strip, node rows).
      Scoped to .d-panel so the rest of the dashboard is untouched. */
-  .d-panel { font-family:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  .d-panel { font-family:var(--sans); }
   .d-page-lead { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:end; gap:18px; margin:2px 0 16px; }
-  .d-eyebrow { color:var(--accent-strong); font:600 12px/1.2 "IBM Plex Mono",ui-monospace,SFMono-Regular,monospace; letter-spacing:.02em; margin-bottom:8px; }
+  .d-eyebrow { color:var(--accent-strong); font:600 12px/1.2 var(--mono); letter-spacing:.02em; margin-bottom:8px; }
   .d-h1 { margin:0 0 6px; font-size:clamp(26px,4vw,36px); letter-spacing:-.03em; line-height:1.08; color:var(--text); }
   .d-lead-copy { margin:0; color:var(--muted); font-style:normal; font-size:14px; max-width:64ch; }
   .d-status { display:inline-flex; align-items:center; gap:6px; padding:6px 11px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; background:var(--panel2); color:var(--muted); border:1px solid var(--border); }
   .d-status::before { content:""; width:7px; height:7px; border-radius:50%; background:currentColor; }
-  .d-status.ok { color:var(--ok); background:rgba(34,197,94,.10); border-color:rgba(34,197,94,.45); }
-  .d-status.warn { color:var(--warn); background:rgba(245,158,11,.10); border-color:rgba(245,158,11,.45); }
-  .d-status.bad { color:var(--down); background:rgba(239,68,68,.12); border-color:rgba(239,68,68,.5); }
+  .d-status.ok { color:var(--ok); background:color-mix(in srgb, var(--ok) 10%, transparent); border-color:color-mix(in srgb, var(--ok) 45%, transparent); }
+  .d-status.warn { color:var(--warn); background:color-mix(in srgb, var(--warn) 10%, transparent); border-color:color-mix(in srgb, var(--warn) 45%, transparent); }
+  .d-status.bad { color:var(--down); background:color-mix(in srgb, var(--down) 12%, transparent); border-color:color-mix(in srgb, var(--down) 50%, transparent); }
   .d-metrics { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; margin:0 0 20px; }
   .d-metric { padding:14px; border:1px solid var(--border); background:var(--panel); border-radius:12px; }
-  .d-metric strong { display:block; color:var(--accent-strong); font:600 22px/1.1 "IBM Plex Mono",ui-monospace,SFMono-Regular,monospace; }
+  .d-metric strong { display:block; color:var(--accent-strong); font:600 22px/1.1 var(--mono); }
   .d-metric.attention strong { color:var(--warn); }
   .d-metric.critical strong { color:var(--down); }
   .d-grid { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(0,1fr); gap:20px; align-items:start; }
   .d-grid > .card { min-width:0; }
   .d-metric span { display:block; margin-top:6px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.035em; }
-  .d-callout { display:flex; align-items:flex-start; gap:10px; padding:12px 14px; border:1px solid rgba(229,160,13,.5); border-radius:10px; background:rgba(229,160,13,.08); color:var(--text); font-size:13px; margin:0 0 14px; }
+  .d-callout { display:flex; align-items:flex-start; gap:10px; padding:12px 14px; border:1px solid color-mix(in srgb, var(--warn) 50%, transparent); border-radius:10px; background:color-mix(in srgb, var(--warn) 8%, transparent); color:var(--text); font-size:13px; margin:0 0 14px; }
   .d-callout svg { flex:0 0 auto; width:17px; height:17px; color:var(--accent); margin-top:1px; }
   .d-card { padding:0; overflow:hidden; }
   .card.d-card .d-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:16px 16px 13px; border-bottom:1px solid var(--border); }
@@ -201,10 +206,10 @@ const DASHBOARD_CSS = `
   .d-node-dot { width:9px; height:9px; border-radius:50%; background:var(--ok); }
   .d-node-dot.warn { background:var(--warn); }
   .d-node-dot.down { background:var(--down); }
-  .d-node-dot.skip { background:#6b7280; }
+  .d-node-dot.skip { background:var(--skip); }
   .d-node-name { font-weight:600; font-size:14px; overflow-wrap:anywhere; }
   .d-node-meta { color:var(--muted); font-size:12px; margin-top:2px; overflow-wrap:anywhere; }
-  .d-node-right { font:500 12px "IBM Plex Mono",ui-monospace,SFMono-Regular,monospace; color:var(--muted); text-align:right; white-space:nowrap; }
+  .d-node-right { font:500 12px var(--mono); color:var(--muted); text-align:right; white-space:nowrap; }
   .d-progress { height:5px; overflow:hidden; margin-top:8px; border-radius:999px; background:var(--panel2); }
   .d-progress > span { display:block; height:100%; border-radius:inherit; background:var(--accent); }
   @media (max-width:900px) { .d-grid { grid-template-columns:1fr; gap:0; } }
@@ -214,6 +219,51 @@ const DASHBOARD_CSS = `
     .d-node-row { grid-template-columns:12px minmax(0,1fr); }
     .d-node-right { grid-column:2; text-align:left; }
   }
+  /* ---- Durant skin: liquid glass over drifting light, underline tabs, quieter chrome ---- */
+  body { background:var(--bg); font-family:var(--sans); }
+  body::before { content:""; position:fixed; inset:0; z-index:-1; pointer-events:none;
+    background: radial-gradient(520px circle at 8% 12%, rgba(121,210,216,.20), transparent 70%),
+      radial-gradient(460px circle at 92% 46%, rgba(156,194,122,.12), transparent 70%),
+      radial-gradient(640px circle at 46% 108%, rgba(40,87,98,.55), transparent 70%); }
+  header.hdr { background:color-mix(in srgb, var(--bg) 72%, transparent); border-bottom-color:var(--edge); }
+  .topbar h1 { display:flex; align-items:center; gap:10px; font-weight:700; letter-spacing:-.02em; }
+  .topbar .brand { color:var(--text); }
+  .brand-mark { display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; padding-right:3px; border-radius:7px; background:var(--text); color:var(--bg); font-size:22px; font-weight:800; letter-spacing:-3px; flex:0 0 auto; }
+  .brand-mark span { color:#285762; }
+  .nav { background:transparent; border:0; border-radius:0; padding:0 4px; margin-bottom:0; gap:2px; }
+  .chip.tab { position:relative; border-radius:0; min-height:44px; }
+  .chip.tab::after { content:""; position:absolute; left:12px; right:12px; bottom:4px; height:2px; border-radius:2px; background:var(--accent); transform:scaleX(0); transform-origin:left; transition:transform .35s cubic-bezier(.2,.75,.25,1); }
+  .chip.tab[aria-selected="true"] { background:transparent; color:var(--text); }
+  .chip.tab[aria-selected="true"]::after, .chip.tab:hover::after { transform:scaleX(1); }
+  .tab-count { min-width:19px; padding:1px 6px; border-radius:99px; background:color-mix(in srgb, var(--accent) 16%, transparent); color:var(--accent); font:700 11px/1.5 var(--mono); text-align:center; }
+  .card, .stat, .d-metric, .overall, .login-card { background:linear-gradient(150deg, color-mix(in srgb, #fff 7%, transparent), transparent 46%), var(--glass); border-color:var(--edge);
+    -webkit-backdrop-filter:blur(22px) saturate(1.8); backdrop-filter:blur(22px) saturate(1.8); box-shadow:inset 0 1px 0 color-mix(in srgb, #fff 18%, transparent), 0 18px 52px rgba(0,0,0,.22); }
+  .card { border-radius:18px; }
+  .stat, .d-metric { border-radius:14px; }
+  .card h2, .stat .l, .d-metric span, th { font-family:var(--mono); font-weight:400; letter-spacing:.1em; }
+  .card h2 .sub { font-family:var(--sans); letter-spacing:0; }
+  .login-card h1 { display:flex; align-items:center; gap:10px; }
+  .login-card h1 .brand { color:var(--text); }
+  .stat .n, .d-metric strong { color:var(--text); font-weight:400; letter-spacing:-.04em; }
+  .d-metric.attention strong { color:var(--warn); } .d-metric.critical strong { color:var(--down); }
+  .btn { border-color:var(--line-strong); background:transparent; border-radius:10px; }
+  .btn:hover { background:color-mix(in srgb, var(--accent) 10%, transparent); border-color:var(--accent); }
+  .btn.primary:hover { background:var(--accent-strong); }
+  .bar-fill { background:var(--accent); }
+  input[type=search], input[type=text], input[type=number], input[type=password], select, textarea { border-color:var(--line-strong) !important; background:color-mix(in srgb, var(--bg) 70%, transparent) !important; }
+  .d-eyebrow { color:var(--muted); font-weight:400; letter-spacing:.14em; text-transform:uppercase; display:flex; align-items:center; gap:10px; }
+  .d-eyebrow::before { content:""; width:28px; height:1px; background:var(--accent); }
+  .d-h1 { font-weight:500; letter-spacing:-.045em; }
+  .d-progress > span.warn { background:var(--warn); } .d-progress > span.down { background:var(--down); }
+  .d-healthy { border-top:1px solid var(--border); }
+  .d-healthy summary { display:flex; align-items:center; gap:12px; padding:12px 0; cursor:pointer; list-style:none; color:var(--muted); font-size:13.5px; }
+  .d-healthy summary::-webkit-details-marker { display:none; }
+  .d-healthy summary::after { content:"+"; margin-left:auto; color:var(--accent); font:400 16px var(--mono); }
+  .d-healthy[open] summary::after { content:"−"; }
+  /* The global summary belongs to Overview; Director and Services carry their own. */
+  body[data-tab="director"] .container > .overall, body[data-tab="director"] .container > .stats,
+  body[data-tab="services"] .container > .overall, body[data-tab="services"] .container > .stats { display:none; }
+  @media (prefers-reduced-motion: reduce) { .chip.tab::after { transition:none; } }
 `;
 
 // `tabs: true` turns the nav into panel switches rather than scroll anchors. The panels are all
@@ -222,8 +272,8 @@ const DASHBOARD_CSS = `
 // script runs). The active tab lives in location.hash so the 60s auto-refresh comes back to it.
 function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, searchQuery = '', nav = [], autoRefresh = false, tabs = false } = {}) {
   const navHtml = nav.length
-    ? `<nav class="nav" aria-label="Dashboard sections"${tabs ? ' role="tablist"' : ''}>${nav.map(([id, label]) => (tabs
-      ? `<button class="chip tab" role="tab" type="button" data-tab="${escapeHtml(id)}" aria-selected="false">${escapeHtml(label)}</button>`
+    ? `<nav class="nav" aria-label="Dashboard sections"${tabs ? ' role="tablist"' : ''}>${nav.map(([id, label, count]) => (tabs
+      ? `<button class="chip tab" role="tab" type="button" data-tab="${escapeHtml(id)}" aria-selected="false">${escapeHtml(label)}${count ? ` <span class="tab-count" aria-label="${escapeHtml(String(count))} need attention">${escapeHtml(String(count))}</span>` : ''}</button>`
       : `<a class="chip" href="#${escapeHtml(id)}">${escapeHtml(label)}</a>`)).join('')}</nav>`
     : '';
   // Full ARIA tabs pattern (https://www.w3.org/WAI/ARIA/apg/patterns/tabs/): each tab/panel pair
@@ -234,7 +284,7 @@ function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, s
   const tabScript = tabs ? `<script>
     (function () {
       var tabButtons = [].slice.call(document.querySelectorAll('.chip.tab'));
-      var panels = [].slice.call(document.querySelectorAll('.panel'));
+      var panels = [].slice.call(document.querySelectorAll('.panel[data-panel]'));
       tabButtons.forEach(function (b) {
         b.id = 'tab-' + b.dataset.tab;
         b.setAttribute('aria-controls', 'panel-' + b.dataset.tab);
@@ -248,6 +298,7 @@ function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, s
       function show(id, focusTab) {
         if (!panels.some(function (p) { return p.dataset.panel === id; })) id = panels[0] && panels[0].dataset.panel;
         panels.forEach(function (p) { p.hidden = p.dataset.panel !== id; });
+        document.body.dataset.tab = id || '';
         tabButtons.forEach(function (b) {
           var selected = b.dataset.tab === id;
           b.setAttribute('aria-selected', String(selected));
@@ -294,13 +345,13 @@ function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, s
   </script>` : '';
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#101114">
+  <meta name="theme-color" content="#10232f">
   <title>${escapeHtml(title)} — Durant Media Server</title>
   <style>${DASHBOARD_CSS}</style></head><body>
   <a class="skip-link" href="#main-content">Skip to content</a>
   <header class="hdr">
     <div class="topbar">
-      <h1><span class="brand">Durant</span> Media Server</h1>
+      <h1><span class="brand-mark" aria-hidden="true">d<span>l</span>.</span><span><span class="brand">Durant</span> Media Server</span></h1>
       ${showSearch ? `<form class="topbar-search" method="get" action="/admin/search"><input type="search" name="q" value="${escapeHtml(searchQuery)}" minlength="2" placeholder="Search requests, users, library, audit" aria-label="Search dashboard"><button class="btn" type="submit">Search</button></form>` : ''}
       ${showLogout ? '<form class="logout" method="post" action="/admin/logout"><button class="btn" type="submit">Log out</button></form>' : ''}
     </div>
@@ -378,19 +429,32 @@ function renderDirectorPanel({ overall, services, disks, totalFreeLabel }) {
         <div><strong>${downServices.length === 1 ? 'One service needs attention' : `${downServices.length} services need attention`}.</strong>
         ${downServices.map(s => `${escapeHtml(s.title)}${s.sub ? ` — ${escapeHtml(s.sub)}` : ''}`).join(' · ')}</div>
       </div>` : '';
-  const serviceRows = list.length ? list.map(s => `
+  // Exceptions first: down, then warnings, then not configured; healthy services fold into one
+  // expandable row so the one red dot isn't hiding among a column of green ones.
+  const order = { down: 0, warn: 1, skip: 2, ok: 3 };
+  const sorted = list.map((s, i) => [s, i]).sort((a, b) => ((order[a[0].state] ?? 1) - (order[b[0].state] ?? 1)) || a[1] - b[1]).map(([s]) => s);
+  const serviceRow = s => `
         <div class="d-node-row">
           <span class="d-node-dot ${dotClass(s.state)}" aria-hidden="true"></span>
           <div><div class="d-node-name">${escapeHtml(s.title || '')}</div>${s.sub ? `<div class="d-node-meta">${escapeHtml(s.sub)}</div>` : ''}</div>
           <div class="d-node-right">${escapeHtml(s.right || '')}</div>
-        </div>`).join('') : '<p class="d-lead-copy" style="padding:12px 0">No health data yet.</p>';
+        </div>`;
+  const healthy = sorted.filter(s => s.state === 'ok');
+  const exceptions = sorted.filter(s => s.state !== 'ok');
+  const serviceRows = list.length
+    ? exceptions.map(serviceRow).join('') + (healthy.length
+      ? (exceptions.length
+        ? `<details class="d-healthy"><summary><span class="d-node-dot" aria-hidden="true"></span>${healthy.length} healthy service${healthy.length === 1 ? '' : 's'}</summary>${healthy.map(serviceRow).join('')}</details>`
+        : healthy.map(serviceRow).join(''))
+      : '')
+    : '<p class="d-lead-copy" style="padding:12px 0">No health data yet.</p>';
   const diskRows = disks === null
     ? '<p class="d-lead-copy" style="padding:12px 0">*arr diskspace unreachable or not configured.</p>'
     : (Array.isArray(disks) && disks.length ? disks.map(d => `
         <div class="d-node-row">
           <span class="d-node-dot ${dotClass(d.state)}" aria-hidden="true"></span>
           <div><div class="d-node-name">${escapeHtml(d.title || '')}</div>${d.sub ? `<div class="d-node-meta">${escapeHtml(d.sub)}</div>` : ''}
-            ${typeof d.pct === 'number' ? `<div class="d-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.max(0, Math.min(100, d.pct))}" aria-label="${escapeHtml(d.title || 'disk')} usage"><span style="width:${Math.max(0, Math.min(100, d.pct))}%"></span></div>` : ''}</div>
+            ${typeof d.pct === 'number' ? `<div class="d-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.max(0, Math.min(100, d.pct))}" aria-label="${escapeHtml(d.title || 'disk')} usage"><span class="${dotClass(d.state)}" style="width:${Math.max(0, Math.min(100, d.pct))}%"></span></div>` : ''}</div>
           <div class="d-node-right">${escapeHtml(d.right || '')}</div>
         </div>`).join('') : '<p class="d-lead-copy" style="padding:12px 0">No disks reported.</p>');
   return `
@@ -433,13 +497,14 @@ function renderServicesPanel() {
   // styles use the svc- prefix to avoid colliding with dashboard CSS.
   return `
 <style>
-.svc-wrap { --svc-accent: #e97a4f; --svc-ink: #f2ede6; --svc-ink2: #b8b2a8; --svc-ink3: #7a766e;
-  --svc-glass: rgba(255,255,255,.045); --svc-line: rgba(255,255,255,.09);
-  --svc-green: #34d399; --svc-red: #f87171; --svc-amber: #fbbf24; --svc-cool: #38bdf8;
+.svc-wrap { /* Durant Logic theme from the shared Durant Sites design system (see DASHBOARD_CSS :root). */
+  --svc-accent: var(--accent); --svc-ink: var(--text); --svc-ink2: var(--muted); --svc-ink3: var(--faint);
+  --svc-glass: var(--glass); --svc-line: var(--edge);
+  --svc-green: var(--ok); --svc-red: var(--down); --svc-amber: var(--warn); --svc-cool: var(--cool);
   position: relative; max-width: 1060px; margin: 0 auto; }
 .svc-orb { position: fixed; border-radius: 50%; filter: blur(90px); pointer-events: none; z-index: 0; opacity: .45; }
-.svc-orb-1 { width: 420px; height: 420px; background: radial-gradient(circle, rgba(233,122,79,.14), transparent 70%); top: -120px; left: -100px; animation: svcDrift1 26s ease-in-out infinite alternate; }
-.svc-orb-2 { width: 380px; height: 380px; background: radial-gradient(circle, rgba(56,189,248,.10), transparent 70%); bottom: -140px; right: -100px; animation: svcDrift2 32s ease-in-out infinite alternate; }
+.svc-orb-1 { width: 420px; height: 420px; background: radial-gradient(circle, color-mix(in srgb, var(--svc-accent) 14%, transparent), transparent 70%); top: -120px; left: -100px; animation: svcDrift1 26s ease-in-out infinite alternate; }
+.svc-orb-2 { width: 380px; height: 380px; background: radial-gradient(circle, color-mix(in srgb, var(--svc-cool) 10%, transparent), transparent 70%); bottom: -140px; right: -100px; animation: svcDrift2 32s ease-in-out infinite alternate; }
 @keyframes svcDrift1 { to { transform: translate(70px, 50px) scale(1.12); } }
 @keyframes svcDrift2 { to { transform: translate(-60px, -40px) scale(1.08); } }
 @keyframes svcFadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
@@ -456,22 +521,22 @@ function renderServicesPanel() {
   border: 1px solid var(--svc-line); border-radius: 18px; padding: 16px 14px; overflow: hidden;
   transition: transform .25s ease, border-color .25s ease, box-shadow .25s ease; cursor: pointer;
   -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
-.svc-card:hover { transform: translateY(-3px); border-color: rgba(233,122,79,.35); box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+.svc-card:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--svc-accent) 35%, transparent); box-shadow: 0 10px 30px rgba(0,0,0,.35); }
 .svc-card:active { transform: translateY(-1px) scale(.99); }
 .svc-dot { position: absolute; top: 12px; right: 12px; width: 8px; height: 8px; border-radius: 50%; background: var(--svc-green);
-  box-shadow: 0 0 10px rgba(52,211,153,.8); animation: svcPulse 2.2s ease-in-out infinite; }
-.svc-dot.down { background: var(--svc-red); box-shadow: 0 0 10px rgba(248,113,113,.8); }
+  box-shadow: none; }
+.svc-dot.down { background: var(--svc-red); box-shadow: 0 0 10px color-mix(in srgb, var(--svc-red) 80%, transparent); animation: svcPulse 1.6s ease-in-out infinite; }
 .svc-dot.skip { background: var(--svc-ink3); box-shadow: none; animation: none; }
 @keyframes svcPulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .55; transform: scale(.8); } }
 .svc-top { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .svc-icon { width: 36px; height: 36px; border-radius: 11px; display: flex; align-items: center; justify-content: center; flex: none;
-  background: rgba(233,122,79,.12); border: 1px solid rgba(233,122,79,.2); color: var(--svc-accent); font-size: 18px; }
-.svc-icon.cool { background: rgba(56,189,248,.1); border-color: rgba(56,189,248,.2); color: var(--svc-cool); }
-.svc-icon.green { background: rgba(52,211,153,.1); border-color: rgba(52,211,153,.2); color: var(--svc-green); }
+  background: color-mix(in srgb, var(--svc-accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--svc-accent) 20%, transparent); color: var(--svc-accent); font-size: 18px; }
+.svc-icon.cool { background: color-mix(in srgb, var(--svc-cool) 10%, transparent); border-color: color-mix(in srgb, var(--svc-cool) 20%, transparent); color: var(--svc-cool); }
+.svc-icon.green { background: color-mix(in srgb, var(--svc-green) 10%, transparent); border-color: color-mix(in srgb, var(--svc-green) 20%, transparent); color: var(--svc-green); }
 .svc-name { font-weight: 650; font-size: 14px; }
 .svc-desc { font-size: 11.5px; color: var(--svc-ink2); margin-bottom: 6px; min-height: 16px; }
 .svc-badge { display: inline-block; font-size: 10.5px; font-weight: 700; color: var(--svc-accent);
-  background: rgba(233,122,79,.12); border: 1px solid rgba(233,122,79,.25); padding: 2px 8px; border-radius: 999px; margin-top: 4px; }
+  background: color-mix(in srgb, var(--svc-accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--svc-accent) 25%, transparent); padding: 2px 8px; border-radius: 999px; margin-top: 4px; }
 .svc-metrics { display: flex; gap: 14px; margin-top: 8px; }
 .svc-metric .v { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .svc-metric .v small { font-size: 11px; font-weight: 500; color: var(--svc-ink2); }
@@ -480,7 +545,7 @@ function renderServicesPanel() {
 .svc-np { display: flex; align-items: center; gap: 14px; background: var(--svc-glass); border: 1px solid var(--svc-line);
   border-radius: 18px; padding: 14px 16px; margin-bottom: 22px; backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
 .svc-np .np-poster { width: 52px; height: 76px; border-radius: 10px; flex: none;
-  background: linear-gradient(135deg, rgba(233,122,79,.14), rgba(233,122,79,.04));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--svc-accent) 14%, transparent), color-mix(in srgb, var(--svc-accent) 4%, transparent));
   border: 1px solid var(--svc-line); display: flex; align-items: center; justify-content: center;
   font-size: 22px; overflow: hidden; }
 .svc-np .np-info { flex: 1; min-width: 0; }
@@ -500,12 +565,12 @@ function renderServicesPanel() {
 .svc-netmode { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700; letter-spacing: .08em;
   padding: 6px 12px; border-radius: 999px; border: 1px solid var(--svc-line); background: var(--svc-glass);
   color: var(--svc-ink2); cursor: pointer; margin-bottom: 16px; }
-.svc-netmode .mdot { width: 7px; height: 7px; border-radius: 50%; background: var(--svc-cool); box-shadow: 0 0 8px rgba(56,189,248,.9); }
+.svc-netmode .mdot { width: 7px; height: 7px; border-radius: 50%; background: var(--svc-cool); box-shadow: 0 0 8px color-mix(in srgb, var(--svc-cool) 90%, transparent); }
 .svc-loading { color: var(--svc-ink2); font-size: 13px; padding: 24px; text-align: center; }
 .svc-sheet { position: fixed; inset: 0; z-index: 60; display: none; align-items: flex-end; justify-content: center; }
 .svc-sheet.open { display: flex; }
 .svc-sheet .scrim { position: absolute; inset: 0; background: rgba(0,0,0,.55); backdrop-filter: blur(4px); }
-.svc-sheet .panel { position: relative; width: 100%; max-width: 420px; background: #1c1a17; border: 1px solid var(--svc-line);
+.svc-sheet .svc-sheet-panel { position: relative; width: 100%; max-width: 420px; background: var(--panel); border: 1px solid var(--svc-line);
   border-bottom: none; border-radius: 20px 20px 0 0; padding: 12px 16px 28px; animation: svcSlideUp .28s cubic-bezier(.2,.9,.25,1.1); }
 @keyframes svcSlideUp { from { transform: translateY(60px); opacity: 0; } }
 .svc-sheet .grab { width: 40px; height: 4px; border-radius: 99px; background: rgba(255,255,255,.18); margin: 0 auto 14px; }
@@ -517,27 +582,26 @@ function renderServicesPanel() {
   border: 1px solid var(--svc-line); background: rgba(255,255,255,.05); color: var(--svc-ink);
   font-size: 15px; font-weight: 600; border-radius: 14px; cursor: pointer; text-align: left; backdrop-filter: blur(8px); }
 .svc-action:active { transform: scale(.98); }
-.svc-action.danger { color: #fca5a5; border-color: rgba(248,113,113,.3); }
+.svc-action.danger { color: #fca5a5; border-color: color-mix(in srgb, var(--svc-red) 30%, transparent); }
 .svc-action:disabled { opacity: .4; cursor: default; }
-.svc-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: rgba(42,39,35,.92);
+.svc-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: color-mix(in srgb, var(--panel) 92%, transparent);
   border: 1px solid var(--svc-line); color: var(--svc-ink); padding: 10px 18px 10px 14px; border-radius: 999px; font-size: 13.5px;
   font-weight: 600; opacity: 0; pointer-events: none; transition: all .3s ease; z-index: 70;
   display: flex; align-items: center; gap: 9px; backdrop-filter: blur(12px); max-width: 92vw; }
 .svc-toast::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--svc-green);
-  box-shadow: 0 0 8px rgba(52,211,153,.9); flex: none; }
+  box-shadow: 0 0 8px color-mix(in srgb, var(--svc-green) 90%, transparent); flex: none; }
 .svc-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-.svc-sort-tag { font-size: 9px; font-weight: 700; letter-spacing: .1em; color: var(--svc-accent); margin-left: 6px; }
 .svc-banner { display: flex; align-items: center; gap: 12px; background: var(--svc-glass); border: 1px solid var(--svc-line);
   border-radius: 16px; padding: 13px 16px; margin-bottom: 14px; }
 .svc-banner .pulse-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--svc-green); flex: none;
-  box-shadow: 0 0 12px rgba(52,211,153,.9); animation: svcPulse 2.2s ease-in-out infinite; }
-.svc-banner.warn .pulse-dot { background: var(--svc-amber); box-shadow: 0 0 12px rgba(251,191,36,.9); }
+  box-shadow: 0 0 12px color-mix(in srgb, var(--svc-green) 90%, transparent); animation: svcPulse 2.2s ease-in-out infinite; }
+.svc-banner.warn .pulse-dot { background: var(--svc-amber); box-shadow: 0 0 12px color-mix(in srgb, var(--svc-amber) 90%, transparent); }
 .svc-banner .t { font-weight: 700; font-size: 14px; }
 .svc-banner .s { font-size: 12px; color: var(--svc-ink2); margin-top: 2px; }
 .svc-banner .pill { margin-left: auto; flex: none; font-size: 10px; font-weight: 800; letter-spacing: .12em;
-  color: var(--svc-green); background: rgba(52,211,153,.1); border: 1px solid rgba(52,211,153,.3);
+  color: var(--svc-green); background: color-mix(in srgb, var(--svc-green) 10%, transparent); border: 1px solid color-mix(in srgb, var(--svc-green) 30%, transparent);
   padding: 5px 12px; border-radius: 999px; }
-.svc-banner.warn .pill { color: var(--svc-amber); background: rgba(251,191,36,.1); border-color: rgba(251,191,36,.3); }
+.svc-banner.warn .pill { color: var(--svc-amber); background: color-mix(in srgb, var(--svc-amber) 10%, transparent); border-color: color-mix(in srgb, var(--svc-amber) 30%, transparent); }
 .svc-hero { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 22px; }
 .svc-hero .stat { background: var(--svc-glass); border: 1px solid var(--svc-line); border-radius: 14px; padding: 12px 8px; text-align: center; }
 .svc-hero .stat .v { font-size: 20px; font-weight: 750; font-variant-numeric: tabular-nums; }
@@ -549,7 +613,7 @@ function renderServicesPanel() {
 .svc-card.mini .svc-icon { width: 30px; height: 30px; font-size: 15px; border-radius: 9px; }
 .svc-card.mini .svc-name { font-size: 13px; }
 .svc-qbadge { position: absolute; top: 10px; left: 12px; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px;
-  background: rgba(233,122,79,.15); border: 1px solid rgba(233,122,79,.35); color: var(--svc-accent);
+  background: color-mix(in srgb, var(--svc-accent) 15%, transparent); border: 1px solid color-mix(in srgb, var(--svc-accent) 35%, transparent); color: var(--svc-accent);
   font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
 .svc-widget { display: flex; gap: 6px; margin-top: 8px; }
 .svc-widget .metric { flex: 1; background: rgba(0,0,0,.28); border: 1px solid rgba(255,255,255,.06); border-radius: 10px; padding: 8px 6px; text-align: center; }
@@ -561,7 +625,7 @@ function renderServicesPanel() {
 .svc-bar-row .bl { display: flex; justify-content: space-between; font-size: 10px; color: var(--svc-ink2); margin-bottom: 4px; letter-spacing: .04em; }
 .svc-bar-row .bl b { color: var(--svc-ink); font-variant-numeric: tabular-nums; }
 .svc-bar { height: 5px; border-radius: 99px; background: rgba(255,255,255,.07); overflow: hidden; }
-.svc-bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--svc-accent), #f5a623); width: 0; animation: svcFillBar 1.4s .4s cubic-bezier(.2,.8,.2,1) forwards; }
+.svc-bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--svc-accent), var(--accent-strong)); width: 0; animation: svcFillBar 1.4s .4s cubic-bezier(.2,.8,.2,1) forwards; }
 @keyframes svcFillBar { to { width: var(--w); } }
 .svc-batt-wrap { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
 .svc-batt { width: 64px; height: 32px; border: 2px solid rgba(255,255,255,.25); border-radius: 8px; position: relative; flex: none; padding: 3px; }
@@ -569,8 +633,8 @@ function renderServicesPanel() {
 .svc-batt i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--svc-green), #6ee7b7); width: 0; animation: svcFillBar 1.6s .5s cubic-bezier(.2,.8,.2,1) forwards; }
 .svc-batt-info .bv { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .svc-batt-info .bl2 { font-size: 10px; color: var(--svc-ink3); letter-spacing: .08em; text-transform: uppercase; margin-top: 1px; }
-.svc-mains { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; letter-spacing: .06em; color: var(--svc-green); background: rgba(52,211,153,.1); border: 1px solid rgba(52,211,153,.25); padding: 5px 11px; border-radius: 999px; margin-top: 10px; }
-.svc-mains.amber { color: var(--svc-amber); background: rgba(251,191,36,.1); border-color: rgba(251,191,36,.3); }
+.svc-mains { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; letter-spacing: .06em; color: var(--svc-green); background: color-mix(in srgb, var(--svc-green) 10%, transparent); border: 1px solid color-mix(in srgb, var(--svc-green) 25%, transparent); padding: 5px 11px; border-radius: 999px; margin-top: 10px; }
+.svc-mains.amber { color: var(--svc-amber); background: color-mix(in srgb, var(--svc-amber) 10%, transparent); border-color: color-mix(in srgb, var(--svc-amber) 30%, transparent); }
 .svc-mains .mdot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; animation: svcPulse 2.2s ease-in-out infinite; }
 .svc-donut-wrap { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
 .svc-donut { width: 74px; height: 74px; flex: none; transform: rotate(-90deg); }
@@ -592,45 +656,143 @@ function renderServicesPanel() {
 .svc-tput-legend { display: flex; gap: 14px; margin-top: 8px; font-size: 11px; color: var(--svc-ink2); }
 .svc-tput-legend b { color: var(--svc-ink); font-variant-numeric: tabular-nums; }
 .svc-tput-legend .sw { display: inline-block; width: 8px; height: 8px; border-radius: 3px; margin-right: 5px; }
-.svc-unifi-tag { font-size: 9px; font-weight: 700; letter-spacing: .1em; color: var(--svc-cool); background: rgba(56,189,248,.1); border: 1px solid rgba(56,189,248,.25); padding: 3px 8px; border-radius: 999px; }
+.svc-unifi-tag { font-size: 9px; font-weight: 700; letter-spacing: .1em; color: var(--svc-cool); background: color-mix(in srgb, var(--svc-cool) 10%, transparent); border: 1px solid color-mix(in srgb, var(--svc-cool) 25%, transparent); padding: 3px 8px; border-radius: 999px; }
 @media (prefers-reduced-motion: reduce) {
   .svc-card, .svc-dot, .svc-np .eq i, .svc-orb, .svc-bar i, .svc-batt i, .svc-talker .tbar i, .svc-mains .mdot { animation: none !important; transition: none !important; }
-  .svc-sheet .panel { animation: none; }
+  .svc-sheet .svc-sheet-panel { animation: none; }
   .svc-enter { opacity: 1 !important; }
+}
+
+/* ---- Durant redesign: liquid glass, status line, attention, pins, menu, palette ---- */
+.svc-card, .svc-np, .svc-attn, .svc-pal-box { background: linear-gradient(150deg, color-mix(in srgb, #fff 8%, transparent), transparent 46%), var(--svc-glass);
+  -webkit-backdrop-filter: blur(22px) saturate(1.8); backdrop-filter: blur(22px) saturate(1.8);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 20%, transparent), 0 18px 52px rgba(0,0,0,.28); }
+.svc-card { padding-right: 46px; }
+.svc-card.mini { padding-right: 46px; }
+.svc-card:hover { border-color: color-mix(in srgb, var(--svc-accent) 45%, var(--svc-line)); }
+.svc-card.pinned .svc-icon { background: var(--svc-accent); border-color: var(--svc-accent); color: var(--on-accent); }
+.svc-card.is-down { border-color: color-mix(in srgb, var(--svc-red) 50%, var(--svc-line)); }
+.svc-icon svg { width: 19px; height: 19px; }
+.svc-card.mini .svc-icon svg { width: 16px; height: 16px; }
+.svc-dot { top: 16px; right: 44px; }
+.svc-card.mini .svc-dot { top: 50%; right: 44px; margin-top: -4px; }
+.svc-more { position: absolute; top: 9px; right: 8px; z-index: 2; width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid transparent; border-radius: 8px; background: none; color: var(--svc-ink2); cursor: pointer; }
+.svc-card.mini .svc-more { top: 50%; margin-top: -15px; }
+.svc-more:hover, .svc-more:focus-visible { border-color: var(--svc-line); color: var(--svc-ink); }
+.svc-more svg { width: 17px; height: 17px; }
+.svc-kicker { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 6px 0 10px; color: var(--svc-ink2); font: 400 11px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; }
+.svc-kicker::before { content: ""; width: 28px; height: 1px; background: var(--svc-accent); }
+.svc-status { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px 28px; align-items: end; margin-bottom: 18px; }
+.svc-status h1 { margin: 0; font-size: clamp(28px, 4.4vw, 46px); font-weight: 500; letter-spacing: -.045em; line-height: 1.05; text-wrap: balance; }
+.svc-status h1 em { font: italic 400 1.04em/1 var(--serif); letter-spacing: -.01em; color: var(--svc-accent); }
+.svc-status .sub { margin: 8px 0 0; color: var(--svc-ink2); font-size: 13.5px; }
+.svc-seg { display: inline-flex; padding: 3px; border: 1px solid var(--line-strong); border-radius: 99px; }
+.svc-seg button { border: 0; background: none; padding: 6px 12px; border-radius: 99px; color: var(--svc-ink2); font: 700 10.5px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; cursor: pointer; }
+.svc-seg button[aria-pressed="true"] { background: var(--svc-accent); color: var(--on-accent); }
+.svc-vitals { display: flex; flex-wrap: wrap; border-block: 1px solid var(--border); margin-bottom: 22px; }
+.svc-vital { padding: 11px 18px 11px 0; }
+.svc-vital + .svc-vital { padding-left: 18px; border-left: 1px solid var(--border); }
+.svc-vital b { display: block; font: 400 22px/1.1 var(--mono); letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+.svc-vital b small { font-size: 11px; color: var(--svc-ink2); letter-spacing: 0; }
+.svc-vital span { display: block; margin-top: 4px; color: var(--svc-ink3); font: 400 10px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.svc-attn { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 14px 16px; margin-bottom: 12px; border: 1px solid color-mix(in srgb, var(--svc-red) 50%, var(--svc-line)); border-radius: 18px; }
+.svc-attn .ai { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 12px; background: color-mix(in srgb, var(--svc-red) 16%, transparent); color: var(--svc-red); }
+.svc-attn .ai svg { width: 21px; height: 21px; }
+.svc-attn h2 { margin: 0; font-size: 15.5px; font-weight: 650; }
+.svc-attn p { margin: 2px 0 0; color: var(--svc-ink2); font-size: 13px; overflow-wrap: anywhere; }
+.svc-attn code { font: 400 12px var(--mono); color: var(--svc-red); }
+.svc-attn .acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.svc-attn .btn svg { width: 16px; height: 16px; }
+.svc-attn .btn[aria-busy="true"] svg { animation: svcSpin 1s linear infinite; }
+@keyframes svcSpin { to { transform: rotate(360deg); } }
+.svc-head .sum { font: 400 11.5px var(--mono); color: var(--svc-ink3); }
+.svc-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.svc-chip { padding: 1px 8px; border: 1px solid var(--svc-line); border-radius: 99px; color: var(--svc-ink2); font: 400 10.5px/1.6 var(--mono); }
+.svc-chip.hot { border-color: color-mix(in srgb, var(--svc-amber) 60%, transparent); color: var(--svc-amber); }
+.svc-np-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin-bottom: 22px; }
+.svc-np-list .svc-np { margin-bottom: 0; }
+.svc-np .np-poster svg { width: 24px; height: 24px; color: var(--svc-accent); }
+.svc-action .a-ic svg { width: 17px; height: 17px; color: var(--svc-ink2); vertical-align: -3px; }
+.svc-action.danger .a-ic svg { color: currentColor; }
+@media (min-width: 721px) { .svc-sheet { align-items: center; } .svc-sheet .svc-sheet-panel { border-bottom: 1px solid var(--svc-line); border-radius: 20px; } }
+.svc-jump { display: inline-flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 10px 0 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: none; color: var(--svc-ink2); font-size: 13px; cursor: pointer; }
+.svc-jump svg { width: 15px; height: 15px; }
+.svc-jump kbd { padding: 1px 6px; border: 1px solid var(--svc-line); border-radius: 5px; font: 400 11px/1.6 var(--mono); color: var(--svc-ink3); }
+.svc-tools { display: grid; justify-items: end; gap: 10px; }
+.svc-pal { position: fixed; inset: 0; z-index: 65; display: none; align-items: flex-start; justify-content: center; padding: 12vh 16px 16px; background: rgba(0,0,0,.45); }
+.svc-pal.open { display: flex; }
+.svc-pal-box { width: min(560px, 100%); padding: 8px; border: 1px solid var(--svc-line); border-radius: 18px; }
+.svc-pal input { width: 100%; padding: 14px; border: 0; border-bottom: 1px solid var(--svc-line); background: none; color: var(--svc-ink); font-size: 16px; outline: none; }
+.svc-pal ul { list-style: none; margin: 6px 0 0; padding: 0; max-height: 46vh; overflow: auto; }
+.svc-pal li button { display: flex; align-items: center; gap: 12px; width: 100%; padding: 9px 10px; border: 0; border-radius: 10px; background: none; color: var(--svc-ink); text-align: left; cursor: pointer; }
+.svc-pal li button[aria-selected="true"] { background: color-mix(in srgb, var(--svc-accent) 16%, transparent); }
+.svc-pal li .svc-icon { width: 30px; height: 30px; }
+.svc-pal li small { display: block; color: var(--svc-ink3); font: 400 11px var(--mono); }
+.svc-pal li .grow { flex: 1; min-width: 0; }
+@media (max-width: 720px) {
+  .svc-status { grid-template-columns: 1fr; }
+  .svc-tools { justify-items: start; }
+  .svc-jump span, .svc-jump kbd { display: none; }
+  .svc-vitals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .svc-vital, .svc-vital + .svc-vital { padding: 9px 12px 9px 0; border-left: 0; }
+  .svc-vital:nth-child(even) { padding-left: 12px; border-left: 1px solid var(--border); }
+  .svc-attn { grid-template-columns: auto minmax(0, 1fr); }
+  .svc-attn .acts { grid-column: 1 / -1; }
 }
 </style>
 <div class="svc-wrap">
   <div class="svc-orb svc-orb-1"></div>
   <div class="svc-orb svc-orb-2"></div>
-  <div style="margin-bottom:4px">
-    <div style="font-size:11px;font-weight:700;letter-spacing:.16em;color:var(--svc-ink2)">SERVICES / LIVE</div>
-    <h1 style="font-size:24px;margin:4px 0 2px">Every service, one tap away.</h1>
-    <p style="color:var(--svc-ink2);font-size:13px;margin:0 0 12px">Long-press a card for quick actions. Links automatically use your LAN or Tailscale address.</p>
+  <div class="svc-status">
+    <div>
+      <p class="svc-kicker">Services · live</p>
+      <h1 id="svcHeadline">Checking every service…</h1>
+      <p class="sub" id="svcSub">Use ⋯ on a card (or long-press it) for actions. Links use your local or Tailscale address.</p>
+    </div>
+    <div class="svc-tools">
+      <button class="svc-jump" id="svcJump" type="button" aria-haspopup="dialog" aria-label="Jump to a service (press /)"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg><span>Jump to a service</span><kbd>/</kbd></button>
+      <div class="svc-seg" role="group" aria-label="Open service links through">
+        <button type="button" data-net="lan" aria-pressed="false">Local</button>
+        <button type="button" data-net="tail" aria-pressed="false">Tailscale</button>
+      </div>
+    </div>
   </div>
-  <button class="svc-netmode" id="svcNetMode" type="button"><span class="mdot"></span><span id="svcNetLabel">DETECTING NETWORK…</span></button>
+  <div id="svcVitals"></div>
+  <div id="svcAttention"></div>
   <div id="svcNowPlaying"></div>
   <div id="svcBoard"><div class="svc-loading">Loading services…</div></div>
 </div>
-<div class="svc-sheet" id="svcSheet" role="dialog" aria-modal="true">
+<div class="svc-sheet" id="svcSheet" role="dialog" aria-modal="true" aria-labelledby="svcSheetTitle">
   <div class="scrim" id="svcScrim"></div>
-  <div class="panel">
+  <div class="svc-sheet-panel">
     <div class="grab"></div>
     <div class="stitle" id="svcSheetTitle"></div>
     <div class="ssub" id="svcSheetSub"></div>
-    <button class="svc-action" id="svcOpen"><span class="a-ic">&#127760;</span><span>Open</span></button>
-    <button class="svc-action danger" id="svcRestart"><span class="a-ic">&#128260;</span><span>Restart container</span></button>
-    <button class="svc-action" id="svcCopy"><span class="a-ic">&#128279;</span><span>Copy link</span></button>
+    <button class="svc-action" id="svcOpen"><span class="a-ic" data-icon="open"></span><span>Open</span></button>
+    <button class="svc-action" id="svcCopy"><span class="a-ic" data-icon="copy"></span><span>Copy link</span></button>
+    <button class="svc-action" id="svcPin"><span class="a-ic" data-icon="pin"></span><span id="svcPinLabel">Pin to top of group</span></button>
+    <button class="svc-action danger" id="svcRestart"><span class="a-ic" data-icon="restart"></span><span>Restart container</span></button>
   </div>
 </div>
-<div class="svc-toast" id="svcToast"></div>
+<div class="svc-pal" id="svcPal">
+  <div class="svc-pal-box" role="dialog" aria-modal="true" aria-label="Jump to a service">
+    <input id="svcPalInput" type="text" placeholder="Jump to a service…" autocomplete="off" aria-controls="svcPalList" aria-label="Service name">
+    <ul id="svcPalList" role="listbox" aria-label="Services"></ul>
+  </div>
+</div>
+<div class="svc-toast" id="svcToast" role="status" aria-live="polite"></div>
 <script>
 (function () {
   var board = document.getElementById('svcBoard');
   var np = document.getElementById('svcNowPlaying');
   if (!board) return;
   var LAN = '', TAIL = '', mode = 'tail', manualMode = null;
-  var taps = {};
-  try { taps = JSON.parse(localStorage.getItem('svcTaps') || '{}'); } catch (e) { taps = {}; }
+  // Pinned services lead their group and stay put (replaces tap-count "smart sort",
+  // which reordered cards under the user's thumb).
+  var pins = [];
+  try { pins = JSON.parse(localStorage.getItem('svcPins') || '[]'); if (!Array.isArray(pins)) pins = []; } catch (e) { pins = []; }
+  function savePins() { try { localStorage.setItem('svcPins', JSON.stringify(pins)); } catch (e) {} }
+  var lastData = null;
 
   function toast(msg) {
     var t = document.getElementById('svcToast');
@@ -656,13 +818,15 @@ function renderServicesPanel() {
   }
   function setMode(m) {
     mode = m;
-    var label = document.getElementById('svcNetLabel');
-    if (label) label.textContent = m === 'lan' ? 'LOCAL NETWORK' : 'TAILSCALE';
+    document.querySelectorAll('.svc-seg [data-net]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.net === m)); });
+    if (lastData) render(lastData);
   }
-  document.getElementById('svcNetMode').addEventListener('click', function () {
-    var next = mode === 'lan' ? 'tail' : 'lan';
-    try { localStorage.setItem('svcNetMode', next); } catch (e) {}
-    manualMode = next; setMode(next); toast(next === 'lan' ? 'Using LAN addresses' : 'Using Tailscale addresses');
+  document.querySelectorAll('.svc-seg [data-net]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var next = b.dataset.net;
+      try { localStorage.setItem('svcNetMode', next); } catch (e) {}
+      manualMode = next; setMode(next); toast(next === 'lan' ? 'Links now use your local network' : 'Links now use Tailscale');
+    });
   });
 
   function svcUrl(s) {
@@ -681,30 +845,56 @@ function renderServicesPanel() {
     return m >= 60 ? Math.floor(m / 60) + 'h ' + (m % 60) + 'm' : m + ' min';
   }
 
-  var ICONS = {
-    bolt: '&#9889;', disk: '&#128190;', gauge: '&#128246;', play: '&#9654;', chart: '&#128202;', search: '&#128269;',
-    tv: '&#128250;', film: '&#127916;', layers: '&#128450;', download: '&#11015;', cloud: '&#9729;', sync: '&#128260;',
-    folder: '&#128193;', cpu: '&#128421;', box: '&#128230;', trash: '&#128465;', shield: '&#128737;',
-    globe: '&#127760;', wifi: '&#128225;'
+  // Line icons (1.6 stroke) shared with durantlogic.com and durant.xyz, replacing emoji.
+  var P = {
+    bolt: '<path d="M13 3 5 13.5h6L10 21l8-10.5h-6z"/>',
+    disk: '<ellipse cx="12" cy="6" rx="7" ry="2.5"/><path d="M5 6v12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V6M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5"/>',
+    gauge: '<path d="M4 18a8 8 0 1 1 16 0M12 18l4-6"/>',
+    play: '<path d="M7 4.5v15l12-7.5z"/>',
+    chart: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+    search: '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>',
+    tv: '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="m9 3 3 3 3-3M8 21h8"/>',
+    film: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/>',
+    layers: '<path d="m12 3 9 5-9 5-9-5zM3 13l9 5 9-5"/>',
+    download: '<path d="M12 4v11m0 0 4.5-4.5M12 15l-4.5-4.5M4 20h16"/>',
+    cloud: '<path d="M7 18a4.5 4.5 0 1 1 .9-8.9A6 6 0 0 1 19.5 11 3.5 3.5 0 0 1 18 18z"/>',
+    sync: '<path d="M20 7h-5m5 0V2m0 5a8 8 0 0 0-14.5 2M4 17h5m-5 0v5m0-5a8 8 0 0 0 14.5-2"/>',
+    folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+    cpu: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>',
+    box: '<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9zM4 7.5l8 4.5 8-4.5M12 12v9"/>',
+    trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
+    shield: '<path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z"/>',
+    globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9S14.5 18.4 12 21c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/>',
+    wifi: '<path d="M2.5 9a14 14 0 0 1 19 0M5.5 12.5a9.5 9.5 0 0 1 13 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/>',
+    open: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+    copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>',
+    pin: '<path d="M9 4h6l-1 5 3 3H7l3-3zM12 12v8"/>',
+    restart: '<path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/>',
+    alert: '<path d="M12 9v4m0 4h.01"/><path d="M10.3 3.7 2.2 17.8A2 2 0 0 0 4 21h16a2 2 0 0 0 1.8-3.2L13.7 3.7a2 2 0 0 0-3.4 0Z"/>',
+    more: '<circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/>',
+    dot: '<circle cx="12" cy="12" r="3"/>'
   };
-  function iconFor(id) { return ICONS[id] || '&#9642;'; }
+  function svg(id) { return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (P[id] || P.dot) + '</svg>'; }
+  function iconFor(id) { return svg(id); }
+  document.querySelectorAll('#svcSheet [data-icon]').forEach(function (el) { el.innerHTML = svg(el.dataset.icon); });
 
   function cardHtml(s) {
     var url = svcUrl(s);
     var dot = s.state === 'down' ? 'down' : s.state === 'skip' ? 'skip' : '';
-    var smart = (taps[s.key] || 0) >= 3 ? '<span class="svc-sort-tag">SMART SORT</span>' : '';
+    var cls = (pins.indexOf(s.key) > -1 ? ' pinned' : '') + (s.state === 'down' ? ' is-down' : '');
+    var more = '<button class="svc-more" type="button" aria-haspopup="dialog" aria-label="Actions for ' + esc(s.name) + '">' + svg('more') + '</button>';
     var attrs = ' data-key="' + esc(s.key) + '"' + (url ? ' data-url="' + esc(url) + '"' : '') +
       ' data-name="' + esc(s.name) + '" data-container="' + esc(s.container || '') + '" data-canrestart="' + (s.canRestart ? '1' : '') + '"';
     if (s.compact) {
       // Mini card: icon + name only, like the mockup's background-services row.
-      return '<a class="svc-card mini"' + attrs + '><div class="svc-dot ' + dot + '"></div>' +
+      return '<a class="svc-card mini' + cls + '"' + attrs + '><div class="svc-dot ' + dot + '"></div>' + more +
         '<div class="svc-icon">' + iconFor(s.icon) + '</div><div class="svc-name">' + esc(s.name) + '</div></a>';
     }
     var qbadge = s.queue ? '<div class="svc-qbadge">' + s.queue + '</div>' : '';
     var desc = s.detail ? esc(s.detail) : esc(s.desc || '');
-    return '<a class="svc-card"' + attrs + '>' + qbadge +
-      '<div class="svc-dot ' + dot + '"></div>' +
-      '<div class="svc-top"><div class="svc-icon">' + iconFor(s.icon) + '</div><div class="svc-name">' + esc(s.name) + smart + '</div></div>' +
+    return '<a class="svc-card' + cls + '"' + attrs + '>' + qbadge +
+      '<div class="svc-dot ' + dot + '"></div>' + more +
+      '<div class="svc-top"><div class="svc-icon">' + iconFor(s.icon) + '</div><div class="svc-name">' + esc(s.name) + '</div></div>' +
       (desc ? '<div class="svc-desc">' + desc + '</div>' : '') + '</a>';
   }
 
@@ -744,7 +934,7 @@ function renderServicesPanel() {
         '<div class="metric' + (z.issueCount ? '' : ' good') + '"><div class="mv">' + (z.issueCount || 0) + '</div><div class="ml">Issues</div></div>' +
         '</div>' +
         (z.space ? '<div class="svc-bar-row"><div class="bl"><span>Pool usage</span><b>' + z.space.usedPct + '%</b></div>' +
-        '<div class="svc-bar"><i style="--w:' + z.space.usedPct + '%;' + (z.space.usedPct >= 90 ? 'background:linear-gradient(90deg,#f87171,#ef4444);' : '') + '"></i></div></div>' +
+        '<div class="svc-bar"><i style="--w:' + z.space.usedPct + '%;' + (z.space.usedPct >= 90 ? 'background:var(--svc-red);' : '') + '"></i></div></div>' +
         '<div class="svc-kv"><span>Used</span><b>' + fmtBytes(z.space.usedBytes) + ' of ' + fmtBytes(z.space.totalBytes) + '</b></div>' : '') +
         '<div class="svc-desc" style="margin-top:8px">' + (z.lastScrub && z.lastScrub !== 'unknown' ? 'Last scrub: ' + esc(z.lastScrub) : 'Last scrub: unknown') + '</div>' +
         (z.issueCount ? '<span class="svc-badge">' + z.issueCount + ' issues</span>' : '') + '</div>';
@@ -841,8 +1031,8 @@ function renderServicesPanel() {
       '<div class="svc-desc">Real-time LAN bandwidth, updated every refresh</div>' +
       '<div class="svc-tput"><canvas id="netSpark"></canvas></div>' +
       '<div class="svc-tput-legend">' +
-      '<span><span class="sw" style="background:#e8a33d"></span>Down <b>' + fmtMbps(t.downMbps).replace(/<[^>]+>/g, '') + '</b> Mbps Mbps</span>' +
-      '<span><span class="sw" style="background:rgba(255,255,255,.35)"></span>Up <b>' + fmtMbps(t.upMbps).replace(/<[^>]+>/g, '') + '</b> Mbps Mbps</span>' +
+      '<span><span class="sw" style="background:var(--svc-accent)"></span>Down <b>' + fmtMbps(t.downMbps).replace(/<[^>]+>/g, '') + '</b></span>' +
+      '<span><span class="sw" style="background:var(--svc-cool)"></span>Up <b>' + fmtMbps(t.upMbps).replace(/<[^>]+>/g, '') + '</b></span>' +
       '</div></div>';
     var c = n.clients || {};
     var total = c.total || 0;
@@ -892,49 +1082,80 @@ function renderServicesPanel() {
       });
       ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
     }
-    line('downMbps', '#e8a33d');
-    line('upMbps', 'rgba(255,255,255,.35)');
+    var cs = getComputedStyle(cv);
+    line('downMbps', cs.getPropertyValue('--svc-accent').trim() || '#79d2d8');
+    line('upMbps', cs.getPropertyValue('--svc-cool').trim() || '#9cc27a');
   }
 
   var firstRender = true;
   function render(d) {
+    lastData = d;
     LAN = d.netHosts.lan; TAIL = d.netHosts.tail;
     var entCls = firstRender ? ' svc-enter' : '';
     var services = d.services || [];
     var byGroup = {};
     (d.groups || []).forEach(function (g) { byGroup[g] = []; });
     services.forEach(function (s) { (byGroup[s.group] = byGroup[s.group] || []).push(s); });
+    // Down first, then pinned, then the registry's own order.
+    function rank(x) { return (x.state === 'down' ? 0 : 2) + (pins.indexOf(x.key) > -1 ? 0 : 1); }
     Object.keys(byGroup).forEach(function (g) {
-      byGroup[g].sort(function (a, b) { return (taps[b.key] || 0) - (taps[a.key] || 0); });
+      byGroup[g] = byGroup[g].map(function (x, i) { return [x, i]; })
+        .sort(function (a, b) { return rank(a[0]) - rank(b[0]) || a[1] - b[1]; })
+        .map(function (p) { return p[0]; });
     });
     var html = '';
-    // Status banner + hero — real data only.
+    // One status line instead of banner + hero + pill — real data only.
     var all = d.services || [];
     var up = all.filter(function (x) { return x.state !== 'down'; }).length;
     var downs = all.filter(function (x) { return x.state === 'down'; });
-    var upsNote = d.ups ? (d.ups.onBattery ? 'UPS on battery' : 'UPS on mains') : '';
-    var netNote = d.network && !d.network.error ? 'UDR7 online' : '';
-    var bannerSub = [up + '/' + all.length + ' services up', upsNote, netNote, 'last check ' + (d.ageSeconds != null ? d.ageSeconds + 's' : 'just now') + ' ago']
-      .filter(Boolean).join(' · ');
-    var bannerTitle = downs.length ? downs.length + ' service' + (downs.length > 1 ? 's' : '') + ' need attention'
-      : 'All systems operational';
-    html += '<div class="svc-banner' + entCls + (downs.length ? ' warn' : '') + '"><div class="pulse-dot"></div>' +
-      '<div><div class="t">' + esc(bannerTitle) + '</div><div class="s">' + esc(bannerSub) + '</div></div>' +
-      '<div class="pill">' + (downs.length ? 'DEGRADED' : 'ONLINE') + '</div></div>';
-    var sp = d.speedtest || {};
-    html += '<div class="svc-hero">' +
-      '<div class="stat' + entCls + '"><div class="v">' + up + '<small>/' + all.length + '</small></div><div class="l">Services Up</div></div>' +
-      '<div class="stat hot' + entCls + '"><div class="v">' + (sp.downloadMbps != null ? Math.round(sp.downloadMbps * 10) / 10 : '—') + '<small> Mbps</small></div><div class="l">Download</div></div>' +
-      '<div class="stat' + entCls + '"><div class="v">' + (sp.uploadMbps != null ? Math.round(sp.uploadMbps * 10) / 10 : '—') + '<small> Mbps</small></div><div class="l">Upload</div></div>' +
-      '<div class="stat' + entCls + '"><div class="v">' + (sp.pingMs != null ? Number(sp.pingMs).toFixed(1) : '—') + '<small> ms</small></div><div class="l">Ping</div></div>' +
-      '</div>';
+    var head = document.getElementById('svcHeadline');
+    if (head) {
+      head.innerHTML = esc(up + ' of ' + all.length + ' running.') + ' <em>' +
+        (downs.length ? (downs.length === 1 ? 'One needs you.' : downs.length + ' need you.') : 'All clear.') + '</em>';
+    }
+    var subEl = document.getElementById('svcSub');
+    if (subEl) {
+      subEl.textContent = ['Checked ' + (d.ageSeconds != null ? d.ageSeconds + 's' : 'just now') + ' ago',
+        d.ups ? (d.ups.onBattery ? 'UPS on battery' : 'UPS on mains') : '',
+        'links use ' + (mode === 'lan' ? 'your local network' : 'Tailscale')].filter(Boolean).join(' · ');
+    }
+    var sp = d.speedtest && !d.speedtest.error ? d.speedtest : {};
+    var streams = (d.nowPlaying || []).length;
+    var vit = document.getElementById('svcVitals');
+    if (vit) {
+      vit.innerHTML = '<div class="svc-vitals">' +
+        '<div class="svc-vital"><b>' + up + '<small>/' + all.length + '</small></b><span>Services up</span></div>' +
+        '<div class="svc-vital"><b>' + (sp.downloadMbps != null ? Math.round(sp.downloadMbps) : '—') + '<small> Mbps</small></b><span>Download</span></div>' +
+        '<div class="svc-vital"><b>' + (sp.uploadMbps != null ? Math.round(sp.uploadMbps * 10) / 10 : '—') + '<small> Mbps</small></b><span>Upload</span></div>' +
+        '<div class="svc-vital"><b>' + (sp.pingMs != null ? Number(sp.pingMs).toFixed(1) : '—') + '<small> ms</small></b><span>Ping</span></div>' +
+        '<div class="svc-vital"><b>' + streams + '<small> stream' + (streams === 1 ? '' : 's') + '</small></b><span>On Plex now</span></div>' +
+        '</div>';
+    }
+    // The one thing that needs you, pinned on top with its fix in reach.
+    var attn = document.getElementById('svcAttention');
+    if (attn) {
+      attn.innerHTML = downs.map(function (x) {
+        var u = svcUrl(x);
+        return '<div class="svc-attn' + entCls + '" role="alert"><div class="ai">' + svg('alert') + '</div>' +
+          '<div><h2>' + esc(x.name) + ' stopped responding</h2><p>' + (x.detail ? '<code>' + esc(x.detail) + '</code>' : esc(x.desc || 'Health check failed')) + '</p></div>' +
+          '<div class="acts">' +
+          (x.canRestart && x.container ? '<button class="btn primary" type="button" data-attn-restart="' + esc(x.container) + '" data-name="' + esc(x.name) + '">' + svg('restart') + '<span>Restart container</span></button>' : '') +
+          (u ? '<a class="btn" href="' + esc(u) + '" target="_blank" rel="noopener">' + svg('open') + '<span>Open</span></a>' : '') +
+          '</div></div>';
+      }).join('');
+    }
     (d.groups || []).forEach(function (g) {
       var items = byGroup[g] || [];
       var special = g === 'System Health' ? specialCards(d) : (g === 'Network' ? networkCards(d) : '');
       if (!items.length && !special) return;
       var specialCount = (d.ups ? 1 : 0) + (d.zfs ? 1 : 0) + (d.speedtest ? 1 : 0);
       var netCount = d.network ? (d.network.error ? 1 : 4) : 0;
-      html += '<div class="svc-head' + entCls + '"><h2>' + esc(g) + '</h2><span class="count">' + (items.length + (g === 'System Health' ? specialCount : 0) + (g === 'Network' ? netCount : 0)) + '</span><div class="line"></div></div>';
+      var groupOff = items.filter(function (x) { return x.state === 'skip'; }).length;
+      var groupUp = items.filter(function (x) { return x.state !== 'down' && x.state !== 'skip'; }).length;
+      var summary = items.length
+        ? groupUp + ' of ' + (items.length - groupOff) + ' up' + (groupOff ? ' · ' + groupOff + ' not set up' : '')
+        : (specialCount + netCount) + (specialCount + netCount === 1 ? ' reading' : ' readings');
+      html += '<div class="svc-head' + entCls + '"><h2>' + esc(g) + '</h2><span class="sum">' + summary + '</span><div class="line"></div></div>';
       html += '<div class="svc-grid' + entCls + '">' + special + items.map(cardHtml).join('') + '</div>';
     });
     board.innerHTML = html || '<div class="svc-loading">No services configured yet.</div>';
@@ -948,17 +1169,20 @@ function renderServicesPanel() {
       ents[ei].style.animationDelay = Math.min(ei * 60, 600) + 'ms';
     }
     if (d.nowPlaying && d.nowPlaying.length) {
-      np.innerHTML = d.nowPlaying.map(function (s) {
+      np.innerHTML = '<div class="svc-head"><h2>Now playing</h2><span class="sum">' + d.nowPlaying.length + ' stream' + (d.nowPlaying.length === 1 ? '' : 's') + '</span><div class="line"></div></div><div class="svc-np-list">' + d.nowPlaying.map(function (s) {
         var pct = s.duration > 0 ? Math.min(100, Math.round(s.viewOffset / s.duration * 100)) : 0;
         var rem = s.duration > s.viewOffset ? fmtHMS(s.duration - s.viewOffset) + ' remaining' : '';
         return '<div class="svc-np"><div class="np-poster">' + iconFor('film') + '</div><div class="np-info">' +
-          '<div class="np-kicker"><span class="eq"><i></i><i></i><i></i></span>NOW PLAYING  · PLEX</div>' +
+          '<div class="np-kicker"><span class="eq"><i></i><i></i><i></i></span>' + (s.state === 'paused' ? 'PAUSED' : 'PLAYING') + '</div>' +
           '<div class="np-title">' + esc(s.title) + '</div>' +
-          '<div class="np-sub">' + esc([s.player, s.user].filter(Boolean).join(' · ')) + '</div>' +
+          '<div class="np-sub">' + esc([s.user, s.player].filter(Boolean).join(' · ')) + '</div>' +
+          '<div class="svc-chips">' + (s.decision ? '<span class="svc-chip' + (s.decision === 'transcode' ? ' hot' : '') + '">' + esc(s.decision === 'transcode' ? 'Transcoding' : s.decision === 'direct stream' ? 'Direct stream' : 'Direct play') + '</span>' : '') +
+            (s.quality ? '<span class="svc-chip">' + esc(String(s.quality)) + '</span>' : '') +
+            (s.bandwidthKbps ? '<span class="svc-chip">' + (Math.round(s.bandwidthKbps / 100) / 10) + ' Mbps</span>' : '') + '</div>' +
           (s.duration > 0 ? '<div class="np-progress"><i style="width:' + pct + '%"></i></div>' +
             (rem ? '<div class="np-time">' + rem + '</div>' : '') : '') +
           '</div></div>';
-      }).join('');
+      }).join('') + '</div>';
     } else { np.innerHTML = ''; }
     wireCards();
     firstRender = false;
@@ -966,7 +1190,7 @@ function renderServicesPanel() {
 
   var sheet = document.getElementById('svcSheet');
   var sheetKey = null, sheetUrl = null, sheetName = '', sheetContainer = '', sheetCanRestart = false;
-  var pressTimer = null, suppressClick = false;
+  var pressTimer = null, suppressClick = false, sheetReturn = null;
   function openSheet(card) {
     sheetKey = card.dataset.key; sheetUrl = card.dataset.url || null;
     sheetName = card.dataset.name; sheetContainer = card.dataset.container || '';
@@ -976,10 +1200,16 @@ function renderServicesPanel() {
     document.getElementById('svcOpen').disabled = !sheetUrl;
     document.getElementById('svcRestart').disabled = !sheetCanRestart || !sheetContainer;
     document.getElementById('svcCopy').disabled = !sheetUrl;
+    document.getElementById('svcPinLabel').textContent = pins.indexOf(sheetKey) > -1 ? 'Unpin' : 'Pin to top of group';
+    sheetReturn = document.activeElement;
     sheet.classList.add('open');
+    var first = sheet.querySelector('.svc-action:not(:disabled)');
+    if (first) first.focus();
   }
   function closeSheet() {
+    if (!sheet.classList.contains('open')) return;
     sheet.classList.remove('open');
+    if (sheetReturn && sheetReturn.focus) sheetReturn.focus();
     // The long-press flag is consumed by the card's click handler, but the
     // sheet may cover the card by the time the finger lifts (so no click
     // fires). Reset here too so the next tap is never swallowed.
@@ -987,24 +1217,43 @@ function renderServicesPanel() {
   }
   document.getElementById('svcScrim').addEventListener('click', closeSheet);
   document.getElementById('svcOpen').addEventListener('click', function () {
-    if (sheetUrl) {
-      taps[sheetKey] = (taps[sheetKey] || 0) + 1;
-      try { localStorage.setItem('svcTaps', JSON.stringify(taps)); } catch (e) {}
-      resort();
-      window.open(sheetUrl, '_blank', 'noopener');
-    }
+    if (sheetUrl) window.open(sheetUrl, '_blank', 'noopener');
     closeSheet();
   });
   document.getElementById('svcRestart').addEventListener('click', function () {
     if (!sheetCanRestart || !sheetContainer) { closeSheet(); return; }
-    var btn = this; btn.disabled = true; btn.textContent = 'Restarting…';
-    fetch('/admin/api/services/restart', {
+    var btn = this, label = btn.querySelector('span:last-child');
+    btn.disabled = true; label.textContent = 'Restarting…';
+    restartContainer(sheetContainer).then(function () { btn.disabled = false; label.textContent = 'Restart container'; closeSheet(); });
+  });
+  function restartContainer(container) {
+    return fetch('/admin/api/services/restart', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ container: sheetContainer }),
+      body: JSON.stringify({ container: container }),
     }).then(function (r) { return r.json(); }).then(function (j) {
       toast(j.ok ? j.message : ('Restart failed: ' + (j.error || 'unknown')));
-    }).catch(function () { toast('Restart failed: network error'); })
-    .then(function () { btn.disabled = false; btn.textContent = 'Restart container'; closeSheet(); });
+    }).catch(function () { toast('Restart failed: network error'); });
+  }
+  document.getElementById('svcAttention').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-attn-restart]');
+    if (!b || b.disabled) return;
+    var label = b.querySelector('span');
+    b.disabled = true; b.setAttribute('aria-busy', 'true'); label.textContent = 'Restarting…';
+    toast('Restarting ' + b.dataset.name + '…');
+    restartContainer(b.dataset.attnRestart).then(function () {
+      b.disabled = false; b.removeAttribute('aria-busy'); label.textContent = 'Restart container'; load();
+    });
+  });
+  document.getElementById('svcPin').addEventListener('click', function () {
+    var i = pins.indexOf(sheetKey);
+    if (i > -1) pins.splice(i, 1); else pins.push(sheetKey);
+    savePins();
+    toast(i > -1 ? sheetName + ' unpinned' : sheetName + ' pinned to the top of its group');
+    closeSheet();
+    if (lastData) render(lastData);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { closeSheet(); closePal(); }
   });
   // navigator.clipboard needs a secure context; the dashboard is usually plain
   // http on LAN/Tailscale, so fall back to the execCommand path there.
@@ -1035,26 +1284,6 @@ function renderServicesPanel() {
       .catch(function () { closeSheet(); toast('Copy failed'); });
   });
 
-  // Smart sort: re-float the most-tapped cards to the top of their group
-  // immediately after a tap, instead of waiting for the next 30s refresh.
-  // Special cards (UPS/ZFS/Speedtest) stay pinned at the top of System Health.
-  function resort() {
-    document.querySelectorAll('#svcBoard .svc-grid').forEach(function (grid) {
-      var cards = Array.prototype.slice.call(
-        grid.querySelectorAll('.svc-card[data-key]:not([data-nosheet])'));
-      cards.sort(function (a, b) { return (taps[b.dataset.key] || 0) - (taps[a.dataset.key] || 0); });
-      cards.forEach(function (c) {
-        var name = c.querySelector('.svc-name');
-        if ((taps[c.dataset.key] || 0) >= 3 && name && !c.querySelector('.svc-sort-tag')) {
-          var tag = document.createElement('span');
-          tag.className = 'svc-sort-tag'; tag.textContent = 'SMART SORT';
-          name.appendChild(tag);
-        }
-        grid.appendChild(c);
-      });
-    });
-  }
-
   function wireCards() {
     // Special cards (UPS/ZFS/Speedtest) carry data-nosheet: they have no
     // actions, so a long-press must not open an empty action sheet.
@@ -1071,21 +1300,59 @@ function renderServicesPanel() {
       }, { passive: true });
       card.addEventListener('touchend', function () { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } });
       card.addEventListener('touchcancel', function () { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } });
-      card.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+      // Right-click opens the same actions on a computer (touch uses long-press).
+      card.addEventListener('contextmenu', function (e) { e.preventDefault(); openSheet(card); });
+      var moreBtn = card.querySelector('.svc-more');
+      if (moreBtn) moreBtn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); openSheet(card); });
       card.addEventListener('click', function () {
         // A long-press opens the action sheet; the finger lifting afterwards
         // synthesizes a click on the card — swallow it so the card's link
         // does not also open.
         if (suppressClick) { suppressClick = false; return; }
         var url = card.dataset.url;
-        if (!url) return;
-        taps[card.dataset.key] = (taps[card.dataset.key] || 0) + 1;
-        try { localStorage.setItem('svcTaps', JSON.stringify(taps)); } catch (e) {}
-        resort();
+        if (!url) { openSheet(card); return; }
         window.open(url, '_blank', 'noopener');
       });
     });
   }
+
+  var pal = document.getElementById('svcPal'), palIn = document.getElementById('svcPalInput'), palList = document.getElementById('svcPalList');
+  var palSel = 0, palRes = [], palReturn = null;
+  function paintPal() {
+    var q = palIn.value.trim().toLowerCase();
+    var list = (lastData && lastData.services) || [];
+    palRes = list.filter(function (x) { return !q || String(x.name).toLowerCase().indexOf(q) > -1 || String(x.desc || '').toLowerCase().indexOf(q) > -1; }).slice(0, 8);
+    palSel = Math.min(palSel, Math.max(0, palRes.length - 1));
+    palList.innerHTML = palRes.map(function (x, i) {
+      return '<li><button type="button" role="option" aria-selected="' + (i === palSel) + '" data-i="' + i + '"><span class="svc-icon">' + iconFor(x.icon) + '</span>' +
+        '<span class="grow">' + esc(x.name) + '<small>' + esc(x.group) + (x.port ? ' · :' + x.port : '') + '</small></span>' +
+        '<span class="svc-chip' + (x.state === 'down' ? ' hot' : '') + '">' + (x.state === 'down' ? 'Down' : x.state === 'skip' ? 'Off' : 'Up') + '</span></button></li>';
+    }).join('') || '<li class="svc-loading">No service matches.</li>';
+  }
+  function openPal() { if (!lastData) return; palReturn = document.activeElement; pal.classList.add('open'); palIn.value = ''; palSel = 0; paintPal(); palIn.focus(); }
+  function closePal() { if (!pal.classList.contains('open')) return; pal.classList.remove('open'); if (palReturn && palReturn.focus) palReturn.focus(); }
+  function choosePal(i) {
+    var x = palRes[i]; if (!x) return;
+    closePal();
+    var u = svcUrl(x);
+    if (u) window.open(u, '_blank', 'noopener');
+    else { var c = board.querySelector('.svc-card[data-key="' + x.key + '"]'); if (c) { c.scrollIntoView({ block: 'center' }); openSheet(c); } }
+  }
+  document.getElementById('svcJump').addEventListener('click', openPal);
+  palIn.addEventListener('input', function () { palSel = 0; paintPal(); });
+  palIn.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); palSel = Math.min(palSel + 1, palRes.length - 1); paintPal(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); palSel = Math.max(palSel - 1, 0); paintPal(); }
+    else if (e.key === 'Enter') { e.preventDefault(); choosePal(palSel); }
+  });
+  palList.addEventListener('click', function (e) { var b = e.target.closest('[data-i]'); if (b) choosePal(+b.dataset.i); });
+  pal.addEventListener('click', function (e) { if (e.target === pal) closePal(); });
+  document.addEventListener('keydown', function (e) {
+    var panel = board.closest('.panel');
+    if (panel && panel.hidden) return;
+    var typing = /^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName || '');
+    if ((e.key === 'k' && (e.metaKey || e.ctrlKey)) || (e.key === '/' && !typing)) { e.preventDefault(); if (pal.classList.contains('open')) closePal(); else openPal(); }
+  });
 
   function load() {
     fetch('/admin/api/services', { headers: { 'Accept': 'application/json' } })
@@ -1093,6 +1360,7 @@ function renderServicesPanel() {
       .then(function (d) { if (d.ok) render(d); else board.innerHTML = '<div class="svc-loading">Services unavailable.</div>'; })
       .catch(function () { board.innerHTML = '<div class="svc-loading">Could not reach the services API.</div>'; });
   }
+  setMode(mode);
   detectNetwork();
   load();
   setInterval(load, 30000);
@@ -1212,7 +1480,7 @@ function renderLogin(isError, message, { passkeyEnabled = false, expectedOrigin 
   const banner = message ? `<div class="error" id="login-error">${escapeHtml(message)}</div>`
     : (isError ? '<div class="error" id="login-error">Incorrect password. Please try again.</div>' : '');
   const body = `<div class="login-wrap" data-expected-origin="${escapeHtml(expectedOrigin)}"><div class="login-card">
-    <h1><span class="brand">Durant</span> Media Server</h1>
+    <h1><span class="brand-mark" aria-hidden="true">d<span>l</span>.</span><span><span class="brand">Durant</span> Media Server</span></h1>
     <p>Admin dashboard login</p>
     ${banner}
     <div class="error" id="insecure-context-warning" role="alert" hidden>This page is not loaded over a secure connection (HTTPS). Do not enter your password here — it would be sent unencrypted. Open the dashboard at its HTTPS URL instead.</div>
