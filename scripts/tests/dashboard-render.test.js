@@ -438,3 +438,11 @@ test('renderServicesPanel: the client script it ships parses', () => {
   assert.ok(scripts.length > 0);
   for (const source of scripts) assert.doesNotThrow(() => new vm.Script(source));
 });
+
+test('renderServicesPanel: draws the admin-only Config gaps card with one copy button per variable', () => {
+  const html = renderServicesPanel();
+  assert.match(html, /Config gaps/);
+  assert.match(html, /Admin only/);
+  assert.match(html, /data-copy-env/);
+  assert.match(html, /copyText\(line\)/, 'reuses the existing clipboard helper');
+});

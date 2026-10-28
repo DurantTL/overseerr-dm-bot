@@ -520,6 +520,16 @@ function renderServicesPanel() {
 .svc-hidden-card small { font-size: 12px; color: var(--faint); }
 .svc-hidden-card code { font-family: var(--mono); font-size: 11.5px; color: var(--warn); overflow-wrap: anywhere; }
 @media (max-width: 520px) { .svc-hidden-card .svc-icon { display: none; } .svc-hidden-card code { font-size: 11px; } }
+.svc-gaps { margin-top: 12px; padding: 14px; border-radius: 18px; background: var(--panel); border: 1px solid var(--edge); display: grid; gap: 10px; }
+.svc-gaps header { display: flex; align-items: center; gap: 10px; }
+.svc-gaps h2 { margin: 0; font-size: 15px; }
+.svc-admin-chip { margin-left: auto; font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--focus); border: 1px solid var(--edge); border-radius: 999px; padding: 3px 9px; }
+.svc-gaps .svc-hidden-note { margin: 0; }
+.svc-gap { display: flex; align-items: center; gap: 10px; padding-top: 10px; border-top: 1px solid var(--edge); }
+.svc-gap .grow { display: grid; gap: 3px; min-width: 0; flex: 1; }
+.svc-gap code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.svc-gap small { font-size: 12px; color: var(--faint); }
+.svc-gap-copy { flex: none; min-height: 44px; min-width: 64px; padding: 0 14px; border-radius: 12px; border: 1px solid var(--edge); background: var(--glass); color: var(--text); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
 .svc-head h2 { font-size: 13px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: var(--svc-ink2); margin: 0; }
 .svc-head .count { font-size: 11px; color: var(--svc-ink3); background: var(--svc-glass); border: 1px solid var(--svc-line); padding: 2px 9px; border-radius: 999px; }
 .svc-head .line { flex: 1; height: 1px; background: linear-gradient(90deg, var(--svc-line), transparent); }
@@ -1179,6 +1189,21 @@ function renderServicesPanel() {
             '<span class="grow"><b>' + esc(h.name) + '</b><small>' + esc(h.group) + '</small>' +
             (h.missing ? '<code>' + esc(h.missing) + '</code>' : '') + '</span></div>';
         }).join('') + '</div></section>';
+      // Config gaps: the fix list for the row above. The dashboard is admin-only; this card
+      // shows variable names and value templates, never a configured value.
+      var gaps = d.hidden.filter(function (h) { return h.missing; });
+      if (gaps.length) {
+        html += '<section class="svc-gaps' + entCls + '" aria-labelledby="svcGapsTitle">' +
+          '<header><h2 id="svcGapsTitle">Config gaps</h2><span class="svc-admin-chip">Admin only</span></header>' +
+          '<p class="svc-hidden-note">Add these to the stack\\'s environment in Portainer, then redeploy. Each one brings its card back.</p>' +
+          gaps.map(function (h) {
+            var line = h.missing + '=' + (h.format || '');
+            return '<div class="svc-gap"><div class="grow"><code>' + esc(line) + '</code>' +
+              (h.note ? '<small>' + esc(h.note) + '</small>' : '') + '</div>' +
+              '<button type="button" class="svc-gap-copy" data-copy-env="' + esc(line) + '" aria-label="Copy ' + esc(h.missing) + '">Copy</button></div>';
+          }).join('') +
+          '</section>';
+      }
     }
     board.innerHTML = html || '<div class="svc-loading">No services configured yet.</div>';
     var spark = document.getElementById('netSpark');
@@ -1300,6 +1325,14 @@ function renderServicesPanel() {
     }
     return legacy();
   }
+  // Config gaps: copy one VARIABLE=template line. Delegated, since the board re-renders.
+  board.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-copy-env]');
+    if (!btn) return;
+    var line = btn.getAttribute('data-copy-env');
+    copyText(line).then(function () { toast('Copied ' + line.split('=')[0]); })
+      .catch(function () { toast('Copy failed'); });
+  });
   document.getElementById('svcCopy').addEventListener('click', function () {
     if (!sheetUrl) { closeSheet(); toast('No link for this service'); return; }
     copyText(sheetUrl).then(function () { closeSheet(); toast('Link copied'); })

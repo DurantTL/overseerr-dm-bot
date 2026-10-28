@@ -5,7 +5,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { describeUps, nutConfigured } = require('../../src/nut');
-const { GROUPS, SERVICES, gatherServicesBoard, portFromUrl } = require('../../src/services-board');
+const { GROUPS, SERVICES, gatherServicesBoard, portFromUrl, urlFormat } = require('../../src/services-board');
 const { restartCapable } = require('../../src/docker-control');
 
 test('nut: nutConfigured requires host and UPS name', () => {
@@ -301,7 +301,11 @@ test('services-board: services without a URL are listed as hidden with the missi
   const secretUrl = 'https://user:hunter2@seedbox.example.test/rutorrent';
   const without = await gatherServicesBoard({ ...base, config: { RTORRENT_URL: secretUrl } });
   const plex = without.hidden.find(h => h.key === 'plex');
-  assert.deepStrictEqual(plex, { key: 'plex', name: 'Plex', group: 'Media', icon: 'play', missing: 'PLEX_URL' });
+  assert.deepStrictEqual(plex, {
+    key: 'plex', name: 'Plex', group: 'Media', icon: 'play', missing: 'PLEX_URL',
+    format: 'http://<server LAN IP>:32400',
+    note: "Plex uses host networking, so use the server's LAN IP. A container name won't resolve from the bot.",
+  });
   assert.ok(!without.services.some(s => s.key === 'plex'), 'not drawn as a card');
   assert.ok(!without.hidden.some(h => h.key === 'director' || h.key === 'premiumize'), 'self and fixed external links are never hidden');
   assert.ok(!JSON.stringify(without.hidden).includes('hunter2'), 'hidden entries carry names only, never values');
@@ -328,5 +332,16 @@ test('services-board: the registry carries no site addresses for the Websites gr
   for (const svc of SERVICES.filter(s => s.group === 'Websites')) {
     assert.ok(!svc.external, `${svc.key} reads its link from ${svc.externalKey}`);
     assert.ok(svc.externalKey);
+  }
+});
+
+test('services-board: config-gap value formats are templates built from the registry, never real addresses', () => {
+  const byKey = Object.fromEntries(SERVICES.map(svc => [svc.key, svc]));
+  assert.strictEqual(urlFormat(byKey.grafana), 'http://<host>:3000');
+  assert.strictEqual(urlFormat(byKey.syncthing), 'http://<host>:8384');
+  assert.strictEqual(urlFormat(byKey.recyclarr), 'http://<host>:<port>', 'no default port: both placeholders');
+  assert.strictEqual(urlFormat(byKey.portfolio), 'https://<site address>');
+  for (const svc of SERVICES.filter(x => x.urlKey || x.externalKey)) {
+    assert.match(urlFormat(svc), /<[^>]+>/, `${svc.key}: a template with a placeholder, not a real value`);
   }
 });

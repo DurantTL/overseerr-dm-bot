@@ -26,7 +26,7 @@ const GROUPS = Object.freeze([
 // restart, and icon id for the client.
 const SERVICES = Object.freeze([
   // Media
-  { key: 'plex', name: 'Plex', desc: 'Movies, television, and streaming', icon: 'play', group: 'Media', urlKey: 'PLEX_URL', healthKey: 'plex', container: 'plex', defaultPort: 32400 },
+  { key: 'plex', name: 'Plex', desc: 'Movies, television, and streaming', icon: 'play', group: 'Media', urlKey: 'PLEX_URL', healthKey: 'plex', container: 'plex', defaultPort: 32400, urlFormat: 'http://<server LAN IP>:32400', urlNote: 'Plex uses host networking, so use the server\'s LAN IP. A container name won\'t resolve from the bot.' },
   { key: 'tautulli', name: 'Tautulli', desc: 'Plex activity and viewing statistics', icon: 'chart', group: 'Media', urlKey: 'TAUTULLI_URL', healthKey: 'tautulli', defaultPort: 8181 },
   { key: 'seerr', name: 'Seerr', desc: 'Media requests and availability', icon: 'search', group: 'Media', urlKey: 'OVERSEERR_URL', healthKey: 'overseerr', defaultPort: 5055 },
   { key: 'director', name: 'Plex Director', desc: 'Request bot and automation director', icon: 'bolt', group: 'Media', self: true, healthKey: null },
@@ -86,6 +86,14 @@ async function probeUrl(url, timeoutMs = 4000) {
 function externalLink(svc, config) {
   const value = svc.external || (svc.externalKey ? config[svc.externalKey] : null);
   return typeof value === 'string' && /^https?:\/\//i.test(value.trim()) ? value.trim() : null;
+}
+
+// The value an operator should add for a service's missing variable, as a template: never a
+// real address. Shown in the admin-only Config gaps card next to the variable name.
+function urlFormat(svc) {
+  if (svc.urlFormat) return svc.urlFormat;
+  if (svc.externalKey) return 'https://<site address>';
+  return svc.defaultPort ? `http://<host>:${svc.defaultPort}` : 'http://<host>:<port>';
 }
 
 // One service's up/down state, shared by the Services board and the service-down
@@ -258,7 +266,12 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
     const link = externalLink(svc, config);
     if (!url && !link && !svc.self && state !== 'down') {
       // Names only: never the value of a variable, which can embed credentials.
-      hidden.push({ key: svc.key, name: svc.name, group: svc.group, icon: svc.icon, missing: svc.urlKey || svc.externalKey || null });
+      const missing = svc.urlKey || svc.externalKey || null;
+      hidden.push({
+        key: svc.key, name: svc.name, group: svc.group, icon: svc.icon, missing,
+        format: missing ? urlFormat(svc) : null,
+        note: svc.urlNote || null,
+      });
       continue;
     }
 
@@ -320,4 +333,4 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
   };
 }
 
-module.exports = { GROUPS, SERVICES, gatherServicesBoard, resolveServiceState, externalLink, portFromUrl, fetchSpeedtest, fetchZfsHealth, fetchSsdTemp };
+module.exports = { GROUPS, SERVICES, gatherServicesBoard, resolveServiceState, externalLink, urlFormat, portFromUrl, fetchSpeedtest, fetchZfsHealth, fetchSsdTemp };
