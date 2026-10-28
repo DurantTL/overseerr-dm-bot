@@ -32,7 +32,8 @@ async function tautulliApi(cmd, params = {}, endpoint = undefined) {
 // tmdb:/tvdb: per-title granularity of the arr inventory. Paginates get_history; music is
 // ignored. Throws on an unreachable/misconfigured endpoint — the planner catches and treats
 // that node's history as empty (a missing Tautulli must never fail a whole plan).
-async function fetchHistory(endpoint, { afterDays = 90, length = 5000 } = {}) {
+// Raw get_history rows (one per play), paginated. F10's viewing insights need them per user.
+async function fetchHistoryRows(endpoint, { afterDays = 90, length = 5000 } = {}) {
   const after = new Date(Date.now() - afterDays * 86400000).toISOString().slice(0, 10);
   const pageSize = 1000;
   const rows = [];
@@ -42,6 +43,11 @@ async function fetchHistory(endpoint, { afterDays = 90, length = 5000 } = {}) {
     rows.push(...page);
     if (page.length < pageSize) break;
   }
+  return rows;
+}
+
+async function fetchHistory(endpoint, { afterDays = 90, length = 5000 } = {}) {
+  const rows = await fetchHistoryRows(endpoint, { afterDays, length });
   const byTitle = new Map();
   for (const r of rows) {
     if (r.media_type === 'track') continue;
@@ -103,8 +109,12 @@ function mapRecentlyAdded(data) {
       thumb = r.thumb || r.parent_thumb;
     }
     const addedSec = Number(r.added_at);
+    // The title a play is counted under: the show for episodes and seasons, else the item itself
+    // (the same key fetchHistory groups plays by).
+    const titleKey = String((type === 'episode' ? r.grandparent_rating_key : type === 'season' ? r.parent_rating_key : r.rating_key) || r.rating_key || '');
     return {
       ratingKey: String(r.rating_key || ''),
+      titleKey,
       type: type || 'movie',
       title,
       detail,
@@ -147,4 +157,4 @@ async function fetchPoster(thumb) {
   return { type, body: Buffer.from(res.data) };
 }
 
-module.exports = { tautulliConfigured, tautulliApi, fetchHistory, describeSession, PLEX_SECTIONS, mapRecentlyAdded, fetchRecentlyAdded, fetchPoster };
+module.exports = { tautulliConfigured, tautulliApi, fetchHistory, fetchHistoryRows, describeSession, PLEX_SECTIONS, mapRecentlyAdded, fetchRecentlyAdded, fetchPoster };

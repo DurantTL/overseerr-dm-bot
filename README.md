@@ -100,6 +100,11 @@ advanced-infrastructure layer lives in `docs/`:
   nothing in flight, failed) and how long ago it was requested. Same data as the dashboard's
   "Not Watchable Yet" card. Titles link to Seerr when `SEERR_PUBLIC_URL` is set. On/off, day and
   hour are on the Automation tab.
+- Viewing insights: weekly (Monday 9 am by default, `VIEWING_INSIGHTS_DAY`/`_HOUR`) one
+  admin-channel post from Tautulli: top movies and shows by plays, hours watched per person, new
+  additions someone watched within 3 days, and ones still untouched after a week (4K copies are
+  left out). Per-person numbers stay in the admin channel; the public monthly recap is unchanged.
+  On/off, day and hour are on the Automation tab.
 - Quiet hours: with `QUIET_HOURS_ENABLED` on, admin-channel posts between `QUIET_HOURS_START` and
   `QUIET_HOURS_END` (local hours in `QUIET_HOURS_TZ`, default 22 to 7, America/Chicago) go out as
   Discord silent messages: no push, buttons still work. Disk-space and drive-health alerts still

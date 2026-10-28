@@ -172,6 +172,14 @@ const RUNTIME_SETTINGS = [
   { key: 'NOT_WATCHABLE_DIGEST_HOUR', group: 'not_watchable_digest', type: 'int', min: 0, max: 23, source: 'config',
     label: 'Hour', unit: 'h', help: 'Local hour, 0–23. 9 = 9 am.' },
 
+  // ---- Viewing insights (F10) ----
+  { key: 'VIEWING_INSIGHTS_ENABLED', group: 'viewing_insights', type: 'bool', source: 'config',
+    label: 'Post the weekly viewing insights', help: 'Needs Tautulli. Top movies and shows, hours per person, and which new additions were watched or ignored.' },
+  { key: 'VIEWING_INSIGHTS_DAY', group: 'viewing_insights', type: 'int', min: 0, max: 6, source: 'config',
+    label: 'Day', unit: '0 = Sun … 6 = Sat', help: '1 = Monday. Local to QUIET_HOURS_TZ.' },
+  { key: 'VIEWING_INSIGHTS_HOUR', group: 'viewing_insights', type: 'int', min: 0, max: 23, source: 'config',
+    label: 'Hour', unit: 'h', help: 'Local hour, 0–23. 9 = 9 am.' },
+
   // ---- Premiumize→rTorrent reroute ----
   { key: 'PREMIUMIZE_REROUTE_ENABLED', group: 'premiumize', type: 'bool', source: 'config',
     label: 'Reroute dead transfers to seedbox rTorrent', help: 'When a Premiumize transfer is finally given up on, try to pick the same release back up through the seedbox rTorrent client instead of leaving it dead. Matched against the live Sonarr/Radarr queue entry — skipped if no match is found.' },
@@ -193,6 +201,7 @@ const GROUPS = [
   { id: 'release_group_blocklist', title: 'Release-group blocklist', blurb: 'Suggests a Sonarr Custom Format when the same release-group tag keeps showing up in dead Premiumize auto-clears.' },
   { id: 'pack_size_fix', title: 'Season-pack size floors', blurb: 'Sonarr’s minimum-size limits reject efficient encodes. Counts which limit is blocking packs and offers to loosen it.' },
   { id: 'not_watchable_digest', title: 'Not Watchable Yet digest', blurb: 'A weekly admin-channel post of open requests that still can\'t be watched, grouped by requester, with status and age.' },
+  { id: 'viewing_insights', title: 'Viewing insights', blurb: 'A weekly admin-channel post from Tautulli: what was watched most, hours per person, and new additions that were hits or still untouched.' },
   { id: 'quiet_hours', title: 'Quiet hours', blurb: 'Admin channel posts go out silently overnight, then one digest sums them up. Disk and drive health always ping. Member DMs are unchanged.' },
   { id: 'ratio_cleanup', title: 'rTorrent ratio cleanup', blurb: 'Removes finished torrents from rTorrent once they\'ve seeded enough — either stalled at a healthy ratio for a while, or straight past a high-ratio bar.' },
 ];

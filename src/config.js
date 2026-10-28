@@ -709,6 +709,10 @@ const CONFIG = (() => {
   NOT_WATCHABLE_DIGEST_ENABLED: parseBool(process.env.NOT_WATCHABLE_DIGEST_ENABLED, true),
   NOT_WATCHABLE_DIGEST_DAY: Number.parseInt(process.env.NOT_WATCHABLE_DIGEST_DAY || '1', 10),
   NOT_WATCHABLE_DIGEST_HOUR: Number.parseInt(process.env.NOT_WATCHABLE_DIGEST_HOUR || '9', 10),
+  // F10 weekly viewing insights from Tautulli, in the admin channel. Same day/hour rules as above.
+  VIEWING_INSIGHTS_ENABLED: parseBool(process.env.VIEWING_INSIGHTS_ENABLED, true),
+  VIEWING_INSIGHTS_DAY: Number.parseInt(process.env.VIEWING_INSIGHTS_DAY || '1', 10),
+  VIEWING_INSIGHTS_HOUR: Number.parseInt(process.env.VIEWING_INSIGHTS_HOUR || '9', 10),
   // Seerr's address as people open it in a browser (the OVERSEERR_URL above is usually the
   // internal one). Optional: when set, digest titles link to their Seerr page.
   SEERR_PUBLIC_URL: (process.env.SEERR_PUBLIC_URL || '').replace(/\/$/, ''),
@@ -807,6 +811,10 @@ function validateConfig() {
   if (!(Number.isInteger(CONFIG.NOT_WATCHABLE_DIGEST_DAY) && CONFIG.NOT_WATCHABLE_DIGEST_DAY >= 0 && CONFIG.NOT_WATCHABLE_DIGEST_DAY <= 6)
     || !(Number.isInteger(CONFIG.NOT_WATCHABLE_DIGEST_HOUR) && CONFIG.NOT_WATCHABLE_DIGEST_HOUR >= 0 && CONFIG.NOT_WATCHABLE_DIGEST_HOUR <= 23)) {
     throw new Error('NOT_WATCHABLE_DIGEST_DAY must be 0-6 (0 = Sunday) and NOT_WATCHABLE_DIGEST_HOUR 0-23');
+  }
+  if (!(Number.isInteger(CONFIG.VIEWING_INSIGHTS_DAY) && CONFIG.VIEWING_INSIGHTS_DAY >= 0 && CONFIG.VIEWING_INSIGHTS_DAY <= 6)
+    || !(Number.isInteger(CONFIG.VIEWING_INSIGHTS_HOUR) && CONFIG.VIEWING_INSIGHTS_HOUR >= 0 && CONFIG.VIEWING_INSIGHTS_HOUR <= 23)) {
+    throw new Error('VIEWING_INSIGHTS_DAY must be 0-6 (0 = Sunday) and VIEWING_INSIGHTS_HOUR 0-23');
   }
   if (CONFIG.SEERR_PUBLIC_URL && !/^https?:\/\//.test(CONFIG.SEERR_PUBLIC_URL)) {
     throw new Error('SEERR_PUBLIC_URL must start with http:// or https://');
