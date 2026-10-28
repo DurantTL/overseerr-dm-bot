@@ -79,6 +79,8 @@ advanced-infrastructure layer lives in `docs/`:
   (`TAILSCALE_KEY_EXPIRY_DAYS`), posting at 30, 7 and 1 days out and on expiry. Headless means
   Linux/FreeBSD devices that aren't PH viewers, or the names in `TAILSCALE_HEADLESS_NODES`.
   `node scripts/tailscale-audit.js` prints the full report. Report-only.
+- Dozzle alerts: [docs/dozzle-alerts.md](docs/dozzle-alerts.md) sets up the existing Dozzle stack to
+  alert to Discord on FATAL log lines and Docker OOM kills only.
 - Admin dashboard (`/admin`) with health, pending items, and safe action endpoints. The
   **Director** tab is the fleet health board: every service the media server runs
   (Plex, *arrs, Prowlarr, Byparr, Huntarr, Recyclarr, Cleanuparr, rTorrent, Syncthing,
