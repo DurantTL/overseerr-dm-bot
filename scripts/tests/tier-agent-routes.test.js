@@ -23,7 +23,7 @@ function request(port, { method = 'GET', path = '/', token, body } = {}) {
   });
 }
 
-function setup() {
+function setup(extraDeps = {}) {
   const settings = new Map([['tier_manifest:edge', JSON.stringify({ planHash: 'current' })]]);
   const plans = new Map([['edge', { published: { planHash: 'current' }, lastTelemetryLevel: 'unknown' }]]);
   const calls = { heartbeats: [], reports: [], inventories: [], converged: [], missing: 0, recovered: 0, errorAlerts: [], skipAlerts: [], agentReports: [], telemetryTransitions: [], mergedMountDiagnostics: [] };
@@ -55,6 +55,7 @@ function setup() {
     notifyTelemetryTransition: value => calls.telemetryTransitions.push(value), notifyDriveMissing: () => { calls.missing += 1; },
     notifyDriveRecovered: () => { calls.recovered += 1; },
     notifyAgentReport: payload => calls.agentReports.push(payload),
+    ...extraDeps,
   });
   return { app, settings, calls, plans };
 }
@@ -248,5 +249,33 @@ test('tier-agent HTTP report preserves unavailable temperature instead of record
     assert.strictEqual(calls.heartbeats[0].value.telemetry.temperatureC, null);
     assert.strictEqual(calls.heartbeats[0].value.telemetryLevel, 'unknown');
     assert.strictEqual(calls.telemetryTransitions[0].telemetryHealth.level, 'unknown');
+  } finally { await close(server); }
+});
+
+test('tier-agent report: new Syncthing conflict copies in the inventory ping once; known ones stay quiet', async () => {
+  const pinged = [];
+  const { app, settings } = setup({ notifySyncConflicts: payload => pinged.push(payload) });
+  const server = await listen(app, 0);
+  const movie = { folderId: 'movies', relPath: 'Dune (2021)/Dune (2021).mkv', sizeBytes: 10, atime: 1 };
+  const conflict = { folderId: 'movies', relPath: 'Dune (2021)/Dune (2021).sync-conflict-20261028-120501-ABCDEF7.mkv', sizeBytes: 9, atime: 1 };
+  const second = { folderId: 'tv', relPath: 'Andor/S02E01.sync-conflict-20261028-130000-QWERTY1.mkv', sizeBytes: 8, atime: 1 };
+  const report = inventory => request(server.address().port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: { planHash: 'current', converged: true, inventory } });
+  try {
+    await report([movie]);
+    assert.strictEqual(pinged.length, 0, 'no conflict, no ping');
+    await report([movie, conflict]);
+    assert.strictEqual(pinged.length, 1);
+    assert.strictEqual(pinged[0].node, 'edge');
+    assert.deepStrictEqual(pinged[0].fresh.map(c => [c.relPath, c.original, c.device]), [[conflict.relPath, 'Dune (2021)/Dune (2021).mkv', 'ABCDEF7']]);
+    await report([movie, conflict]);
+    assert.strictEqual(pinged.length, 1, 'the same conflict is not reported twice');
+    await report([movie, conflict, second]);
+    assert.strictEqual(pinged.length, 2);
+    assert.deepStrictEqual(pinged[1].fresh.map(c => c.relPath), [second.relPath], 'only the new one');
+    assert.strictEqual(pinged[1].total, 2);
+    await report([movie]);
+    await report([movie, conflict]);
+    assert.strictEqual(pinged.length, 3, 'a resolved conflict that comes back is new again');
+    assert.ok(settings.has('sync_conflicts_seen:edge'));
   } finally { await close(server); }
 });

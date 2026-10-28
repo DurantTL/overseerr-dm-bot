@@ -62,6 +62,11 @@ advanced-infrastructure layer lives in `docs/`:
   Tautulli's own Discord notifications to failures and health only, from `NATIVE_ALERTS_DISCORD_WEBHOOK`.
   It previews by default and changes nothing without `--apply`. Scrutiny's SMART alerts are a
   `scrutiny.yaml` entry. See [docs/native-notifications.md](docs/native-notifications.md).
+- Syncthing conflict watcher: each tier agent report already lists the node's media files, and
+  Syncthing keeps the extension on conflict copies (`name.sync-conflict-<date>-<time>-<device>.mkv`).
+  The bot compares each node's conflict copies with the last report and posts to the system
+  channel only when new ones appear. Report-only: nothing is moved or deleted. It sees media files
+  in the tier folders (the same files the agent inventories), not `.nfo`/`.srt` sidecars.
 - Admin dashboard (`/admin`) with health, pending items, and safe action endpoints. The
   **Director** tab is the fleet health board: every service the media server runs
   (Plex, *arrs, Prowlarr, Byparr, Huntarr, Recyclarr, Cleanuparr, rTorrent, Syncthing,
