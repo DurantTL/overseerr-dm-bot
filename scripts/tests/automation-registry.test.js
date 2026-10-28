@@ -89,7 +89,7 @@ test('automation inventory is declarative and contains every recurring media wor
   const block = source.slice(source.indexOf('function createAutomationDefinitions()'), source.indexOf('function channelFor'));
   const ids = [...block.matchAll(/id: '([^']+)'/g)].map(match => match[1]);
   assert.deepStrictEqual(ids.sort(), [
-    'adoption', 'backup', 'disk-space', 'episode-recovery', 'escalation', 'grab', 'indexer-health', 'janitor',
+    'adoption', 'backup', 'backup-check', 'disk-space', 'episode-recovery', 'escalation', 'grab', 'indexer-health', 'janitor',
     'monthly-recap', 'pending-approvals', 'premiumize', 'ratio-cleanup', 'request-reconcile',
     'season-pack', 'service-alerts', 'stage-queue', 'stage-reconcile', 'stuck', 'tailscale-keys', 'tier-plan-stale-alert', 'transcode', 'tunnel',
   ]);

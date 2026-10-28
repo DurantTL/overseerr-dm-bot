@@ -696,6 +696,8 @@ const CONFIG = (() => {
   BACKUP_INTERVAL_HOURS: Number.parseInt(process.env.BACKUP_INTERVAL_HOURS || '0', 10),
   BACKUP_DIR: process.env.BACKUP_DIR || '/app/data/backups',
   BACKUP_KEEP_COUNT: Number.parseInt(process.env.BACKUP_KEEP_COUNT || '14', 10),
+  // Daily read-only check of the apps' own backups (src/backup-inventory.js verifyBackups).
+  BACKUP_CHECK_ENABLED: parseBool(process.env.BACKUP_CHECK_ENABLED, true),
   REQUEST_SUBSCRIBER_RETENTION_DAYS: Number.parseInt(process.env.REQUEST_SUBSCRIBER_RETENTION_DAYS || '180', 10),
   PLEX_MEMBER_ROLE_ID: parseId(process.env.PLEX_MEMBER_ROLE_ID) || null,
   WHATS_NEW_ENABLED: parseBool(process.env.WHATS_NEW_ENABLED, false),

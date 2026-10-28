@@ -67,6 +67,8 @@ async function arrBackups(target, { http = axios, now = Date.now() } = {}) {
       ? `${list.length} backup(s), newest ${fmtAge(now - newest.time)} old (${newest.type}); ${schedule}`
       : `no backups listed; ${schedule}`,
     newestAt: newest ? newest.time : null,
+    newestSize: newest ? newest.size : null,
+    intervalDays: Number(host.backupInterval) > 0 ? Number(host.backupInterval) : null,
     count: list.length,
   };
 }
@@ -80,6 +82,7 @@ async function plexBackupSetting({ url, token, http = axios }) {
   if (on === undefined) return { source: 'Plex', status: 'unknown', detail: 'backup setting not found in Plex preferences', newestAt: null, count: null };
   return {
     source: 'Plex',
+    settingOn: on === true || on === '1' || on === 1,
     status: on === true || on === '1' || on === 1 ? 'exists' : 'off',
     detail: on === true || on === '1' || on === 1
       ? `scheduled database backup on${get('ButlerDatabaseBackupPath') ? `, folder ${get('ButlerDatabaseBackupPath')}` : ''} (age of the newest copy isn't readable from the API)`
@@ -114,4 +117,59 @@ async function inventory(config, { http = axios, now = Date.now(), fileSystem = 
   return rows;
 }
 
-module.exports = { botDatabase, arrBackups, plexBackupSetting, inventory };
+// ---- Item 18, step two: verification for the backups the inventory found ----
+// Only sources that exist are checked; nothing here restores or drills a backup.
+//   *arr: the newest backup must be newer than its own schedule plus GRACE_DAYS, and not empty.
+//   Plex: the scheduled database backup must still be on. The API doesn't expose the copies' age,
+//         so that is all that can be checked honestly.
+// The bot database is only checked when its in-process backup is on (it has its own overdue alert
+// and /backup-rehearse), and Seerr/Tautulli have nothing readable, so they are not checked.
+const GRACE_DAYS = 1;
+const ARR_SOURCES = ['Sonarr', 'Radarr', 'Radarr 4K', 'Prowlarr'];
+
+// One verdict per checkable source: { source, ok, problem } — problem is a short sentence when not
+// ok. Sources that couldn't be read come back with ok: null (unknown), never as a failure.
+function verifyBackups(rows, { now = Date.now(), graceDays = GRACE_DAYS } = {}) {
+  const verdicts = [];
+  for (const row of rows) {
+    if (ARR_SOURCES.includes(row.source)) {
+      if (row.status === 'unknown') { verdicts.push({ source: row.source, ok: null, problem: row.detail }); continue; }
+      if (row.status === 'missing' || !row.newestAt) { verdicts.push({ source: row.source, ok: false, problem: 'no backups listed' }); continue; }
+      const days = row.intervalDays || 7;
+      const ageDays = (now - row.newestAt) / 86400000;
+      if (ageDays > days + graceDays) {
+        verdicts.push({ source: row.source, ok: false, problem: `newest backup is ${Math.floor(ageDays)} days old; it backs up every ${days} days` });
+      } else if (row.newestSize === 0) {
+        verdicts.push({ source: row.source, ok: false, problem: 'newest backup is an empty file' });
+      } else {
+        verdicts.push({ source: row.source, ok: true, problem: null });
+      }
+    } else if (row.source === 'Plex') {
+      if (row.status === 'unknown') verdicts.push({ source: 'Plex', ok: null, problem: row.detail });
+      else verdicts.push({ source: 'Plex', ok: !!row.settingOn, problem: row.settingOn ? null : 'scheduled database backup has been turned off' });
+    }
+  }
+  return verdicts;
+}
+
+// Pure: which verdicts changed since the last check. A source that goes bad posts once; one that
+// recovers after a reported problem posts once. Unknown (unreadable) results leave state alone.
+// state: { [source]: { problem } } for sources currently reported bad.
+function backupTransitions(verdicts, state = {}) {
+  const next = { ...state };
+  const failed = [];
+  const recovered = [];
+  for (const v of verdicts) {
+    if (v.ok === null) continue;
+    if (v.ok === false) {
+      if (!state[v.source]) failed.push(v);
+      next[v.source] = { problem: v.problem };
+    } else if (state[v.source]) {
+      recovered.push(v);
+      delete next[v.source];
+    }
+  }
+  return { failed, recovered, state: next };
+}
+
+module.exports = { botDatabase, arrBackups, plexBackupSetting, inventory, verifyBackups, backupTransitions, GRACE_DAYS };
