@@ -419,3 +419,57 @@ test('director tab shows an em dash, not "0", for disk free when no disks report
     assert.ok(!/<strong>0<\/strong><span>Disk free/.test(res.body), 'disk-free metric must not render zero when disks are unknown');
   } finally { await close(server); }
 });
+
+// ---- Item 9: recently-added strip and its poster proxy ----
+const RECENT = [
+  { ratingKey: '501', type: 'movie', title: 'The Wild Robot', detail: '2024', library: 'Movies', addedAt: Date.now() - 2 * 3600000, thumb: '/library/metadata/501/thumb/1730000000' },
+  { ratingKey: '777', type: 'episode', title: 'Slow Horses', detail: 'S5E3', library: 'TV Shows', addedAt: Date.now() - 5 * 3600000, thumb: null },
+];
+
+test('overview renders the recently-added strip from Tautulli, posters through the proxy', async () => {
+  const { app } = fixture({ tautulliConfigured: () => true, fetchRecentlyAdded: async () => RECENT });
+  const server = await listen(app, 0);
+  try {
+    const res = await request(server.address().port, '/admin', { 'x-admin-token': 'secret' });
+    assert.strictEqual(res.statusCode, 200);
+    assert.match(res.body, /Recently added/);
+    assert.match(res.body, /src="\/admin\/api\/poster\/501"/);
+    assert.ok(!res.body.includes('/admin/api/poster/777'), 'no img for an item without a poster path');
+    assert.match(res.body, /Slow Horses S5E3/);
+  } finally { await close(server); }
+});
+
+test('poster proxy: admin-only, serves only items in the current strip, never echoes the upstream URL', async () => {
+  const asked = [];
+  const { app } = fixture({
+    tautulliConfigured: () => true,
+    fetchRecentlyAdded: async () => RECENT,
+    fetchPoster: async thumb => { asked.push(thumb); return { type: 'image/jpeg', body: Buffer.from([0xff, 0xd8, 0xff]) }; },
+  });
+  const server = await listen(app, 0);
+  const port = server.address().port;
+  const admin = { 'x-admin-token': 'secret' };
+  try {
+    assert.strictEqual((await request(port, '/admin/api/poster/501')).statusCode, 401);
+    assert.strictEqual((await request(port, '/admin/api/poster/abc', admin)).statusCode, 404);
+    assert.strictEqual((await request(port, '/admin/api/poster/999', admin)).statusCode, 404, 'not in the strip');
+    assert.strictEqual((await request(port, '/admin/api/poster/777', admin)).statusCode, 404, 'no poster path');
+    const ok = await request(port, '/admin/api/poster/501', admin);
+    assert.strictEqual(ok.statusCode, 200);
+    assert.strictEqual(ok.headers['content-type'], 'image/jpeg');
+    assert.match(ok.headers['cache-control'], /private, max-age=86400/);
+    assert.deepStrictEqual(asked, ['/library/metadata/501/thumb/1730000000']);
+  } finally { await close(server); }
+
+  const failing = fixture({
+    tautulliConfigured: () => true,
+    fetchRecentlyAdded: async () => RECENT,
+    fetchPoster: async () => { throw new Error('upstream http://tautulli:8181/api/v2?apikey=SECRET failed'); },
+  });
+  const server2 = await listen(failing.app, 0);
+  try {
+    const res = await request(server2.address().port, '/admin/api/poster/501', admin);
+    assert.strictEqual(res.statusCode, 502);
+    assert.strictEqual(res.body, '', 'upstream error text is never sent to the browser');
+  } finally { await close(server2); }
+});

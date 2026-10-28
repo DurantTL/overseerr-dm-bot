@@ -507,3 +507,17 @@ test('renderAlertInbox: open and resolved incidents, five shown, the rest behind
   assert.match(html, /<summary>Show 3 more<\/summary>/);
   assert.match(renderAlertInbox([]), /No service-down alerts yet/);
 });
+
+test('renderRecentlyAdded: escaped labels, lazy posters through the proxy, an empty state', () => {
+  const { renderRecentlyAdded } = require('../../src/dashboard-render');
+  const html = renderRecentlyAdded([
+    { ratingKey: '501', title: '<b>Robot</b>', detail: '2024', library: 'Movies', addedAt: Date.now() - 2 * 3600000, thumb: '/library/metadata/501/thumb/1' },
+    { ratingKey: '777', title: 'Slow Horses', detail: 'S5E3', library: 'TV Shows', addedAt: null, thumb: null },
+  ]);
+  assert.match(html, /&lt;b&gt;Robot&lt;\/b&gt; 2024/);
+  assert.match(html, /<img src="\/admin\/api\/poster\/501" alt="" loading="lazy"/);
+  assert.strictEqual((html.match(/<img /g) || []).length, 1);
+  assert.match(html, /Movies · 2h ago/);
+  assert.match(html, /role="list"/);
+  assert.match(renderRecentlyAdded([]), /Nothing has been added recently/);
+});
