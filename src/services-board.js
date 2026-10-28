@@ -342,6 +342,7 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
     if (facts) {
       if (facts.restartCount != null) entry.restarts = facts.restartCount;
       if (facts.startedAt) entry.startedAt = facts.startedAt;
+      if (facts.image) entry.image = facts.image;
     }
     if (svc.queueLabel && queueCounts[svc.queueLabel]) {
       entry.queue = queueCounts[svc.queueLabel];

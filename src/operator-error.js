@@ -32,16 +32,23 @@ function boundOperatorLabel(value, maxChars = OPERATOR_EMBED_LIMITS.label) {
   return `${text.slice(0, Math.max(0, maxChars - 1))}…`;
 }
 
-function redactOperatorText(value) {
-  let text = String(value || '').slice(0, MAX_OPERATOR_INPUT_CHARS);
+// Credentials only: URLs with userinfo, auth headers, key=value secrets, JWTs, and ANSI colour
+// codes. Shared by operator diagnostics and the dashboard's container log viewer. Callers bound
+// the input length.
+function redactCredentials(value) {
+  let text = String(value || '');
   text = text.replace(ANSI_ESCAPE, '');
   text = text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@[^\s/]+/gi, '$1[redacted]');
   text = text.replace(/\b(authorization\s*[:=]\s*)(?:bearer|basic)\s+[^\s,;]+/gi, '$1[redacted]');
   text = text.replace(/((?:api[_-]?key|access[_-]?key|token|secret|password|passwd|pwd|session(?:id|_id)?)["']?\s*[:=]\s*["']?)([^&\s,;"']+)/gi, '$1[redacted]');
-  // Input is explicitly bounded above; these expressions preserve complete credential/path
-  // tokens so sensitive fragments cannot survive in the operator-facing diagnostic.
   // eslint-disable-next-line security/detect-unsafe-regex
-  text = text.replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]{10,})?\b/g, '[redacted token]');
+  return text.replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]{10,})?\b/g, '[redacted token]');
+}
+
+function redactOperatorText(value) {
+  // Input is explicitly bounded here; these expressions preserve complete credential/path
+  // tokens so sensitive fragments cannot survive in the operator-facing diagnostic.
+  let text = redactCredentials(String(value || '').slice(0, MAX_OPERATOR_INPUT_CHARS));
   // eslint-disable-next-line security/detect-unsafe-regex
   text = text.replace(/(["'`])(\/(?:[^\r\n/]+\/)+[^\r\n]+?)\1/g, (_match, quote, pathValue) => `${quote}${safePathTail(pathValue)}${quote}`);
   // eslint-disable-next-line security/detect-unsafe-regex
@@ -142,4 +149,4 @@ function formatOperatorError(error, limits = OPERATOR_DIAGNOSTIC_LIMITS) {
   };
 }
 
-module.exports = { OPERATOR_DIAGNOSTIC_LIMITS, OPERATOR_EMBED_LIMITS, boundOperatorLabel, formatOperatorError, redactOperatorText };
+module.exports = { OPERATOR_DIAGNOSTIC_LIMITS, OPERATOR_EMBED_LIMITS, boundOperatorLabel, formatOperatorError, redactCredentials, redactOperatorText };

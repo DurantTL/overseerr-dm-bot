@@ -396,5 +396,6 @@ test('services-board: cards carry Docker restart count and last start for their 
   const radarr = board.services.find(s => s.key === 'radarr');
   assert.strictEqual(radarr.restarts, 4);
   assert.strictEqual(radarr.startedAt, '2026-10-28T12:02:00Z');
+  assert.strictEqual(radarr.image, 'radarr:5', 'image reference for the action sheet');
   assert.ok(!('restarts' in board.services.find(s => s.key === 'tautulli')), 'no container, no facts');
 });

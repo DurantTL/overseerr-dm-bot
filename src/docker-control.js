@@ -7,6 +7,7 @@
 
 const http = require('http');
 const axios = require('axios');
+const { redactCredentials } = require('./operator-error');
 
 function socketAvailable(socketPath = '/var/run/docker.sock') {
   try {
@@ -17,12 +18,15 @@ function socketAvailable(socketPath = '/var/run/docker.sock') {
   }
 }
 
-function dockerSocketRequest(socketPath, method, reqPath, timeoutMs = 15000) {
+function dockerSocketRequest(socketPath, method, reqPath, timeoutMs = 15000, { binary = false } = {}) {
   return new Promise((resolve, reject) => {
     const req = http.request({ socketPath, path: reqPath, method }, res => {
-      let body = '';
-      res.on('data', c => { body += c; });
-      res.on('end', () => resolve({ status: res.statusCode, body }));
+      const chunks = [];
+      res.on('data', c => { chunks.push(c); });
+      res.on('end', () => {
+        const buf = Buffer.concat(chunks);
+        resolve({ status: res.statusCode, body: binary ? buf : buf.toString('utf8') });
+      });
     });
     req.on('error', reject);
     req.setTimeout(timeoutMs, () => { req.destroy(new Error('Docker socket timed out')); });
@@ -104,6 +108,98 @@ async function inspectContainers(config, names) {
   return out;
 }
 
+// ---- Read-only container logs for the action sheet's View logs ----
+const LOG_TAIL = 200;
+const LOG_LINE_CHARS = 2000;
+const LOG_MAX_BYTES = 1024 * 1024;
+const SECRET_KEY_NAME = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|WEBHOOK|COOKIE|CREDENTIAL)/i;
+
+// Docker multiplexes stdout/stderr for non-TTY containers: each frame is an 8-byte header
+// (stream byte, three zero bytes, big-endian length) then the payload. TTY containers send
+// plain text. Anything that doesn't parse as frames is treated as plain text.
+function demuxDockerLogs(buf) {
+  if (!Buffer.isBuffer(buf)) return [{ stream: 'stdout', text: String(buf || '') }];
+  const frames = [];
+  let off = 0;
+  while (off + 8 <= buf.length) {
+    const kind = buf[off];
+    if (kind > 2 || buf[off + 1] !== 0 || buf[off + 2] !== 0 || buf[off + 3] !== 0) break;
+    const len = buf.readUInt32BE(off + 4);
+    if (off + 8 + len > buf.length) break;
+    frames.push({ stream: kind === 2 ? 'stderr' : 'stdout', text: buf.toString('utf8', off + 8, off + 8 + len) });
+    off += 8 + len;
+  }
+  if (off === 0 && buf.length) return [{ stream: 'stdout', text: buf.toString('utf8') }];
+  return frames;
+}
+
+// The literal values of every secret-looking setting, plus the password part of any configured
+// URL that embeds credentials (RTORRENT_URL does), so a container that echoes its own config
+// can't put them on screen. Short values are skipped so common words don't get blanked.
+function secretLiterals(config) {
+  const out = new Set();
+  for (const [name, value] of Object.entries(config || {})) {
+    if (typeof value !== 'string' || !value) continue;
+    if (SECRET_KEY_NAME.test(name) && value.length >= 6) out.add(value);
+    const userinfo = /^[a-z][a-z0-9+.-]*:\/\/([^/@\s]+)@/i.exec(value);
+    if (userinfo) {
+      const [user, pass] = userinfo[1].split(':');
+      if (pass && pass.length >= 4) out.add(pass);
+      if (pass && user && user.length >= 4) out.add(user);
+      try { if (pass) out.add(decodeURIComponent(pass)); } catch { /* keep the raw form only */ }
+    }
+  }
+  return [...out].sort((a, b) => b.length - a.length);
+}
+
+function redactLogLine(text, literals) {
+  let line = redactCredentials(text);
+  for (const lit of literals) if (line.includes(lit)) line = line.split(lit).join('[redacted]');
+  return line;
+}
+
+// [{ at, stream, text }] for the last LOG_TAIL lines, timestamps from Docker, every line
+// redacted before it leaves. Read-only: only GET /logs is ever called.
+function parseLogLines(frames, literals) {
+  const lines = [];
+  for (const frame of frames) {
+    for (const raw of frame.text.split('\n')) {
+      if (!raw) continue;
+      const sp = raw.indexOf(' ');
+      const stamp = sp > 0 ? raw.slice(0, sp) : '';
+      const hasStamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(stamp);
+      const body = (hasStamp ? raw.slice(sp + 1) : raw).replace(/\r$/, '').slice(0, LOG_LINE_CHARS);
+      lines.push({ at: hasStamp ? stamp.slice(0, 19) + 'Z' : null, stream: frame.stream, text: redactLogLine(body, literals) });
+    }
+  }
+  return lines.slice(-LOG_TAIL);
+}
+
+async function containerLogs(config, container) {
+  const cap = restartCapable(config);
+  if (!cap) throw new Error('Container access is not configured (mount the Docker socket or set PORTAINER_*).');
+  if (!/^[a-z0-9][a-z0-9_.-]*$/i.test(container)) throw new Error('Invalid container name.');
+  const query = `stdout=1&stderr=1&timestamps=1&tail=${LOG_TAIL}`;
+  let buf;
+  if (cap.via === 'socket') {
+    const { status, body } = await dockerSocketRequest(cap.socketPath, 'GET', `/containers/${encodeURIComponent(container)}/logs?${query}`, 15000, { binary: true });
+    if (status !== 200) throw new Error(`Docker logs failed: HTTP ${status}`);
+    buf = body.subarray(0, LOG_MAX_BYTES);
+  } else {
+    const base = cap.url.replace(/\/$/, '');
+    const headers = { 'X-API-Key': cap.apiKey };
+    const list = await axios.get(`${base}/api/endpoints/${cap.endpointId}/docker/containers/json`, { headers, params: { all: 1 }, timeout: 10000 });
+    const match = (list.data || []).find(c => (c.Names || []).some(n => n.replace(/^\//, '') === container));
+    if (!match) throw new Error(`Container "${container}" not found in Portainer`);
+    const res = await axios.get(`${base}/api/endpoints/${cap.endpointId}/docker/containers/${match.Id}/logs?${query}`, {
+      headers, timeout: 15000, responseType: 'arraybuffer', maxContentLength: LOG_MAX_BYTES, validateStatus: () => true,
+    });
+    if (res.status !== 200) throw new Error(`Portainer logs failed: HTTP ${res.status}`);
+    buf = Buffer.from(res.data);
+  }
+  return parseLogLines(demuxDockerLogs(buf), secretLiterals(config));
+}
+
 function restartCapable(config) {
   const socketPath = config.DOCKER_SOCKET || '/var/run/docker.sock';
   if (config.DOCKER_SOCKET !== '' && socketAvailable(socketPath)) return { via: 'socket', socketPath };
@@ -122,4 +218,7 @@ async function restartContainer(config, container) {
   return restartViaPortainer({ ...cap, container });
 }
 
-module.exports = { restartCapable, restartContainer, socketAvailable, containerFacts, inspectContainers };
+module.exports = {
+  restartCapable, restartContainer, socketAvailable, containerFacts, inspectContainers,
+  containerLogs, demuxDockerLogs, parseLogLines, secretLiterals, LOG_TAIL,
+};

@@ -77,3 +77,75 @@ test('docker-control: inspectContainers returns nothing when the list call fails
   assert.deepStrictEqual(await inspectContainers(PORTAINER, ['radarr']), {});
   assert.deepStrictEqual(await inspectContainers({ DOCKER_SOCKET: '' }, ['radarr']), {});
 });
+
+// ---- View logs: read-only, last 200 lines, redacted ----
+const { containerLogs, demuxDockerLogs, parseLogLines, secretLiterals, LOG_TAIL } = require('../../src/docker-control');
+
+function frame(kind, text) {
+  const body = Buffer.from(text, 'utf8');
+  const head = Buffer.alloc(8);
+  head[0] = kind;
+  head.writeUInt32BE(body.length, 4);
+  return Buffer.concat([head, body]);
+}
+
+test('docker-control: demuxDockerLogs splits stdout/stderr frames and passes TTY text through', () => {
+  const buf = Buffer.concat([frame(1, '2026-10-28T12:00:01.123456789Z started\n'), frame(2, '2026-10-28T12:00:02.5Z boom\n')]);
+  assert.deepStrictEqual(demuxDockerLogs(buf).map(f => f.stream), ['stdout', 'stderr']);
+  const plain = demuxDockerLogs(Buffer.from('Hello from a TTY container\n'));
+  assert.deepStrictEqual(plain, [{ stream: 'stdout', text: 'Hello from a TTY container\n' }]);
+});
+
+test('docker-control: parseLogLines keeps the last 200 lines with Docker timestamps', () => {
+  const text = Array.from({ length: 250 }, (_, i) => `2026-10-28T12:00:${String(i % 60).padStart(2, '0')}.000000001Z line ${i}`).join('\n') + '\n';
+  const lines = parseLogLines([{ stream: 'stdout', text }], []);
+  assert.strictEqual(LOG_TAIL, 200);
+  assert.strictEqual(lines.length, 200);
+  assert.strictEqual(lines[0].text, 'line 50');
+  assert.strictEqual(lines.at(-1).text, 'line 249');
+  assert.strictEqual(lines[0].at, '2026-10-28T12:00:50Z');
+  assert.strictEqual(parseLogLines([{ stream: 'stdout', text: 'no stamp here\n' }], [])[0].at, null);
+});
+
+test('docker-control: log lines never carry configured secrets or credential URLs', () => {
+  const config = {
+    RTORRENT_URL: 'https://seeduser:s3edPa55word@seedbox.example.test/rutorrent/RPC2',
+    RADARR_API_KEY: 'radarrkey1234567890',
+    DISCORD_TOKEN: 'discord.token.value',
+    RADARR_URL: 'http://radarr:7878',
+  };
+  const literals = secretLiterals(config);
+  assert.ok(literals.includes('s3edPa55word') && literals.includes('seeduser') && literals.includes('radarrkey1234567890'));
+  assert.ok(!literals.includes('http://radarr:7878'), 'plain URLs are not secrets');
+  const raw = [
+    'Connecting to https://seeduser:s3edPa55word@seedbox.example.test/rutorrent/RPC2',
+    'user=seeduser pass s3edPa55word',
+    'GET /api/v3/movie?apikey=radarrkey1234567890',
+    'X-Api-Key radarrkey1234567890 accepted',
+    'Authorization: Bearer abc.def.ghi',
+    'login with discord.token.value',
+  ].join('\n');
+  const out = parseLogLines([{ stream: 'stdout', text: raw }], literals).map(l => l.text).join('\n');
+  for (const secret of ['s3edPa55word', 'seeduser', 'radarrkey1234567890', 'abc.def.ghi', 'discord.token.value']) {
+    assert.ok(!out.includes(secret), `${secret} must not appear`);
+  }
+  assert.match(out, /\[redacted\]/);
+});
+
+test('docker-control: containerLogs reads GET /logs (tail 200) through Portainer and redacts', async t => {
+  const calls = [];
+  const realGet = axios.get;
+  axios.get = async (url, opts) => {
+    calls.push({ url, opts });
+    if (url.endsWith('/containers/json')) return { status: 200, data: [{ Id: 'r1', Names: ['/radarr'] }] };
+    return { status: 200, data: frame(1, '2026-10-28T12:00:01Z key=ptr_test_secret_value ok\n') };
+  };
+  t.after(() => { axios.get = realGet; });
+  const lines = await containerLogs({ ...PORTAINER, PORTAINER_API_KEY: 'ptr_test_secret_value' }, 'radarr');
+  assert.match(calls[1].url, /\/api\/endpoints\/3\/docker\/containers\/r1\/logs\?stdout=1&stderr=1&timestamps=1&tail=200$/);
+  assert.strictEqual(calls[1].opts.responseType, 'arraybuffer');
+  assert.strictEqual(lines.length, 1);
+  assert.ok(!lines[0].text.includes('ptr_test_secret_value'));
+  await assert.rejects(containerLogs(PORTAINER, '../etc'), /Invalid container name/);
+  await assert.rejects(containerLogs({ DOCKER_SOCKET: '' }, 'radarr'), /not configured/);
+});

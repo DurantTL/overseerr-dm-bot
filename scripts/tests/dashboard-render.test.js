@@ -475,3 +475,18 @@ test('renderServicesPanel: cards show restart count and last start, nothing more
   assert.match(html, /started ' \+ esc\(startedAgo\(s\.startedAt\)\)/);
   assert.doesNotMatch(html, /restartHistory|restart-log|restarts\.map/, 'no invented restart history list');
 });
+
+test('renderServicesPanel: action sheet shows status, uptime, restarts and image, plus read-only View logs', () => {
+  const html = renderServicesPanel();
+  assert.match(html, /id="svcSheetFacts"/);
+  assert.match(html, /\['Status', label/);
+  assert.match(html, /\['Uptime', upFor\(s\.startedAt\)/);
+  assert.match(html, /\['Image', s\.image, 'mono'\]/);
+  assert.doesNotMatch(html, /update available|updateAvailable|latestTag/i, 'no update check in v1');
+  assert.match(html, /id="svcLogs"/);
+  assert.match(html, /fetch\('\/admin\/api\/services\/logs\?container=' \+ encodeURIComponent\(sheetContainer\)/);
+  assert.match(html, /esc\(l\.text\)/, 'log text is escaped before it reaches the page');
+  assert.match(html, /svcLogs'\)\.disabled = !sheetCanRestart \|\| !sheetContainer/, 'View logs needs Docker access and a container');
+  assert.match(html, /role="log"/);
+  assert.match(html, /\.svc-log-btn \{ min-height: 44px;/, 'log view buttons are full-size tap targets');
+});
