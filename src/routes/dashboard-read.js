@@ -5,7 +5,7 @@ const { readCookie, SETUP_NUDGE_COOKIE } = require('./dashboard-auth');
 const { parseScriptConfig } = require('../europe-sync');
 const { HEALTH_KEYS, healthLabel } = require('../health');
 const { INBOX_ACTIONS, alertInbox } = require('../service-alerts');
-const { renderAlertInbox, renderRecentlyAdded } = require('../dashboard-render');
+const { renderAlertInbox, renderRecentlyAdded, renderQuickActions, renderQuickActionSheet } = require('../dashboard-render');
 const tautulliRecent = require('../tautulli');
 const { buildFleetSync } = require('../fleet-sync');
 
@@ -37,6 +37,7 @@ function registerDashboardReadRoutes(app, deps) {
     gatherHealth,
     gatherIncompleteRequests,
     getAutomationRegistry = () => null,
+    rtorrentConfigured = () => false,
     getGuildMembers,
     getTierPlan,
     grabDailyAllowance,
@@ -314,6 +315,32 @@ function registerDashboardReadRoutes(app, deps) {
     }));
     const seasonAlertItems = seasonAlertDashboardItems(listSeasonAlertStates({ stoodDownOnly: true }));
     const automationInventory = getAutomationRegistry()?.list() || [];
+    // F14: each tab's own Quick Actions. Run-now buttons only appear for registry jobs that allow
+    // a manual run and are enabled; bulk actions open the confirm sheet (renderQuickActionSheet).
+    const runNow = (id, label) => {
+      const job = automationInventory.find(item => item.id === id);
+      if (!job || !job.manual.enabled) return null;
+      return { label, post: { url: '/admin/action/sweep', body: { name: id } }, disabled: !job.enabled, reason: job.disabledReason };
+    };
+    const noTorrents = rtorrentConfigured() ? null : 'rTorrent is not configured.';
+    const importedCount = queue === null ? null : (queue || []).filter(item => item.trackedState === 'imported').length;
+    const quickActions = {
+      director: [
+        { label: 'Run doctor', doctor: true },
+        runNow('backup-check', 'Check backups'),
+      ],
+      overview: [
+        { label: 'Pause downloads', bulk: 'pause-downloads', disabled: !!noTorrents, reason: noTorrents },
+        { label: 'Resume downloads', bulk: 'resume-downloads', disabled: !!noTorrents, reason: noTorrents },
+        { label: 'Clear imported', bulk: 'clear-imported', count: importedCount ?? undefined, disabled: queue === null, reason: queue === null ? 'Radarr/Sonarr queues are unavailable.' : null },
+      ],
+      operations: [
+        { label: 'Approve all pending', bulk: 'approve-pending', count: pendingApprovals.length, disabled: !pendingApprovals.length, reason: pendingApprovals.length ? null : 'Nothing is waiting for approval.' },
+        runNow('episode-recovery', 'Run episode recovery'),
+        runNow('stuck', 'Check stuck downloads'),
+      ],
+    };
+
     const sweepItems = automationInventory.filter(item => item.manual.enabled).map(item => ({
       state: item.enabled ? 'skip' : 'warn',
       title: item.label,
@@ -439,6 +466,7 @@ function registerDashboardReadRoutes(app, deps) {
       <div class="stats">${stats}</div>
 
       <section class="panel d-panel" data-panel="director">
+        ${renderQuickActions(quickActions.director)}
         ${renderDirectorPanel({
           overall: health.overall,
           services: directorItems,
@@ -453,6 +481,7 @@ function registerDashboardReadRoutes(app, deps) {
       </section>
 
       <section class="panel" data-panel="overview">
+        ${renderQuickActions(quickActions.overview)}
         ${showPasskeySetupBanner ? renderPasskeySetupBanner() : ''}
         ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID, PASSKEY_RP.origin)}
         ${renderAgentApiTokens(agentApiTokens, { legacyConfigured: !!CONFIG.AGENT_API_TOKEN_HASH })}
@@ -480,6 +509,7 @@ function registerDashboardReadRoutes(app, deps) {
       </section>
 
       <section class="panel" data-panel="operations">
+        ${renderQuickActions(quickActions.operations)}
         <div class="card">
           <h2>Pending Approval<span class="sub">Requests waiting for an administrator. Quota changes are warnings and do not block approval.</span></h2>
           ${renderItemList(approvalItems, 'No requests are waiting for approval.')}
@@ -625,6 +655,7 @@ function registerDashboardReadRoutes(app, deps) {
         </div>
       </section>
 
+      ${renderQuickActionSheet()}
       <script src="/admin/passkey-client.js"></script>
       <script src="/admin/webauthn-browser.js"></script>
       <script>

@@ -1,6 +1,7 @@
 'use strict';
 
 const express = require('express');
+const bulkActions = require('../bulk-actions');
 
 // Every dashboard mutation (POST) route, extracted from startExpressServer() in index.js as part
 // of #178. index.js still owns wiring: it builds the deps object below from its existing local
@@ -76,6 +77,12 @@ function registerDashboardMutationRoutes(app, deps) {
     upsertTierNode,
     usesDirectGrabEscalation,
     getAutomationRegistry = () => null,
+    listPendingRequests = () => [],
+    listRtorrentTorrents = async () => [],
+    rtorrentConfigured = () => false,
+    rtorrentControl = null,
+    fetchArrQueues = async () => [],
+    removeQueueItem = null,
   } = deps;
 
   const router = express.Router();
@@ -411,6 +418,68 @@ function registerDashboardMutationRoutes(app, deps) {
       const error = dashboardActionError(err);
       audit('dashboard_sweep', { ...dashboardActor(req), ok: false, name, error });
       return res.status(502).json({ ok: false, error });
+    }
+  });
+
+  // F14 bulk Quick Actions: POST { kind } previews exactly what would be touched and returns a
+  // listKey; POST { kind, listKey } re-plans and only runs if the list still matches that token.
+  async function bulkSources(kind) {
+    if (kind === 'approve-pending') return { pending: listPendingRequests() };
+    if (kind === 'pause-downloads' || kind === 'resume-downloads') {
+      if (!rtorrentConfigured() || !rtorrentControl) throw Object.assign(new Error('rTorrent is not configured.'), { status: 400 });
+      return { torrents: await listRtorrentTorrents() };
+    }
+    if (kind === 'clear-imported') {
+      if (!removeQueueItem) throw Object.assign(new Error('Queue removal is not available.'), { status: 400 });
+      return { queue: await fetchArrQueues() };
+    }
+    return {};
+  }
+  async function bulkAct(req, kind, item) {
+    if (kind === 'approve-pending') {
+      const result = await approveGatedRequest({ nonce: item.ref, actor: dashboardGateActor(req), azPreAuth: false });
+      const response = dashboardGateResponse(result, 'approve');
+      return response.ok ? { ok: true } : { ok: false, error: response.error };
+    }
+    if (kind === 'pause-downloads' || kind === 'resume-downloads') {
+      return rtorrentControl.control(item.ref, kind === 'pause-downloads' ? 'pause' : 'resume');
+    }
+    if (kind === 'clear-imported') return removeQueueItem(item.ref.source, item.ref.queueId);
+    return { ok: false, error: 'Unknown bulk action' };
+  }
+  router.post('/admin/action/bulk', rateLimit({
+    windowMs: 60000,
+    limit: 20,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many bulk actions. Wait a moment and try again.' }),
+  }), dashboardAuth, async (req, res, next) => {
+    const kind = String(req.body?.kind || '');
+    if (!Object.hasOwn(bulkActions.KINDS, kind)) return res.status(400).json({ ok: false, error: 'Unknown bulk action.' });
+    // Approving creates Seerr requests and DMs requesters, so it needs Discord up like /gate does.
+    if (bulkActions.KINDS[kind].needsDiscord) return discordReadyGuard(req, res, next);
+    return next();
+  }, async (req, res) => {
+    const kind = String(req.body.kind);
+    const reviewed = req.body?.listKey == null ? null : String(req.body.listKey);
+    try {
+      const planned = bulkActions.plan(kind, await bulkSources(kind));
+      if (reviewed == null) return res.json({ ok: true, preview: true, plan: bulkActions.publicPlan(planned) });
+      if (reviewed !== planned.listKey) {
+        audit('dashboard_bulk_action', { ...dashboardActor(req), ok: false, kind, reason: 'plan_changed' });
+        return res.status(409).json({ ok: false, error: 'The list changed since you reviewed it. Review it again.', plan: bulkActions.publicPlan(planned) });
+      }
+      if (!planned.items.length) return res.json({ ok: true, message: 'Nothing to do.', result: { attempted: 0, succeeded: 0, failed: [] } });
+      const result = await bulkActions.run(planned, (k, item) => bulkAct(req, k, item));
+      audit('dashboard_bulk_action', { ...dashboardActor(req), ok: result.failed.length === 0, kind, attempted: result.attempted, succeeded: result.succeeded, failed: result.failed.slice(0, 20) });
+      const verb = bulkActions.KINDS[kind].verb;
+      const tail = result.failed.length ? ` ${result.failed.length} failed.` : '';
+      return res.json({ ok: result.failed.length === 0, message: `${verb}: ${result.succeeded} of ${result.attempted} done.${tail}`, result });
+    } catch (err) {
+      const error = dashboardActionError(err);
+      audit('dashboard_bulk_action', { ...dashboardActor(req), ok: false, kind, error });
+      return res.status(err?.status || 502).json({ ok: false, error });
     }
   });
 
