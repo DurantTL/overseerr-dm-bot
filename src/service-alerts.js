@@ -84,6 +84,64 @@ function evaluateServiceAlerts({
   return events;
 }
 
+// ---- Alert inbox (dashboard Overview) ----
+// Rebuilt from the audit rows the sweep already writes; nothing new is stored. Rows are
+// service_down_alerted (first alert and each reminder), service_down_recovered, and
+// service_alert_restart (the alert's Restart button). They are grouped into incidents per
+// service: an alert opens one, reminders and restarts attach to it, a recovery closes it.
+const INBOX_ACTIONS = ['service_down_alerted', 'service_down_recovered', 'service_alert_restart'];
+
+function auditRowMs(createdAt) {
+  const s = String(createdAt || '');
+  const t = Date.parse(/^\d{4}-\d{2}-\d{2} /.test(s) ? `${s.replace(' ', 'T')}Z` : s);
+  return Number.isFinite(t) ? t : null;
+}
+
+function alertInbox(rows, { services = SERVICES, limit = 20 } = {}) {
+  const names = new Map(services.map(svc => [svc.key, svc.name]));
+  const ordered = [...(rows || [])].sort((a, b) => a.id - b.id);
+  const open = new Map();
+  const incidents = [];
+  for (const row of ordered) {
+    let meta;
+    try { meta = JSON.parse(row.metadata_json || '{}'); } catch { continue; }
+    const key = typeof meta.service === 'string' ? meta.service : null;
+    const at = auditRowMs(row.created_at);
+    if (!key || at == null) continue;
+    const name = names.get(key) || key;
+    if (row.action === 'service_down_alerted') {
+      let inc = open.get(key);
+      if (!inc) {
+        inc = { service: key, name, open: true, alertedAt: at, lastAt: at, alerts: 0, stoodDown: false, restarts: 0, restartFailed: 0 };
+        open.set(key, inc);
+        incidents.push(inc);
+      }
+      inc.alerts += 1;
+      inc.lastAt = at;
+      if (meta.stoodDown) inc.stoodDown = true;
+    } else if (row.action === 'service_down_recovered') {
+      const downForMs = Number.isFinite(meta.downForMs) ? meta.downForMs : null;
+      let inc = open.get(key);
+      if (!inc) {
+        // The alert itself is older than the rows read (or was pruned): the recovery still
+        // says how long it was down.
+        inc = { service: key, name, alertedAt: null, alerts: 0, stoodDown: false, restarts: 0, restartFailed: 0 };
+        incidents.push(inc);
+      }
+      open.delete(key);
+      Object.assign(inc, { open: false, recoveredAt: at, lastAt: at, downForMs });
+    } else if (row.action === 'service_alert_restart') {
+      const inc = open.get(key);
+      if (!inc) continue;
+      if (meta.ok === false) inc.restartFailed += 1; else inc.restarts += 1;
+      inc.lastAt = at;
+    }
+  }
+  return incidents
+    .sort((a, b) => (Number(b.open) - Number(a.open)) || (b.lastAt - a.lastAt))
+    .slice(0, limit);
+}
+
 function parseIgnoreList(raw) {
   return new Set(String(raw || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean));
 }
@@ -96,4 +154,6 @@ module.exports = {
   checkServices,
   evaluateServiceAlerts,
   parseIgnoreList,
+  INBOX_ACTIONS,
+  alertInbox,
 };

@@ -111,3 +111,65 @@ test('service alerts: parseIgnoreList trims, lowercases and drops blanks', () =>
   assert.deepStrictEqual([...parseIgnoreList(' Plex, grafana ,,')], ['plex', 'grafana']);
   assert.strictEqual(parseIgnoreList('').size, 0);
 });
+
+// ---- Alert inbox: incidents rebuilt from the audit rows the sweep writes ----
+const { alertInbox, INBOX_ACTIONS } = require('../../src/service-alerts');
+
+function row(id, action, createdAt, meta) {
+  return { id, action, created_at: createdAt, metadata_json: JSON.stringify(meta) };
+}
+
+test('alert inbox: reads exactly the alert, recovery and alert-restart audit actions', () => {
+  assert.deepStrictEqual(INBOX_ACTIONS, ['service_down_alerted', 'service_down_recovered', 'service_alert_restart']);
+});
+
+test('alert inbox: an alert, its reminders and a restart make one open incident on top', () => {
+  const rows = [
+    row(1, 'service_down_alerted', '2026-10-27 09:00:00', { service: 'prowlarr', attemptCount: 1 }),
+    row(2, 'service_down_recovered', '2026-10-27 09:14:00', { service: 'prowlarr', downForMs: 14 * 60000 }),
+    row(3, 'service_down_alerted', '2026-10-28 14:31:00', { service: 'radarr', attemptCount: 1 }),
+    row(4, 'service_alert_restart', '2026-10-28 14:33:00', { service: 'radarr', container: 'radarr', ok: true }),
+    row(5, 'service_down_alerted', '2026-10-28 14:56:00', { service: 'radarr', attemptCount: 6 }),
+    row(6, 'service_down_alerted', '2026-10-28 16:51:00', { service: 'radarr', attemptCount: 24, stoodDown: true }),
+  ];
+  // Rows arrive newest-first from the query; order must not matter.
+  const inbox = alertInbox(rows.reverse());
+  assert.strictEqual(inbox.length, 2);
+  const [radarr, prowlarr] = inbox;
+  assert.strictEqual(radarr.name, 'Radarr');
+  assert.strictEqual(radarr.open, true);
+  assert.strictEqual(radarr.alerts, 3);
+  assert.strictEqual(radarr.restarts, 1);
+  assert.strictEqual(radarr.stoodDown, true);
+  assert.strictEqual(radarr.alertedAt, Date.parse('2026-10-28T14:31:00Z'));
+  assert.strictEqual(prowlarr.open, false);
+  assert.strictEqual(prowlarr.downForMs, 14 * 60000);
+  assert.strictEqual(prowlarr.recoveredAt, Date.parse('2026-10-27T09:14:00Z'));
+});
+
+test('alert inbox: a recovery whose alert was pruned still shows, and open incidents sort first', () => {
+  const inbox = alertInbox([
+    row(10, 'service_down_recovered', '2026-10-28 12:00:00', { service: 'sonarr', downForMs: 9 * 60000 }),
+    row(11, 'service_down_alerted', '2026-10-28 08:00:00', { service: 'tautulli' }),
+    row(12, 'service_alert_restart', '2026-10-28 13:00:00', { service: 'plex', ok: true }),
+    row(13, 'service_down_alerted', '2026-10-28 13:00:00', { service: 'bogus' }),
+    { id: 14, action: 'service_down_alerted', created_at: '2026-10-28 13:00:00', metadata_json: '{not json' },
+  ]);
+  assert.deepStrictEqual(inbox.map(i => [i.service, i.open]), [['bogus', true], ['tautulli', true], ['sonarr', false]]);
+  assert.strictEqual(inbox[0].name, 'bogus', 'an unknown key shows as-is rather than vanishing');
+  assert.strictEqual(inbox[2].alertedAt, null);
+  assert.ok(!inbox.some(i => i.service === 'plex'), 'a restart with no open incident adds nothing');
+});
+
+test('alert inbox: a second outage after recovery is a new incident; the list stops at 20', () => {
+  const rows = [];
+  let id = 0;
+  for (let n = 0; n < 30; n++) {
+    const hh = String(n % 24).padStart(2, '0');
+    rows.push(row(++id, 'service_down_alerted', `2026-10-${n < 24 ? '01' : '02'} ${hh}:00:00`, { service: 'radarr' }));
+    rows.push(row(++id, 'service_down_recovered', `2026-10-${n < 24 ? '01' : '02'} ${hh}:10:00`, { service: 'radarr', downForMs: 600000 }));
+  }
+  const inbox = alertInbox(rows);
+  assert.strictEqual(inbox.length, 20);
+  assert.ok(inbox.every(i => i.alerts === 1 && !i.open));
+});

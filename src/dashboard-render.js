@@ -148,6 +148,7 @@ const DASHBOARD_CSS = `
   .tier-plan-node h3 { margin:0 0 6px; font-size:15px; }
   .tier-plan-node p { margin:6px 0; font-size:13px; }
   .tier-plan-node details { margin-top:8px; font-size:13px; }
+  .inbox-more summary { display:flex; align-items:center; min-height:44px; cursor:pointer; color:var(--accent); font-size:13.5px; font-weight:600; }
   .tier-plan-node summary { cursor:pointer; color:var(--muted); }
   .tier-manage-row { margin:10px 0; font-size:13px; }
   .tier-manage-list { list-style:none; padding:0; margin:8px 0; display:flex; flex-direction:column; gap:6px; }
@@ -160,6 +161,7 @@ const DASHBOARD_CSS = `
     .topbar { flex-wrap:wrap; }
     .topbar-search { order:3; flex-basis:100%; max-width:none; }
     .item { flex-wrap:wrap; }
+    .item-main { flex-basis:0; } /* stay beside the dot however long the subline is */
     .item-right { flex-basis:100%; max-width:none; text-align:left; margin-left:19px; margin-top:2px; }
     .actions .btn { flex:1 1 45%; }
     .tier-folder-row { grid-template-columns:1fr; padding:10px; border:1px solid var(--border); border-radius:10px; }
@@ -400,6 +402,43 @@ function renderItemList(items, emptyText = 'Nothing right now.') {
       </div>
       ${i.right ? `<div class="item-right">${escapeHtml(i.right)}</div>` : ''}
     </div>`).join('')}</div>`;
+}
+
+// Overview's alert inbox: service-down incidents from src/service-alerts.js alertInbox(), newest
+// open ones first. Five show; the rest of the last 20 sit behind "Show N more".
+function renderAlertInbox(incidents, { shown = 5 } = {}) {
+  const list = Array.isArray(incidents) ? incidents : [];
+  const items = list.map(inc => {
+    const restart = inc.restarts ? 'restarted from Discord' : inc.restartFailed ? 'restart from Discord failed' : null;
+    if (inc.open) {
+      return {
+        state: 'down',
+        title: `${inc.name} is down`,
+        sub: [
+          inc.alertedAt != null ? `First alert ${fmtAgo(inc.alertedAt)}` : null,
+          `${inc.alerts} alert${inc.alerts === 1 ? '' : 's'} sent`,
+          inc.stoodDown ? 'reminders stopped' : null,
+          restart,
+        ].filter(Boolean).join(' · '),
+        right: 'Open',
+      };
+    }
+    return {
+      state: 'ok',
+      title: `${inc.name} is back`,
+      sub: [
+        inc.downForMs != null ? `Down for ${fmtDuration(inc.downForMs)}` : null,
+        inc.recoveredAt != null ? `back ${fmtAgo(inc.recoveredAt)}` : null,
+        restart,
+      ].filter(Boolean).join(' · '),
+      right: 'Resolved',
+    };
+  });
+  const head = renderItemList(items.slice(0, shown), 'No service-down alerts yet. An alert posts after a service fails two checks in a row.');
+  const rest = items.slice(shown);
+  return rest.length
+    ? `${head}<details class="inbox-more"><summary>Show ${rest.length} more</summary>${renderItemList(rest, '')}</details>`
+    : head;
 }
 
 function shellQuote(value) {
@@ -2024,6 +2063,7 @@ module.exports = {
   fmtAgo,
   renderBar,
   renderItemList,
+  renderAlertInbox,
   renderLogin,
   renderStat,
   healthClass,
