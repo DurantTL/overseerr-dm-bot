@@ -4,6 +4,8 @@ const fs = require('fs');
 const { readCookie, SETUP_NUDGE_COOKIE } = require('./dashboard-auth');
 const { parseScriptConfig } = require('../europe-sync');
 const { HEALTH_KEYS, healthLabel } = require('../health');
+const { INBOX_ACTIONS, alertInbox } = require('../service-alerts');
+const { renderAlertInbox } = require('../dashboard-render');
 
 function registerDashboardReadRoutes(app, deps) {
   const {
@@ -152,6 +154,15 @@ function registerDashboardReadRoutes(app, deps) {
         if (m.node && !lastReportByNode[m.node]) lastReportByNode[m.node] = { ...m, at: r.created_at };
       } catch (_e) {}
     }
+
+    // Overview's alert inbox: the last 20 service-down incidents, rebuilt from the audit rows the
+    // alert sweep already writes. 500 rows covers 20 incidents with all their reminders.
+    let alertIncidents = null;
+    try {
+      alertIncidents = alertInbox(db.prepare(
+        `SELECT id, action, created_at, metadata_json FROM audit_log WHERE action IN (${INBOX_ACTIONS.map(() => '?').join(',')}) ORDER BY id DESC LIMIT 500`
+      ).all(...INBOX_ACTIONS));
+    } catch (_e) { /* left null: the card says the audit log is unavailable */ }
 
     const pendingPlex = db.prepare('SELECT * FROM users WHERE invited = 0 ORDER BY requested_at DESC LIMIT 25').all();
     const pendingRequestCount = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get().c;
@@ -434,6 +445,10 @@ function registerDashboardReadRoutes(app, deps) {
         ${showPasskeySetupBanner ? renderPasskeySetupBanner() : ''}
         ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID, PASSKEY_RP.origin)}
         ${renderAgentApiTokens(agentApiTokens, { legacyConfigured: !!CONFIG.AGENT_API_TOKEN_HASH })}
+        <div class="card">
+          <h2>Alert inbox<span class="sub">Service-down alerts, last 20. Read from the audit log the alert sweep already writes.</span></h2>
+          ${alertIncidents === null ? unavailable('Audit log') : renderAlertInbox(alertIncidents)}
+        </div>
         <div class="card">
           <h2>Integrations</h2>
           <div class="badges">${renderHealthBadges(health)}</div>

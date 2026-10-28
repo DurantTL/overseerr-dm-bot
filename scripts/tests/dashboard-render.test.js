@@ -490,3 +490,20 @@ test('renderServicesPanel: action sheet shows status, uptime, restarts and image
   assert.match(html, /role="log"/);
   assert.match(html, /\.svc-log-btn \{ min-height: 44px;/, 'log view buttons are full-size tap targets');
 });
+
+test('renderAlertInbox: open and resolved incidents, five shown, the rest behind Show more', () => {
+  const { renderAlertInbox } = require('../../src/dashboard-render');
+  const now = Date.now();
+  const incidents = [
+    { service: 'radarr', name: 'Radarr', open: true, alertedAt: now - 12 * 60000, alerts: 2, stoodDown: false, restarts: 1, restartFailed: 0 },
+    ...Array.from({ length: 7 }, (_, i) => ({ service: `s${i}`, name: `<Svc ${i}>`, open: false, alertedAt: now - 3600000, recoveredAt: now - 1800000, downForMs: 14 * 60000, alerts: 1, restarts: 0, restartFailed: 0 })),
+  ];
+  const html = renderAlertInbox(incidents);
+  assert.match(html, /Radarr is down/);
+  assert.match(html, /First alert 12m ago · 2 alerts sent · restarted from Discord/);
+  assert.match(html, />Open</);
+  assert.match(html, /&lt;Svc 0&gt; is back/, 'names are escaped');
+  assert.match(html, /Down for 14m · back 30m ago/);
+  assert.match(html, /<summary>Show 3 more<\/summary>/);
+  assert.match(renderAlertInbox([]), /No service-down alerts yet/);
+});
