@@ -71,3 +71,47 @@ test('backup inventory: every source appears; unconfigured or unreachable ones a
   assert.strictEqual(rows[2].detail, "couldn't read (HTTP 401)");
   assert.strictEqual(rows[1].detail, 'not configured in the bot');
 });
+
+// ---- Item 18 step two: verify the backups that exist ----
+const DAY = 86400000;
+const arr = (source, ageDays, extra = {}) => ({ source, status: 'exists', newestAt: NOW - ageDays * DAY, newestSize: 4e6, intervalDays: 7, count: 5, detail: '', ...extra });
+
+test('backup check: today\'s real inventory (5 days old on a 7-day schedule, Plex on) all passes', () => {
+  const verdicts = B.verifyBackups([
+    { source: 'Bot database', status: 'off' },
+    arr('Sonarr', 5), arr('Radarr', 5), arr('Radarr 4K', 15 / 24), arr('Prowlarr', 5),
+    { source: 'Plex', status: 'exists', settingOn: true },
+    { source: 'Seerr', status: 'unknown' }, { source: 'Tautulli', status: 'unknown' },
+  ], { now: NOW });
+  assert.deepStrictEqual(verdicts.map(v => [v.source, v.ok]), [['Sonarr', true], ['Radarr', true], ['Radarr 4K', true], ['Prowlarr', true], ['Plex', true]],
+    'the bot database (off), Seerr and Tautulli are not checked at all');
+});
+
+test('backup check: stale past schedule + 1 day, empty, missing, Plex switched off, and unreadable', () => {
+  const verdicts = B.verifyBackups([
+    arr('Sonarr', 7.9), arr('Radarr', 8.5), arr('Radarr 4K', 1, { newestSize: 0 }), { source: 'Prowlarr', status: 'missing', newestAt: null },
+    { source: 'Plex', status: 'off', settingOn: false },
+  ], { now: NOW });
+  assert.deepStrictEqual(verdicts.map(v => [v.source, v.ok, v.problem]), [
+    ['Sonarr', true, null],
+    ['Radarr', false, 'newest backup is 8 days old; it backs up every 7 days'],
+    ['Radarr 4K', false, 'newest backup is an empty file'],
+    ['Prowlarr', false, 'no backups listed'],
+    ['Plex', false, 'scheduled database backup has been turned off'],
+  ]);
+  const unreadable = B.verifyBackups([{ source: 'Sonarr', status: 'unknown', detail: "couldn't read (HTTP 401)" }], { now: NOW });
+  assert.deepStrictEqual(unreadable, [{ source: 'Sonarr', ok: null, problem: "couldn't read (HTTP 401)" }]);
+});
+
+test('backup check: posts when a source goes bad and when it recovers, not every day in between', () => {
+  let state = {};
+  const step = verdicts => { const r = B.backupTransitions(verdicts, state); state = r.state; return [r.failed.map(v => v.source), r.recovered.map(v => v.source)]; };
+  const good = { source: 'Radarr', ok: true, problem: null };
+  const bad = { source: 'Radarr', ok: false, problem: 'stale' };
+  assert.deepStrictEqual(step([good]), [[], []]);
+  assert.deepStrictEqual(step([bad]), [['Radarr'], []]);
+  assert.deepStrictEqual(step([bad]), [[], []], 'no repeat while it stays bad');
+  assert.deepStrictEqual(step([{ source: 'Radarr', ok: null, problem: 'HTTP 502' }]), [[], []], 'unreadable leaves it as reported');
+  assert.deepStrictEqual(step([good]), [[], ['Radarr']]);
+  assert.deepStrictEqual(state, {});
+});

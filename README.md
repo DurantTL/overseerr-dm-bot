@@ -86,6 +86,11 @@ advanced-infrastructure layer lives in `docs/`:
   `BACKUP_DIR`, including ones a host cron wrote), Sonarr/Radarr/Prowlarr's built-in config backups
   and their schedule, and Plex's scheduled database backup when `PLEX_URL` is set. Sources with no
   API (Seerr, Tautulli) are listed with where to check.
+- Backup check: once a day (`BACKUP_CHECK_ENABLED`) the bot verifies the backups the inventory
+  found: each *arr's newest backup is within its own schedule plus a day and not empty, and Plex's
+  scheduled database backup is still on. It posts when one goes bad and when it recovers. Read-only;
+  `node scripts/backup-inventory.js --check` runs the same check by hand. The bot's own database
+  backup is separate: set `BACKUP_INTERVAL_HOURS` to turn it on.
 - Admin dashboard (`/admin`) with health, pending items, and safe action endpoints. The
   **Director** tab is the fleet health board: every service the media server runs
   (Plex, *arrs, Prowlarr, Byparr, Huntarr, Recyclarr, Cleanuparr, rTorrent, Syncthing,

@@ -65,6 +65,7 @@ const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { normalizeGranularity, parseTvUnitId, resolvePromotableUnit, checkPromotionCap, previewTvGranularity, mapSonarrSeriesList, mapSonarrEpisodeFiles } = require('./src/tv-granularity');
 const { checkPublicOriginReadiness } = require('./src/public-origin-diagnostics');
 const { createDeadman } = require('./src/deadman');
+const { inventory: backupInventory, verifyBackups, backupTransitions } = require('./src/backup-inventory');
 const { fetchIndexerHealth, evaluateIndexerFlips } = require('./src/indexer-health');
 const { auditConfigured: tailscaleAuditConfigured, listDevices: listTailscaleDevices, auditDevices: auditTailscaleDevices, newWarnings: newTailscaleKeyWarnings } = require('./src/tailscale-audit');
 const { provisionConfig: tailscaleProvisionConfig } = require('./src/tailscale-provision');
@@ -193,6 +194,7 @@ function createAutomationDefinitions() {
     { id: 'service-alerts', label: 'Service-down alerts', cadence: () => staticCadence(CONFIG.SERVICE_ALERT_CHECK_MINUTES, 'SERVICE_ALERT_CHECK_MINUTES'), prerequisite: () => enabled(CONFIG.SERVICE_ALERTS_ENABLED, 'SERVICE_ALERTS_ENABLED is false'), firstRunDelayMs: 90000, run: sweepServiceAlerts, manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
     { id: 'indexer-health', label: 'Indexer health', cadence: () => staticCadence(CONFIG.INDEXER_ALERT_CHECK_MINUTES, 'INDEXER_ALERT_CHECK_MINUTES'), prerequisite: () => enabled(CONFIG.INDEXER_ALERTS_ENABLED && !!(CONFIG.PROWLARR_URL && CONFIG.PROWLARR_API_KEY), CONFIG.INDEXER_ALERTS_ENABLED ? 'Prowlarr is not configured.' : 'INDEXER_ALERTS_ENABLED is false'), firstRunDelayMs: 120000, run: sweepIndexerHealth, manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
     { id: 'tailscale-keys', label: 'Tailscale key expiry', cadence: () => staticCadence(24 * 60, 'TAILSCALE_KEY_EXPIRY_DAYS'), prerequisite: () => enabled(CONFIG.TAILSCALE_KEY_ALERTS_ENABLED && tailscaleAuditConfigured(tailscaleProvisionConfig()), CONFIG.TAILSCALE_KEY_ALERTS_ENABLED ? 'Tailscale API (TAILSCALE_OAUTH_*) is not configured.' : 'TAILSCALE_KEY_ALERTS_ENABLED is false'), firstRunDelayMs: 300000, run: sweepTailscaleKeys, manual: scheduledOnly('Sends operator alerts; run scripts/tailscale-audit.js for a full report.') },
+    { id: 'backup-check', label: 'App backup check', cadence: () => staticCadence(24 * 60, 'BACKUP_CHECK_ENABLED'), prerequisite: () => enabled(CONFIG.BACKUP_CHECK_ENABLED, 'BACKUP_CHECK_ENABLED is false'), firstRunDelayMs: 600000, run: sweepBackupCheck, manual: safeManual },
     { id: 'disk-space', label: 'Disk space & drive health', cadence: () => staticCadence(CONFIG.DISK_CHECK_MINUTES, 'DISK_CHECK_MINUTES'), prerequisite: () => enabled(true), firstRunDelayMs: 60000, run: sweepFleetDiskAlerts, preview: () => previewFleetDiskAlerts(), manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
     { id: 'pending-approvals', label: 'Pending approvals', cadence: () => runtimeCadence('PENDING_APPROVAL_CHECK_MINUTES'), prerequisite: () => enabled(true), run: sweepPendingApprovals, manual: scheduledOnly('Uses notification and expiry timing; scheduled execution only.') },
     { id: 'request-reconcile', label: 'Request reconciliation', cadence: () => staticCadence(CONFIG.REQUEST_RECONCILE_MINUTES, 'REQUEST_RECONCILE_MINUTES'), prerequisite: () => enabled(true), firstRunDelayMs: 60000, runOnStartup: true, run: sweepRequestStatuses, manual: scheduledOnly('May notify many requesters; scheduled execution only.') },
@@ -305,6 +307,33 @@ async function sweepTailscaleKeys() {
     audit('tailscale_key_expiry_warned', { nodes: fresh.map(r => `${r.name}:${r.stage}`).join(', ') });
   }
   return { checked: rows.length, warned: fresh.length };
+}
+
+// App backup check (src/backup-inventory.js, item 18): once a day, verify the backups the inventory
+// found: Sonarr/Radarr/Prowlarr's newest backup is within its schedule (+1 day) and not empty, and
+// Plex's scheduled database backup is still on. Posts when a source goes bad and when it recovers.
+// Read-only; restores nothing.
+async function sweepBackupCheck() {
+  const plex = process.env.PLEX_URL && CONFIG.PLEX_TOKEN ? { url: process.env.PLEX_URL, token: CONFIG.PLEX_TOKEN } : null;
+  const now = Date.now();
+  const rows = await backupInventory(CONFIG, { lastSuccessAt: getSetting('backup_last_success'), plex, now });
+  const verdicts = verifyBackups(rows, { now });
+  let state;
+  try { state = JSON.parse(getSetting('backup_check_state') || '{}') || {}; } catch (_err) { state = {}; }
+  const { failed, recovered, state: next } = backupTransitions(verdicts, state);
+  setSetting('backup_check_state', JSON.stringify(next));
+  if (failed.length || recovered.length) {
+    notifyChannel('system', { embeds: [brandedEmbed(failed.length ? COLORS.WARN : COLORS.SUCCESS)
+      .setTitle(failed.length ? `🗄️ Backup ${failed.length === 1 ? `problem: ${failed[0].source}` : `problems: ${failed.length} apps`}` : `✅ Backups healthy again: ${recovered.map(v => v.source).join(', ')}`)
+      .setDescription([
+        ...failed.map(v => `🔴 **${v.source}**: ${v.problem}`),
+        ...recovered.map(v => `✅ **${v.source}** is backing up again`),
+        '',
+        'Read-only check: nothing was restored or changed. `node scripts/backup-inventory.js` shows the full picture.',
+      ].join('\n').slice(0, 4000))] });
+    audit('backup_check_changed', { failed: failed.map(v => v.source).join(', ') || undefined, recovered: recovered.map(v => v.source).join(', ') || undefined });
+  }
+  return { checked: verdicts.filter(v => v.ok !== null).length, problems: verdicts.filter(v => v.ok === false).length };
 }
 
 // Prowlarr indexer-health flips (src/indexer-health.js): one post per sweep listing the indexers
