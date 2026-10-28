@@ -44,7 +44,7 @@ contract (#190/#191).
 
 ## Repository policy
 
-The repository is licensed under MIT, copyright 2026 Durant Logic. Vulnerabilities are reported
+The repository is licensed under MIT, copyright 2026 DurantTL. Vulnerabilities are reported
 through GitHub Private Vulnerability Reporting; public security issues and pull requests are not an
 accepted disclosure channel. Contribution expectations are documented in `CONTRIBUTING.md`.
 

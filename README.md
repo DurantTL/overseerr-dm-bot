@@ -536,7 +536,7 @@ evidence that all future regex findings are harmless.
 
 ## Contributor and agent guidance
 
-This project is available under the [`MIT License`](LICENSE), copyright 2026 Durant Logic. See
+This project is available under the [`MIT License`](LICENSE), copyright 2026 DurantTL. See
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for how changes are proposed and accepted, and report suspected
 vulnerabilities privately through [`SECURITY.md`](SECURITY.md).
 
