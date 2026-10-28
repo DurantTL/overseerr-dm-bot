@@ -169,4 +169,17 @@ async function fetchUnifiNetwork(config, http = axios) {
   }
 }
 
-module.exports = { fetchUnifiNetwork, parseHealth, parseClients };
+// True when a successful UniFi read carries at least one real value. A console that answers with
+// empty health and client lists still parses (wan.up defaults to true), which would draw a green
+// WAN card full of dashes and a 0-device donut — numbers that look live but aren't. The board
+// hides the Network group for that case instead. Errors are not "empty": they render their own
+// honest unreachable card.
+function hasNetworkData(network) {
+  if (!network || network.error) return false;
+  const wan = network.wan || {};
+  const clients = network.clients || {};
+  return Boolean(wan.ip || wan.isp || wan.latencyMs != null || wan.capacityDownMbps != null || wan.capacityUpMbps != null
+    || Number(clients.total) > 0);
+}
+
+module.exports = { fetchUnifiNetwork, parseHealth, parseClients, hasNetworkData };

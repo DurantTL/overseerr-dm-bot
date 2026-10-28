@@ -275,3 +275,23 @@ test('services-board: fetchSsdTemp prefers the SSD from the SMART textfile metri
   assert.strictEqual(r2.tempC, 34.2);
   assert.strictEqual(r2.sensor, 'Composite');
 });
+
+test('services-board: an empty UniFi answer hides the Network group instead of drawing an empty shell', async () => {
+  const http = { get: async () => ({ data: { data: [] } }) };
+  const board = await gatherServicesBoard({
+    config: { UNIFI_HOST: '192.168.50.1', UNIFI_API_KEY: 'k' },
+    health: {}, queues: [], sessions: [], canRestart: false, http,
+  });
+  assert.strictEqual(board.network, null, 'no real values: nothing to show');
+  assert.ok(!board.groups.includes('Network'));
+});
+
+test('services-board: an unreachable UniFi console still shows its error card', async () => {
+  const http = { get: async () => { const err = new Error('connect ECONNREFUSED'); err.code = 'ECONNREFUSED'; throw err; } };
+  const board = await gatherServicesBoard({
+    config: { UNIFI_HOST: '192.168.50.1', UNIFI_API_KEY: 'k' },
+    health: {}, queues: [], sessions: [], canRestart: false, http,
+  });
+  assert.ok(board.network && board.network.error, 'the error is kept so the card can say why');
+  assert.ok(board.groups.includes('Network'));
+});
