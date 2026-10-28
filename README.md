@@ -81,6 +81,11 @@ advanced-infrastructure layer lives in `docs/`:
   `node scripts/tailscale-audit.js` prints the full report. Report-only.
 - Dozzle alerts: [docs/dozzle-alerts.md](docs/dozzle-alerts.md) sets up the existing Dozzle stack to
   alert to Discord on FATAL log lines and Docker OOM kills only.
+- Backup inventory: `node scripts/backup-inventory.js` (inside the bot container) reports, read-only,
+  which backups exist today: the bot's own database (in-process schedule and any files in
+  `BACKUP_DIR`, including ones a host cron wrote), Sonarr/Radarr/Prowlarr's built-in config backups
+  and their schedule, and Plex's scheduled database backup when `PLEX_URL` is set. Sources with no
+  API (Seerr, Tautulli) are listed with where to check.
 - Admin dashboard (`/admin`) with health, pending items, and safe action endpoints. The
   **Director** tab is the fleet health board: every service the media server runs
   (Plex, *arrs, Prowlarr, Byparr, Huntarr, Recyclarr, Cleanuparr, rTorrent, Syncthing,
