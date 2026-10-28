@@ -142,6 +142,10 @@ const CONFIG = (() => {
   GLANCES_URL: (process.env.GLANCES_URL || '').replace(/\/$/, ''),
   SCRUTINY_URL: (process.env.SCRUTINY_URL || '').replace(/\/$/, ''),
   PORTAINER_URL: (process.env.PORTAINER_URL || '').replace(/\/$/, ''),
+  // Websites group: public site links shown as cards and opened as-is. Kept in the stack, not
+  // the repo. Empty = the card waits in the "Not on the board yet" row.
+  PORTFOLIO_URL: (process.env.PORTFOLIO_URL || '').trim(),
+  BUSINESS_SITE_URL: (process.env.BUSINESS_SITE_URL || '').trim(),
   // Smart network: the Services tab detects LAN vs Tailscale client-side and
   // builds service URLs from the matching host + each service's port.
   DASHBOARD_LAN_HOST: process.env.DASHBOARD_LAN_HOST || '192.168.50.122',
