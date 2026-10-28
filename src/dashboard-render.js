@@ -520,6 +520,24 @@ function renderServicesPanel() {
 .svc-hidden-card small { font-size: 12px; color: var(--faint); }
 .svc-hidden-card code { font-family: var(--mono); font-size: 11.5px; color: var(--warn); overflow-wrap: anywhere; }
 @media (max-width: 520px) { .svc-hidden-card .svc-icon { display: none; } .svc-hidden-card code { font-size: 11px; } }
+.svc-filter { display: flex; gap: 8px; align-items: center; margin: 0 0 16px; }
+.svc-find { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; border-radius: 14px; border: 1px solid var(--edge); background: var(--glass); color: var(--faint); }
+.svc-find svg { width: 18px; height: 18px; flex: none; }
+.svc-find input { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; color: var(--text); font: inherit; font-size: 16px; -webkit-appearance: none; appearance: none; }
+.svc-find:focus-within { border-color: var(--focus); }
+.svc-downonly { flex: none; min-height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 0 14px; border-radius: 14px; border: 1px solid var(--edge); background: var(--glass); color: var(--text); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
+.svc-downonly .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--down); }
+.svc-downonly[aria-pressed="true"] { border-color: var(--down); background: color-mix(in srgb, var(--down) 16%, transparent); color: var(--down); }
+.svc-group-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; margin: -10px 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
+.svc-group-toggle:disabled { cursor: default; }
+.svc-group-toggle .chev { width: 16px; height: 16px; transition: transform .18s; }
+.svc-group-toggle[aria-expanded="false"] .chev { transform: rotate(-90deg); }
+.svc-group-toggle:disabled .chev { opacity: .35; }
+.svc-grid[hidden] { display: none; }
+.svc-empty { display: grid; justify-items: center; gap: 12px; padding: 28px 0; color: var(--muted); text-align: center; }
+.svc-empty p { margin: 0; }
+.svc-clear { min-height: 44px; padding: 0 16px; border-radius: 12px; border: 1px solid var(--edge); background: var(--glass); color: var(--text); font: inherit; font-weight: 600; cursor: pointer; }
+@media (prefers-reduced-motion: reduce) { .svc-group-toggle .chev { transition: none; } }
 .svc-gaps { margin-top: 12px; padding: 14px; border-radius: 18px; background: var(--panel); border: 1px solid var(--edge); display: grid; gap: 10px; }
 .svc-gaps header { display: flex; align-items: center; gap: 10px; }
 .svc-gaps h2 { margin: 0; font-size: 15px; }
@@ -780,6 +798,10 @@ function renderServicesPanel() {
   <div id="svcVitals"></div>
   <div id="svcAttention"></div>
   <div id="svcNowPlaying"></div>
+  <div class="svc-filter" role="search">
+    <label class="svc-find" for="svcFind"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg><input id="svcFind" type="search" placeholder="Find a service" autocomplete="off" enterkeyhint="search" aria-label="Find a service by name"></label>
+    <button type="button" class="svc-downonly" id="svcDownOnly" aria-pressed="false"><span class="dot" aria-hidden="true"></span>Down only</button>
+  </div>
   <div id="svcBoard"><div class="svc-loading">Loading services…</div></div>
 </div>
 <div class="svc-sheet" id="svcSheet" role="dialog" aria-modal="true" aria-labelledby="svcSheetTitle">
@@ -812,6 +834,18 @@ function renderServicesPanel() {
   var pins = [];
   try { pins = JSON.parse(localStorage.getItem('svcPins') || '[]'); if (!Array.isArray(pins)) pins = []; } catch (e) { pins = []; }
   function savePins() { try { localStorage.setItem('svcPins', JSON.stringify(pins)); } catch (e) {} }
+  // Find, Down only and collapsed groups. Collapsed groups are remembered per browser; a search or
+  // the Down only filter opens every group so a match is never hidden inside a collapsed one.
+  var findTerm = '';
+  var downOnly = false;
+  var collapsed = [];
+  try { collapsed = JSON.parse(localStorage.getItem('svcCollapsed') || '[]'); if (!Array.isArray(collapsed)) collapsed = []; } catch (e) { collapsed = []; }
+  function saveCollapsed() { try { localStorage.setItem('svcCollapsed', JSON.stringify(collapsed)); } catch (e) {} }
+  function filtering() { return !!findTerm || downOnly; }
+  function matches(x) {
+    if (downOnly && x.state !== 'down') return false;
+    return !findTerm || String(x.name || '').toLowerCase().indexOf(findTerm) > -1;
+  }
   var lastData = null;
 
   function toast(msg) {
@@ -1165,10 +1199,13 @@ function renderServicesPanel() {
           '</div></div>';
       }).join('');
     }
-    (d.groups || []).forEach(function (g) {
-      var items = byGroup[g] || [];
-      var special = g === 'System Health' ? specialCards(d) : (g === 'Network' ? networkCards(d) : '');
+    var shownCount = 0;
+    (d.groups || []).forEach(function (g, gi) {
+      var items = (byGroup[g] || []).filter(matches);
+      // Readings (UPS, ZFS, speed, network) aren't services, so a filter leaves them out.
+      var special = filtering() ? '' : (g === 'System Health' ? specialCards(d) : (g === 'Network' ? networkCards(d) : ''));
       if (!items.length && !special) return;
+      shownCount += items.length + (special ? 1 : 0);
       var specialCount = (d.ups ? 1 : 0) + (d.zfs ? 1 : 0) + (d.speedtest ? 1 : 0);
       var netCount = d.network ? (d.network.error ? 1 : 4) : 0;
       var groupOff = items.filter(function (x) { return x.state === 'skip'; }).length;
@@ -1176,22 +1213,28 @@ function renderServicesPanel() {
       var summary = items.length
         ? groupUp + ' of ' + (items.length - groupOff) + ' up' + (groupOff ? ' · ' + groupOff + ' not set up' : '')
         : (specialCount + netCount) + (specialCount + netCount === 1 ? ' reading' : ' readings');
-      html += '<div class="svc-head' + entCls + '"><h2>' + esc(g) + '</h2><span class="sum">' + summary + '</span><div class="line"></div></div>';
-      html += '<div class="svc-grid' + entCls + '">' + special + items.map(cardHtml).join('') + '</div>';
+      var isOpen = filtering() || collapsed.indexOf(g) === -1;
+      var gridId = 'svcg-' + gi;
+      html += '<div class="svc-head' + entCls + '"><h2><button type="button" class="svc-group-toggle" data-group="' + esc(g) + '" aria-expanded="' + isOpen + '" aria-controls="' + gridId + '"' + (filtering() ? ' disabled' : '') + '>' + esc(g) +
+        '<svg class="chev" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button></h2>' +
+        '<span class="sum">' + summary + '</span><div class="line"></div></div>';
+      html += '<div class="svc-grid' + entCls + '" id="' + gridId + '"' + (isOpen ? '' : ' hidden') + '>' + special + items.map(cardHtml).join('') + '</div>';
     });
     // Services the board can't check yet, each with the variable that would add it.
-    if (d.hidden && d.hidden.length) {
+    var hiddenShown = downOnly ? [] : (d.hidden || []).filter(function (h) { return !findTerm || String(h.name || '').toLowerCase().indexOf(findTerm) > -1; });
+    shownCount += hiddenShown.length;
+    if (hiddenShown.length) {
       html += '<section class="svc-hidden' + entCls + '" aria-labelledby="svcHiddenTitle">' +
-        '<div class="svc-head"><h2 id="svcHiddenTitle">Not on the board yet</h2><span class="sum">' + d.hidden.length + '</span><div class="line"></div></div>' +
+        '<div class="svc-head"><h2 id="svcHiddenTitle">Not on the board yet</h2><span class="sum">' + hiddenShown.length + '</span><div class="line"></div></div>' +
         '<p class="svc-hidden-note">These have no address set, so the board can\\'t check them. Each one moves into its group as soon as its variable is added.</p>' +
-        '<div class="svc-hidden-grid">' + d.hidden.map(function (h) {
+        '<div class="svc-hidden-grid">' + hiddenShown.map(function (h) {
           return '<div class="svc-hidden-card"><span class="svc-icon">' + iconFor(h.icon) + '</span>' +
             '<span class="grow"><b>' + esc(h.name) + '</b><small>' + esc(h.group) + '</small>' +
             (h.missing ? '<code>' + esc(h.missing) + '</code>' : '') + '</span></div>';
         }).join('') + '</div></section>';
       // Config gaps: the fix list for the row above. The dashboard is admin-only; this card
       // shows variable names and value templates, never a configured value.
-      var gaps = d.hidden.filter(function (h) { return h.missing; });
+      var gaps = hiddenShown.filter(function (h) { return h.missing; });
       if (gaps.length) {
         html += '<section class="svc-gaps' + entCls + '" aria-labelledby="svcGapsTitle">' +
           '<header><h2 id="svcGapsTitle">Config gaps</h2><span class="svc-admin-chip">Admin only</span></header>' +
@@ -1204,6 +1247,10 @@ function renderServicesPanel() {
           }).join('') +
           '</section>';
       }
+    }
+    if (filtering() && !shownCount) {
+      html = '<div class="svc-empty"><p>' + (downOnly && !findTerm ? 'Nothing is down.' : 'No service matches that.') + '</p>' +
+        '<button type="button" class="svc-clear" data-clear-filter="1">Clear filter</button></div>';
     }
     board.innerHTML = html || '<div class="svc-loading">No services configured yet.</div>';
     var spark = document.getElementById('netSpark');
@@ -1325,6 +1372,33 @@ function renderServicesPanel() {
     }
     return legacy();
   }
+  var findEl = document.getElementById('svcFind');
+  var downEl = document.getElementById('svcDownOnly');
+  function rerender() { if (lastData) render(lastData); }
+  findEl.addEventListener('input', function () { findTerm = findEl.value.trim().toLowerCase(); rerender(); });
+  downEl.addEventListener('click', function () {
+    downOnly = !downOnly;
+    downEl.setAttribute('aria-pressed', String(downOnly));
+    rerender();
+  });
+  board.addEventListener('click', function (e) {
+    var toggle = e.target.closest('.svc-group-toggle');
+    if (toggle && !toggle.disabled) {
+      var g = toggle.getAttribute('data-group');
+      var at = collapsed.indexOf(g);
+      if (at > -1) collapsed.splice(at, 1); else collapsed.push(g);
+      saveCollapsed();
+      var grid = document.getElementById(toggle.getAttribute('aria-controls'));
+      var open = at > -1;
+      toggle.setAttribute('aria-expanded', String(open));
+      if (grid) grid.hidden = !open;
+      return;
+    }
+    if (e.target.closest('[data-clear-filter]')) {
+      findTerm = ''; findEl.value = ''; downOnly = false; downEl.setAttribute('aria-pressed', 'false');
+      rerender(); findEl.focus();
+    }
+  });
   // Config gaps: copy one VARIABLE=template line. Delegated, since the board re-renders.
   board.addEventListener('click', function (e) {
     var btn = e.target.closest('[data-copy-env]');
