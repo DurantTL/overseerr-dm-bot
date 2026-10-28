@@ -91,7 +91,7 @@ test('automation inventory is declarative and contains every recurring media wor
   assert.deepStrictEqual(ids.sort(), [
     'adoption', 'backup', 'disk-space', 'episode-recovery', 'escalation', 'grab', 'indexer-health', 'janitor',
     'monthly-recap', 'pending-approvals', 'premiumize', 'ratio-cleanup', 'request-reconcile',
-    'season-pack', 'service-alerts', 'stage-queue', 'stage-reconcile', 'stuck', 'tier-plan-stale-alert', 'transcode', 'tunnel',
+    'season-pack', 'service-alerts', 'stage-queue', 'stage-reconcile', 'stuck', 'tailscale-keys', 'tier-plan-stale-alert', 'transcode', 'tunnel',
   ]);
   assert.ok(!/setInterval\(/.test(source.slice(source.indexOf('async function startDiscordWorkers()'), source.indexOf("client.on('guildMemberAdd'"))), 'worker startup must schedule only through the registry');
 });
