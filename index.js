@@ -65,6 +65,7 @@ const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { normalizeGranularity, parseTvUnitId, resolvePromotableUnit, checkPromotionCap, previewTvGranularity, mapSonarrSeriesList, mapSonarrEpisodeFiles } = require('./src/tv-granularity');
 const { checkPublicOriginReadiness } = require('./src/public-origin-diagnostics');
 const { createDeadman } = require('./src/deadman');
+const { fetchIndexerHealth, evaluateIndexerFlips } = require('./src/indexer-health');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderDirectorPanel, renderServicesPanel, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement, renderPasskeySetupBanner, renderAgentApiTokens, DASHBOARD_CSS } = require('./src/dashboard-render');
 const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, findAnimezIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, eraseTorrent, getRtorrentVersion, getRtorrentPaths, rtorrentCall } = require('./src/rtorrent');
@@ -188,6 +189,7 @@ function createAutomationDefinitions() {
   return [
     { id: 'tier-plan-stale-alert', label: 'Tier plan staleness', cadence: () => staticCadence(60, 'TIER_PLAN_STALE_DAYS'), prerequisite: () => enabled(true), firstRunDelayMs: 120000, runOnStartup: true, run: sweepTierPlanStaleAlerts, manual: scheduledOnly('Read-only operator alert; scheduled execution only.') },
     { id: 'service-alerts', label: 'Service-down alerts', cadence: () => staticCadence(CONFIG.SERVICE_ALERT_CHECK_MINUTES, 'SERVICE_ALERT_CHECK_MINUTES'), prerequisite: () => enabled(CONFIG.SERVICE_ALERTS_ENABLED, 'SERVICE_ALERTS_ENABLED is false'), firstRunDelayMs: 90000, run: sweepServiceAlerts, manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
+    { id: 'indexer-health', label: 'Indexer health', cadence: () => staticCadence(CONFIG.INDEXER_ALERT_CHECK_MINUTES, 'INDEXER_ALERT_CHECK_MINUTES'), prerequisite: () => enabled(CONFIG.INDEXER_ALERTS_ENABLED && !!(CONFIG.PROWLARR_URL && CONFIG.PROWLARR_API_KEY), CONFIG.INDEXER_ALERTS_ENABLED ? 'Prowlarr is not configured.' : 'INDEXER_ALERTS_ENABLED is false'), firstRunDelayMs: 120000, run: sweepIndexerHealth, manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
     { id: 'disk-space', label: 'Disk space & drive health', cadence: () => staticCadence(CONFIG.DISK_CHECK_MINUTES, 'DISK_CHECK_MINUTES'), prerequisite: () => enabled(true), firstRunDelayMs: 60000, run: sweepFleetDiskAlerts, preview: () => previewFleetDiskAlerts(), manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
     { id: 'pending-approvals', label: 'Pending approvals', cadence: () => runtimeCadence('PENDING_APPROVAL_CHECK_MINUTES'), prerequisite: () => enabled(true), run: sweepPendingApprovals, manual: scheduledOnly('Uses notification and expiry timing; scheduled execution only.') },
     { id: 'request-reconcile', label: 'Request reconciliation', cadence: () => staticCadence(CONFIG.REQUEST_RECONCILE_MINUTES, 'REQUEST_RECONCILE_MINUTES'), prerequisite: () => enabled(true), firstRunDelayMs: 60000, runOnStartup: true, run: sweepRequestStatuses, manual: scheduledOnly('May notify many requesters; scheduled execution only.') },
@@ -265,6 +267,31 @@ async function sweepServiceAlerts() {
     }
   }
   return { checked: results.length, down: results.filter(r => r.state === 'down').length, alerted: events.length };
+}
+
+// Prowlarr indexer-health flips (src/indexer-health.js): one post per sweep listing the indexers
+// that started failing (after two checks in a row) and the ones that came back. Report-only.
+async function sweepIndexerHealth() {
+  const results = await fetchIndexerHealth(CONFIG);
+  let state;
+  try { state = JSON.parse(getSetting('indexer_health_state') || '{}') || {}; } catch (_err) { state = {}; }
+  const { events, state: next } = evaluateIndexerFlips({ results, state });
+  setSetting('indexer_health_state', JSON.stringify(next));
+  const failing = events.filter(e => e.type === 'failing');
+  const back = events.filter(e => e.type === 'recovered');
+  if (events.length) {
+    const retry = till => (till ? ` — Prowlarr retries ${discordTimestamp(Date.parse(till), 'R')}` : '');
+    notifyChannel('system', { embeds: [brandedEmbed(failing.length ? COLORS.WARN : COLORS.SUCCESS)
+      .setTitle(failing.length && back.length ? '🔍 Indexer health changed' : failing.length ? `🔴 ${failing.length === 1 ? `${failing[0].indexer.name} is failing` : `${failing.length} indexers are failing`}` : `✅ ${back.length === 1 ? `${back[0].indexer.name} is working again` : `${back.length} indexers are working again`}`)
+      .setDescription([
+        ...failing.map(e => `🔴 **${e.indexer.name}** failing${retry(e.indexer.disabledTill)}`),
+        ...back.map(e => `✅ **${e.indexer.name}** working again after about ${fmtDuration(e.downForMs)}`),
+        '',
+        'Report only: nothing was changed in Prowlarr. `/indexers` shows every indexer.',
+      ].join('\n').slice(0, 4000))] });
+    audit('indexer_health_changed', { failing: failing.map(e => e.indexer.name).join(', ') || undefined, recovered: back.map(e => e.indexer.name).join(', ') || undefined });
+  }
+  return { checked: results.length, failing: results.filter(r => r.failing).length, alerted: events.length };
 }
 
 // The alert's Restart button. Admin only, and only for containers the Services board names —
@@ -7161,16 +7188,10 @@ async function handleIndexersCommand(interaction) {
   const lines = [];
   if (CONFIG.PROWLARR_URL) {
     try {
-      const headers = { 'X-Api-Key': CONFIG.PROWLARR_API_KEY };
-      const [indexers, statuses] = await Promise.all([
-        axios.get(`${CONFIG.PROWLARR_URL}/api/v1/indexer`, { headers, timeout: 10000 }).then(r => r.data || []),
-        axios.get(`${CONFIG.PROWLARR_URL}/api/v1/indexerstatus`, { headers, timeout: 10000 }).then(r => r.data || []).catch(() => []),
-      ]);
-      const failing = new Map(statuses.map(s => [s.indexerId, s]));
+      const indexers = await fetchIndexerHealth(CONFIG);
       for (const ix of indexers) {
-        const st = failing.get(ix.id);
-        const icon = !ix.enable ? '⏸️' : st?.disabledTill ? '❌' : '✅';
-        const note = !ix.enable ? ' — disabled' : st?.disabledTill ? ` — failing, retrying after \`${String(st.disabledTill).slice(0, 16).replace('T', ' ')}\`` : '';
+        const icon = !ix.enabled ? '⏸️' : ix.failing ? '❌' : '✅';
+        const note = !ix.enabled ? ' — disabled' : ix.failing ? ` — failing, retrying after \`${String(ix.disabledTill).slice(0, 16).replace('T', ' ')}\`` : '';
         lines.push(`${icon} ${ix.name}${note}`);
       }
       if (!indexers.length) lines.push('▫️ No indexers defined in Prowlarr');
