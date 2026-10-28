@@ -704,6 +704,14 @@ const CONFIG = (() => {
   QUIET_HOURS_START: Number.parseInt(process.env.QUIET_HOURS_START || '22', 10),
   QUIET_HOURS_END: Number.parseInt(process.env.QUIET_HOURS_END || '7', 10),
   QUIET_HOURS_TZ: process.env.QUIET_HOURS_TZ || process.env.TZ || 'America/Chicago',
+  // F9 weekly "Not Watchable Yet" digest in the admin channel, at a local day/hour in
+  // QUIET_HOURS_TZ (0 = Sunday … 6 = Saturday). All three can be changed on the Automation tab.
+  NOT_WATCHABLE_DIGEST_ENABLED: parseBool(process.env.NOT_WATCHABLE_DIGEST_ENABLED, true),
+  NOT_WATCHABLE_DIGEST_DAY: Number.parseInt(process.env.NOT_WATCHABLE_DIGEST_DAY || '1', 10),
+  NOT_WATCHABLE_DIGEST_HOUR: Number.parseInt(process.env.NOT_WATCHABLE_DIGEST_HOUR || '9', 10),
+  // Seerr's address as people open it in a browser (the OVERSEERR_URL above is usually the
+  // internal one). Optional: when set, digest titles link to their Seerr page.
+  SEERR_PUBLIC_URL: (process.env.SEERR_PUBLIC_URL || '').replace(/\/$/, ''),
   REQUEST_SUBSCRIBER_RETENTION_DAYS: Number.parseInt(process.env.REQUEST_SUBSCRIBER_RETENTION_DAYS || '180', 10),
   PLEX_MEMBER_ROLE_ID: parseId(process.env.PLEX_MEMBER_ROLE_ID) || null,
   WHATS_NEW_ENABLED: parseBool(process.env.WHATS_NEW_ENABLED, false),
@@ -795,6 +803,13 @@ function validateConfig() {
   }
   if (![CONFIG.QUIET_HOURS_START, CONFIG.QUIET_HOURS_END].every(h => Number.isInteger(h) && h >= 0 && h <= 23)) {
     throw new Error('QUIET_HOURS_START and QUIET_HOURS_END must be whole hours from 0 to 23');
+  }
+  if (!(Number.isInteger(CONFIG.NOT_WATCHABLE_DIGEST_DAY) && CONFIG.NOT_WATCHABLE_DIGEST_DAY >= 0 && CONFIG.NOT_WATCHABLE_DIGEST_DAY <= 6)
+    || !(Number.isInteger(CONFIG.NOT_WATCHABLE_DIGEST_HOUR) && CONFIG.NOT_WATCHABLE_DIGEST_HOUR >= 0 && CONFIG.NOT_WATCHABLE_DIGEST_HOUR <= 23)) {
+    throw new Error('NOT_WATCHABLE_DIGEST_DAY must be 0-6 (0 = Sunday) and NOT_WATCHABLE_DIGEST_HOUR 0-23');
+  }
+  if (CONFIG.SEERR_PUBLIC_URL && !/^https?:\/\//.test(CONFIG.SEERR_PUBLIC_URL)) {
+    throw new Error('SEERR_PUBLIC_URL must start with http:// or https://');
   }
   if (!require('./quiet-hours').validTimeZone(CONFIG.QUIET_HOURS_TZ)) {
     throw new Error(`QUIET_HOURS_TZ "${CONFIG.QUIET_HOURS_TZ}" is not a time zone name (e.g. America/Chicago)`);

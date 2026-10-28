@@ -165,6 +165,7 @@ const dashboardGateActor = createDashboardGateActor({ sha256 });
 // Read through this at the point of use, never cached at boot — a value captured in a closure
 // would ignore every override until the next restart.
 const { createQuietHours } = require('./src/quiet-hours');
+const { dueKey, buildNotWatchableDigest } = require('./src/not-watchable-digest');
 const settingsStore = { get: getSetting, set: setSetting, del: deleteSetting };
 const tunable = key => runtimeSettings.resolveRuntime(key, { config: CONFIG, store: settingsStore });
 // F7: admin-channel posts go out silently during quiet hours and are summed up afterwards.
@@ -201,6 +202,7 @@ function createAutomationDefinitions() {
     { id: 'service-alerts', label: 'Service-down alerts', cadence: () => staticCadence(CONFIG.SERVICE_ALERT_CHECK_MINUTES, 'SERVICE_ALERT_CHECK_MINUTES'), prerequisite: () => enabled(CONFIG.SERVICE_ALERTS_ENABLED, 'SERVICE_ALERTS_ENABLED is false'), firstRunDelayMs: 90000, run: sweepServiceAlerts, manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
     { id: 'indexer-health', label: 'Indexer health', cadence: () => staticCadence(CONFIG.INDEXER_ALERT_CHECK_MINUTES, 'INDEXER_ALERT_CHECK_MINUTES'), prerequisite: () => enabled(CONFIG.INDEXER_ALERTS_ENABLED && !!(CONFIG.PROWLARR_URL && CONFIG.PROWLARR_API_KEY), CONFIG.INDEXER_ALERTS_ENABLED ? 'Prowlarr is not configured.' : 'INDEXER_ALERTS_ENABLED is false'), firstRunDelayMs: 120000, run: sweepIndexerHealth, manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
     { id: 'tailscale-keys', label: 'Tailscale key expiry', cadence: () => staticCadence(24 * 60, 'TAILSCALE_KEY_EXPIRY_DAYS'), prerequisite: () => enabled(CONFIG.TAILSCALE_KEY_ALERTS_ENABLED && tailscaleAuditConfigured(tailscaleProvisionConfig()), CONFIG.TAILSCALE_KEY_ALERTS_ENABLED ? 'Tailscale API (TAILSCALE_OAUTH_*) is not configured.' : 'TAILSCALE_KEY_ALERTS_ENABLED is false'), firstRunDelayMs: 300000, run: sweepTailscaleKeys, manual: scheduledOnly('Sends operator alerts; run scripts/tailscale-audit.js for a full report.') },
+    { id: 'not-watchable-digest', label: 'Not Watchable Yet digest', cadence: () => staticCadence(15), prerequisite: () => enabled(tunable('NOT_WATCHABLE_DIGEST_ENABLED'), 'NOT_WATCHABLE_DIGEST_ENABLED is off.'), firstRunDelayMs: 120000, run: sweepNotWatchableDigest, manual: scheduledOnly('Posts weekly at the configured day and hour; scheduled execution only.') },
     { id: 'quiet-digest', label: 'Quiet-hours digest', cadence: () => staticCadence(5), prerequisite: () => enabled(true), firstRunDelayMs: 90000, run: sweepQuietDigest, manual: scheduledOnly('Posts the digest when quiet hours end; scheduled execution only.') },
     { id: 'backup-check', label: 'App backup check', cadence: () => staticCadence(24 * 60, 'BACKUP_CHECK_ENABLED'), prerequisite: () => enabled(CONFIG.BACKUP_CHECK_ENABLED, 'BACKUP_CHECK_ENABLED is false'), firstRunDelayMs: 600000, run: sweepBackupCheck, manual: safeManual },
     { id: 'disk-space', label: 'Disk space & drive health', cadence: () => staticCadence(CONFIG.DISK_CHECK_MINUTES, 'DISK_CHECK_MINUTES'), prerequisite: () => enabled(true), firstRunDelayMs: 60000, run: sweepFleetDiskAlerts, preview: () => previewFleetDiskAlerts(), manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
@@ -322,6 +324,21 @@ async function sweepTailscaleKeys() {
 // Plex's scheduled database backup is still on. Posts when a source goes bad and when it recovers.
 // Read-only; restores nothing.
 // F7: once quiet hours end, one digest of what was posted silently, grouped by category.
+// F9: the weekly "Not Watchable Yet" post, built from the same rows as the dashboard card.
+async function sweepNotWatchableDigest() {
+  const key = dueKey({ now: Date.now(), tz: CONFIG.QUIET_HOURS_TZ, day: tunable('NOT_WATCHABLE_DIGEST_DAY'), hour: tunable('NOT_WATCHABLE_DIGEST_HOUR'), lastKey: getSetting('not_watchable_digest_last') });
+  if (!key) return { posted: 0 };
+  const queue = await fetchArrQueues().catch(() => []);
+  const escalations = db.prepare("SELECT * FROM escalations WHERE state IN ('watching','alerted','error') ORDER BY approved_at").all();
+  const rows = await gatherIncompleteRequests({ queue, grabJobs: listActiveGrabJobs(), escalations });
+  const digest = buildNotWatchableDigest(rows, { seerrUrl: CONFIG.SEERR_PUBLIC_URL });
+  const ok = await notifyChannel('admin', { embeds: [brandedEmbed(COLORS.INFO).setTitle(`🕒 ${digest.title}`).setDescription(digest.description)] });
+  if (!ok) throw new Error('Digest could not be posted; it will be retried on the next run today.');
+  setSetting('not_watchable_digest_last', key);
+  audit('not_watchable_digest', { titles: rows.filter(r => r.digest).length });
+  return { posted: 1 };
+}
+
 async function sweepQuietDigest() {
   const pending = quietHours.pendingDigest();
   if (!pending) return { posted: 0 };
@@ -10599,9 +10616,12 @@ async function gatherIncompleteRequests({ queue = [], grabJobs = [], escalations
           title: cooling ? `Normally eligible ${new Date(nextEligible).toISOString()} — this bypasses that cooldown/backoff.` : '',
         };
       });
+      // F9 digest fields: who asked and when, from the newest request row for this series.
+      const requestRow = db.prepare('SELECT requested_by_discord_id, created_at FROM requests WHERE media_id = ? ORDER BY id DESC LIMIT 1').get(`tvdb:${entry.tvdbId}`);
       rows.push({
         state: activity.state,
         title: `📺 ${summary.title}`,
+        digest: { title: summary.title, mediaType: 'tv', tmdbId: entry.tmdbId || null, requesterId: requestRow?.requested_by_discord_id || null, requestedAt: requestRow?.created_at ? sqliteUtcMs(requestRow.created_at) : null, status: `${summary.airedMissing} episode${summary.airedMissing === 1 ? '' : 's'} missing · ${activity.note}`, failed: false },
         sub: `${describeGaps(summary)} — ${activity.note}${rank != null ? ` — pinned #${rank}` : ''}`,
         right: `${summary.airedMissing} missing`,
         pct: summary.pct,
@@ -10644,6 +10664,7 @@ async function gatherIncompleteRequests({ queue = [], grabJobs = [], escalations
     rows.push({
       state: request.status === 'failed' ? 'down' : activity.state,
       title: `${mediaTypeEmoji(request.media_type, request.is_4k)} ${request.title}`,
+      digest: { title: `${request.title}${request.is_4k ? ' (4K)' : ''}`, mediaType: request.media_type, tmdbId: tmdbId ? Number(tmdbId) : null, requesterId: request.requested_by_discord_id || null, requestedAt: sqliteUtcMs(request.created_at), status: `${request.status} · ${activity.note}`, failed: request.status === 'failed' },
       sub: `${requestStatusBadge(request.status)} · requested ${age} · ${activity.note}`,
       right: request.requested_by_discord_id ? `by ${request.requested_by_discord_id}` : '',
       missing: 0,

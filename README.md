@@ -94,6 +94,12 @@ advanced-infrastructure layer lives in `docs/`:
 - Plex watchlist requests: Seerr's own watchlist auto-request does the requesting; the bot notes
   "from their Plex watchlist" on the request card and DMs the member once to say why the request
   appeared. Setup and limits: [docs/plex-watchlist.md](docs/plex-watchlist.md).
+- Not Watchable Yet digest: every Monday at 9 am (`NOT_WATCHABLE_DIGEST_DAY`/`_HOUR`, local to
+  `QUIET_HOURS_TZ`) one admin-channel post lists the open requests that still can't be watched,
+  grouped by requester: title, what's happening with it now (in the queue, episodes missing,
+  nothing in flight, failed) and how long ago it was requested. Same data as the dashboard's
+  "Not Watchable Yet" card. Titles link to Seerr when `SEERR_PUBLIC_URL` is set. On/off, day and
+  hour are on the Automation tab.
 - Quiet hours: with `QUIET_HOURS_ENABLED` on, admin-channel posts between `QUIET_HOURS_START` and
   `QUIET_HOURS_END` (local hours in `QUIET_HOURS_TZ`, default 22 to 7, America/Chicago) go out as
   Discord silent messages: no push, buttons still work. Disk-space and drive-health alerts still
