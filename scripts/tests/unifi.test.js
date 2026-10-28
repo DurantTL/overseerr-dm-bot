@@ -4,7 +4,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { fetchUnifiNetwork, parseHealth, parseClients } = require('../../src/unifi');
+const { fetchUnifiNetwork, parseHealth, parseClients, hasNetworkData } = require('../../src/unifi');
 
 const HEALTH = { meta: { rc: 'ok' }, data: [
   { subsystem: 'wan', up: true, wan_ip: '203.0.113.44', isp_name: 'Mediacom' },
@@ -68,4 +68,14 @@ test('unifi: fetchUnifiNetwork surfaces network errors with the code', async () 
   const http = { get: async () => { const e = new Error('connect'); e.code = 'ECONNREFUSED'; throw e; } };
   const n = await fetchUnifiNetwork({ UNIFI_HOST: '192.168.50.1', UNIFI_API_KEY: 'k' }, http);
   assert.strictEqual(n.error, 'ECONNREFUSED');
+});
+
+test('unifi: hasNetworkData is true only when the console sent a real value', () => {
+  assert.strictEqual(hasNetworkData(null), false);
+  assert.strictEqual(hasNetworkData({ error: 'ECONNREFUSED' }), false, 'errors are shown, not treated as data');
+  const empty = { wan: parseHealth({ data: [] }), clients: parseClients({ data: [] }) };
+  assert.strictEqual(empty.wan.up, true, 'parseHealth is optimistic about an empty answer');
+  assert.strictEqual(hasNetworkData(empty), false, 'so emptiness is judged by the values, not by up');
+  assert.strictEqual(hasNetworkData({ wan: { latencyMs: 9 }, clients: { total: 0 } }), true);
+  assert.strictEqual(hasNetworkData({ wan: {}, clients: { total: 3 } }), true);
 });

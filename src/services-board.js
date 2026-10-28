@@ -7,7 +7,7 @@
 
 const axios = require('axios');
 const { fetchUpsStatus, nutConfigured } = require('./nut');
-const { fetchUnifiNetwork } = require('./unifi');
+const { fetchUnifiNetwork, hasNetworkData } = require('./unifi');
 
 // Groups in display order.
 const GROUPS = Object.freeze([
@@ -226,13 +226,15 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
     if (label in queueCounts) queueCounts[label]++;
   }
 
-  const [ups, zfs, speedtest, network, ssdTemp] = await Promise.all([
+  const [ups, zfs, speedtest, networkRead, ssdTemp] = await Promise.all([
     nutConfigured(config) ? fetchUpsStatus(config).catch(() => null) : Promise.resolve(null),
     fetchZfsHealth(config, http).catch(() => null),
     fetchSpeedtest(config, http).catch(() => null),
     fetchUnifiNetwork(config, http).catch(() => null),
     fetchSsdTemp(config, http).catch(() => null),
   ]);
+  // Network shows real UniFi numbers or an honest unreachable card, never an empty shell.
+  const network = networkRead && (networkRead.error || hasNetworkData(networkRead)) ? networkRead : null;
 
   const services = [];
   for (const svc of SERVICES) {
