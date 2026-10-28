@@ -698,6 +698,12 @@ const CONFIG = (() => {
   BACKUP_KEEP_COUNT: Number.parseInt(process.env.BACKUP_KEEP_COUNT || '14', 10),
   // Daily read-only check of the apps' own backups (src/backup-inventory.js verifyBackups).
   BACKUP_CHECK_ENABLED: parseBool(process.env.BACKUP_CHECK_ENABLED, true),
+  // F7 quiet hours (src/quiet-hours.js): off until turned on. Hours are whole local hours in
+  // QUIET_HOURS_TZ; the three below can also be changed from the dashboard's Automation tab.
+  QUIET_HOURS_ENABLED: parseBool(process.env.QUIET_HOURS_ENABLED, false),
+  QUIET_HOURS_START: Number.parseInt(process.env.QUIET_HOURS_START || '22', 10),
+  QUIET_HOURS_END: Number.parseInt(process.env.QUIET_HOURS_END || '7', 10),
+  QUIET_HOURS_TZ: process.env.QUIET_HOURS_TZ || process.env.TZ || 'America/Chicago',
   REQUEST_SUBSCRIBER_RETENTION_DAYS: Number.parseInt(process.env.REQUEST_SUBSCRIBER_RETENTION_DAYS || '180', 10),
   PLEX_MEMBER_ROLE_ID: parseId(process.env.PLEX_MEMBER_ROLE_ID) || null,
   WHATS_NEW_ENABLED: parseBool(process.env.WHATS_NEW_ENABLED, false),
@@ -786,6 +792,12 @@ function validateConfig() {
     || !(CONFIG.DISK_URGENT_FREE_PCT < CONFIG.DISK_WARN_FREE_PCT) || !(CONFIG.DISK_WARN_FREE_PCT <= 100)
     || CONFIG.DISK_CLEAR_MARGIN_PCT < 0) {
     throw new Error('DISK_WARN_FREE_PCT / DISK_URGENT_FREE_PCT must satisfy 0 < urgent < warn <= 100, DISK_CLEAR_MARGIN_PCT must be >= 0, DISK_CHECK_MINUTES must be > 0');
+  }
+  if (![CONFIG.QUIET_HOURS_START, CONFIG.QUIET_HOURS_END].every(h => Number.isInteger(h) && h >= 0 && h <= 23)) {
+    throw new Error('QUIET_HOURS_START and QUIET_HOURS_END must be whole hours from 0 to 23');
+  }
+  if (!require('./quiet-hours').validTimeZone(CONFIG.QUIET_HOURS_TZ)) {
+    throw new Error(`QUIET_HOURS_TZ "${CONFIG.QUIET_HOURS_TZ}" is not a time zone name (e.g. America/Chicago)`);
   }
   if (!Number.isFinite(CONFIG.INDEXER_ALERT_CHECK_MINUTES) || !(CONFIG.INDEXER_ALERT_CHECK_MINUTES > 0)) {
     throw new Error('INDEXER_ALERT_CHECK_MINUTES must be a whole number of minutes greater than 0');

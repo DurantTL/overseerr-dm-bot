@@ -164,8 +164,14 @@ const dashboardGateActor = createDashboardGateActor({ sha256 });
 // Automation knobs that the dashboard can override at runtime (see src/runtime-settings.js).
 // Read through this at the point of use, never cached at boot — a value captured in a closure
 // would ignore every override until the next restart.
+const { createQuietHours } = require('./src/quiet-hours');
 const settingsStore = { get: getSetting, set: setSetting, del: deleteSetting };
 const tunable = key => runtimeSettings.resolveRuntime(key, { config: CONFIG, store: settingsStore });
+// F7: admin-channel posts go out silently during quiet hours and are summed up afterwards.
+const quietHours = createQuietHours({
+  settings: () => ({ enabled: tunable('QUIET_HOURS_ENABLED'), start: tunable('QUIET_HOURS_START'), end: tunable('QUIET_HOURS_END'), tz: CONFIG.QUIET_HOURS_TZ }),
+  store: settingsStore,
+});
 const PASSKEY_RP = passkeyRp(CONFIG.DASHBOARD_PUBLIC_URL);
 const passkeyService = createPasskeyService({
   store: { listPasskeys, getPasskey, savePasskey, updatePasskeyUse },
@@ -195,6 +201,7 @@ function createAutomationDefinitions() {
     { id: 'service-alerts', label: 'Service-down alerts', cadence: () => staticCadence(CONFIG.SERVICE_ALERT_CHECK_MINUTES, 'SERVICE_ALERT_CHECK_MINUTES'), prerequisite: () => enabled(CONFIG.SERVICE_ALERTS_ENABLED, 'SERVICE_ALERTS_ENABLED is false'), firstRunDelayMs: 90000, run: sweepServiceAlerts, manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
     { id: 'indexer-health', label: 'Indexer health', cadence: () => staticCadence(CONFIG.INDEXER_ALERT_CHECK_MINUTES, 'INDEXER_ALERT_CHECK_MINUTES'), prerequisite: () => enabled(CONFIG.INDEXER_ALERTS_ENABLED && !!(CONFIG.PROWLARR_URL && CONFIG.PROWLARR_API_KEY), CONFIG.INDEXER_ALERTS_ENABLED ? 'Prowlarr is not configured.' : 'INDEXER_ALERTS_ENABLED is false'), firstRunDelayMs: 120000, run: sweepIndexerHealth, manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
     { id: 'tailscale-keys', label: 'Tailscale key expiry', cadence: () => staticCadence(24 * 60, 'TAILSCALE_KEY_EXPIRY_DAYS'), prerequisite: () => enabled(CONFIG.TAILSCALE_KEY_ALERTS_ENABLED && tailscaleAuditConfigured(tailscaleProvisionConfig()), CONFIG.TAILSCALE_KEY_ALERTS_ENABLED ? 'Tailscale API (TAILSCALE_OAUTH_*) is not configured.' : 'TAILSCALE_KEY_ALERTS_ENABLED is false'), firstRunDelayMs: 300000, run: sweepTailscaleKeys, manual: scheduledOnly('Sends operator alerts; run scripts/tailscale-audit.js for a full report.') },
+    { id: 'quiet-digest', label: 'Quiet-hours digest', cadence: () => staticCadence(5), prerequisite: () => enabled(true), firstRunDelayMs: 90000, run: sweepQuietDigest, manual: scheduledOnly('Posts the digest when quiet hours end; scheduled execution only.') },
     { id: 'backup-check', label: 'App backup check', cadence: () => staticCadence(24 * 60, 'BACKUP_CHECK_ENABLED'), prerequisite: () => enabled(CONFIG.BACKUP_CHECK_ENABLED, 'BACKUP_CHECK_ENABLED is false'), firstRunDelayMs: 600000, run: sweepBackupCheck, manual: safeManual },
     { id: 'disk-space', label: 'Disk space & drive health', cadence: () => staticCadence(CONFIG.DISK_CHECK_MINUTES, 'DISK_CHECK_MINUTES'), prerequisite: () => enabled(true), firstRunDelayMs: 60000, run: sweepFleetDiskAlerts, preview: () => previewFleetDiskAlerts(), manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
     { id: 'pending-approvals', label: 'Pending approvals', cadence: () => runtimeCadence('PENDING_APPROVAL_CHECK_MINUTES'), prerequisite: () => enabled(true), run: sweepPendingApprovals, manual: scheduledOnly('Uses notification and expiry timing; scheduled execution only.') },
@@ -314,6 +321,21 @@ async function sweepTailscaleKeys() {
 // found: Sonarr/Radarr/Prowlarr's newest backup is within its schedule (+1 day) and not empty, and
 // Plex's scheduled database backup is still on. Posts when a source goes bad and when it recovers.
 // Read-only; restores nothing.
+// F7: once quiet hours end, one digest of what was posted silently, grouped by category.
+async function sweepQuietDigest() {
+  const pending = quietHours.pendingDigest();
+  if (!pending) return { posted: 0 };
+  // Only log channels (audit, deploy) were silenced: nothing worth a digest.
+  if (!pending.digest) { quietHours.clear(); return { posted: 0, items: pending.items.length }; }
+  const ok = await notifyChannel('admin', { embeds: [brandedEmbed(COLORS.INFO)
+    .setTitle(`🌙 ${pending.digest.title}`)
+    .setDescription(pending.digest.description)] });
+  if (!ok) throw new Error('Digest could not be posted; it will be retried on the next run.');
+  quietHours.clear();
+  audit('quiet_hours_digest', { items: pending.items.length });
+  return { posted: 1, items: pending.items.length };
+}
+
 async function sweepBackupCheck() {
   const plex = process.env.PLEX_URL && CONFIG.PLEX_TOKEN ? { url: process.env.PLEX_URL, token: CONFIG.PLEX_TOKEN } : null;
   const now = Date.now();
@@ -502,7 +524,7 @@ async function sweepFleetDiskAlerts() {
       .setDescription([
         event.reason,
         recovered ? `Recovered from ${event.from}.` : `Warn at ≤${CONFIG.DISK_WARN_FREE_PCT}% free · urgent at ≤${CONFIG.DISK_URGENT_FREE_PCT}% free.`,
-      ].filter(Boolean).join('\n'))] });
+      ].filter(Boolean).join('\n'))] }, { urgent: true });
     audit('disk_space_transition', { key: event.key, label: event.label, from: event.from, to: event.to, freePct: event.freePct });
   }
 
@@ -515,7 +537,7 @@ async function sweepFleetDiskAlerts() {
     if (event.recovered.length) lines.push(`✅ **Recovered:** ${event.recovered.map(d => `\`${d}\``).join(', ')}`);
     notifyChannel('system', { embeds: [brandedEmbed(event.newlyFailing.length ? COLORS.DANGER : COLORS.SUCCESS)
       .setTitle(`💽 Drive health — ${event.node}`)
-      .setDescription(lines.join('\n'))] });
+      .setDescription(lines.join('\n'))] }, { urgent: true });
     audit('smart_health_transition', { node: event.node, newlyFailing: event.newlyFailing, recovered: event.recovered });
   }
 
@@ -576,8 +598,13 @@ function channelFor(kind) {
 // ignore it — but the failure is never silent: a bad channel ID, a channel in another guild, or a
 // missing Send Messages permission gets logged instead of being swallowed, which is what made a
 // dead DEPLOY_CHANNEL_ID look like a perfectly healthy startup.
-async function notifyChannel(kind, msg) {
+//
+// During quiet hours (F7) a non-urgent post is sent silently and noted for the digest; pass
+// { urgent: true } for the posts that must still ping (disk and drive health).
+async function notifyChannel(kind, msg, { urgent = false } = {}) {
   const channelId = channelFor(kind);
+  const quiet = !urgent && quietHours.isQuiet();
+  if (quiet) msg = quietHours.silence(msg);
   if (!channelId) return false;
   let channel;
   try {
@@ -595,7 +622,10 @@ async function notifyChannel(kind, msg) {
     return false;
   }
   try {
-    await channel.send(msg);
+    const sent = await channel.send(msg);
+    if (quiet) {
+      try { quietHours.record(kind, msg, sent); } catch (err) { log.warn(`Quiet-hours digest note failed: ${err.message}`); }
+    }
     return true;
   } catch (err) {
     log.warn(`Notification to '${kind}' channel ${channelId} failed to send: ${describeChannelError(err)}`);
@@ -4270,7 +4300,7 @@ async function sweepDiskSpace() {
   if (projected.length) details.push(projected.map(d => `**${d.root}** — ${forecastLabel(d.forecast)}`).join('\n'));
   notifyChannel('system', { embeds: [brandedEmbed(COLORS.DANGER)
     .setTitle('Storage Capacity Warning')
-    .setDescription(`${details.join('\n\n')}\n\nThresholds: ${freeGbThreshold} GB free or ${forecastDaysThreshold} projected days. Run \`/cleanup-suggestions\` for read-only options.`)] });
+    .setDescription(`${details.join('\n\n')}\n\nThresholds: ${freeGbThreshold} GB free or ${forecastDaysThreshold} projected days. Run \`/cleanup-suggestions\` for read-only options.`)] }, { urgent: true });
   audit('disk_space_alert', {
     disks: low.map(d => ({ path: d.path, freeGb: Math.round(gb(d.freeSpace)) })),
     projected: projected.map(d => ({ path: d.path, daysRemaining: Math.ceil(d.forecast.daysRemaining), confidence: d.forecast.confidence })),

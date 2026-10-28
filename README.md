@@ -91,6 +91,13 @@ advanced-infrastructure layer lives in `docs/`:
   scheduled database backup is still on. It posts when one goes bad and when it recovers. Read-only;
   `node scripts/backup-inventory.js --check` runs the same check by hand. The bot's own database
   backup is separate: set `BACKUP_INTERVAL_HOURS` to turn it on.
+- Quiet hours: with `QUIET_HOURS_ENABLED` on, admin-channel posts between `QUIET_HOURS_START` and
+  `QUIET_HOURS_END` (local hours in `QUIET_HOURS_TZ`, default 22 to 7, America/Chicago) go out as
+  Discord silent messages: no push, buttons still work. Disk-space and drive-health alerts still
+  ping. When the window ends, one digest in the admin channel lists what came in, grouped by
+  health, requests, downloads, cleanup and playback, with a link to each post (audit and deploy
+  logs are left out). Member DMs are unchanged. The on/off and hours are also on the dashboard's
+  Automation tab.
 - Dashboard Quick Actions: Director, Overview and Operations each open with a row of big buttons
   for that tab. Director: **Run doctor** (the edge and origin checks, in a sheet) and **Check
   backups**. Overview: **Pause downloads**, **Resume downloads** (rTorrent torrents still

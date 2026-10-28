@@ -281,6 +281,7 @@ test('request: notifyChannel reports drops instead of swallowing them', async ()
     CONFIG: { ADMIN_CHANNEL_ID: '100000000000000001', DEPLOY_CHANNEL_ID: '100000000000000003' },
     log: { warn: m => logged.push(m), info: () => {}, ok: () => {} },
     client: { channels: { fetch: async () => { throw Object.assign(new Error('Unknown Channel'), { code: 10003 }); } } },
+    quietHours: { isQuiet: () => false },
   });
 
   assert.strictEqual(await bed.run("notifyChannel('deploy', 'hi')"), false, 'unknown channel reports failure');
@@ -300,6 +301,19 @@ test('request: notifyChannel reports drops instead of swallowing them', async ()
   assert.strictEqual(await bed.run("notifyChannel('deploy', 'hi')"), true, 'happy path returns true');
   assert.deepStrictEqual(sent, ['hi'], 'message delivered');
   assert.strictEqual(logged.length, 2, 'no warning on success');
+
+  // F7 quiet hours: a non-urgent post goes out silent and is noted for the digest; urgent ones ping.
+  const noted = [];
+  bed.quietHours.isQuiet = () => true;
+  bed.quietHours.silence = m => ({ content: m, flags: 4096 });
+  bed.quietHours.record = (kind, msg, s) => noted.push({ kind, msg, s });
+  bed.client.channels.fetch = async () => ({ send: async m => { sent.push(m); return { url: 'https://discord.com/channels/1/2/3' }; } });
+  assert.strictEqual(await bed.run("notifyChannel('system', 'night')"), true);
+  assert.deepStrictEqual(sent.at(-1), { content: 'night', flags: 4096 });
+  assert.deepStrictEqual(noted, [{ kind: 'system', msg: { content: 'night', flags: 4096 }, s: { url: 'https://discord.com/channels/1/2/3' } }]);
+  assert.strictEqual(await bed.run("notifyChannel('system', 'disk', { urgent: true })"), true);
+  assert.strictEqual(sent.at(-1), 'disk', 'urgent posts are not silenced');
+  assert.strictEqual(noted.length, 1, 'or digested');
 });
 
 test('request: describeSession transcode vs direct play formatting', () => {
