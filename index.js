@@ -88,6 +88,9 @@ const { createApp } = require('./src/app');
 const { createRuntimeLifecycle, createDiscordReadyGuard } = require('./src/runtime-lifecycle');
 const { createAutomationRegistry } = require('./src/automation-registry');
 const { evaluateTierPlanStaleness } = require('./src/tier-plan-staleness');
+const { checkServices, evaluateServiceAlerts, parseIgnoreList } = require('./src/service-alerts');
+const { SERVICES: BOARD_SERVICES } = require('./src/services-board');
+const { restartCapable, restartContainer } = require('./src/docker-control');
 const { mergeFleetDisks, evaluateFleetDiskAlerts, evaluateSmartTransitions, collectSmartHealth } = require('./src/fleet-disks');
 const { assessDiskLevel } = require('./src/node-telemetry');
 const { findUnprocessableTorrents, unacknowledgedTorrents, pruneAcknowledged, resolveAbsoluteDownloadDir, matchTorrentsByName, adoptTargetForLabel, remoteSubpathCandidates, parseRemoteListing, indexRemoteListing, remoteSizeMatches, joinRemotePath, decideAdoption, bulkTargetChoices } = require('./src/adopt');
@@ -183,6 +186,7 @@ const scheduledOnly = reason => ({ enabled: false, reason });
 function createAutomationDefinitions() {
   return [
     { id: 'tier-plan-stale-alert', label: 'Tier plan staleness', cadence: () => staticCadence(60, 'TIER_PLAN_STALE_DAYS'), prerequisite: () => enabled(true), firstRunDelayMs: 120000, runOnStartup: true, run: sweepTierPlanStaleAlerts, manual: scheduledOnly('Read-only operator alert; scheduled execution only.') },
+    { id: 'service-alerts', label: 'Service-down alerts', cadence: () => staticCadence(CONFIG.SERVICE_ALERT_CHECK_MINUTES, 'SERVICE_ALERT_CHECK_MINUTES'), prerequisite: () => enabled(CONFIG.SERVICE_ALERTS_ENABLED, 'SERVICE_ALERTS_ENABLED is false'), firstRunDelayMs: 90000, run: sweepServiceAlerts, manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
     { id: 'disk-space', label: 'Disk space & drive health', cadence: () => staticCadence(CONFIG.DISK_CHECK_MINUTES, 'DISK_CHECK_MINUTES'), prerequisite: () => enabled(true), firstRunDelayMs: 60000, run: sweepFleetDiskAlerts, preview: () => previewFleetDiskAlerts(), manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
     { id: 'pending-approvals', label: 'Pending approvals', cadence: () => runtimeCadence('PENDING_APPROVAL_CHECK_MINUTES'), prerequisite: () => enabled(true), run: sweepPendingApprovals, manual: scheduledOnly('Uses notification and expiry timing; scheduled execution only.') },
     { id: 'request-reconcile', label: 'Request reconciliation', cadence: () => staticCadence(CONFIG.REQUEST_RECONCILE_MINUTES, 'REQUEST_RECONCILE_MINUTES'), prerequisite: () => enabled(true), firstRunDelayMs: 60000, runOnStartup: true, run: sweepRequestStatuses, manual: scheduledOnly('May notify many requesters; scheduled execution only.') },
@@ -202,6 +206,88 @@ function createAutomationDefinitions() {
     { id: 'tunnel', label: 'Tunnel health', cadence: () => staticCadence(CONFIG.PH_TUNNEL_CHECK_MINUTES, 'PH_TUNNEL_CHECK_MINUTES'), prerequisite: () => enabled(!!CONFIG.PH_TUNNEL_HEALTH_URL, 'PH_TUNNEL_HEALTH_URL is not configured.'), run: sweepTunnelHealth, manual: scheduledOnly('May send availability alerts; scheduled execution only.') },
     { id: 'episode-recovery', label: 'Episode recovery', cadence: () => runtimeCadence('EPISODE_RECOVERY_CHECK_MINUTES'), prerequisite: () => enabled(tunable('EPISODE_RECOVERY_ENABLED') && !!(CONFIG.SONARR_URL && CONFIG.PROWLARR_URL && CONFIG.RTORRENT_URL), tunable('EPISODE_RECOVERY_ENABLED') ? 'Sonarr, Prowlarr, and rTorrent are required.' : 'EPISODE_RECOVERY_ENABLED is off.'), firstRunDelayMs: 30000, runOnStartup: true, run: runEpisodeRecoverySweep, preview: values => previewEpisodeRecoverySweep(values), manual: safeManual },
   ];
+}
+
+// Service-down alerts (src/service-alerts.js): container-level checks the external endpoint
+// checker can't make — the dashboard still answers when Radarr dies. Posts to the system channel
+// with a Restart button when the board knows the container and restart is configured.
+const serviceAlertKey = key => `service_alert:${key}`;
+
+function serviceAlertState(key) {
+  const raw = getSetting(serviceAlertKey(key));
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (_err) { return null; }
+}
+
+function serviceAlertComponents(service) {
+  if (!service.container || !restartCapable(CONFIG)) return [];
+  return [new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`svcalert:restart:${service.key}`).setLabel('Restart container').setStyle(ButtonStyle.Danger),
+  )];
+}
+
+async function sweepServiceAlerts() {
+  let health = null;
+  try {
+    health = await gatherHealth();
+  } catch (err) {
+    log.warn(`service alerts: health gather failed, probing URLs only: ${err.message}`);
+  }
+  const results = await checkServices({ config: CONFIG, health, ignore: parseIgnoreList(CONFIG.SERVICE_ALERTS_IGNORE) });
+  const events = evaluateServiceAlerts({
+    results,
+    getAlertState: serviceAlertState,
+    setAlertState: (key, state) => setSetting(serviceAlertKey(key), JSON.stringify(state)),
+    clearAlertState: key => deleteSetting(serviceAlertKey(key)),
+  });
+  for (const event of events) {
+    const { service } = event;
+    if (event.type === 'down') {
+      const { state } = event;
+      const reminder = state.attemptCount > 1;
+      notifyChannel('system', {
+        embeds: [brandedEmbed(COLORS.DANGER)
+          .setTitle(`🔴 ${service.name} is ${reminder ? 'still ' : ''}down`)
+          .setDescription([
+            `${service.name} has failed ${state.downChecks} checks in a row, first at ${discordTimestamp(state.firstDownAt, 't')} (${discordTimestamp(state.firstDownAt)}).`,
+            state.detail ? `\`\`\`${state.detail}\`\`\`` : null,
+            state.stoodDown ? 'This is the last reminder. I\'ll post again when it recovers.' : null,
+          ].filter(Boolean).join('\n'))],
+        components: serviceAlertComponents(service),
+      });
+      audit('service_down_alerted', { service: service.key, downChecks: state.downChecks, attemptCount: state.attemptCount, stoodDown: state.stoodDown });
+    } else {
+      notifyChannel('system', { embeds: [brandedEmbed(COLORS.SUCCESS)
+        .setTitle(`✅ ${service.name} is back`)
+        .setDescription(`${service.name} is responding again after about ${fmtDuration(event.downForMs)}.`)] });
+      audit('service_down_recovered', { service: service.key, downForMs: event.downForMs });
+    }
+  }
+  return { checked: results.length, down: results.filter(r => r.state === 'down').length, alerted: events.length };
+}
+
+// The alert's Restart button. Admin only, and only for containers the Services board names —
+// the same allowlist the dashboard's restart endpoint uses.
+async function handleServiceAlertButton(interaction) {
+  const customId = interaction?.customId;
+  if (typeof customId !== 'string' || !customId.startsWith('svcalert:')) return false;
+  if (!(await requireAdmin(interaction))) return true;
+  const [, action, key] = customId.split(':');
+  const service = BOARD_SERVICES.find(svc => svc.key === key);
+  if (action !== 'restart' || !service?.container) {
+    await interaction.reply({ content: '❌ That service can\'t be restarted from here.', ephemeral: true });
+    return true;
+  }
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    await restartContainer(CONFIG, service.container);
+    audit('service_alert_restart', { actorDiscordId: interaction.user.id, service: service.key, container: service.container, ok: true });
+    await interaction.editReply({ content: `🔁 Restarting **${service.name}** (\`${service.container}\`). I'll post when it's back.` });
+  } catch (err) {
+    audit('service_alert_restart', { actorDiscordId: interaction.user.id, service: service.key, container: service.container, ok: false, reason: String(err.message || err).slice(0, 120) });
+    await interaction.editReply({ content: `❌ Restart failed: ${String(err.message || err).slice(0, 300)}` });
+  }
+  return true;
 }
 
 function tierPlanStaleAlertState(node) {
@@ -5007,6 +5093,7 @@ client.on('interactionCreate', async interaction => {
     if (await setupEnhancementsFeature.handleInteraction(interaction)) return;
     if (await setupExtensionFeature.handleInteraction(interaction)) return;
     if (await commandFallbackFeature.handleInteraction(interaction)) return;
+    if (interaction.isButton?.() && await handleServiceAlertButton(interaction)) return;
     if (interaction.isChatInputCommand()) {
       await handleSlashCommand(interaction);
       return;

@@ -75,6 +75,27 @@ async function probeUrl(url, timeoutMs = 4000) {
   }
 }
 
+// One service's up/down state, shared by the Services board and the service-down
+// alert sweep (src/service-alerts.js) so both always agree on what "down" means.
+// A health key from gatherHealth() wins; otherwise the configured URL is probed.
+async function resolveServiceState(svc, { config, health, probe = probeUrl }) {
+  const url = svc.urlKey ? config[svc.urlKey] : null;
+
+  let state = 'skip';
+  if (svc.healthKey && health) {
+    const v = health[svc.healthKey];
+    state = v === 'ok' || v === 'configured' ? 'ok' : v === 'down' || v === 'missing' ? 'down' : 'skip';
+  } else if (url) {
+    state = await probe(url);
+  }
+  // A configured URL that fails its health check but answers HTTP is still
+  // reachable — prefer the probe for URL-less health misses.
+  if (state === 'skip' && url) state = await probe(url);
+  // External links and the dashboard itself are always "up" from here.
+  if ((svc.external || svc.self) && state === 'skip') state = 'ok';
+  return { url, state };
+}
+
 // Speedtest Tracker response shapes:
 // - legacy /api/speedtest/latest: { data: { download, upload } } in Mbps, { ping } in ms
 // - v1 /api/v1/results/latest: { data: { download_bits, upload_bits, ping } }
@@ -211,20 +232,7 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
   const services = [];
   for (const svc of SERVICES) {
     if (svc.special) continue; // handled as dedicated cards below
-    const url = svc.urlKey ? config[svc.urlKey] : null;
-
-    let state = 'skip';
-    if (svc.healthKey && health) {
-      const v = health[svc.healthKey];
-      state = v === 'ok' || v === 'configured' ? 'ok' : v === 'down' || v === 'missing' ? 'down' : 'skip';
-    } else if (url) {
-      state = await probeUrl(url);
-    }
-    // A configured URL that fails its health check but answers HTTP is still
-    // reachable — prefer the probe for URL-less health misses.
-    if (state === 'skip' && url) state = await probeUrl(url);
-    // External links and the dashboard itself are always "up" from here.
-    if ((svc.external || svc.self) && state === 'skip') state = 'ok';
+    const { url, state } = await resolveServiceState(svc, { config, health });
 
     // No dead cards: without a URL (or external/self link) and without a
     // down-state worth flagging, there is nothing actionable to show.
@@ -287,4 +295,4 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
   };
 }
 
-module.exports = { GROUPS, SERVICES, gatherServicesBoard, portFromUrl, fetchSpeedtest, fetchZfsHealth, fetchSsdTemp };
+module.exports = { GROUPS, SERVICES, gatherServicesBoard, resolveServiceState, portFromUrl, fetchSpeedtest, fetchZfsHealth, fetchSsdTemp };

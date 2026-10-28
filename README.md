@@ -46,6 +46,13 @@ advanced-infrastructure layer lives in `docs/`:
   cards lead their group and stay put. Press **/** or **⌘K** to jump to a service. A
   **Local / Tailscale** switch picks which address the links use (auto-detected until you choose).
   Now Playing shows direct play vs transcode, quality and bitrate.
+- Service-down alerts: every 5 minutes (`SERVICE_ALERT_CHECK_MINUTES`) the bot checks each configured
+  Services-board service the same way the board does. After two failed checks in a row it posts to
+  the system channel with a **Restart container** button (admin only, and only for containers the
+  board names), reminds at about 35 minutes and 2 hours, then goes quiet until a ✅ recovery note.
+  This covers what an external endpoint checker can't see: Radarr down while the dashboard still
+  answers. `SERVICE_ALERTS_IGNORE` skips service keys (default `plex`); `SERVICE_ALERTS_ENABLED=false`
+  turns it off.
 - Admin dashboard (`/admin`) with health, pending items, and safe action endpoints. The
   **Director** tab is the fleet health board: every service the media server runs
   (Plex, *arrs, Prowlarr, Byparr, Huntarr, Recyclarr, Cleanuparr, rTorrent, Syncthing,
