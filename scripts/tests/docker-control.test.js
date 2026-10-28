@@ -149,3 +149,9 @@ test('docker-control: containerLogs reads GET /logs (tail 200) through Portainer
   await assert.rejects(containerLogs(PORTAINER, '../etc'), /Invalid container name/);
   await assert.rejects(containerLogs({ DOCKER_SOCKET: '' }, 'radarr'), /not configured/);
 });
+
+test('docker-control: dead-man push URLs are redacted from container logs', () => {
+  const literals = secretLiterals({ DEADMAN_PING_URLS: 'backup=https://hc-ping.com/abc-SECRET-uuid,grab=https://kuma.example.test/api/push/KUMATOKEN?status=up' });
+  const out = parseLogLines([{ stream: 'stdout', text: 'pinging https://hc-ping.com/abc-SECRET-uuid and https://kuma.example.test/api/push/KUMATOKEN?status=up\n' }], literals);
+  assert.ok(!/SECRET|KUMATOKEN/.test(out[0].text), out[0].text);
+});

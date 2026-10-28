@@ -141,6 +141,13 @@ function secretLiterals(config) {
   for (const [name, value] of Object.entries(config || {})) {
     if (typeof value !== 'string' || !value) continue;
     if (SECRET_KEY_NAME.test(name) && value.length >= 6) out.add(value);
+    // DEADMAN_PING_URLS-style lists: each push URL carries the monitor's token.
+    if (/PING_URLS$/.test(name)) {
+      for (const entry of value.split(/[\s,]+/)) {
+        const url = entry.slice(entry.indexOf('=') + 1);
+        if (url.length >= 12) out.add(url);
+      }
+    }
     const userinfo = /^[a-z][a-z0-9+.-]*:\/\/([^/@\s]+)@/i.exec(value);
     if (userinfo) {
       const [user, pass] = userinfo[1].split(':');

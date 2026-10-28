@@ -578,6 +578,9 @@ const CONFIG = (() => {
   SERVICE_ALERTS_ENABLED: parseBool(process.env.SERVICE_ALERTS_ENABLED, true),
   SERVICE_ALERT_CHECK_MINUTES: Number.parseInt(process.env.SERVICE_ALERT_CHECK_MINUTES || '5', 10),
   SERVICE_ALERTS_IGNORE: process.env.SERVICE_ALERTS_IGNORE ?? 'plex',
+  // job-id=push-url pairs for the scheduled jobs' dead-man pings (src/deadman.js). The URLs carry
+  // the monitor's token: never log or display them.
+  DEADMAN_PING_URLS: process.env.DEADMAN_PING_URLS || '',
   // Tailscale as an *optional* reachability path for PH viewers: CGNAT + no IPv6 means normal
   // Plex remote access can't reach the box, and the Cloudflare tunnel is reserved for the bot's
   // own HTTP routes (never media, per Plex's ToS). Nothing here invites anyone automatically —

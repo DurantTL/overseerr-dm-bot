@@ -2090,7 +2090,20 @@ function renderSettingsGroup(group) {
   </div>`;
 }
 
-function renderAutomationRegistry(items) {
+// Dead-man line for a job with a push URL (src/deadman.js): the window to set on the monitor and
+// the last ping. Only ids and outcomes are shown; the URL itself never reaches the page.
+function deadmanLine(item) {
+  if (!item.heartbeat) return '';
+  const state = item.state || {};
+  const minutes = Number(item.cadence?.minutes || 0);
+  const window = minutes > 0 ? `monitor window every ${minutes} min, grace ${Math.max(5, minutes)} min` : 'no cadence while disabled';
+  const last = state.heartbeatAt
+    ? `${state.heartbeatOk ? 'last ping' : 'last ping failed'} ${fmtAgo(state.heartbeatAt)}`
+    : 'no ping sent yet';
+  return `Dead-man: ${window} · ${last}`;
+}
+
+function renderAutomationRegistry(items, { heartbeatIssues = [] } = {}) {
   const rows = (items || []).map(item => {
     const state = item.state || {};
     const cadence = item.cadence || {};
@@ -2116,11 +2129,14 @@ function renderAutomationRegistry(items) {
       : '';
     return `<div class="setting">
       <div class="setting-main"><div class="setting-name">${escapeHtml(item.label)} <span class="tag${item.enabled ? ' on' : ''}">${escapeHtml(status)}</span></div>
-      <div class="setting-help">${escapeHtml(item.enabled ? cadenceText : `Disabled: ${item.disabledReason} · ${cadenceText}`)} · ${escapeHtml(timing)}<br>${escapeHtml(outcome)} · ${escapeHtml(next)} · ${escapeHtml(manual)}</div></div>
+      <div class="setting-help">Job id ${escapeHtml(item.id)} · ${escapeHtml(item.enabled ? cadenceText : `Disabled: ${item.disabledReason} · ${cadenceText}`)} · ${escapeHtml(timing)}<br>${escapeHtml(outcome)} · ${escapeHtml(next)} · ${escapeHtml(manual)}${item.heartbeat ? `<br>${escapeHtml(deadmanLine(item))}` : ''}</div></div>
       <div class="setting-ctl">${action}</div>
     </div>`;
   }).join('');
-  return `<div class="card" id="automation-registry"><h2>Automation registry<span class="sub">Every scheduled worker, its effective source, persisted outcome, and safe manual policy.</span></h2>${rows || '<p class="muted">Registry is starting.</p>'}</div>`;
+  const issues = heartbeatIssues.length
+    ? `<p class="muted">DEADMAN_PING_URLS has entries that were ignored: ${escapeHtml(heartbeatIssues.join(', '))}. Each entry is job-id=https://… using a job id from this list.</p>`
+    : '';
+  return `<div class="card" id="automation-registry"><h2>Automation registry<span class="sub">Every scheduled worker, its effective source, persisted outcome, and safe manual policy.</span></h2>${issues}${rows || '<p class="muted">Registry is starting.</p>'}</div>`;
 }
 
 module.exports = {

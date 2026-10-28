@@ -525,7 +525,7 @@ function registerDashboardReadRoutes(app, deps) {
           <h2>Season-search alert stand-downs<span class="sub">Searches still run. Only repeated identical no-release messages are muted.</span></h2>
           ${renderItemList(seasonAlertItems, 'No season-search alerts are stood down.')}
         </div>
-        ${renderAutomationRegistry(automationInventory)}
+        ${renderAutomationRegistry(automationInventory, { heartbeatIssues: getAutomationRegistry()?.heartbeatIssues?.() || [] })}
         ${settingsGroups.map(renderSettingsGroup).join('')}
       </section>
 
