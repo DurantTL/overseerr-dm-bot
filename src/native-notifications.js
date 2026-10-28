@@ -106,6 +106,77 @@ async function planArr(target, { http, webhookUrl }) {
   return { app: target.app, action: 'update', detail: `update "${CONNECTION_NAME}": ${diffs.join(', ')}`, request: { method: 'put', url: `${root}/${existing.id}`, body: desired, headers } };
 }
 
+// ---- Autopulse (service queue item 15) ----
+// With AUTOPULSE_URL set, Sonarr / Radarr / Radarr 4K each get one Webhook connection that calls
+// Autopulse's matching trigger (/triggers/sonarr or /triggers/radarr) on import, upgrade and
+// rename, so Plex refreshes just that item instead of scanning the library. Delete events stay
+// off: this only ever refreshes. The Autopulse password is a credential and is never printed.
+const AUTOPULSE_CONNECTION = 'Autopulse: refresh imported item';
+const AUTOPULSE_EVENTS_ON = ['onDownload', 'onUpgrade', 'onRename'];
+const AUTOPULSE_LABELS = { onDownload: 'import', onUpgrade: 'upgrade', onRename: 'rename' };
+
+function setField(fields, name, value) {
+  const f = fields.find(x => x.name === name);
+  if (f) f.value = value;
+  else fields.push({ name, value });
+}
+
+function desiredAutopulseWebhook(schema, { url, username, password }, existing = null) {
+  const out = JSON.parse(JSON.stringify(existing || schema));
+  if (!existing) delete out.id;
+  out.name = AUTOPULSE_CONNECTION;
+  out.implementation = schema.implementation;
+  out.configContract = schema.configContract;
+  for (const key of Object.keys(schema)) {
+    if (/^on[A-Z]/.test(key) && typeof schema[key] === 'boolean') out[key] = AUTOPULSE_EVENTS_ON.includes(key);
+  }
+  const fields = Array.isArray(out.fields) ? out.fields : JSON.parse(JSON.stringify(schema.fields || []));
+  setField(fields, 'url', url);
+  setField(fields, 'method', 1); // POST
+  setField(fields, 'username', username);
+  setField(fields, 'password', password);
+  out.fields = fields;
+  return out;
+}
+
+function autopulseDifferences(current, desired) {
+  const diffs = [];
+  for (const key of Object.keys(desired)) {
+    if (/^on[A-Z]/.test(key) && typeof desired[key] === 'boolean' && current[key] !== desired[key]) diffs.push(`${key} ${desired[key] ? 'on' : 'off'}`);
+  }
+  const val = (n, name) => (n.fields || []).find(f => f.name === name)?.value;
+  for (const name of ['url', 'method', 'username']) {
+    if (String(val(current, name) ?? '') !== String(val(desired, name) ?? '')) diffs.push(`${name} changed`);
+  }
+  // A masked stored password ("********") can't be compared; see arrDifferences.
+  const pw = String(val(current, 'password') ?? '');
+  if (!/^\*+$/.test(pw) && pw !== String(val(desired, 'password') ?? '')) diffs.push('password changed');
+  return diffs;
+}
+
+async function planAutopulse(target, { http, autopulse }) {
+  const app = `${target.app} → Autopulse`;
+  const headers = { 'X-Api-Key': target.key };
+  const root = `${base(target.url)}/api/${target.api}/notification`;
+  const [listRes, schemaRes] = await Promise.all([
+    http.get(root, { headers, timeout: 15000 }),
+    http.get(`${root}/schema`, { headers, timeout: 15000 }),
+  ]);
+  const schema = (schemaRes.data || []).find(s => s.implementation === 'Webhook');
+  if (!schema) return { app, action: 'skip', detail: 'this version has no Webhook connection type' };
+  const trigger = target.app === 'Sonarr' ? 'sonarr' : 'radarr';
+  const url = `${base(autopulse.url)}/triggers/${trigger}`;
+  const existing = (listRes.data || []).find(n => n.name === AUTOPULSE_CONNECTION) || null;
+  const desired = desiredAutopulseWebhook(schema, { url, username: autopulse.username, password: autopulse.password }, existing);
+  const events = AUTOPULSE_EVENTS_ON.filter(k => k in schema).map(k => AUTOPULSE_LABELS[k]).join(', ');
+  if (!existing) {
+    return { app, action: 'create', detail: `add Webhook "${AUTOPULSE_CONNECTION}" to ${url} on ${events}; every other event off`, request: { method: 'post', url: root, body: desired, headers } };
+  }
+  const diffs = autopulseDifferences(existing, desired);
+  if (!diffs.length) return { app, action: 'none', detail: `"${AUTOPULSE_CONNECTION}" already calls ${url} on ${events} only` };
+  return { app, action: 'update', detail: `update "${AUTOPULSE_CONNECTION}": ${diffs.join(', ')}`, request: { method: 'put', url: `${root}/${existing.id}`, body: desired, headers } };
+}
+
 async function planSeerr(config, { http }) {
   const headers = { 'X-Api-Key': config.OVERSEERR_API_KEY };
   const url = `${base(config.OVERSEERR_URL)}/api/v1/settings/notifications/discord`;
@@ -158,12 +229,20 @@ async function planTautulli(config, { http, webhookUrl }) {
 // Read-only. One entry per app; an app that can't be read becomes an 'error' entry rather than
 // stopping the others. Errors never include URLs or response bodies.
 async function planAll(config, { http, webhookUrl }) {
-  if (!webhookUrl) throw new Error('NATIVE_ALERTS_DISCORD_WEBHOOK is not set');
+  const autopulse = config.AUTOPULSE_URL ? { url: config.AUTOPULSE_URL, username: config.AUTOPULSE_USERNAME || '', password: config.AUTOPULSE_PASSWORD || '' } : null;
+  if (!webhookUrl && !autopulse) throw new Error('Set NATIVE_ALERTS_DISCORD_WEBHOOK and/or AUTOPULSE_URL');
   const safe = (app, fn) => fn().catch(err => ({ app, action: 'error', detail: `could not read settings (${err?.response?.status ? `HTTP ${err.response.status}` : err?.code || 'request failed'})` }));
   const plans = [];
-  for (const target of arrTargets(config)) plans.push(await safe(target.app, () => planArr(target, { http, webhookUrl })));
-  if (config.OVERSEERR_URL && config.OVERSEERR_API_KEY) plans.push(await safe('Seerr', () => planSeerr(config, { http })));
-  if (config.TAUTULLI_URL && config.TAUTULLI_API_KEY) plans.push(await safe('Tautulli', () => planTautulli(config, { http, webhookUrl })));
+  if (webhookUrl) {
+    for (const target of arrTargets(config)) plans.push(await safe(target.app, () => planArr(target, { http, webhookUrl })));
+    if (config.OVERSEERR_URL && config.OVERSEERR_API_KEY) plans.push(await safe('Seerr', () => planSeerr(config, { http })));
+    if (config.TAUTULLI_URL && config.TAUTULLI_API_KEY) plans.push(await safe('Tautulli', () => planTautulli(config, { http, webhookUrl })));
+  }
+  if (autopulse) {
+    for (const target of arrTargets(config).filter(t => t.app !== 'Prowlarr')) {
+      plans.push(await safe(`${target.app} → Autopulse`, () => planAutopulse(target, { http, autopulse })));
+    }
+  }
   return plans;
 }
 
@@ -202,6 +281,7 @@ async function applyPlan(plans, config, { http }) {
 
 module.exports = {
   CONNECTION_NAME, ARR_EVENTS_ON, SEERR_TYPES, SEERR_WANTED, TAUTULLI_TRIGGERS_ON,
+  AUTOPULSE_CONNECTION, AUTOPULSE_EVENTS_ON, desiredAutopulseWebhook, autopulseDifferences, planAutopulse,
   arrTargets, desiredArrNotification, arrDifferences, seerrTypeNames,
   planArr, planSeerr, planTautulli, planAll, applyPlan,
 };

@@ -587,6 +587,11 @@ const CONFIG = (() => {
   // Discord webhook for the apps' own failure/health notifications (scripts/native-notifications.js).
   // A credential: never log or display it.
   NATIVE_ALERTS_DISCORD_WEBHOOK: process.env.NATIVE_ALERTS_DISCORD_WEBHOOK || '',
+  // Autopulse (deploy/autopulse): where Sonarr/Radarr send import webhooks so Plex refreshes just
+  // that item. Used by scripts/native-notifications.js. The password is a credential.
+  AUTOPULSE_URL: (process.env.AUTOPULSE_URL || '').replace(/\/$/, ''),
+  AUTOPULSE_USERNAME: process.env.AUTOPULSE_USERNAME || 'admin',
+  AUTOPULSE_PASSWORD: process.env.AUTOPULSE_PASSWORD || '',
   // Tailscale as an *optional* reachability path for PH viewers: CGNAT + no IPv6 means normal
   // Plex remote access can't reach the box, and the Cloudflare tunnel is reserved for the bot's
   // own HTTP routes (never media, per Plex's ToS). Nothing here invites anyone automatically —

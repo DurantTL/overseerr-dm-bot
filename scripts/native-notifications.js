@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Service queue item 12: set the apps' own Discord notifications (Sonarr, Radarr, Radarr 4K,
-// Prowlarr, Seerr, Tautulli) from the bot's existing config. See docs/native-notifications.md.
+// Service queue items 12 and 15: set the apps' own Discord notifications (Sonarr, Radarr, Radarr
+// 4K, Prowlarr, Seerr, Tautulli) and, with AUTOPULSE_URL set, the *arrs' Autopulse import webhook,
+// from the bot's existing config. See docs/native-notifications.md and docs/autopulse.md.
 //
 //   node scripts/native-notifications.js           # preview: reads each app, changes nothing
 //   node scripts/native-notifications.js --apply   # make the changes the preview listed
@@ -16,7 +17,7 @@ const mark = { create: '+ ', update: '~ ', none: '= ', skip: '- ', error: '! ' }
 
 (async () => {
   const plans = await planAll(CONFIG, { http: axios, webhookUrl: CONFIG.NATIVE_ALERTS_DISCORD_WEBHOOK });
-  if (!plans.length) { process.stdout.write('No Sonarr, Radarr, Prowlarr, Seerr or Tautulli configured.\n'); return; }
+  if (!plans.length) { process.stdout.write('Nothing to plan: no matching apps are configured.\n'); return; }
   for (const p of plans) process.stdout.write(`${mark[p.action] || '  '}${p.app}: ${p.detail}\n`);
   const pending = plans.filter(p => p.action === 'create' || p.action === 'update').length;
   if (!apply) {

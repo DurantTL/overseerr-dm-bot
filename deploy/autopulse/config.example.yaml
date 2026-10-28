@@ -1,0 +1,26 @@
+# Copy to config.yaml next to docker-compose.yml on the host and fill in the Plex token there.
+# Never commit the filled-in file.
+app:
+  database_url: sqlite://data/autopulse.db
+
+opts:
+  # Autopulse only forwards paths to Plex; it doesn't need to see the media.
+  check_path: false
+
+triggers:
+  # Sonarr calls http://autopulse:2875/triggers/sonarr, Radarr and Radarr 4K call /triggers/radarr.
+  sonarr:
+    type: sonarr
+  radarr:
+    type: radarr
+  # If the *arrs see the library under a different path than Plex does, add a rewrite to the
+  # target below instead (the "from" value is a regex, so anchor it), for example:
+  #   rewrite:
+  #     from: "^/data/media"
+  #     to: "/media"
+
+targets:
+  plex:
+    type: plex
+    url: http://plex:32400
+    token: "<plex token>"
