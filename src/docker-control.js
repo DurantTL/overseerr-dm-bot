@@ -40,8 +40,9 @@ async function restartViaSocket(container, socketPath) {
 async function restartViaPortainer({ url, apiKey, endpointId, container }) {
   const base = url.replace(/\/$/, '');
   const headers = { 'X-API-Key': apiKey };
-  // Find the container id by name, then restart it.
-  const list = await axios.get(`${base}/api/endpoints/${endpointId}/docker/containers`, {
+  // Find the container id by name, then restart it. Docker's list endpoint is
+  // /containers/json; Portainer proxies it unchanged and 404s on /containers.
+  const list = await axios.get(`${base}/api/endpoints/${endpointId}/docker/containers/json`, {
     headers, params: { all: 1 }, timeout: 10000,
   });
   const match = (list.data || []).find(c =>
