@@ -106,12 +106,12 @@ test('services-board: queue counts attach to arr cards', async () => {
 test('services-board: nowPlaying normalizes tautulli sessions', async () => {
   const sessions = [{
     title: 'Dune: Part Two', grandparent_title: 'Dune: Part Two',
-    friendly_name: 'Caleb', player: 'Living Room TV', state: 'playing',
+    friendly_name: 'Alex', player: 'Living Room TV', state: 'playing',
   }];
   const board = await gatherServicesBoard({ config: {}, health: {}, queues: [], sessions, canRestart: false });
   assert.strictEqual(board.nowPlaying.length, 1);
   assert.strictEqual(board.nowPlaying[0].title, 'Dune: Part Two');
-  assert.strictEqual(board.nowPlaying[0].user, 'Caleb');
+  assert.strictEqual(board.nowPlaying[0].user, 'Alex');
 });
 
 test('docker-control: restartCapable returns null when nothing configured', () => {

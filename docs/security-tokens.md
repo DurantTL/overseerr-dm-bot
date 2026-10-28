@@ -6,7 +6,7 @@
 
 The Agent API bearer token (`POST /api/v1/discord/exec`, `/api/v1/discord/interact`) intentionally
 runs any slash command as an admin actor. This is by design — the Agent API exists so automation
-(Caleb's own agents) can operate the bot with full capability.
+(the operator's own agents) can operate the bot with full capability.
 
 **Risk accepted:** A leaked token = full bot control. Mitigations in place:
 - 32-char minimum, sha256-hash-only storage, per-token labels + audit trail

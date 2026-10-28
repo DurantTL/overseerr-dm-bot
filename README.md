@@ -39,8 +39,7 @@ advanced-infrastructure layer lives in `docs/`:
 - Seerr/Overseerr request approvals from Discord.
 - Secure download links (hashed tokens, expiry, optional one-time-use, access logs, rate limits).
 - Audit logging for admin/user/system actions.
-- Admin dashboard (`/admin`) on the Durant Logic design system (the same palette, type and liquid
-  glass as durantlogic.com). The **Services** tab opens with one status line and any service that is
+- Admin dashboard (`/admin`) with a liquid-glass theme. The **Services** tab opens with one status line and any service that is
   down pinned on top with **Restart container** and **Open**. Every card has a **⋯** button (or
   right-click; long-press on touch) for Open, Copy link, Pin to top of group, and Restart. Pinned
   cards lead their group and stay put. Press **/** or **⌘K** to jump to a service. A

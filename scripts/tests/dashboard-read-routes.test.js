@@ -202,7 +202,7 @@ test('tier planning and node management cards render with enable/disable, folder
     ],
     listTierNodeFolders: node => (node === 'california' ? [{ folderId: 'movies', folderRoot: '/m' }] : []),
     listTierNodeMembers: node => (node === 'california' ? ['123'] : []),
-    getGuildMembers: async () => [{ user: { id: '123', username: 'caleb' }, displayName: 'Caleb' }],
+    getGuildMembers: async () => [{ user: { id: '123', username: 'alex' }, displayName: 'Alex' }],
   });
   const server = await listen(app, 0);
   try {
@@ -217,7 +217,7 @@ test('tier planning and node management cards render with enable/disable, folder
     assert.match(dashboard.body, /Tier Node Management/);
     assert.match(dashboard.body, /tier-node\/folder-remove/);
     assert.match(dashboard.body, /tier-member\/remove/);
-    assert.match(dashboard.body, /Caleb/);
+    assert.match(dashboard.body, /Alex/);
     // Enable/disable actions on the node list.
     assert.match(dashboard.body, /tier-node\/disable/);
     assert.match(dashboard.body, /tier-node\/enable/);

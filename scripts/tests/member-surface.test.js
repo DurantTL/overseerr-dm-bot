@@ -74,7 +74,7 @@ test('memberReplyToHtml renders embeds, fields, and link buttons', () => {
 });
 
 test('createMemberInteraction supports admin mode and getUser', () => {
-  const target = { id: '999', username: 'caleb' };
+  const target = { id: '999', username: 'alex' };
   const { interaction } = createMemberInteraction({ discordId: 'dashboard', admin: true, optionUsers: { user: target } });
   assert.strictEqual(interaction.memberPermissions.has('Administrator'), true);
   assert.strictEqual(interaction.options.getUser('user'), target);

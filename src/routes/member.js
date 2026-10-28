@@ -210,7 +210,7 @@ function registerMemberRoutes(app, deps) {
         </form>
         <p class="muted" style="margin-top:12px">No code? <a href="/member/login">Send a new one</a>.</p>`
       : `<h1>Member login</h1>${errHtml}
-        <p class="muted">Enter your Discord username or user ID — the bot will DM you a one-time login code. You need to be linked first (ask Caleb).</p>
+        <p class="muted">Enter your Discord username or user ID — the bot will DM you a one-time login code. You need to be linked first (ask an admin).</p>
         <form class="member-form" method="POST" action="/member/login">
           <label>Discord username or ID<input type="text" name="handle" value="${escapeHtml(handle)}" required autocomplete="username" autofocus></label>
           <button class="btn primary" type="submit">Send me a code</button>

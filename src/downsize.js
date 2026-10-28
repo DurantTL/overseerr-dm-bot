@@ -2,7 +2,7 @@
 
 // Downsize swap: replace an existing larger movie file with a smaller staged replacement.
 //
-// Caleb is downsizing his 4K library — same quality, smaller files. Radarr's import logic
+// The 4K library is being downsized — same quality, smaller files. Radarr's import logic
 // only accepts "upgrades," so it rejects smaller replacements ("Not a quality revision
 // upgrade"). The working swap is: delete the old file via the Radarr API, then import the
 // staged smaller file. This module holds the pure decision logic (facts in, verdict out)

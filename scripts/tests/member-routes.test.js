@@ -67,7 +67,7 @@ function fixture({ adminUserId = null } = {}) {
     };
     await interaction.reply({ content: `ok:${name}` });
   };
-  const linkedUsers = { '123456789012345678': { discord_id: '123456789012345678', email: 'caleb@example.com', plex_username: 'caleb' } };
+  const linkedUsers = { '123456789012345678': { discord_id: '123456789012345678', email: 'alex@example.com', plex_username: 'alex' } };
   registerMemberRoutes(app, {
     CONFIG: { SESSION_SECRET: 'test-secret', ADMIN_USER_ID: adminUserId },
     db,
@@ -89,7 +89,7 @@ function fixture({ adminUserId = null } = {}) {
       keep: stubHandler('keep'),
     },
     searchSeerr: async () => [],
-    getGuildMembers: async () => [{ user: { id: '123456789012345678', username: 'caleb' }, displayName: 'Caleb' }],
+    getGuildMembers: async () => [{ user: { id: '123456789012345678', username: 'alex' }, displayName: 'Alex' }],
     getUserByDiscordId: id => linkedUsers[id] || null,
     getSetting: () => null,
     sendMemberDm: async (discordId, text) => { dms.push({ discordId, text }); },
@@ -170,7 +170,7 @@ test('member auth: full DM-code flow mints a session cookie', async () => {
 
     // Username resolves to the linked Discord ID and triggers a DM.
     const sent = await request(port, 'POST', '/member/login', {
-      headers: formHeaders(form({ handle: 'caleb' })), body: form({ handle: 'caleb' }),
+      headers: formHeaders(form({ handle: 'alex' })), body: form({ handle: 'alex' }),
     });
     assert.strictEqual(sent.statusCode, 200);
     assert.match(sent.body, /Check your DMs/);
@@ -181,14 +181,14 @@ test('member auth: full DM-code flow mints a session cookie', async () => {
 
     // Wrong code is rejected without minting a session.
     const wrong = await request(port, 'POST', '/member/verify', {
-      headers: formHeaders(form({ handle: 'caleb', code: '000000' })), body: form({ handle: 'caleb', code: '000000' }),
+      headers: formHeaders(form({ handle: 'alex', code: '000000' })), body: form({ handle: 'alex', code: '000000' }),
     });
     assert.strictEqual(wrong.statusCode, 400);
     assert.ok(!wrong.headers['set-cookie']?.some(c => c.startsWith('member_session=')), 'no session on wrong code');
 
     // Right code mints the session.
     const verified = await request(port, 'POST', '/member/verify', {
-      headers: formHeaders(form({ handle: 'caleb', code })), body: form({ handle: 'caleb', code }),
+      headers: formHeaders(form({ handle: 'alex', code })), body: form({ handle: 'alex', code }),
     });
     assert.strictEqual(verified.statusCode, 302);
     assert.strictEqual(verified.headers.location, '/member');
@@ -196,7 +196,7 @@ test('member auth: full DM-code flow mints a session cookie', async () => {
 
     // The code is single-use.
     const replay = await request(port, 'POST', '/member/verify', {
-      headers: formHeaders(form({ handle: 'caleb', code })), body: form({ handle: 'caleb', code }),
+      headers: formHeaders(form({ handle: 'alex', code })), body: form({ handle: 'alex', code }),
     });
     assert.strictEqual(replay.statusCode, 400);
 

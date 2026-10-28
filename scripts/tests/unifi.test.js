@@ -12,7 +12,7 @@ const HEALTH = { meta: { rc: 'ok' }, data: [
 ] };
 const STA = { meta: { rc: 'ok' }, data: [
   { mac: 'aa:bb:cc:dd:ee:01', ip: '192.168.50.122', hostname: 'durant-server', is_wired: true, 'wired-rx_bytes-r': 125000, 'wired-tx_bytes-r': 62500 },
-  { mac: 'aa:bb:cc:dd:ee:02', ip: '192.168.50.50', hostname: 'caleb-iphone', is_wired: false, 'rx_bytes-r': 250000, 'tx_bytes-r': 12500 },
+  { mac: 'aa:bb:cc:dd:ee:02', ip: '192.168.50.50', hostname: 'alex-iphone', is_wired: false, 'rx_bytes-r': 250000, 'tx_bytes-r': 12500 },
   { mac: 'aa:bb:cc:dd:ee:03', ip: '192.168.50.51', is_wired: false },
 ] };
 
@@ -34,7 +34,7 @@ test('unifi: parseClients sums live rates and ranks talkers', () => {
   // (125000 + 250000 + 0) bytes/s * 8 / 1e6 = 3.0 Mbps down; 0.6 up
   assert.ok(Math.abs(c.downMbps - 3.0) < 1e-9);
   assert.ok(Math.abs(c.upMbps - 0.6) < 1e-9);
-  assert.strictEqual(c.top[0].name, 'caleb-iphone');
+  assert.strictEqual(c.top[0].name, 'alex-iphone');
   assert.strictEqual(c.top[2].name, 'aa:bb:cc:dd:ee:03');
 });
 
