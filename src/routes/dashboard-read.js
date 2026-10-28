@@ -5,7 +5,10 @@ const { readCookie, SETUP_NUDGE_COOKIE } = require('./dashboard-auth');
 const { parseScriptConfig } = require('../europe-sync');
 const { HEALTH_KEYS, healthLabel } = require('../health');
 const { INBOX_ACTIONS, alertInbox } = require('../service-alerts');
-const { renderAlertInbox } = require('../dashboard-render');
+const { renderAlertInbox, renderRecentlyAdded } = require('../dashboard-render');
+const tautulliRecent = require('../tautulli');
+
+const RECENT_TTL_MS = 5 * 60000;
 
 function registerDashboardReadRoutes(app, deps) {
   const {
@@ -23,6 +26,8 @@ function registerDashboardReadRoutes(app, deps) {
     fetchArrQueues,
     fetchDiskSpace,
     fetchOverseerrUsers,
+    fetchPoster = tautulliRecent.fetchPoster,
+    fetchRecentlyAdded = tautulliRecent.fetchRecentlyAdded,
     fmtAgo,
     fmtDuration,
     fmtSpace,
@@ -102,7 +107,7 @@ function registerDashboardReadRoutes(app, deps) {
     // as unavailable, exactly like before this cache existed.
     const notFetched = { value: null, fetchedAt: now, stale: false };
     const notFetchedEmpty = { value: [], fetchedAt: now, stale: false };
-    const [healthEntry, sessionsEntry, queueEntry, disksEntry, edgeEntry, membersEntry, pendingQuota] = await Promise.all([
+    const [healthEntry, sessionsEntry, queueEntry, disksEntry, edgeEntry, membersEntry, pendingQuota, recentEntry] = await Promise.all([
       dashboardCache.get('health', 15000, gatherHealth).catch(() => ({ value: null, fetchedAt: now, stale: true })),
       tautulliConfigured()
         ? dashboardCache.get('tautulli-activity', 10000, () => tautulliApi('get_activity').then(d => d?.sessions || [])).catch(() => ({ value: null, fetchedAt: now, stale: true }))
@@ -120,6 +125,10 @@ function registerDashboardReadRoutes(app, deps) {
       Promise.all(pendingApprovals.map(pending => quotaBlockReason(pending.seerrUserId, pending.discordId, pending.mediaType, { tmdbId: pending.tmdbId, is4k: pending.is4k }, true)
         .then(warning => ({ warning, error: null }))
         .catch(err => ({ warning: null, error: dashboardActionError(err) })))),
+      // Overview's recently-added strip, from Tautulli (no PLEX_URL needed).
+      tautulliConfigured()
+        ? dashboardCache.get('tautulli-recent', RECENT_TTL_MS, () => fetchRecentlyAdded(12)).catch(() => ({ value: null, fetchedAt: now, stale: true }))
+        : Promise.resolve(notFetched),
     ]);
     // Unlike the other integrations, health has no page-level "not configured" state to render
     // instead — the overall banner always shows it. A null value here means gatherHealth() has
@@ -445,6 +454,10 @@ function registerDashboardReadRoutes(app, deps) {
         ${showPasskeySetupBanner ? renderPasskeySetupBanner() : ''}
         ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID, PASSKEY_RP.origin)}
         ${renderAgentApiTokens(agentApiTokens, { legacyConfigured: !!CONFIG.AGENT_API_TOKEN_HASH })}
+        <div class="card">
+          <h2>Recently added<span class="sub">From Tautulli, newest first.</span></h2>
+          ${recentEntry.value === null ? unavailable('Tautulli') : renderRecentlyAdded(recentEntry.value)}
+        </div>
         <div class="card">
           <h2>Alert inbox<span class="sub">Service-down alerts, last 20. Read from the audit log the alert sweep already writes.</span></h2>
           ${alertIncidents === null ? unavailable('Audit log') : renderAlertInbox(alertIncidents)}
@@ -1199,6 +1212,31 @@ function registerDashboardReadRoutes(app, deps) {
   // Services tab: one JSON payload backing the card board — service states,
   // UPS/ZFS/Speedtest adapters, Plex now-playing, and smart-network hosts.
   // Cached per source so a 30s client poll doesn't multiply upstream traffic.
+  // Poster for the recently-added strip, proxied through Tautulli so the browser never needs a
+  // Plex token or the Tautulli API key. Only items in the current strip are served.
+  app.get('/admin/api/poster/:ratingKey', rateLimit({
+    windowMs: 60000,
+    limit: 120,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).end(),
+  }), dashboardAuth, async (req, res) => {
+    const key = String(req.params.ratingKey || '');
+    if (!/^\d{1,12}$/.test(key) || !tautulliConfigured()) return res.status(404).end();
+    try {
+      const recent = await dashboardCache.get('tautulli-recent', RECENT_TTL_MS, () => fetchRecentlyAdded(12));
+      const item = (recent.value || []).find(i => i.ratingKey === key);
+      if (!item?.thumb) return res.status(404).end();
+      // Not kept in dashboardCache (it never evicts old keys); the browser caches it for a day.
+      const poster = await fetchPoster(item.thumb);
+      res.set('Cache-Control', 'private, max-age=86400');
+      return res.type(poster.type).send(poster.body);
+    } catch (_err) {
+      return res.status(502).end();
+    }
+  });
+
   const { gatherServicesBoard, SERVICES } = require('../services-board');
   const { restartCapable, inspectContainers } = require('../docker-control');
   const BOARD_CONTAINERS = SERVICES.map(s => s.container).filter(Boolean);

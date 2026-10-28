@@ -148,6 +148,13 @@ const DASHBOARD_CSS = `
   .tier-plan-node h3 { margin:0 0 6px; font-size:15px; }
   .tier-plan-node p { margin:6px 0; font-size:13px; }
   .tier-plan-node details { margin-top:8px; font-size:13px; }
+  .recent-strip { display:flex; gap:12px; overflow-x:auto; overscroll-behavior-x:contain; scroll-snap-type:x proximity; padding:2px 2px 8px; margin:0 -2px; -webkit-overflow-scrolling:touch; }
+  .recent-item { flex:0 0 112px; min-width:0; scroll-snap-align:start; }
+  .recent-poster { position:relative; aspect-ratio:2/3; border-radius:10px; overflow:hidden; border:1px solid var(--border); background:var(--bg); display:flex; align-items:flex-end; padding:8px; }
+  .recent-poster .ph { font-size:12px; font-weight:650; line-height:1.25; color:var(--muted); overflow-wrap:anywhere; }
+  .recent-poster img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  .recent-title { margin-top:6px; font-size:12.5px; font-weight:650; line-height:1.3; overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .recent-meta { font-size:11.5px; color:var(--muted); margin-top:2px; }
   .inbox-more summary { display:flex; align-items:center; min-height:44px; cursor:pointer; color:var(--accent); font-size:13.5px; font-weight:600; }
   .tier-plan-node summary { cursor:pointer; color:var(--muted); }
   .tier-manage-row { margin:10px 0; font-size:13px; }
@@ -402,6 +409,23 @@ function renderItemList(items, emptyText = 'Nothing right now.') {
       </div>
       ${i.right ? `<div class="item-right">${escapeHtml(i.right)}</div>` : ''}
     </div>`).join('')}</div>`;
+}
+
+// Overview's recently-added strip: posters come through /admin/api/poster (Tautulli's image proxy),
+// so it works without PLEX_URL. The title sits behind each poster and shows if the image fails.
+function renderRecentlyAdded(items) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return '<p class="muted">Nothing has been added recently.</p>';
+  return `<div class="recent-strip" role="list">${list.map(i => {
+    const label = [i.title, i.detail].filter(Boolean).join(' ');
+    const meta = [i.library, i.addedAt ? fmtAgo(i.addedAt) : ''].filter(Boolean).join(' · ');
+    return `<div class="recent-item" role="listitem">
+      <div class="recent-poster"><span class="ph">${escapeHtml(label)}</span>${i.thumb ? `<img src="/admin/api/poster/${encodeURIComponent(i.ratingKey)}" alt="" loading="lazy" decoding="async" width="112" height="168">` : ''}</div>
+      <div class="recent-title">${escapeHtml(label)}</div>
+      <div class="recent-meta">${escapeHtml(meta)}</div>
+    </div>`;
+  }).join('')}</div>
+  <script>document.addEventListener('error', function (e) { var t = e.target; if (t && t.matches && t.matches('.recent-poster img')) t.remove(); }, true);</script>`;
 }
 
 // Overview's alert inbox: service-down incidents from src/service-alerts.js alertInbox(), newest
@@ -2064,6 +2088,7 @@ module.exports = {
   renderBar,
   renderItemList,
   renderAlertInbox,
+  renderRecentlyAdded,
   renderLogin,
   renderStat,
   healthClass,

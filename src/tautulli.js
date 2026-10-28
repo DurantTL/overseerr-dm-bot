@@ -77,4 +77,74 @@ function describeSession(s) {
   return `• **${s.friendly_name || s.user || 'Unknown'}** — ${s.full_title || 'Unknown'} — ${decision}${quality ? ` — ${quality}` : ''}${pct}`;
 }
 
-module.exports = { tautulliConfigured, tautulliApi, fetchHistory, describeSession };
+// ---- Recently added (dashboard Overview strip) ----
+// Plex library sections by id; Tautulli's own library_name is the fallback for any other section.
+const PLEX_SECTIONS = { 1: 'Movies', 2: 'TV Shows', 3: '4K', 4: 'Family Films', 5: 'Extra Movies', 6: 'Extra TV Shows' };
+
+// One card per item from get_recently_added: what it is, which library, when, and the Plex image
+// path for its poster. Episodes and seasons use the show's poster so the strip stays portrait.
+function mapRecentlyAdded(data) {
+  const rows = Array.isArray(data?.recently_added) ? data.recently_added : [];
+  return rows.map(r => {
+    const type = r.media_type;
+    const num = v => (v === '' || v == null || !Number.isFinite(Number(v)) ? null : Number(v));
+    let title = r.title || r.full_title || 'Unknown';
+    let detail = r.year ? String(r.year) : '';
+    let thumb = r.thumb;
+    if (type === 'episode') {
+      title = r.grandparent_title || title;
+      const season = num(r.parent_media_index);
+      const episode = num(r.media_index);
+      detail = season != null && episode != null ? `S${season}E${episode}` : (r.title || '');
+      thumb = r.grandparent_thumb || r.parent_thumb || r.thumb;
+    } else if (type === 'season') {
+      title = r.parent_title || title;
+      detail = r.title || (num(r.media_index) != null ? `Season ${num(r.media_index)}` : '');
+      thumb = r.thumb || r.parent_thumb;
+    }
+    const addedSec = Number(r.added_at);
+    return {
+      ratingKey: String(r.rating_key || ''),
+      type: type || 'movie',
+      title,
+      detail,
+      library: PLEX_SECTIONS[Number(r.section_id)] || r.library_name || '',
+      addedAt: Number.isFinite(addedSec) && addedSec > 0 ? addedSec * 1000 : null,
+      thumb: typeof thumb === 'string' && thumb.startsWith('/') ? thumb : null,
+    };
+  }).filter(i => i.ratingKey);
+}
+
+async function fetchRecentlyAdded(count = 12) {
+  return mapRecentlyAdded(await tautulliApi('get_recently_added', { count }));
+}
+
+// Poster bytes through Tautulli's pms_image_proxy, so the page never needs PLEX_URL or a Plex
+// token, and the Tautulli API key stays on the server (the browser only sees /admin/api/poster).
+// Only Plex image paths are accepted; the reply must be an image and is capped in size.
+const POSTER_MAX_BYTES = 3 * 1024 * 1024;
+// /library/metadata/<id>/thumb or /art, with an optional numeric version: nothing else.
+function isPlexImagePath(value) {
+  if (typeof value !== 'string' || value.length > 100) return false;
+  const parts = value.split('/');
+  const [lead, library, metadata, id, kind, version] = parts;
+  return lead === '' && library === 'library' && metadata === 'metadata' && /^\d+$/.test(id || '')
+    && (kind === 'thumb' || kind === 'art')
+    && (parts.length === 5 || (parts.length === 6 && /^\d+$/.test(version)));
+}
+
+async function fetchPoster(thumb) {
+  if (!isPlexImagePath(thumb)) throw new Error('Not a Plex poster path');
+  const res = await axios.get(`${String(CONFIG.TAUTULLI_URL).replace(/\/$/, '')}/api/v2`, {
+    params: { apikey: CONFIG.TAUTULLI_API_KEY, cmd: 'pms_image_proxy', img: thumb, width: 300, height: 450, fallback: 'poster' },
+    responseType: 'arraybuffer',
+    timeout: 10000,
+    maxContentLength: POSTER_MAX_BYTES,
+    validateStatus: () => true,
+  });
+  const type = String(res.headers?.['content-type'] || '').split(';')[0].trim().toLowerCase();
+  if (res.status !== 200 || !/^image\/(jpeg|png|webp|gif)$/.test(type)) throw new Error(`Poster unavailable (HTTP ${res.status})`);
+  return { type, body: Buffer.from(res.data) };
+}
+
+module.exports = { tautulliConfigured, tautulliApi, fetchHistory, describeSession, PLEX_SECTIONS, mapRecentlyAdded, fetchRecentlyAdded, fetchPoster };
