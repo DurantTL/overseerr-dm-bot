@@ -1,19 +1,12 @@
 'use strict';
 
-// Add a persistent setup entry point to the bot's existing onboarding DMs without duplicating the
-// onboarding business logic from index.js. This only touches a tightly scoped set of known
-// onboarding embed titles; request/progress/cleanup DMs are left unchanged.
+// Add a persistent setup entry point to the bot's onboarding DMs. index.js calls withSetupButton()
+// explicitly on the payloads it sends at the onboarding steps (the welcome DM, the setup-complete
+// reply, and dmUser); nothing patches Discord prototypes. Only a tightly scoped set of known
+// onboarding embed titles gains the button; request/progress/cleanup DMs pass through unchanged.
 
-const {
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  GuildMember,
-  Message,
-  User,
-} = require('discord.js');
+const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 
-const INSTALL_MARK = Symbol.for('durant.setupDmBridgeInstalled');
 const ONBOARDING_TITLE_PATTERNS = [
   /Welcome to Durant Media Server/i,
   /You're In!/i,
@@ -63,28 +56,7 @@ function withSetupButton(payload) {
   return { ...payload, components: rows };
 }
 
-function wrapSend(proto, methodName, marker) {
-  const original = proto?.[methodName];
-  if (typeof original !== 'function' || original[marker]) return;
-  async function wrapped(payload, ...rest) {
-    return original.call(this, withSetupButton(payload), ...rest);
-  }
-  wrapped[marker] = true;
-  proto[methodName] = wrapped;
-}
-
-function installSetupDmBridge() {
-  if (globalThis[INSTALL_MARK]) return;
-  globalThis[INSTALL_MARK] = true;
-  // member.send and user.send cover admin-triggered DMs; Message.reply covers the flow where a
-  // member replies to the bot's onboarding DM and the bot finishes setup in that same DM thread.
-  wrapSend(User?.prototype, 'send', '__durantSetupDmWrapped');
-  wrapSend(GuildMember?.prototype, 'send', '__durantSetupDmWrapped');
-  wrapSend(Message?.prototype, 'reply', '__durantSetupReplyWrapped');
-}
-
 module.exports = {
-  installSetupDmBridge,
   isOnboardingPayload,
   setupButtonLabel,
   withSetupButton,

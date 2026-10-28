@@ -33,11 +33,27 @@ test('setup DM bridge: leaves non-onboarding payloads untouched', () => {
   assert.strictEqual(withSetupButton(payload), payload);
 });
 
-test('setup DM bridge: bootstrap installs it before the main bot starts', () => {
-  const bootstrap = fs.readFileSync(path.join(__dirname, '..', '..', 'bootstrap.js'), 'utf8');
-  const installAt = bootstrap.indexOf('installSetupDmBridge();');
-  const mainAt = bootstrap.indexOf("require('./index');");
-  assert.ok(installAt >= 0, 'bridge installer is present');
-  assert.ok(mainAt >= 0, 'main bot startup is present');
-  assert.ok(installAt < mainAt, 'bridge is installed before index.js emits onboarding DMs');
+test('setup DM bridge: nothing patches Discord prototypes any more (#257)', () => {
+  const root = path.join(__dirname, '..', '..');
+  const bridge = fs.readFileSync(path.join(root, 'src', 'setup-dm-bridge.js'), 'utf8');
+  const bootstrap = fs.readFileSync(path.join(root, 'bootstrap.js'), 'utf8');
+  assert.doesNotMatch(bridge, /\.prototype\b/, 'the bridge no longer wraps send/reply');
+  assert.doesNotMatch(bootstrap, /installSetupDmBridge/);
+  for (const file of fs.readdirSync(path.join(root, 'src')).filter(f => f.endsWith('.js'))) {
+    const src = fs.readFileSync(path.join(root, 'src', file), 'utf8');
+    assert.doesNotMatch(src, /\.prototype\.(emit|put|send|reply)\s*=/, `${file} must not patch Discord prototypes`);
+  }
+});
+
+test('setup DM bridge: every onboarding send in index.js adds the button explicitly', () => {
+  const index = fs.readFileSync(path.join(__dirname, '..', '..', 'index.js'), 'utf8');
+  // Each place that builds an onboarding embed must send it through withSetupButton, either
+  // directly or via dmUser (which applies it to every payload).
+  const titles = [...index.matchAll(/setTitle\(([^)]*(?:Welcome to Durant Media Server|You\\'re In!)[^)]*)\)/g)];
+  assert.ok(titles.length >= 4, `found ${titles.length} onboarding titles`);
+  for (const m of titles) {
+    const before = index.slice(Math.max(0, m.index - 160), m.index);
+    assert.match(before, /(send|reply)\(withSetupButton\(\{ embeds: \[brandedEmbed\([^)]*\)\s*\.$|dmUser\([^,]+, \{ embeds: \[brandedEmbed\([^)]*\)\s*\.$/, `onboarding send near: ${m[1]}`);
+  }
+  assert.match(index, /await user\.send\(withSetupButton\(payload\)\);/, 'dmUser applies the button');
 });
