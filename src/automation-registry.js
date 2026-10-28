@@ -15,7 +15,10 @@ function summarizeResult(result) {
   return { count, summary: (parts.join(', ') || 'completed').slice(0, 500) };
 }
 
-function createAutomationRegistry({ definitions, store, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, logger = console } = {}) {
+// heartbeat (optional, src/deadman.js): { configured(id), ping(id) } — after a scheduled or
+// startup run succeeds, ping(id) is called without delaying the run; its { at, ok } is recorded on
+// the run state. Manual runs never ping, so run-now can't mask a schedule that has stopped.
+function createAutomationRegistry({ definitions, store, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, logger = console, heartbeat = null } = {}) {
   if (!Array.isArray(definitions) || !definitions.length) throw new Error('Automation definitions are required');
   const byId = new Map();
   for (const definition of definitions) {
@@ -111,6 +114,12 @@ function createAutomationRegistry({ definitions, store, now = Date.now, setTimer
       const finishedAt = now();
       const summary = summarizeResult(result);
       writeState(id, { status: 'ok', startedAt, finishedAt, durationMs: Math.max(0, finishedAt - startedAt), trigger, resultCount: summary.count, resultSummary: summary.summary, error: null });
+      if (heartbeat && trigger !== 'manual' && heartbeat.configured(id)) {
+        Promise.resolve()
+          .then(() => heartbeat.ping(id))
+          .then(sent => { if (sent) writeState(id, { heartbeatAt: sent.at, heartbeatOk: !!sent.ok }); })
+          .catch(err => logger.warn?.(`${definition.label || id} dead-man ping failed: ${err?.message || err}`));
+      }
       return { ok: true, result };
     } catch (err) {
       const finishedAt = now();
@@ -141,6 +150,7 @@ function createAutomationRegistry({ definitions, store, now = Date.now, setTimer
         running: running.has(definition.id) || state?.status === 'running',
         manual: definition.manual || { enabled: false, reason: 'manual execution is unavailable' },
         previewable: typeof definition.preview === 'function',
+        heartbeat: !!heartbeat?.configured(definition.id),
         state,
       };
     });
@@ -166,7 +176,10 @@ function createAutomationRegistry({ definitions, store, now = Date.now, setTimer
     timers.clear();
   }
 
-  return { ids: () => [...byId.keys()], list, run, preview, start, stop, readState, availability: id => availability(byId.get(id)) };
+  // Dead-man config entries that name no job or didn't parse (ids only, never URLs).
+  const heartbeatIssues = () => (heartbeat ? [...(heartbeat.unknown?.() || []), ...(heartbeat.invalid?.() || [])] : []);
+
+  return { ids: () => [...byId.keys()], list, run, preview, start, stop, readState, heartbeatIssues, availability: id => availability(byId.get(id)) };
 }
 
 module.exports = { RUN_PREFIX, createAutomationRegistry, summarizeResult };

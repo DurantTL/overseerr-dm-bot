@@ -64,6 +64,7 @@ const { resolveEdgeTierNode, decideCaLocality, planCaPlayPromotion, computePlayP
 const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { normalizeGranularity, parseTvUnitId, resolvePromotableUnit, checkPromotionCap, previewTvGranularity, mapSonarrSeriesList, mapSonarrEpisodeFiles } = require('./src/tv-granularity');
 const { checkPublicOriginReadiness } = require('./src/public-origin-diagnostics');
+const { createDeadman } = require('./src/deadman');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderDirectorPanel, renderServicesPanel, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement, renderPasskeySetupBanner, renderAgentApiTokens, DASHBOARD_CSS } = require('./src/dashboard-render');
 const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, findAnimezIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, eraseTorrent, getRtorrentVersion, getRtorrentPaths, rtorrentCall } = require('./src/rtorrent');
@@ -4810,7 +4811,9 @@ async function startDiscordWorkers() {
     const resumed = resetInterruptedStageJobs();
     if (resumed) log.info(`Re-queued ${resumed} stage job(s) interrupted by restart`);
   }
-  automationRegistry = createAutomationRegistry({ definitions: createAutomationDefinitions(), store: settingsStore, logger: log });
+  const definitions = createAutomationDefinitions();
+  const heartbeat = createDeadman({ raw: CONFIG.DEADMAN_PING_URLS, knownIds: definitions.map(d => d.id), logger: log });
+  automationRegistry = createAutomationRegistry({ definitions, store: settingsStore, logger: log, heartbeat });
   automationRegistry.start();
   const active = automationRegistry.list().filter(item => item.enabled).length;
   log.ok(`Automation registry started: ${active}/${automationRegistry.ids().length} workers enabled`);

@@ -52,6 +52,12 @@ advanced-infrastructure layer lives in `docs/`:
   This covers what an external endpoint checker can't see: Radarr down while the dashboard still
   answers. `SERVICE_ALERTS_IGNORE` skips service keys (default `plex`); `SERVICE_ALERTS_ENABLED=false`
   turns it off.
+- Dead-man's switch for scheduled jobs: `DEADMAN_PING_URLS` pairs Automation-registry job ids with
+  Healthchecks or Uptime Kuma Push URLs (`backup=https://…,grab=https://…`). After a scheduled run of
+  that job succeeds the bot pings its URL; the monitor alerts when a ping misses its window, so a
+  job that silently stops running gets reported. Manual run-now never pings. The registry card shows
+  each job's id, the window to set on the monitor (its cadence, with matching grace), and the last
+  ping; the URLs themselves are never logged or shown.
 - Admin dashboard (`/admin`) with health, pending items, and safe action endpoints. The
   **Director** tab is the fleet health board: every service the media server runs
   (Plex, *arrs, Prowlarr, Byparr, Huntarr, Recyclarr, Cleanuparr, rTorrent, Syncthing,
