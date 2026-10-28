@@ -295,3 +295,18 @@ test('services-board: an unreachable UniFi console still shows its error card', 
   assert.ok(board.network && board.network.error, 'the error is kept so the card can say why');
   assert.ok(board.groups.includes('Network'));
 });
+
+test('services-board: services without a URL are listed as hidden with the missing variable, and move up once it is set', async () => {
+  const base = { health: {}, queues: [], sessions: [], canRestart: false, http: { get: async () => ({ data: {} }) } };
+  const secretUrl = 'https://user:hunter2@seedbox.example.test/rutorrent';
+  const without = await gatherServicesBoard({ ...base, config: { RTORRENT_URL: secretUrl } });
+  const plex = without.hidden.find(h => h.key === 'plex');
+  assert.deepStrictEqual(plex, { key: 'plex', name: 'Plex', group: 'Media', icon: 'play', missing: 'PLEX_URL' });
+  assert.ok(!without.services.some(s => s.key === 'plex'), 'not drawn as a card');
+  assert.ok(!without.hidden.some(h => h.key === 'director' || h.key === 'premiumize' || h.key === 'durantxyz'), 'self and external links are never hidden');
+  assert.ok(!JSON.stringify(without.hidden).includes('hunter2'), 'hidden entries carry names only, never values');
+
+  const withPlex = await gatherServicesBoard({ ...base, config: { PLEX_URL: 'http://192.0.2.10:32400' } });
+  assert.ok(withPlex.services.some(s => s.key === 'plex'), 'Plex is a normal card once PLEX_URL is set');
+  assert.ok(!withPlex.hidden.some(h => h.key === 'plex'), 'and leaves the hidden row');
+});

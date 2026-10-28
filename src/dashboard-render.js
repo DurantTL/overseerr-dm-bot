@@ -509,6 +509,17 @@ function renderServicesPanel() {
 @keyframes svcFadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
 .svc-enter { opacity: 0; animation: svcFadeUp .6s ease forwards; }
 .svc-head { display: flex; align-items: baseline; gap: 10px; margin: 0 0 12px; padding: 0 4px; }
+.svc-hidden { margin-top: 8px; padding: 14px; border: 1px dashed var(--line-strong); border-radius: 18px; }
+.svc-hidden .svc-head { margin-bottom: 6px; }
+.svc-hidden-note { margin: 0 4px 12px; font-size: 13px; color: var(--muted); max-width: 60ch; }
+.svc-hidden-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 148px), 1fr)); gap: 8px; }
+.svc-hidden-card { display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 10px 12px; border-radius: 14px; background: color-mix(in srgb, var(--panel) 70%, transparent); min-width: 0; }
+.svc-hidden-card .svc-icon { opacity: .7; flex: none; }
+.svc-hidden-card .grow { display: grid; gap: 1px; min-width: 0; }
+.svc-hidden-card b { font-size: 14px; font-weight: 600; }
+.svc-hidden-card small { font-size: 12px; color: var(--faint); }
+.svc-hidden-card code { font-family: var(--mono); font-size: 11.5px; color: var(--warn); overflow-wrap: anywhere; }
+@media (max-width: 520px) { .svc-hidden-card .svc-icon { display: none; } .svc-hidden-card code { font-size: 11px; } }
 .svc-head h2 { font-size: 13px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: var(--svc-ink2); margin: 0; }
 .svc-head .count { font-size: 11px; color: var(--svc-ink3); background: var(--svc-glass); border: 1px solid var(--svc-line); padding: 2px 9px; border-radius: 999px; }
 .svc-head .line { flex: 1; height: 1px; background: linear-gradient(90deg, var(--svc-line), transparent); }
@@ -1116,6 +1127,7 @@ function renderServicesPanel() {
     if (subEl) {
       subEl.textContent = ['Checked ' + (d.ageSeconds != null ? d.ageSeconds + 's' : 'just now') + ' ago',
         d.ups ? (d.ups.onBattery ? 'UPS on battery' : 'UPS on mains') : '',
+        d.hidden && d.hidden.length ? d.hidden.length + ' not on the board' : '',
         'links use ' + (mode === 'lan' ? 'your local network' : 'Tailscale')].filter(Boolean).join(' · ');
     }
     var sp = d.speedtest && !d.speedtest.error ? d.speedtest : {};
@@ -1157,6 +1169,17 @@ function renderServicesPanel() {
       html += '<div class="svc-head' + entCls + '"><h2>' + esc(g) + '</h2><span class="sum">' + summary + '</span><div class="line"></div></div>';
       html += '<div class="svc-grid' + entCls + '">' + special + items.map(cardHtml).join('') + '</div>';
     });
+    // Services the board can't check yet, each with the variable that would add it.
+    if (d.hidden && d.hidden.length) {
+      html += '<section class="svc-hidden' + entCls + '" aria-labelledby="svcHiddenTitle">' +
+        '<div class="svc-head"><h2 id="svcHiddenTitle">Not on the board yet</h2><span class="sum">' + d.hidden.length + '</span><div class="line"></div></div>' +
+        '<p class="svc-hidden-note">These have no address set, so the board can\\'t check them. Each one moves into its group as soon as its variable is added.</p>' +
+        '<div class="svc-hidden-grid">' + d.hidden.map(function (h) {
+          return '<div class="svc-hidden-card"><span class="svc-icon">' + iconFor(h.icon) + '</span>' +
+            '<span class="grow"><b>' + esc(h.name) + '</b><small>' + esc(h.group) + '</small>' +
+            (h.missing ? '<code>' + esc(h.missing) + '</code>' : '') + '</span></div>';
+        }).join('') + '</div></section>';
+    }
     board.innerHTML = html || '<div class="svc-loading">No services configured yet.</div>';
     var spark = document.getElementById('netSpark');
     if (spark && d.network && d.network.history && d.network.history.length > 1) {

@@ -420,3 +420,21 @@ test('dashboard-render: tabs only manage real panels and can show an attention c
   assert.match(html, /querySelectorAll\('\.panel\[data-panel\]'\)/);
   assert.match(html, /<span class="tab-count" aria-label="2 need attention">2<\/span>/);
 });
+
+test('renderServicesPanel: draws the hidden-services row from the API with the missing variable', () => {
+  const html = renderServicesPanel();
+  assert.match(html, /Not on the board yet/);
+  assert.match(html, /d\.hidden\.map/);
+  assert.match(html, /svc-hidden-card/);
+  assert.match(html, /not on the board/, 'the summary line counts hidden services');
+});
+
+test('renderServicesPanel: the client script it ships parses', () => {
+  // The script is built inside a template literal, so a single \' collapses to a bare quote and
+  // breaks the whole Services tab in the browser while every text-matching test still passes.
+  const vm = require('node:vm');
+  const html = renderServicesPanel();
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+  assert.ok(scripts.length > 0);
+  for (const source of scripts) assert.doesNotThrow(() => new vm.Script(source));
+});
