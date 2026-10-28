@@ -635,6 +635,29 @@ function renderServicesPanel() {
 .svc-action:active { transform: scale(.98); }
 .svc-action.danger { color: #fca5a5; border-color: color-mix(in srgb, var(--svc-red) 30%, transparent); }
 .svc-action:disabled { opacity: .4; cursor: default; }
+.svc-sheet-facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0 0 10px; padding: 12px 14px;
+  border: 1px solid var(--svc-line); border-radius: 14px; background: rgba(255,255,255,.03); font-size: 13px; }
+.svc-sheet-facts[hidden] { display: none; }
+.svc-sheet-facts dt { color: var(--svc-ink2); }
+.svc-sheet-facts dd { margin: 0; color: var(--svc-ink); text-align: right; min-width: 0; overflow-wrap: anywhere; }
+.svc-sheet-facts dd.mono { font-family: var(--mono); font-size: 12px; }
+.svc-sheet-facts dd.down { color: #fca5a5; }
+.svc-sheet-facts dd.hot { color: var(--warn); }
+.svc-logview[hidden], #svcSheetMain[hidden] { display: none; }
+.svc-logview { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.svc-sheet .svc-sheet-panel.logs { max-width: 760px; height: 88vh; height: 88dvh; display: flex; flex-direction: column; padding-bottom: 16px; }
+.svc-log-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.svc-log-meta { flex: 1; text-align: center; font-size: 12px; color: var(--svc-ink2); }
+.svc-log-btn { min-height: 44px; padding: 0 14px; border: 1px solid var(--svc-line); border-radius: 12px; background: rgba(255,255,255,.05);
+  color: var(--svc-ink); font-size: 14px; font-weight: 600; cursor: pointer; }
+.svc-log-btn:disabled { opacity: .4; cursor: default; }
+.svc-log { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 10px 12px;
+  border: 1px solid var(--svc-line); border-radius: 12px; background: rgba(0,0,0,.35); font-family: var(--mono); font-size: 11.5px; line-height: 1.5; }
+.svc-log .ln { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--svc-ink); }
+.svc-log .ln + .ln { margin-top: 4px; }
+.svc-log .ln.err { color: #fca5a5; }
+.svc-log .ln time { color: var(--faint); margin-right: 8px; }
+.svc-log .empty { color: var(--svc-ink2); font-family: inherit; text-align: center; padding: 24px 8px; }
 .svc-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: color-mix(in srgb, var(--panel) 92%, transparent);
   border: 1px solid var(--svc-line); color: var(--svc-ink); padding: 10px 18px 10px 14px; border-radius: 999px; font-size: 13.5px;
   font-weight: 600; opacity: 0; pointer-events: none; transition: all .3s ease; z-index: 70;
@@ -823,10 +846,22 @@ function renderServicesPanel() {
     <div class="grab"></div>
     <div class="stitle" id="svcSheetTitle"></div>
     <div class="ssub" id="svcSheetSub"></div>
+    <div id="svcSheetMain">
+    <dl class="svc-sheet-facts" id="svcSheetFacts" hidden></dl>
     <button class="svc-action" id="svcOpen"><span class="a-ic" data-icon="open"></span><span>Open</span></button>
     <button class="svc-action" id="svcCopy"><span class="a-ic" data-icon="copy"></span><span>Copy link</span></button>
     <button class="svc-action" id="svcPin"><span class="a-ic" data-icon="pin"></span><span id="svcPinLabel">Pin to top of group</span></button>
+    <button class="svc-action" id="svcLogs"><span class="a-ic" data-icon="logs"></span><span>View logs</span></button>
     <button class="svc-action danger" id="svcRestart"><span class="a-ic" data-icon="restart"></span><span>Restart container</span></button>
+    </div>
+    <div class="svc-logview" id="svcLogView" hidden>
+      <div class="svc-log-bar">
+        <button type="button" class="svc-log-btn" id="svcLogBack" aria-label="Back to actions">&#8249; Back</button>
+        <span class="svc-log-meta" id="svcLogMeta"></span>
+        <button type="button" class="svc-log-btn" id="svcLogRefresh">Refresh</button>
+      </div>
+      <div class="svc-log" id="svcLogBody" tabindex="0" role="log" aria-label="Container log, last 200 lines, read-only"></div>
+    </div>
   </div>
 </div>
 <div class="svc-pal" id="svcPal">
@@ -974,6 +1009,7 @@ function renderServicesPanel() {
     copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>',
     pin: '<path d="M9 4h6l-1 5 3 3H7l3-3zM12 12v8"/>',
     restart: '<path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/>',
+    logs: '<path d="M5 6h14M5 10h14M5 14h10M5 18h7"/>',
     alert: '<path d="M12 9v4m0 4h.01"/><path d="M10.3 3.7 2.2 17.8A2 2 0 0 0 4 21h16a2 2 0 0 0 1.8-3.2L13.7 3.7a2 2 0 0 0-3.4 0Z"/>',
     more: '<circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/>',
     dot: '<circle cx="12" cy="12" r="3"/>'
@@ -1336,14 +1372,95 @@ function renderServicesPanel() {
   var sheet = document.getElementById('svcSheet');
   var sheetKey = null, sheetUrl = null, sheetName = '', sheetContainer = '', sheetCanRestart = false;
   var pressTimer = null, suppressClick = false, sheetReturn = null;
+  var sheetPanel = sheet.querySelector('.svc-sheet-panel');
+  var sheetMain = document.getElementById('svcSheetMain');
+  var logView = document.getElementById('svcLogView');
+  var logBody = document.getElementById('svcLogBody');
+  var logMeta = document.getElementById('svcLogMeta');
+  var logSeq = 0;
+  // How long a container has been up, from Docker's last start: 42m, 5h 12m, 3d 4h.
+  function upFor(iso) {
+    var t = Date.parse(iso);
+    if (!isFinite(t)) return '';
+    var m = Math.max(0, Math.floor((Date.now() - t) / 60000));
+    if (m < 60) return m + 'm';
+    var h = Math.floor(m / 60);
+    if (h < 24) return h + 'h ' + (m % 60) + 'm';
+    return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
+  }
+  // Status, uptime, restarts and image for the sheet, from the board data already on screen.
+  // Image is the reference the container runs (name and tag); there is no update check in v1.
+  function sheetFactsHtml(s) {
+    if (!s) return '';
+    var rows = [];
+    var label = s.state === 'down' ? 'Down' : s.state === 'ok' ? 'Up' : 'Not checked';
+    rows.push(['Status', label, s.state === 'down' ? 'down' : '']);
+    if (s.startedAt) {
+      rows.push(s.state === 'ok' ? ['Uptime', upFor(s.startedAt), ''] : ['Last started', startedAgo(s.startedAt), '']);
+    }
+    if (s.restarts != null) rows.push(['Restarts', String(s.restarts), s.restarts >= 3 ? 'hot' : '']);
+    if (s.image) rows.push(['Image', s.image, 'mono']);
+    return rows.map(function (r) {
+      return '<dt>' + esc(r[0]) + '</dt><dd' + (r[2] ? ' class="' + r[2] + '"' : '') + '>' + esc(r[1]) + '</dd>';
+    }).join('');
+  }
+  function showSheetMain() {
+    logSeq++;
+    logView.hidden = true; sheetMain.hidden = false;
+    sheetPanel.classList.remove('logs');
+  }
+  function stampLabel(iso) {
+    var d = new Date(iso);
+    if (!iso || isNaN(d)) return '';
+    function p2(n) { return (n < 10 ? '0' : '') + n; }
+    return p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
+  }
+  function loadLogs() {
+    var seq = ++logSeq;
+    var refresh = document.getElementById('svcLogRefresh');
+    refresh.disabled = true;
+    logMeta.textContent = 'Loading…';
+    fetch('/admin/api/services/logs?container=' + encodeURIComponent(sheetContainer), { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (seq !== logSeq) return;
+        if (!j.ok) { logBody.innerHTML = '<div class="empty">' + esc('Could not load logs: ' + (j.error || 'unknown error')) + '</div>'; logMeta.textContent = sheetName; return; }
+        var lines = j.lines || [];
+        logBody.innerHTML = lines.length ? lines.map(function (l) {
+          return '<div class="ln' + (l.stream === 'stderr' ? ' err' : '') + '">' + (l.at ? '<time datetime="' + esc(l.at) + '">' + esc(stampLabel(l.at)) + '</time>' : '') + esc(l.text) + '</div>';
+        }).join('') : '<div class="empty">No log output yet.</div>';
+        logMeta.textContent = 'Last ' + lines.length + ' line' + (lines.length === 1 ? '' : 's') + ' · read-only';
+        logBody.scrollTop = logBody.scrollHeight;
+      })
+      .catch(function () {
+        if (seq !== logSeq) return;
+        logBody.innerHTML = '<div class="empty">Could not load logs: network error</div>';
+        logMeta.textContent = sheetName;
+      })
+      .then(function () { if (seq === logSeq) refresh.disabled = false; });
+  }
+  function openLogs() {
+    if (!sheetCanRestart || !sheetContainer) return;
+    sheetMain.hidden = true; logView.hidden = false;
+    sheetPanel.classList.add('logs');
+    logBody.innerHTML = '';
+    loadLogs();
+    document.getElementById('svcLogBack').focus();
+  }
   function openSheet(card) {
     sheetKey = card.dataset.key; sheetUrl = card.dataset.url || null;
     sheetName = card.dataset.name; sheetContainer = card.dataset.container || '';
     sheetCanRestart = card.dataset.canrestart === '1';
+    showSheetMain();
+    var rec = ((lastData && lastData.services) || []).filter(function (x) { return x.key === sheetKey; })[0];
+    var factsEl = document.getElementById('svcSheetFacts');
+    factsEl.innerHTML = sheetFactsHtml(rec);
+    factsEl.hidden = !factsEl.innerHTML;
     document.getElementById('svcSheetTitle').textContent = sheetName;
     document.getElementById('svcSheetSub').textContent = sheetUrl || (sheetContainer ? 'container: ' + sheetContainer : '');
     document.getElementById('svcOpen').disabled = !sheetUrl;
     document.getElementById('svcRestart').disabled = !sheetCanRestart || !sheetContainer;
+    document.getElementById('svcLogs').disabled = !sheetCanRestart || !sheetContainer;
     document.getElementById('svcCopy').disabled = !sheetUrl;
     document.getElementById('svcPinLabel').textContent = pins.indexOf(sheetKey) > -1 ? 'Unpin' : 'Pin to top of group';
     sheetReturn = document.activeElement;
@@ -1354,6 +1471,8 @@ function renderServicesPanel() {
   function closeSheet() {
     if (!sheet.classList.contains('open')) return;
     sheet.classList.remove('open');
+    showSheetMain();
+    logBody.innerHTML = '';
     if (sheetReturn && sheetReturn.focus) sheetReturn.focus();
     // The long-press flag is consumed by the card's click handler, but the
     // sheet may cover the card by the time the finger lifts (so no click
@@ -1361,6 +1480,13 @@ function renderServicesPanel() {
     suppressClick = false;
   }
   document.getElementById('svcScrim').addEventListener('click', closeSheet);
+  document.getElementById('svcLogs').addEventListener('click', openLogs);
+  document.getElementById('svcLogRefresh').addEventListener('click', loadLogs);
+  document.getElementById('svcLogBack').addEventListener('click', function () {
+    showSheetMain();
+    logBody.innerHTML = '';
+    document.getElementById('svcLogs').focus();
+  });
   document.getElementById('svcOpen').addEventListener('click', function () {
     if (sheetUrl) window.open(sheetUrl, '_blank', 'noopener');
     closeSheet();
@@ -1398,7 +1524,11 @@ function renderServicesPanel() {
     if (lastData) render(lastData);
   });
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') { closeSheet(); closePal(); }
+    if (e.key === 'Escape') {
+      // In the log view, Escape steps back to the actions first.
+      if (sheet.classList.contains('open') && !logView.hidden) { document.getElementById('svcLogBack').click(); return; }
+      closeSheet(); closePal();
+    }
   });
   // navigator.clipboard needs a secure context; the dashboard is usually plain
   // http on LAN/Tailscale, so fall back to the execCommand path there.

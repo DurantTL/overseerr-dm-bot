@@ -729,7 +729,7 @@ function registerDashboardMutationRoutes(app, deps) {
   // Services tab: restart a container from the long-press action sheet.
   // Allowlisted to container names the services board advertises; audited.
   const { SERVICES } = require('../services-board');
-  const { restartContainer, restartCapable } = require('../docker-control');
+  const { restartContainer, restartCapable, containerLogs } = require('../docker-control');
   const RESTARTABLE = new Set(SERVICES.filter(s => s.container).map(s => s.container));
   app.post('/admin/api/services/restart', rateLimit({
     windowMs: 60000,
@@ -760,6 +760,35 @@ function registerDashboardMutationRoutes(app, deps) {
       return res.json({ ok: true, message: `${container} restarting.` });
     } catch (err) {
       audit('dashboard_service_restart', { ...dashboardActor(req), ok: false, container, reason: String(err.message || err).slice(0, 120) });
+      return res.status(500).json({ ok: false, error: dashboardActionError(err) });
+    }
+  });
+
+  // Services tab: View logs in the action sheet. Read-only (Docker's GET /logs, last 200 lines)
+  // through the same socket/Portainer access as Restart, the same container allowlist, admin-only.
+  // Lines are redacted before they leave docker-control; each view is audited.
+  app.get('/admin/api/services/logs', rateLimit({
+    windowMs: 60000,
+    limit: 30,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many log requests. Wait a moment and try again.' }),
+  }), dashboardAuth, async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const container = String(req.query?.container || '').trim();
+    if (!container || !RESTARTABLE.has(container)) {
+      return res.status(400).json({ ok: false, error: 'Unknown service.' });
+    }
+    if (!restartCapable(CONFIG)) {
+      return res.status(400).json({ ok: false, error: 'Container access is not configured.' });
+    }
+    try {
+      const lines = await containerLogs(CONFIG, container);
+      audit('dashboard_service_logs_viewed', { ...dashboardActor(req), ok: true, container, lines: lines.length });
+      return res.json({ ok: true, container, lines });
+    } catch (err) {
+      audit('dashboard_service_logs_viewed', { ...dashboardActor(req), ok: false, container, reason: String(err.message || err).slice(0, 120) });
       return res.status(500).json({ ok: false, error: dashboardActionError(err) });
     }
   });
