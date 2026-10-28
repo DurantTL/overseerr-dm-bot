@@ -7,6 +7,7 @@ const { HEALTH_KEYS, healthLabel } = require('../health');
 const { INBOX_ACTIONS, alertInbox } = require('../service-alerts');
 const { renderAlertInbox, renderRecentlyAdded } = require('../dashboard-render');
 const tautulliRecent = require('../tautulli');
+const { buildFleetSync } = require('../fleet-sync');
 
 const RECENT_TTL_MS = 5 * 60000;
 
@@ -443,6 +444,7 @@ function registerDashboardReadRoutes(app, deps) {
           services: directorItems,
           disks: disks === null ? null : diskItems,
           totalFreeLabel: (disks === null || (disks || []).length === 0) ? null : fmtSpace(disks.reduce((n, d) => n + (d.freeSpace || 0), 0)),
+          fleetSync: buildFleetSync(tierNodes, { getTierPlan, listTierNodeFolders }),
         })}
       </section>
 

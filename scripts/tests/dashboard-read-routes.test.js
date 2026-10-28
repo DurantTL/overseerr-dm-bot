@@ -473,3 +473,44 @@ test('poster proxy: admin-only, serves only items in the current strip, never ec
     assert.strictEqual(res.body, '', 'upstream error text is never sent to the browser');
   } finally { await close(server2); }
 });
+
+test('director tab: Fleet sync card per node and folder, stale node marked, node secrets never rendered', async () => {
+  const now = Date.now();
+  const plans = {
+    ph: { folderCompletion: { at: now - 6 * 60000, folders: [
+      { folderId: 'movies-ph', completion: 78.4, globalBytes: 2e12, needBytes: 412e9, needItems: 31 },
+      { folderId: 'family-ph', completion: 100, globalBytes: 5e11, needBytes: 0, needItems: 0 },
+    ] } },
+    california: { folderCompletion: { at: now - 6 * 86400000, folders: [{ folderId: 'movies-ca', completion: 52, needBytes: 880e9, needItems: 0 }] } },
+  };
+  const { app } = fixture({
+    renderDirectorPanel,
+    renderPasskeySetupBanner,
+    listTierNodes: () => [
+      { name: 'ph', enabled: 1, tautulli_api_key: 'TAUTULLI-SECRET', plex_token: 'PLEX-SECRET' },
+      { name: 'california', enabled: 1 },
+      { name: 'southcentral', enabled: 1 },
+      { name: 'retired', enabled: 0 },
+    ],
+    getTierPlan: name => plans[name] || null,
+    listTierNodeFolders: name => (name === 'ph'
+      ? [{ folderId: 'movies-ph', folderRoot: '/mnt/media/Movies' }, { folderId: 'family-ph', folderRoot: '/mnt/media/Family Films/' }]
+      : []),
+  });
+  const server = await listen(app, 0);
+  try {
+    const res = await request(server.address().port, '/admin', { 'x-admin-token': 'secret' });
+    assert.strictEqual(res.statusCode, 200);
+    assert.match(res.body, /<h2>Fleet sync<\/h2>/);
+    assert.match(res.body, /<b>ph<\/b><span>reported 6m ago<\/span>/);
+    assert.match(res.body, /Movies<\/div><div class="d-node-meta">31 items left/);
+    assert.match(res.body, /aria-valuenow="78"/);
+    assert.match(res.body, />Family Films<\/div>/, 'folder label comes from the folder root');
+    assert.match(res.body, /d-fleet-node stale/);
+    assert.match(res.body, /No report in 6d\. These are the last numbers it sent\./);
+    assert.match(res.body, />movies-ca<\/div>/, 'unknown folder ids fall back to the id');
+    assert.match(res.body, /<b>southcentral<\/b><span>no folder report yet<\/span>/);
+    assert.ok(!res.body.includes('<b>retired</b>'), 'disabled nodes are left out');
+    assert.ok(!/TAUTULLI-SECRET|PLEX-SECRET/.test(res.body), 'node credentials never reach the page');
+  } finally { await close(server); }
+});

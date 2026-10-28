@@ -1869,10 +1869,18 @@ function normalizeFolderCompletion(raw) {
   const at = Number(raw.at);
   const folders = Array.isArray(raw.folders) ? raw.folders.filter(f =>
     f && typeof f === 'object' && typeof f.folderId === 'string' && f.folderId && Number.isFinite(Number(f.completion))
-  ).map(f => ({
-    folderId: String(f.folderId).slice(0, 120),
-    completion: Math.min(100, Math.max(0, Number(f.completion))),
-  })) : [];
+  ).map(f => {
+    // The byte and item counts the report route sanitized are kept too: every heartbeat reads
+    // and rewrites the plan, so dropping them here would lose them within one agent cycle.
+    const count = v => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0; };
+    return {
+      folderId: String(f.folderId).slice(0, 120),
+      completion: Math.min(100, Math.max(0, Number(f.completion))),
+      globalBytes: count(f.globalBytes),
+      needBytes: count(f.needBytes),
+      needItems: count(f.needItems),
+    };
+  }) : [];
   if (!folders.length || !Number.isFinite(at)) return null;
   return { at, folders };
 }

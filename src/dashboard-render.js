@@ -262,6 +262,13 @@ const DASHBOARD_CSS = `
   .d-eyebrow { color:var(--muted); font-weight:400; letter-spacing:.14em; text-transform:uppercase; display:flex; align-items:center; gap:10px; }
   .d-eyebrow::before { content:""; width:28px; height:1px; background:var(--accent); }
   .d-h1 { font-weight:500; letter-spacing:-.045em; }
+  .d-grid > .card.d-wide { grid-column:1 / -1; }
+  .d-fleet-node + .d-fleet-node { margin-top:6px; border-top:1px solid var(--border); padding-top:6px; }
+  .d-fleet-head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; padding:12px 0 2px; }
+  .d-fleet-head b { font-size:14px; }
+  .d-fleet-head span { font:500 12px var(--mono); color:var(--muted); white-space:nowrap; }
+  .d-fleet-stale { margin:6px 0 2px; color:var(--warn); font-size:12.5px; }
+  .d-fleet-node.stale .d-node-row { opacity:.72; }
   .d-progress > span.warn { background:var(--warn); } .d-progress > span.down { background:var(--down); }
   .d-healthy { border-top:1px solid var(--border); }
   .d-healthy summary { display:flex; align-items:center; gap:12px; padding:12px 0; cursor:pointer; list-style:none; color:var(--muted); font-size:13.5px; }
@@ -474,7 +481,39 @@ function shellQuote(value) {
 // `services`: [{ state: 'ok'|'down'|'skip', title, sub, right }]
 // `disks`:    [{ state: 'ok'|'warn', title, sub, right, pct }] (or null when the *arr diskspace call failed)
 // `totalFreeLabel`: preformatted free-space total, or null.
-function renderDirectorPanel({ overall, services, disks, totalFreeLabel }) {
+// Director's Fleet sync card (src/fleet-sync.js buildFleetSync): per node and folder, what
+// Syncthing still has to pull, from the agents' own reports. Read only. A node whose last
+// snapshot is old keeps its last numbers, dimmed and labelled as such.
+function renderFleetSync(fleet) {
+  const nodes = Array.isArray(fleet) ? fleet : [];
+  if (!nodes.length) return '<p class="d-lead-copy" style="padding:12px 0">No tier nodes enabled.</p>';
+  return nodes.map(n => {
+    const when = n.reportedAt == null ? 'no folder report yet'
+      : `${n.stale ? 'last report' : 'reported'} ${fmtDuration(Math.max(0, Date.now() - n.reportedAt))} ago`;
+    const rows = n.folders.map(f => {
+      const pct = f.completion == null ? null : Math.max(0, Math.min(100, Math.floor(f.completion)));
+      const right = f.done ? 'Done'
+        : [f.needBytes != null ? `${fmtSpace(f.needBytes)} to go` : null, pct != null ? `${pct}%` : null].filter(Boolean).join(' · ') || 'unknown';
+      const dot = n.stale ? 'warn' : f.done ? '' : 'skip';
+      return `
+        <div class="d-node-row">
+          <span class="d-node-dot ${dot}" aria-hidden="true"></span>
+          <div><div class="d-node-name">${escapeHtml(f.label)}</div>${f.needItems ? `<div class="d-node-meta">${f.needItems} item${f.needItems === 1 ? '' : 's'} left</div>` : ''}
+            ${pct != null ? `<div class="d-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-label="${escapeHtml(`${n.node} ${f.label}`)} synced"><span class="${n.stale ? 'warn' : ''}" style="width:${pct}%"></span></div>` : ''}</div>
+          <div class="d-node-right">${escapeHtml(right)}</div>
+        </div>`;
+    }).join('');
+    const empty = n.reportedAt == null ? '<p class="d-node-meta" style="padding:4px 0 10px">The agent has not sent per-folder completion yet.</p>' : '';
+    return `
+      <div class="d-fleet-node${n.stale ? ' stale' : ''}">
+        <div class="d-fleet-head"><b>${escapeHtml(n.node)}</b><span>${escapeHtml(when)}</span></div>
+        ${n.stale ? `<p class="d-fleet-stale">No report in ${escapeHtml(fmtDuration(Math.max(0, Date.now() - n.reportedAt)))}. These are the last numbers it sent.</p>` : ''}
+        ${rows}${empty}
+      </div>`;
+  }).join('');
+}
+
+function renderDirectorPanel({ overall, services, disks, totalFreeLabel, fleetSync }) {
   const list = Array.isArray(services) ? services : [];
   const counts = { ok: 0, down: 0, warn: 0, skip: 0 };
   for (const s of list) counts[Object.hasOwn(counts, s.state) ? s.state : 'warn']++;
@@ -550,6 +589,13 @@ function renderDirectorPanel({ overall, services, disks, totalFreeLabel }) {
         </div>
         <div class="d-card-body">${diskRows}</div>
       </div>
+      ${fleetSync === undefined ? '' : `
+      <div class="card d-card d-wide">
+        <div class="d-card-head">
+          <div><h2>Fleet sync</h2><p>What each tier node still has to pull, per folder. Read only, from the agents’ own reports.</p></div>
+        </div>
+        <div class="d-card-body">${renderFleetSync(fleetSync)}</div>
+      </div>`}
       </div>`;
 }
 
@@ -2088,6 +2134,7 @@ module.exports = {
   renderBar,
   renderItemList,
   renderAlertInbox,
+  renderFleetSync,
   renderRecentlyAdded,
   renderLogin,
   renderStat,
