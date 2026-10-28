@@ -67,6 +67,9 @@ advanced-infrastructure layer lives in `docs/`:
   The bot compares each node's conflict copies with the last report and posts to the system
   channel only when new ones appear. Report-only: nothing is moved or deleted. It sees media files
   in the tier folders (the same files the agent inventories), not `.nfo`/`.srt` sidecars.
+- Indexer-health flips: every 15 minutes (`INDEXER_ALERT_CHECK_MINUTES`) the bot reads Prowlarr's
+  indexer status and posts only changes: an enabled indexer failing two checks in a row, and one
+  working again (with how long it was out). Report-only; `INDEXER_ALERTS_ENABLED=false` turns it off.
 - Admin dashboard (`/admin`) with health, pending items, and safe action endpoints. The
   **Director** tab is the fleet health board: every service the media server runs
   (Plex, *arrs, Prowlarr, Byparr, Huntarr, Recyclarr, Cleanuparr, rTorrent, Syncthing,

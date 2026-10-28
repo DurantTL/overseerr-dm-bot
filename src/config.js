@@ -577,6 +577,9 @@ const CONFIG = (() => {
   // by default because the external endpoint checker already alerts on it.
   SERVICE_ALERTS_ENABLED: parseBool(process.env.SERVICE_ALERTS_ENABLED, true),
   SERVICE_ALERT_CHECK_MINUTES: Number.parseInt(process.env.SERVICE_ALERT_CHECK_MINUTES || '5', 10),
+  // Prowlarr indexer-health flips (src/indexer-health.js): report-only, changes only.
+  INDEXER_ALERTS_ENABLED: parseBool(process.env.INDEXER_ALERTS_ENABLED, true),
+  INDEXER_ALERT_CHECK_MINUTES: Number.parseInt(process.env.INDEXER_ALERT_CHECK_MINUTES || '15', 10),
   SERVICE_ALERTS_IGNORE: process.env.SERVICE_ALERTS_IGNORE ?? 'plex',
   // job-id=push-url pairs for the scheduled jobs' dead-man pings (src/deadman.js). The URLs carry
   // the monitor's token: never log or display them.
@@ -771,6 +774,9 @@ function validateConfig() {
     || !(CONFIG.DISK_URGENT_FREE_PCT < CONFIG.DISK_WARN_FREE_PCT) || !(CONFIG.DISK_WARN_FREE_PCT <= 100)
     || CONFIG.DISK_CLEAR_MARGIN_PCT < 0) {
     throw new Error('DISK_WARN_FREE_PCT / DISK_URGENT_FREE_PCT must satisfy 0 < urgent < warn <= 100, DISK_CLEAR_MARGIN_PCT must be >= 0, DISK_CHECK_MINUTES must be > 0');
+  }
+  if (!Number.isFinite(CONFIG.INDEXER_ALERT_CHECK_MINUTES) || !(CONFIG.INDEXER_ALERT_CHECK_MINUTES > 0)) {
+    throw new Error('INDEXER_ALERT_CHECK_MINUTES must be a whole number of minutes greater than 0');
   }
   if (!Number.isFinite(CONFIG.SERVICE_ALERT_CHECK_MINUTES) || !(CONFIG.SERVICE_ALERT_CHECK_MINUTES > 0)) {
     throw new Error('SERVICE_ALERT_CHECK_MINUTES must be a whole number of minutes greater than 0');
