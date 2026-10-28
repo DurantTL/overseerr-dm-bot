@@ -91,6 +91,9 @@ advanced-infrastructure layer lives in `docs/`:
   scheduled database backup is still on. It posts when one goes bad and when it recovers. Read-only;
   `node scripts/backup-inventory.js --check` runs the same check by hand. The bot's own database
   backup is separate: set `BACKUP_INTERVAL_HOURS` to turn it on.
+- Plex watchlist requests: Seerr's own watchlist auto-request does the requesting; the bot notes
+  "from their Plex watchlist" on the request card and DMs the member once to say why the request
+  appeared. Setup and limits: [docs/plex-watchlist.md](docs/plex-watchlist.md).
 - Quiet hours: with `QUIET_HOURS_ENABLED` on, admin-channel posts between `QUIET_HOURS_START` and
   `QUIET_HOURS_END` (local hours in `QUIET_HOURS_TZ`, default 22 to 7, America/Chicago) go out as
   Discord silent messages: no push, buttons still work. Disk-space and drive-health alerts still

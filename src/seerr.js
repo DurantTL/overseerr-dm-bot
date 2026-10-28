@@ -206,6 +206,16 @@ async function fetchSeerrMediaIdByRequest(requestId) {
   } catch (_e) { return null; }
 }
 
+// True only when Seerr created this request from the requester's Plex watchlist (F12). Seerr's
+// webhook carries no such marker (its MEDIA_AUTO_REQUESTED event never reaches webhooks), but
+// the request row does: isAutoRequest. Anything else, including a failed lookup, is false.
+async function isSeerrWatchlistRequest(requestId) {
+  try {
+    const res = await axios.get(`${CONFIG.OVERSEERR_URL}/api/v1/request/${requestId}`, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY }, timeout: 8000 });
+    return res.data?.isAutoRequest === true;
+  } catch (_e) { return false; }
+}
+
 // issueType: 1 video, 2 audio, 3 subtitle, 4 other (Overseerr's IssueType enum).
 async function createSeerrIssue(mediaId, issueType, message, userId) {
   const res = await axios.post(`${CONFIG.OVERSEERR_URL}/api/v1/issue`, { mediaId, issueType, message, userId }, { headers: { 'X-Api-Key': CONFIG.OVERSEERR_API_KEY } });
@@ -367,4 +377,4 @@ async function fetchSeerrRequests() {
   return requests;
 }
 
-module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvSeasonInfo, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers, fetchSeerrRequests };
+module.exports = { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvSeasonInfo, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, isSeerrWatchlistRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers, fetchSeerrRequests };
