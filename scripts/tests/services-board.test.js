@@ -5,7 +5,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { describeUps, nutConfigured } = require('../../src/nut');
-const { GROUPS, SERVICES, gatherServicesBoard, portFromUrl, urlFormat } = require('../../src/services-board');
+const { GROUPS, SERVICES, gatherServicesBoard, portFromUrl, urlFormat, cardDownloads, timeleftSeconds } = require('../../src/services-board');
 const { restartCapable } = require('../../src/docker-control');
 
 test('nut: nutConfigured requires host and UPS name', () => {
@@ -344,4 +344,44 @@ test('services-board: config-gap value formats are templates built from the regi
   for (const svc of SERVICES.filter(x => x.urlKey || x.externalKey)) {
     assert.match(urlFormat(svc), /<[^>]+>/, `${svc.key}: a template with a placeholder, not a real value`);
   }
+});
+
+test('services-board: timeleftSeconds reads the *arr HH:MM:SS and D.HH:MM:SS forms', () => {
+  assert.strictEqual(timeleftSeconds('00:18:05'), 1085);
+  assert.strictEqual(timeleftSeconds('1.02:00:00'), 93600);
+  assert.strictEqual(timeleftSeconds(null), null);
+  assert.strictEqual(timeleftSeconds('soon'), null);
+});
+
+test('services-board: cardDownloads ranks downloading first, keeps ETA only while downloading, caps at three', () => {
+  const GB = 1024 ** 3;
+  const rows = cardDownloads([
+    { title: 'Queued Show S01E01', size: 2 * GB, sizeleft: 2 * GB, timeleft: null, status: 'queued' },
+    { title: 'Slow Horses S05E04', size: 3 * GB, sizeleft: 1.14 * GB, timeleft: '00:18:00', status: 'downloading' },
+    { title: 'Andor S02E09', size: 3 * GB, sizeleft: 2.3 * GB, timeleft: '00:41:00', status: 'downloading' },
+    { title: 'Broken Release', size: 1 * GB, sizeleft: 0.5 * GB, timeleft: '00:05:00', status: 'warning' },
+    { title: 'No size yet', size: 0, sizeleft: 0, status: 'queued' },
+  ]);
+  assert.deepStrictEqual(rows.map(r => r.title), ['Slow Horses S05E04', 'Andor S02E09', 'Broken Release'], 'a download that needs a look outranks a queued one; the 4th is cut');
+  assert.strictEqual(rows[0].pct, 62);
+  assert.strictEqual(rows[0].eta, 1080);
+  assert.strictEqual(rows[2].state, 'warning');
+  assert.strictEqual(rows[2].eta, null, 'no time left for something that is not downloading');
+  const warned = cardDownloads([{ title: 'Broken Release', size: 10, sizeleft: 5, timeleft: '00:05:00', status: 'warning' }]);
+  assert.strictEqual(warned[0].state, 'warning');
+  assert.strictEqual(warned[0].eta, null);
+});
+
+test('services-board: download rows attach to the card whose queue label matches', async () => {
+  const q = (label, title) => ({ source: { label }, title, size: 100, sizeleft: 25, timeleft: '00:01:00', status: 'downloading' });
+  const board = await gatherServicesBoard({
+    config: { SONARR_URL: 'http://sonarr:8989', RADARR_URL: 'http://radarr:7878' },
+    health: { sonarr: 'ok', radarr: 'ok' },
+    queues: [q('sonarr', 'Show S01E01'), q('sonarr', 'Show S01E02'), q('radarr-4k', 'Film (2024)')],
+    sessions: [], canRestart: false, http: { get: async () => ({ data: {} }) },
+  });
+  const sonarr = board.services.find(s => s.key === 'sonarr');
+  assert.strictEqual(sonarr.queue, 2);
+  assert.deepStrictEqual(sonarr.downloads.map(d => [d.title, d.pct, d.eta]), [['Show S01E01', 75, 60], ['Show S01E02', 75, 60]]);
+  assert.ok(!board.services.find(s => s.key === 'radarr').downloads, 'no downloads on a card with an empty queue');
 });

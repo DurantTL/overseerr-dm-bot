@@ -458,3 +458,12 @@ test('renderServicesPanel: Services has find, Down only and collapsible groups',
   assert.match(html, /data-clear-filter/);
   assert.match(html, /x\.state !== 'down'/, 'Down only keeps only down services');
 });
+
+test('renderServicesPanel: download cards draw progress bars with size and time left', () => {
+  const html = renderServicesPanel();
+  assert.match(html, /function downloadsHtml/);
+  assert.match(html, /role="progressbar"/);
+  assert.match(html, /' left'/);
+  assert.match(html, /more in the queue/);
+  assert.match(html, /\.svc-card\.has-dl \{ grid-column: 1 \/ -1; \}/, 'download cards take the full row on a phone');
+});

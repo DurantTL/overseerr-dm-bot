@@ -520,6 +520,17 @@ function renderServicesPanel() {
 .svc-hidden-card small { font-size: 12px; color: var(--faint); }
 .svc-hidden-card code { font-family: var(--mono); font-size: 11.5px; color: var(--warn); overflow-wrap: anywhere; }
 @media (max-width: 520px) { .svc-hidden-card .svc-icon { display: none; } .svc-hidden-card code { font-size: 11px; } }
+.svc-card.has-dl { grid-column: span 2; }
+@media (max-width: 720px) { .svc-card.has-dl { grid-column: 1 / -1; } }
+.svc-dl { display: grid; gap: 9px; margin-top: 10px; }
+.svc-dl-row { display: grid; gap: 4px; min-width: 0; }
+.svc-dl-row .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--text); }
+.svc-dl-row .r { font-family: var(--mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.svc-dl-bar { height: 6px; border-radius: 99px; background: color-mix(in srgb, var(--text) 10%, transparent); overflow: hidden; }
+.svc-dl-bar i { display: block; height: 100%; border-radius: 99px; background: var(--focus); }
+.svc-dl-row.warn .svc-dl-bar i { background: var(--warn); }
+.svc-dl-row.warn .r { color: var(--warn); }
+.svc-dl-more { font-size: 12px; color: var(--faint); }
 .svc-filter { display: flex; gap: 8px; align-items: center; margin: 0 0 16px; }
 .svc-find { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; border-radius: 14px; border: 1px solid var(--edge); background: var(--glass); color: var(--faint); }
 .svc-find svg { width: 18px; height: 18px; flex: none; }
@@ -893,6 +904,23 @@ function renderServicesPanel() {
 
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
 
+  // Download rows on Sonarr/Radarr cards: progress, size left and time left, straight from the
+  // queue the board already fetches. Time left shows only while actually downloading.
+  var DL_STATE = { importing: 'Importing', paused: 'Paused', queued: 'Queued', warning: 'Needs a look' };
+  function downloadsHtml(s) {
+    if (!s.downloads || !s.downloads.length) return '';
+    var more = (s.queue || 0) - s.downloads.length;
+    return '<div class="svc-dl">' + s.downloads.map(function (d) {
+      var right = d.state === 'downloading'
+        ? fmtBytes(d.sizeLeft) + ' left' + (d.eta != null ? ' · ' + fmtRuntime(d.eta) : '')
+        : (DL_STATE[d.state] || 'Queued') + (d.sizeLeft ? ' · ' + fmtBytes(d.sizeLeft) + ' left' : '');
+      return '<div class="svc-dl-row' + (d.state === 'warning' ? ' warn' : '') + '">' +
+        '<span class="t">' + esc(d.title) + '</span>' +
+        '<div class="svc-dl-bar" role="progressbar" aria-label="' + esc(d.title) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + d.pct + '"><i style="width:' + d.pct + '%"></i></div>' +
+        '<span class="r">' + d.pct + '% · ' + esc(right) + '</span></div>';
+    }).join('') + (more > 0 ? '<div class="svc-dl-more">+ ' + more + ' more in the queue</div>' : '') + '</div>';
+  }
+
   function fmtRuntime(sec) {
     if (sec == null) return '—';
     var m = Math.round(sec / 60);
@@ -935,7 +963,8 @@ function renderServicesPanel() {
   function cardHtml(s) {
     var url = svcUrl(s);
     var dot = s.state === 'down' ? 'down' : s.state === 'skip' ? 'skip' : '';
-    var cls = (pins.indexOf(s.key) > -1 ? ' pinned' : '') + (s.state === 'down' ? ' is-down' : '');
+    var cls = (pins.indexOf(s.key) > -1 ? ' pinned' : '') + (s.state === 'down' ? ' is-down' : '') +
+      (s.downloads && s.downloads.length ? ' has-dl' : ''); // room for download rows
     var more = '<button class="svc-more" type="button" aria-haspopup="dialog" aria-label="Actions for ' + esc(s.name) + '">' + svg('more') + '</button>';
     var attrs = ' data-key="' + esc(s.key) + '"' + (url ? ' data-url="' + esc(url) + '"' : '') +
       ' data-name="' + esc(s.name) + '" data-container="' + esc(s.container || '') + '" data-canrestart="' + (s.canRestart ? '1' : '') + '"';
@@ -949,7 +978,7 @@ function renderServicesPanel() {
     return '<a class="svc-card' + cls + '"' + attrs + '>' + qbadge +
       '<div class="svc-dot ' + dot + '"></div>' + more +
       '<div class="svc-top"><div class="svc-icon">' + iconFor(s.icon) + '</div><div class="svc-name">' + esc(s.name) + '</div></div>' +
-      (desc ? '<div class="svc-desc">' + desc + '</div>' : '') + '</a>';
+      (desc ? '<div class="svc-desc">' + desc + '</div>' : '') + downloadsHtml(s) + '</a>';
   }
 
   function specialCards(d) {
