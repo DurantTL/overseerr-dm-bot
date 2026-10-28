@@ -134,9 +134,9 @@ test('tier-agent-completion: recordTierFolderCompletion round-trips on the tier 
     const folders = [{ folderId: 'movies', completion: 100, globalBytes: 5e10, needBytes: 0, needItems: 0 }];
     db.recordTierFolderCompletion('california', { at, folders });
     const plan = db.getTierPlan('california');
-    // The read normalizer keeps only what the locality decision needs (folderId + completion)
-    // and validates the shape defensively.
-    assert.deepStrictEqual(plan.folderCompletion, { at, folders: [{ folderId: 'movies', completion: 100 }] });
+    // The read normalizer validates the shape defensively and keeps the counts Director's Fleet
+    // sync card shows (needBytes, globalBytes, needItems) alongside what locality needs.
+    assert.deepStrictEqual(plan.folderCompletion, { at, folders: [{ folderId: 'movies', completion: 100, globalBytes: 5e10, needBytes: 0, needItems: 0 }] });
     // A second report replaces the snapshot — never appends.
     db.recordTierFolderCompletion('california', { at: at + 1, folders: [] });
     assert.strictEqual(db.getTierPlan('california').folderCompletion, null, 'an empty folder list normalizes to null');
@@ -161,5 +161,16 @@ test('tier-agent-completion: countAuditActionsSince counts by action inside the 
     const old = db.countAuditActionsSince(['edge_playback_observed'], Date.now() + 1000);
     assert.strictEqual(old.edge_playback_observed, 0, 'a future window sees nothing');
     assert.deepStrictEqual(db.countAuditActionsSince([], Date.now()), {}, 'empty input never throws');
+  });
+});
+
+test('tier-agent-completion: byte and item counts survive the heartbeat rewrite of the plan', () => {
+  withScratchDb(db => {
+    const at = Date.now();
+    db.recordTierFolderCompletion('ph', { at, folders: [{ folderId: 'movies', completion: 78.3, globalBytes: 2e12, needBytes: 4.12e11, needItems: 57 }] });
+    // A heartbeat reads the normalized plan and writes it back; the counts must still be there.
+    db.recordTierAgentHeartbeat('ph', { errors: [] });
+    const [folder] = db.getTierPlan('ph').folderCompletion.folders;
+    assert.deepStrictEqual(folder, { folderId: 'movies', completion: 78.3, globalBytes: 2e12, needBytes: 4.12e11, needItems: 57 });
   });
 });
