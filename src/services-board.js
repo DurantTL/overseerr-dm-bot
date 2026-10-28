@@ -18,6 +18,7 @@ const GROUPS = Object.freeze([
   'Downloads & Files',
   'Monitoring',
   'Background Services',
+  'Websites',
 ]);
 
 // Registry: key, display name, group, default port, optional path, health key
@@ -53,6 +54,10 @@ const SERVICES = Object.freeze([
   { key: 'recyclarr', name: 'Recyclarr', desc: 'Quality profile sync', icon: 'sync', group: 'Background Services', urlKey: 'RECYCLARR_URL', healthKey: 'recyclarr', compact: true },
   { key: 'cleanuparr', name: 'Cleanuparr', desc: 'Stalled download cleanup', icon: 'trash', group: 'Background Services', urlKey: 'CLEANUPARR_URL', healthKey: 'cleanuparr', compact: true, defaultPort: 11011 },
   { key: 'byparr', name: 'Byparr', desc: 'Captcha solving for indexers', icon: 'shield', group: 'Background Services', urlKey: 'BYPARR_URL', healthKey: 'byparr', compact: true, defaultPort: 8191 },
+
+  // Websites
+  { key: 'durantxyz', name: 'durant.xyz', desc: 'Portfolio and personal site', icon: 'cloud', group: 'Websites', external: 'https://durant.xyz' },
+  { key: 'durantlogic', name: 'durantlogic.com', desc: 'Durant Logic — digital systems for small teams, churches, and event organizers', icon: 'cloud', group: 'Websites', external: 'https://durantlogic.com' },
 ]);
 
 function portFromUrl(url, fallback) {
