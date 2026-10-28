@@ -19,7 +19,7 @@ test('recently added: movies, episodes and seasons map to portrait poster cards 
     { media_type: 'movie', title: 'No key' },
   ] });
   assert.strictEqual(items.length, 4, 'items without a rating key are dropped');
-  assert.deepStrictEqual(items[0], { ratingKey: '501', type: 'movie', title: 'The Wild Robot', detail: '2024', library: 'Movies', addedAt: 1761650000000, thumb: '/library/metadata/501/thumb/1' });
+  assert.deepStrictEqual(items[0], { ratingKey: '501', titleKey: '501', type: 'movie', title: 'The Wild Robot', detail: '2024', library: 'Movies', addedAt: 1761650000000, thumb: '/library/metadata/501/thumb/1' });
   assert.strictEqual(items[1].title, 'Slow Horses');
   assert.strictEqual(items[1].detail, 'S5E3');
   assert.strictEqual(items[1].thumb, '/library/metadata/700/thumb/9', "episodes use the show's poster");

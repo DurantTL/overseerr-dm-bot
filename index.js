@@ -57,7 +57,7 @@ const { assessSeriesAge, seasonSearchTargets, describeSeasonSearch, summarizeSea
 const { rankSeasonReleases, chooseSeasonPack, describeRejections, summarizePackRejections, rejectedOnlyForSizeFloor } = require('./src/season-release');
 const { classifyEpisodeFallbackEvidence, planEpisodeFallback, orderPendingFallbacks } = require('./src/season-episode-fallback');
 const { assessAsianOrigin, describeAvistazFit, isAsianLanguageName } = require('./src/asian');
-const { tautulliConfigured, tautulliApi, fetchHistory, describeSession } = require('./src/tautulli');
+const { tautulliConfigured, tautulliApi, fetchHistory, fetchHistoryRows, fetchRecentlyAdded, describeSession } = require('./src/tautulli');
 const { planTier, gatherNodeHistories, fetchTierInventory, fetchPlexHistory, parseAtimeMask, maskSuspectAtimes, assessApplyImpact, computeTierActionPreview, tierApplyConfirmCode, renderSyncthingStignore, renderFolderStignore, renderRclone, nodeFolders, toRelPath, resolveTitleFolder, physicalTitleBytes } = require('./src/tier');
 const { stagingConfigured, classifyServerIdentity, planCacheSpace, planPlayPromotion, resolveStageSource, stageCopy, purgeStagedPath, getCacheStatus, runRclone, reconcileStagedItems, fetchStagedPresence } = require('./src/staging');
 const { resolveEdgeTierNode, decideCaLocality, planCaPlayPromotion, computePlayPin, promotionFitsBudget, tvPromotionSizeCapped, GB_BYTES } = require('./src/edge-promotion');
@@ -166,6 +166,7 @@ const dashboardGateActor = createDashboardGateActor({ sha256 });
 // would ignore every override until the next restart.
 const { createQuietHours } = require('./src/quiet-hours');
 const { dueKey, buildNotWatchableDigest } = require('./src/not-watchable-digest');
+const { buildViewingInsights } = require('./src/viewing-insights');
 const settingsStore = { get: getSetting, set: setSetting, del: deleteSetting };
 const tunable = key => runtimeSettings.resolveRuntime(key, { config: CONFIG, store: settingsStore });
 // F7: admin-channel posts go out silently during quiet hours and are summed up afterwards.
@@ -203,6 +204,7 @@ function createAutomationDefinitions() {
     { id: 'indexer-health', label: 'Indexer health', cadence: () => staticCadence(CONFIG.INDEXER_ALERT_CHECK_MINUTES, 'INDEXER_ALERT_CHECK_MINUTES'), prerequisite: () => enabled(CONFIG.INDEXER_ALERTS_ENABLED && !!(CONFIG.PROWLARR_URL && CONFIG.PROWLARR_API_KEY), CONFIG.INDEXER_ALERTS_ENABLED ? 'Prowlarr is not configured.' : 'INDEXER_ALERTS_ENABLED is false'), firstRunDelayMs: 120000, run: sweepIndexerHealth, manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
     { id: 'tailscale-keys', label: 'Tailscale key expiry', cadence: () => staticCadence(24 * 60, 'TAILSCALE_KEY_EXPIRY_DAYS'), prerequisite: () => enabled(CONFIG.TAILSCALE_KEY_ALERTS_ENABLED && tailscaleAuditConfigured(tailscaleProvisionConfig()), CONFIG.TAILSCALE_KEY_ALERTS_ENABLED ? 'Tailscale API (TAILSCALE_OAUTH_*) is not configured.' : 'TAILSCALE_KEY_ALERTS_ENABLED is false'), firstRunDelayMs: 300000, run: sweepTailscaleKeys, manual: scheduledOnly('Sends operator alerts; run scripts/tailscale-audit.js for a full report.') },
     { id: 'not-watchable-digest', label: 'Not Watchable Yet digest', cadence: () => staticCadence(15), prerequisite: () => enabled(tunable('NOT_WATCHABLE_DIGEST_ENABLED'), 'NOT_WATCHABLE_DIGEST_ENABLED is off.'), firstRunDelayMs: 120000, run: sweepNotWatchableDigest, manual: scheduledOnly('Posts weekly at the configured day and hour; scheduled execution only.') },
+    { id: 'viewing-insights', label: 'Viewing insights', cadence: () => staticCadence(15), prerequisite: () => enabled(tunable('VIEWING_INSIGHTS_ENABLED') && tautulliConfigured(), tunable('VIEWING_INSIGHTS_ENABLED') ? 'Tautulli is not configured.' : 'VIEWING_INSIGHTS_ENABLED is off.'), firstRunDelayMs: 150000, run: sweepViewingInsights, manual: scheduledOnly('Posts weekly at the configured day and hour; scheduled execution only.') },
     { id: 'quiet-digest', label: 'Quiet-hours digest', cadence: () => staticCadence(5), prerequisite: () => enabled(true), firstRunDelayMs: 90000, run: sweepQuietDigest, manual: scheduledOnly('Posts the digest when quiet hours end; scheduled execution only.') },
     { id: 'backup-check', label: 'App backup check', cadence: () => staticCadence(24 * 60, 'BACKUP_CHECK_ENABLED'), prerequisite: () => enabled(CONFIG.BACKUP_CHECK_ENABLED, 'BACKUP_CHECK_ENABLED is false'), firstRunDelayMs: 600000, run: sweepBackupCheck, manual: safeManual },
     { id: 'disk-space', label: 'Disk space & drive health', cadence: () => staticCadence(CONFIG.DISK_CHECK_MINUTES, 'DISK_CHECK_MINUTES'), prerequisite: () => enabled(true), firstRunDelayMs: 60000, run: sweepFleetDiskAlerts, preview: () => previewFleetDiskAlerts(), manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
@@ -336,6 +338,24 @@ async function sweepNotWatchableDigest() {
   if (!ok) throw new Error('Digest could not be posted; it will be retried on the next run today.');
   setSetting('not_watchable_digest_last', key);
   audit('not_watchable_digest', { titles: rows.filter(r => r.digest).length });
+  return { posted: 1 };
+}
+
+// F10: weekly viewing insights from Tautulli, in the admin channel.
+async function sweepViewingInsights() {
+  const key = dueKey({ now: Date.now(), tz: CONFIG.QUIET_HOURS_TZ, day: tunable('VIEWING_INSIGHTS_DAY'), hour: tunable('VIEWING_INSIGHTS_HOUR'), lastKey: getSetting('viewing_insights_last') });
+  if (!key) return { posted: 0 };
+  // Three weeks of plays, so a title added up to 21 days ago can be judged watched or not.
+  const [historyRows, added] = await Promise.all([fetchHistoryRows(undefined, { afterDays: 21, length: 5000 }), fetchRecentlyAdded(100)]);
+  // 4K copies are second versions of titles in the main libraries; judging them separately
+  // would list every 4K file as "not watched".
+  const insights = buildViewingInsights({ historyRows, added: added.filter(a => !/4K/i.test(a.library || '')) });
+  const embed = brandedEmbed(COLORS.INFO).setTitle(`📈 ${insights.title}`);
+  if (insights.fields.length) embed.addFields(...insights.fields.map(f => ({ ...f, inline: false })));
+  const ok = await notifyChannel('admin', { embeds: [embed] });
+  if (!ok) throw new Error('Viewing insights could not be posted; retried on the next run today.');
+  setSetting('viewing_insights_last', key);
+  audit('viewing_insights_posted', { plays: historyRows.length });
   return { posted: 1 };
 }
 
