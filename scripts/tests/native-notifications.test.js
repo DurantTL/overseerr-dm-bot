@@ -22,6 +22,15 @@ function arrSchema(extra = {}) {
   };
 }
 
+function webhookSchema() {
+  return {
+    implementation: 'Webhook', configContract: 'WebhookSettings', name: '',
+    onGrab: false, onDownload: false, onUpgrade: false, onRename: false, onSeriesDelete: false, onEpisodeFileDelete: false,
+    onHealthIssue: false, onApplicationUpdate: false,
+    fields: [{ name: 'url', value: '' }, { name: 'method', value: 1 }, { name: 'username', value: '' }, { name: 'password', value: '' }, { name: 'headers', value: [] }],
+  };
+}
+
 // One express app standing in for every service, routed by path prefix.
 function fakeFleet({ arrExisting = {}, seerr = { enabled: true, types: 2 | 4 | 8 | 16, options: { webhookUrl: SEERR_HOOK } }, tautulliNotifiers = [], tautulliActions = {} } = {}) {
   const writes = [];
@@ -31,7 +40,7 @@ function fakeFleet({ arrExisting = {}, seerr = { enabled: true, types: 2 | 4 | 8
     const api = svc === 'prowlarr' ? 'v1' : 'v3';
     const list = arrExisting[svc] || [{ id: 1, name: 'Somebody else', implementation: 'Discord', onGrab: true, fields: [] }];
     app.get(`/${svc}/api/${api}/notification`, (req, res) => (req.get('x-api-key') === `${svc}-key` ? res.json(list) : res.status(401).end()));
-    app.get(`/${svc}/api/${api}/notification/schema`, (_req, res) => res.json([{ implementation: 'Email' }, svc === 'prowlarr' ? arrSchema({ onDownload: undefined, onManualInteractionRequired: undefined }) : arrSchema()]));
+    app.get(`/${svc}/api/${api}/notification/schema`, (_req, res) => res.json([{ implementation: 'Email' }, svc === 'prowlarr' ? arrSchema({ onDownload: undefined, onManualInteractionRequired: undefined }) : arrSchema(), webhookSchema()]));
     app.post(`/${svc}/api/${api}/notification`, (req, res) => { writes.push({ svc, method: 'POST', body: req.body }); res.status(201).json({ id: 7, ...req.body }); });
     app.put(`/${svc}/api/${api}/notification/:id`, (req, res) => { writes.push({ svc, method: 'PUT', id: req.params.id, body: req.body }); res.status(202).json(req.body); });
   }
@@ -156,9 +165,40 @@ test('native notifications: an unreadable app is reported without stopping the o
     assert.strictEqual(plans[1].action, 'create');
     noHook(plans.map(p => p.detail));
   });
-  await assert.rejects(N.planAll({}, { http: {}, webhookUrl: '' }), /NATIVE_ALERTS_DISCORD_WEBHOOK is not set/);
+  await assert.rejects(N.planAll({}, { http: {}, webhookUrl: '' }), /Set NATIVE_ALERTS_DISCORD_WEBHOOK and\/or AUTOPULSE_URL/);
 });
 
 test('native notifications: Seerr wanted types are failed + the four issue events', () => {
   assert.deepStrictEqual(N.seerrTypeNames(N.SEERR_WANTED), ['media failed', 'issue created', 'issue comment', 'issue resolved', 'issue reopened']);
+});
+
+test('autopulse: Sonarr and Radarr get one POST webhook to their trigger on import, upgrade and rename only', async () => {
+  await withFleet({}, async ({ config, writes, http }) => {
+    const cfg = { ...config, AUTOPULSE_URL: 'http://autopulse:2875/', AUTOPULSE_USERNAME: 'admin', AUTOPULSE_PASSWORD: 'AP-SECRET-PASS' };
+    const plans = await N.planAll(cfg, { http, webhookUrl: '' });
+    assert.deepStrictEqual(plans.map(p => [p.app, p.action]), [['Sonarr → Autopulse', 'create']], 'Prowlarr imports nothing; no Discord steps without a webhook');
+    assert.match(plans[0].detail, /http:\/\/autopulse:2875\/triggers\/sonarr on import, upgrade, rename; every other event off/);
+    assert.ok(!JSON.stringify(plans.map(p => p.detail)).includes('AP-SECRET-PASS'));
+    const results = await N.applyPlan(plans, cfg, { http });
+    assert.ok(results.every(r => r.ok));
+    const body = writes.find(w => w.svc === 'sonarr').body;
+    assert.strictEqual(body.name, N.AUTOPULSE_CONNECTION);
+    assert.strictEqual(body.implementation, 'Webhook');
+    const on = Object.keys(body).filter(k => /^on[A-Z]/.test(k) && body[k] === true).sort();
+    assert.deepStrictEqual(on, ['onDownload', 'onRename', 'onUpgrade']);
+    assert.strictEqual(body.onSeriesDelete, false, 'deletes never call Autopulse');
+    const field = n => body.fields.find(f => f.name === n).value;
+    assert.deepStrictEqual([field('url'), field('method'), field('username'), field('password')], ['http://autopulse:2875/triggers/sonarr', 1, 'admin', 'AP-SECRET-PASS']);
+  });
+});
+
+test('autopulse: Radarr targets the radarr trigger; a matching connection is left alone; masked passwords are not drift', () => {
+  const schema = webhookSchema();
+  const desired = N.desiredAutopulseWebhook(schema, { url: 'http://a/triggers/radarr', username: 'admin', password: 'p' });
+  const stored = JSON.parse(JSON.stringify(desired));
+  stored.fields.find(f => f.name === 'password').value = '********';
+  assert.deepStrictEqual(N.autopulseDifferences(stored, desired), []);
+  stored.onEpisodeFileDelete = true;
+  stored.fields.find(f => f.name === 'url').value = 'http://old/triggers/radarr';
+  assert.deepStrictEqual(N.autopulseDifferences(stored, desired), ['onEpisodeFileDelete off', 'url changed']);
 });

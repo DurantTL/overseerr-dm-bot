@@ -1,0 +1,20 @@
+# Autopulse: Sonarr/Radarr import webhooks → Plex refreshes just that item (service queue item 15).
+# Add as its own Portainer stack (or to the media stack) on the same Docker network as Plex and
+# the *arrs. See docs/autopulse.md. Nothing here reads or changes media files: check_path is off in
+# config.yaml, so no media mount is needed.
+services:
+  autopulse:
+    image: ghcr.io/dan-online/autopulse:stable
+    container_name: autopulse
+    restart: unless-stopped
+    user: "1000:1000"
+    ports:
+      - "2875:2875"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+    environment:
+      # Credentials stay out of config.yaml and out of git. AUTOPULSE__{SECTION}__{KEY} overrides
+      # the matching config value.
+      AUTOPULSE__AUTH__USERNAME: ${AUTOPULSE_USERNAME:-admin}
+      AUTOPULSE__AUTH__PASSWORD: ${AUTOPULSE_PASSWORD:?set AUTOPULSE_PASSWORD}
