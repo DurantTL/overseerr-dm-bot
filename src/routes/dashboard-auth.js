@@ -70,14 +70,54 @@ function createDashboardGateActor({ sha256 }) {
   };
 }
 
-function createDashboardAuth({ config, session, safeEqual }) {
+// The x-admin-password / x-admin-token headers are accepted on every dashboard route, most of
+// which rate-limit only after auth (or not at all), so without this a client could guess the
+// admin secret at full speed and bypass /admin/login's 5-per-15-minutes limit. Failed header
+// attempts are counted per client; once a client hits the limit, every header attempt from it
+// (right or wrong) gets 429 until the window ends. Cookie sessions are never throttled here.
+function createHeaderAuthThrottle({ limit = 10, windowMs = 15 * 60000, now = Date.now } = {}) {
+  const failures = new Map();
+  function current(key) {
+    const entry = failures.get(key);
+    if (entry && now() - entry.start >= windowMs) {
+      failures.delete(key);
+      return null;
+    }
+    return entry || null;
+  }
+  return {
+    blocked: key => (current(key)?.count || 0) >= limit,
+    fail(key) {
+      if (failures.size > 10000) {
+        for (const k of failures.keys()) current(k);
+      }
+      const entry = current(key) || { start: now(), count: 0 };
+      entry.count++;
+      failures.set(key, entry);
+      return entry.count;
+    },
+  };
+}
+
+function createDashboardAuth({
+  config,
+  session,
+  safeEqual,
+  clientKey = req => req.ip || req.socket?.remoteAddress || 'unknown',
+  headerThrottle = createHeaderAuthThrottle(),
+  onHeaderAuthFailure = () => {},
+}) {
   return function dashboardAuth(req, res, next) {
     const sessionOk = session.verify(session.readCookie(req, 'dm_session'));
     const password = req.headers['x-admin-password'];
     const token = req.headers['x-admin-token'];
+    const headerAttempt = password !== undefined || token !== undefined;
+    const key = headerAttempt && !sessionOk ? clientKey(req) : null;
+    if (key && headerThrottle.blocked(key)) return res.status(429).send('Too many failed attempts. Try again later.');
     const passwordOk = config.DASHBOARD_ADMIN_PASSWORD && safeEqual(password, config.DASHBOARD_ADMIN_PASSWORD);
     const tokenOk = config.DASHBOARD_ADMIN_TOKEN && safeEqual(token, config.DASHBOARD_ADMIN_TOKEN);
     if (!sessionOk && !passwordOk && !tokenOk) {
+      if (key) onHeaderAuthFailure({ ip: key, attempt: headerThrottle.fail(key) });
       if (req.method === 'GET' && (req.headers.accept || '').includes('text/html')) return res.redirect('/admin/login');
       return res.status(401).send('Unauthorized');
     }
@@ -286,6 +326,7 @@ function registerDashboardAuthRoutes(app, {
 
 module.exports = {
   createDashboardSession,
+  createHeaderAuthThrottle,
   createDashboardAuth,
   createDashboardGateActor,
   dashboardActor,

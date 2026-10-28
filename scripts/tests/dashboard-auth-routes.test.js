@@ -7,6 +7,7 @@ const { rateLimit } = require('express-rate-limit');
 const { createApp, listen, close } = require('../../src/app');
 const {
   createDashboardSession,
+  createHeaderAuthThrottle,
   createDashboardAuth,
   registerDashboardAuthRoutes,
 } = require('../../src/routes/dashboard-auth');
@@ -242,4 +243,41 @@ test('password login sets the passkey-setup nudge cookie; logout clears it', asy
     assert.ok(cleared, 'logout clears the nudge cookie');
     assert.match(cleared, /^dm_setup_nudge=; HttpOnly; SameSite=Strict; Path=\/admin; Max-Age=0/);
   } finally { await close(server); }
+});
+
+test('wrong admin headers are throttled per client without affecting cookie sessions', async () => {
+  const config = { DASHBOARD_ADMIN_PASSWORD: 'correct-password', DASHBOARD_ADMIN_TOKEN: '', STRICT_DASHBOARD_POST_AUTH: true };
+  const session = createDashboardSession({ secret: 'test-session-secret', ttlHours: 1 });
+  let clock = 1_000_000;
+  const failures = [];
+  const dashboardAuth = createDashboardAuth({
+    config, session, safeEqual: (a, b) => a === b,
+    headerThrottle: createHeaderAuthThrottle({ limit: 3, windowMs: 60000, now: () => clock }),
+    onHeaderAuthFailure: failure => failures.push(failure),
+  });
+  const app = createApp();
+  app.get('/admin/x', dashboardAuth, (_req, res) => res.send('ok'));
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    for (let i = 0; i < 3; i++) {
+      const wrong = await request(port, { path: '/admin/x', headers: { 'x-admin-password': `guess-${i}` } });
+      assert.strictEqual(wrong.statusCode, 401);
+    }
+    assert.deepStrictEqual(failures.map(f => f.attempt), [1, 2, 3]);
+
+    // Locked: even the right password is refused for header auth until the window passes.
+    const locked = await request(port, { path: '/admin/x', headers: { 'x-admin-password': 'correct-password' } });
+    assert.strictEqual(locked.statusCode, 429);
+
+    // A signed-in browser session is unaffected by the header lockout.
+    const cookie = await request(port, { path: '/admin/x', headers: { cookie: `dm_session=${session.sign()}`, 'x-admin-password': 'stale' } });
+    assert.strictEqual(cookie.statusCode, 200);
+
+    clock += 60001;
+    const reopened = await request(port, { path: '/admin/x', headers: { 'x-admin-password': 'correct-password' } });
+    assert.strictEqual(reopened.statusCode, 200);
+  } finally {
+    await close(server);
+  }
 });

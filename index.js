@@ -138,7 +138,13 @@ const dashboardSession = createDashboardSession({
   ttlHours: CONFIG.SESSION_TTL_HOURS,
   cookieSecure: CONFIG.COOKIE_SECURE,
 });
-const dashboardAuth = createDashboardAuth({ config: CONFIG, session: dashboardSession, safeEqual });
+const dashboardAuth = createDashboardAuth({
+  config: CONFIG,
+  session: dashboardSession,
+  safeEqual,
+  clientKey: httpRateLimitKey,
+  onHeaderAuthFailure: ({ ip, attempt }) => audit('dashboard_header_auth_failed', { ip, attempt }),
+});
 const dashboardGateActor = createDashboardGateActor({ sha256 });
 
 // Per-topic notification routing. Every kind falls back to ADMIN_CHANNEL_ID when its channel
