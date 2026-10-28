@@ -58,6 +58,10 @@ advanced-infrastructure layer lives in `docs/`:
   job that silently stops running gets reported. Manual run-now never pings. The registry card shows
   each job's id, the window to set on the monitor (its cadence, with matching grace), and the last
   ping; the URLs themselves are never logged or shown.
+- Native app alerts: `scripts/native-notifications.js` sets Sonarr, Radarr, Prowlarr, Seerr and
+  Tautulli's own Discord notifications to failures and health only, from `NATIVE_ALERTS_DISCORD_WEBHOOK`.
+  It previews by default and changes nothing without `--apply`. Scrutiny's SMART alerts are a
+  `scrutiny.yaml` entry. See [docs/native-notifications.md](docs/native-notifications.md).
 - Admin dashboard (`/admin`) with health, pending items, and safe action endpoints. The
   **Director** tab is the fleet health board: every service the media server runs
   (Plex, *arrs, Prowlarr, Byparr, Huntarr, Recyclarr, Cleanuparr, rTorrent, Syncthing,

@@ -581,6 +581,9 @@ const CONFIG = (() => {
   // job-id=push-url pairs for the scheduled jobs' dead-man pings (src/deadman.js). The URLs carry
   // the monitor's token: never log or display them.
   DEADMAN_PING_URLS: process.env.DEADMAN_PING_URLS || '',
+  // Discord webhook for the apps' own failure/health notifications (scripts/native-notifications.js).
+  // A credential: never log or display it.
+  NATIVE_ALERTS_DISCORD_WEBHOOK: process.env.NATIVE_ALERTS_DISCORD_WEBHOOK || '',
   // Tailscale as an *optional* reachability path for PH viewers: CGNAT + no IPv6 means normal
   // Plex remote access can't reach the box, and the Cloudflare tunnel is reserved for the bot's
   // own HTTP routes (never media, per Plex's ToS). Nothing here invites anyone automatically —
