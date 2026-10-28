@@ -46,7 +46,7 @@ const { recordSeasonEpisodeFallbackEvidence, getSeasonEpisodeFallback, listSeaso
   clearSeasonEpisodeFallback } = require('./src/db');
 const { recordDeadReleaseGroupSighting, getReleaseGroupSighting, markReleaseGroupSuggested, markReleaseGroupBlocklisted, dismissReleaseGroupSuggestion } = require('./src/db');
 const { getPlexToken, plexApiGet, getPlexServers, inviteUserToPlex, removePlexAccess, fetchPlexFriends, createPlexShareRefreshContext, refreshPlexShare } = require('./src/plex');
-const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvSeasonInfo, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
+const { setOverseerrDiscordNotification, createOverseerrUser, runSeerrSelfTest, searchSeerr, checkExistingSeerrMedia, fetchSeerrTvSeasonInfo, fetchSeerrTvdbId, fetchSeerrMediaOrigin, fetchSeerrMediaId, fetchSeerrMediaIdByRequest, isSeerrWatchlistRequest, createSeerrIssue, createSeerrRequestAs, verifySeerrRequestCreated, resolveSeerrUserId, approveOverseerrRequest, denyOverseerrRequest, deleteOverseerrRequest, fetchUserQuota, fetchOverseerrUsers } = require('./src/seerr');
 const { fetchSeerrRequests } = require('./src/seerr');
 const { ALL_SEASONS, parseSeasonSelection, formatSeasonsLabel, splitCoveredSeasons, seasonsToStorageKey, seasonsFromStorageKey } = require('./src/season-select');
 const { radarrGetFrom, sonarrGet, arrSources, fetchArrQueues, fetchDiskSpace, fetchDiskSpaceReport, searchMovies, searchSeries, listRadarrMovies, listSonarrMissingEpisodes, getEpisodeFiles, executeDeletion, getMovieByTmdbId, getSeriesByTvdbId, applyAvistazTag, escalateMediaToAvistaz, addMediaToArr, pairFilesToEpisodes, verifyAvistazTags, fetchReleaseEta, remapPath, triggerMovieSearch, triggerSeasonSearch, triggerEpisodeSearch, getSonarrCommand, getSeriesEpisodes, getSeasonDownloadHistory, interactiveSeasonSearch, forceGrabRelease, listSonarrSeries, resolveSonarrSeriesIdentity, sonarrSeriesAliases,
@@ -11218,12 +11218,16 @@ async function handleOverseerrWebhook(body) {
     ? `<@${requesterDiscordId}>${requester.email ? ` · \`${requester.email}\`` : ''}`
     : (requester.email ? `\`${requester.email}\`` : 'Unknown');
 
+  let fromWatchlist = false;
   if (['MEDIA_PENDING', 'MEDIA_AUTO_APPROVED'].includes(notification_type)) {
     // /request already posted the Approve/Deny notice for this id — don't double-post.
     const alreadyPosted = request?.request_id && postedApprovalNotices.has(String(request.request_id));
+    // F12: Seerr's own Plex-watchlist auto-request. Bot-made requests are already posted, so
+    // only requests that came in some other way are looked up.
+    fromWatchlist = !alreadyPosted && request?.request_id ? await isSeerrWatchlistRequest(request.request_id) : false;
+    const autoApproved = notification_type === 'MEDIA_AUTO_APPROVED';
     const adminChannel = alreadyPosted ? null : await safeGetChannel(channelFor('requests'));
     if (adminChannel) {
-      const autoApproved = notification_type === 'MEDIA_AUTO_APPROVED';
       const embed = brandedEmbed(autoApproved ? COLORS.SUCCESS : COLORS.INFO)
         .setTitle(`${mediaTypeEmoji(media.media_type, is4k)} ${autoApproved ? 'Request Auto-Approved' : 'New Request'}`)
         .setDescription(`**${title}**`)
@@ -11232,6 +11236,7 @@ async function handleOverseerrWebhook(body) {
           { name: 'Type', value: mediaTypeLabel(media.media_type, is4k), inline: true },
           { name: 'Status', value: autoApproved ? '✅ Auto-approved' : '⏳ Awaiting approval', inline: true },
         );
+      if (fromWatchlist) embed.addFields({ name: 'Source', value: '📋 Added from their Plex watchlist (Seerr auto-request)', inline: false });
       if (poster) embed.setThumbnail(poster);
       if (request?.request_id) embed.setFooter({ text: `Durant Media Server · Request #${request.request_id}` });
       // Requestrr submits through Seerr as its configured default user unless per-user mapping
@@ -11249,7 +11254,16 @@ async function handleOverseerrWebhook(body) {
       }
       await adminChannel.send({ embeds: [embed], components });
     }
-    audit('seerr_request_received', { requestId: request?.request_id, requesterDiscordId, requesterSource: requester.source, title, mediaId });
+    // Auto-approved ones get this in the approval DM below instead, so it's one DM, not two.
+    if (fromWatchlist && !autoApproved && requesterDiscordId) {
+      const watchlistEmbed = brandedEmbed(COLORS.INFO)
+        .setTitle('📋 Added From Your Plex Watchlist')
+        .setDescription(`**${title}** was on your Plex watchlist, so it was requested for you automatically.\n\nIt's waiting for an admin to approve it. You'll get a DM when it's approved and again when it's ready.`);
+      if (poster) watchlistEmbed.setThumbnail(poster);
+      const sent = await dmUser(requesterDiscordId, { embeds: [watchlistEmbed] });
+      if (sent) audit('watchlist_request_notification_sent', { targetDiscordId: requesterDiscordId, requestId: request?.request_id, title });
+    }
+    audit('seerr_request_received', { requestId: request?.request_id, requesterDiscordId, requesterSource: requester.source, title, mediaId, fromWatchlist });
   }
 
   if (['MEDIA_PENDING', 'MEDIA_AUTO_APPROVED', 'MEDIA_APPROVED', 'MEDIA_AVAILABLE', 'MEDIA_DECLINED'].includes(notification_type)) {
@@ -11270,10 +11284,10 @@ async function handleOverseerrWebhook(body) {
       tvdbId: media.tvdbId ?? null,
     }));
     const embed = brandedEmbed(COLORS.SUCCESS)
-      .setTitle('🎉 Request Approved')
-      .setDescription(eta?.waiting
+      .setTitle(fromWatchlist ? '📋 Added From Your Plex Watchlist' : '🎉 Request Approved')
+      .setDescription((fromWatchlist ? 'It was on your Plex watchlist, so it was requested for you automatically.\n\n' : '') + (eta?.waiting
         ? `**${title}** was approved! It isn't out yet, so it'll be grabbed automatically the moment it releases.\n${eta.line}\nYou'll get another DM when it's ready to watch.`
-        : `**${title}** was approved and is being grabbed now.\nYou'll get another DM the moment it's ready to watch.${eta ? `\n\n${eta.line}` : ''}`);
+        : `**${title}** was approved and is being grabbed now.\nYou'll get another DM the moment it's ready to watch.${eta ? `\n\n${eta.line}` : ''}`));
     if (poster) embed.setThumbnail(poster);
     await dmUser(requesterDiscordId, { embeds: [embed] });
   }
