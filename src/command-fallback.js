@@ -419,12 +419,37 @@ async function resolveWithLlm(text, metadatas, llm, fetchImpl) {
 // handler written against real interactions may call them in orders that would
 // throw there; here they degrade to "edit what we sent, else send"), because a
 // fallback invocation must never die on shim bookkeeping.
+//
+// A channel post can't be ephemeral, and handlers put private things in ephemeral
+// replies (/me shows the member's Plex email, /downloads their links). So an
+// ephemeral reply goes to the author's DMs, with a one-line pointer in the
+// channel; if their DMs are closed the command fails with a note to use the real
+// slash command. A private reply must never land in the channel.
 function buildMessageInteraction({ message, commandName, subcommandName, optionValues }) {
   let lastSent = null;
-  const send = async payload => {
+  let privateReply = false; // The handler's reply is ephemeral: it and its edits go to DMs.
+  let dmPointerPosted = false;
+  const toPayload = payload => {
     const p = typeof payload === 'string' ? { content: payload } : { ...(payload || {}) };
-    delete p.ephemeral; // A channel post cannot be ephemeral; handlers asking for it get a public reply.
-    lastSent = await message.channel.send(p);
+    const ephemeral = Boolean(p.ephemeral);
+    delete p.ephemeral;
+    return { p, ephemeral };
+  };
+  const sendPrivately = async p => {
+    let dm;
+    try {
+      dm = await message.author.send(p);
+    } catch (err) {
+      throw new Error('That reply is private and I couldn\'t DM you — run the real slash command instead.', { cause: err });
+    }
+    if (!dmPointerPosted) {
+      dmPointerPosted = true;
+      await message.reply({ content: '📬 Sent you a DM — that one is private.' }).catch(() => {});
+    }
+    return dm;
+  };
+  const send = async (p, ephemeral) => {
+    lastSent = ephemeral ? await sendPrivately(p) : await message.channel.send(p);
     interaction.replied = true;
     return lastSent;
   };
@@ -470,35 +495,42 @@ function buildMessageInteraction({ message, commandName, subcommandName, optionV
     isStringSelectMenu: () => false,
     isModalSubmit: () => false,
     inGuild: () => Boolean(message.guildId),
-    deferReply: async () => {
+    deferReply: async options => {
       if (interaction.deferred || interaction.replied) return;
       interaction.deferred = true;
+      if (options?.ephemeral) {
+        privateReply = true; // Nothing in the channel yet; the edit that follows goes to DMs.
+        return;
+      }
       lastSent = await message.reply({ content: '⏳ Working on it…' }).catch(() => null);
     },
     reply: async payload => {
+      const { p, ephemeral } = toPayload(payload);
       if (interaction.deferred && lastSent) {
-        const p = typeof payload === 'string' ? { content: payload } : { ...(payload || {}) };
-        delete p.ephemeral;
         lastSent = await lastSent.edit(p);
         interaction.replied = true;
         return lastSent;
       }
-      if (interaction.replied) return send(payload);
-      const p = typeof payload === 'string' ? { content: payload } : { ...(payload || {}) };
-      delete p.ephemeral;
+      if (interaction.replied) return send(p, ephemeral);
+      if (ephemeral || privateReply) {
+        privateReply = true;
+        return send(p, true);
+      }
       lastSent = await message.reply(p);
       interaction.replied = true;
       return lastSent;
     },
     editReply: async payload => {
-      if (!lastSent) return send(payload);
-      const p = typeof payload === 'string' ? { content: payload } : { ...(payload || {}) };
-      delete p.ephemeral;
+      const { p } = toPayload(payload);
+      if (!lastSent) return send(p, privateReply);
       lastSent = await lastSent.edit(p);
       interaction.replied = true;
       return lastSent;
     },
-    followUp: async payload => send(payload),
+    followUp: async payload => {
+      const { p, ephemeral } = toPayload(payload);
+      return send(p, ephemeral);
+    },
     fetchReply: async () => lastSent,
     deleteReply: async () => {
       if (lastSent) await lastSent.delete().catch(() => {});
@@ -509,6 +541,26 @@ function buildMessageInteraction({ message, commandName, subcommandName, optionV
     },
   };
   return interaction;
+}
+
+// Discord enforces a command's default_member_permissions only in its own slash
+// picker — the bot is never told. Fallback dispatch goes straight to the handler,
+// so it has to apply that gate itself, or every admin-only command whose handler
+// trusts Discord to hide it (/staged does today) is open to any member who types
+// its name. "0" means no one but administrators, matching Discord.
+function memberMayUse(commandDefs, commandName, member, userId, config = {}) {
+  const def = (commandDefs || [])
+    .map(b => (typeof b?.toJSON === 'function' ? b.toJSON() : b))
+    .find(json => String(json?.name || '').toLowerCase() === String(commandName || '').toLowerCase());
+  const required = def?.default_member_permissions;
+  if (required == null) return true;
+  if (config.ADMIN_USER_ID && String(userId || '') === String(config.ADMIN_USER_ID)) return true;
+  const permissions = member?.permissions;
+  if (typeof permissions?.has !== 'function') return false;
+  let bits;
+  try { bits = BigInt(required); } catch (_err) { return false; }
+  if (bits === 0n) return Boolean(permissions.has('Administrator'));
+  return Boolean(permissions.has(bits));
 }
 
 // ---------------------------------------------------------------------------
@@ -551,6 +603,11 @@ function createCommandFallbackFeature(deps) {
   );
 
   async function executeResolution(message, resolution, via) {
+    if (!memberMayUse(getCommandDefs(), resolution.command, message.member, message.author?.id, config)) {
+      audit('command_fallback', { actorDiscordId: message.author.id, channelId: message.channelId, command: resolution.command, subcommand: resolution.subcommand, via, ok: false, reason: 'not_permitted' });
+      await message.reply({ content: `❌ **/${resolution.command}** isn't available to you.` }).catch(() => {});
+      return false;
+    }
     const interaction = buildMessageInteraction({
       message,
       commandName: resolution.command,
@@ -664,9 +721,11 @@ function createCommandFallbackFeature(deps) {
     if (now() - lastAction < USER_COOLDOWN_MS) return;
     lastActionByUser.set(userKey, now());
 
+    let commandDefs;
     let metadatas;
     try {
-      metadatas = commandDefsToMetadata(getCommandDefs());
+      commandDefs = getCommandDefs();
+      metadatas = commandDefsToMetadata(commandDefs);
     } catch (err) {
       log.error(`command-fallback: command definitions unavailable: ${err.message}`);
       return;
@@ -677,6 +736,12 @@ function createCommandFallbackFeature(deps) {
     if (resolution.kind === 'none' && llm) {
       resolution = await resolveWithLlm(message.content, metadatas, llm, fetchImpl);
       if (resolution.kind === 'resolved') resolution.prefixed = message.content.trim().startsWith('/');
+    }
+    // A command this member can't use is never offered, hinted or run: to them it
+    // isn't a command at all, so it falls through to plain-message handling below.
+    if ((resolution.kind === 'resolved' || resolution.kind === 'invalid')
+      && !memberMayUse(commandDefs, resolution.command, message.member, message.author?.id, config)) {
+      resolution = { kind: 'none' };
     }
 
     if (resolution.kind === 'resolved') {
@@ -778,5 +843,6 @@ module.exports = {
   nameSimilarity,
   canonicalCommandString,
   isCredentialCommand,
+  memberMayUse,
   CONFIRM_MIN_CONFIDENCE,
 };

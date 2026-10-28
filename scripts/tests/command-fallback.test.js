@@ -15,6 +15,8 @@ const {
   damerauLevenshtein,
   coerceOptionValue,
   isCredentialCommand,
+  memberMayUse,
+  buildMessageInteraction,
   CONFIRM_MIN_CONFIDENCE,
 } = require('../../src/command-fallback');
 
@@ -49,6 +51,9 @@ const DEFS = [
     description: 'Get a download link',
     options: [{ name: 'code', type: 3, description: 'Code', required: true }],
   },
+  // Admin-only in Discord's picker (Administrator = 8), with no check of its own in
+  // the handler — the shape /staged has in index.js.
+  { name: 'staged', description: 'Show the cache', default_member_permissions: '8', options: [] },
 ];
 const METAS = commandDefsToMetadata(DEFS);
 
@@ -280,4 +285,87 @@ test('fallback: LLM tier resolves plain language but always needs confirmation',
   assert.match(calls.replies[0].content, /\/request/, 'the offer shows the mapped command');
   const entry = [...feature._pending.values()][0];
   assert.ok(entry.resolution.confidence <= 0.9, 'confidence clamped below the LLM\'s claim');
+});
+
+test('fallback: memberMayUse applies default_member_permissions like Discord does', () => {
+  const member = granted => ({ permissions: { has: p => granted.includes(typeof p === 'bigint' ? p.toString() : p) } });
+  assert.strictEqual(memberMayUse(DEFS, 'request', member([]), 'user1'), true, 'no requirement: anyone');
+  assert.strictEqual(memberMayUse(DEFS, 'staged', member([]), 'user1'), false, 'admin-only: a plain member is refused');
+  assert.strictEqual(memberMayUse(DEFS, 'staged', member(['8']), 'user1'), true, 'a member holding the bit may');
+  assert.strictEqual(memberMayUse(DEFS, 'staged', member([]), 'admin1', { ADMIN_USER_ID: 'admin1' }), true, 'the configured admin may');
+  assert.strictEqual(memberMayUse(DEFS, 'staged', null, 'user1'), false, 'no member object: refused');
+  const zero = [{ name: 'locked', default_member_permissions: '0', options: [] }];
+  assert.strictEqual(memberMayUse(zero, 'locked', member([]), 'user1'), false, '"0" is administrators only');
+  assert.strictEqual(memberMayUse(zero, 'locked', member(['Administrator']), 'user1'), true);
+});
+
+test('fallback: an admin-only command is never offered or run for a plain member', async () => {
+  const { feature, state } = makeFeature({ settings: { cmdfb_autorun: 'staged' } });
+  const { message, calls } = fakeMessage('/staged');
+  await feature.handleMessage(message);
+  assert.strictEqual(state.slashCalls.length, 0, 'not auto-run even though it is on the auto-run list');
+  assert.strictEqual(feature._pending.size, 0, 'not offered');
+  assert.ok(!calls.replies.some(r => /staged/.test(r.content || '')), 'not even hinted');
+
+  const admin = fakeMessage('/staged', { author: { id: 'admin1', bot: false, send: async () => {} } });
+  await feature.handleMessage(admin.message);
+  assert.strictEqual(state.slashCalls.length, 1, 'the configured admin still gets it');
+});
+
+function shimMessage({ dmFails = false } = {}) {
+  const calls = { channel: [], replies: [], dms: [], edits: [] };
+  const sent = where => p => ({ where, p, edit: async q => { calls.edits.push({ where, q }); return sent(where)(q); } });
+  const message = {
+    author: {
+      id: 'user1',
+      send: async p => {
+        if (dmFails) throw new Error('Cannot send messages to this user');
+        calls.dms.push(p);
+        return sent('dm')(p);
+      },
+    },
+    channel: { send: async p => { calls.channel.push(p); return sent('channel')(p); } },
+    reply: async p => { calls.replies.push(p); return sent('reply')(p); },
+    mentions: { users: new Map() },
+  };
+  const interaction = buildMessageInteraction({ message, commandName: 'me', subcommandName: null, optionValues: {} });
+  return { interaction, calls };
+}
+
+test('fallback: an ephemeral reply goes to DMs with a pointer, never to the channel', async () => {
+  const { interaction, calls } = shimMessage();
+  await interaction.reply({ content: 'Plex email: person@example.com', ephemeral: true });
+  assert.deepStrictEqual(calls.dms.map(d => d.content), ['Plex email: person@example.com']);
+  assert.strictEqual(calls.channel.length, 0, 'nothing posted to the channel');
+  assert.strictEqual(calls.replies.length, 1, 'one pointer in the channel');
+  assert.match(calls.replies[0].content, /Sent you a DM/);
+  assert.ok(!JSON.stringify(calls.replies).includes('person@example.com'), 'the pointer carries none of the private content');
+});
+
+test('fallback: a deferred ephemeral reply is edited in DMs, not the channel', async () => {
+  const { interaction, calls } = shimMessage();
+  await interaction.deferReply({ ephemeral: true });
+  assert.strictEqual(calls.replies.length, 0, 'no public "working on it" for a private reply');
+  await interaction.editReply({ content: 'Your links: https://example.test/dl/secret' });
+  await interaction.editReply({ content: 'Your links (updated)' });
+  assert.strictEqual(calls.dms.length, 1, 'first edit is sent to DMs');
+  assert.deepStrictEqual(calls.edits.map(e => e.where), ['dm'], 'later edits change the DM');
+  assert.strictEqual(calls.channel.length, 0);
+  assert.ok(!JSON.stringify(calls.replies).includes('secret'));
+});
+
+test('fallback: closed DMs fail the private reply instead of posting it publicly', async () => {
+  const { interaction, calls } = shimMessage({ dmFails: true });
+  await assert.rejects(() => interaction.reply({ content: 'Plex email: person@example.com', ephemeral: true }), /run the real slash command/);
+  assert.strictEqual(calls.channel.length, 0);
+  assert.strictEqual(calls.replies.length, 0);
+});
+
+test('fallback: a public reply still posts in the channel', async () => {
+  const { interaction, calls } = shimMessage();
+  await interaction.reply({ content: 'Queued Dune.' });
+  await interaction.followUp({ content: 'Also this' });
+  assert.deepStrictEqual(calls.replies.map(r => r.content), ['Queued Dune.']);
+  assert.deepStrictEqual(calls.channel.map(r => r.content), ['Also this']);
+  assert.strictEqual(calls.dms.length, 0);
 });
