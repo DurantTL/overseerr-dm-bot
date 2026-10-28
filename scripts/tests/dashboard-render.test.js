@@ -467,3 +467,11 @@ test('renderServicesPanel: download cards draw progress bars with size and time 
   assert.match(html, /more in the queue/);
   assert.match(html, /\.svc-card\.has-dl \{ grid-column: 1 \/ -1; \}/, 'download cards take the full row on a phone');
 });
+
+test('renderServicesPanel: cards show restart count and last start, nothing more', () => {
+  const html = renderServicesPanel();
+  assert.match(html, /function factsHtml/);
+  assert.match(html, /' restart'/);
+  assert.match(html, /started ' \+ esc\(startedAgo\(s\.startedAt\)\)/);
+  assert.doesNotMatch(html, /restartHistory|restart-log|restarts\.map/, 'no invented restart history list');
+});

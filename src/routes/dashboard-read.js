@@ -1184,8 +1184,9 @@ function registerDashboardReadRoutes(app, deps) {
   // Services tab: one JSON payload backing the card board — service states,
   // UPS/ZFS/Speedtest adapters, Plex now-playing, and smart-network hosts.
   // Cached per source so a 30s client poll doesn't multiply upstream traffic.
-  const { gatherServicesBoard } = require('../services-board');
-  const { restartCapable } = require('../docker-control');
+  const { gatherServicesBoard, SERVICES } = require('../services-board');
+  const { restartCapable, inspectContainers } = require('../docker-control');
+  const BOARD_CONTAINERS = SERVICES.map(s => s.container).filter(Boolean);
   app.get('/admin/api/services', rateLimit({
     windowMs: 15 * 60000,
     limit: 300,
@@ -1196,7 +1197,8 @@ function registerDashboardReadRoutes(app, deps) {
   }), dashboardAuth, async (_req, res) => {
     const now = Date.now();
     try {
-      const [healthEntry, sessionsEntry, queueEntry] = await Promise.all([
+      const dockerAccess = !!restartCapable(CONFIG);
+      const [healthEntry, sessionsEntry, queueEntry, containersEntry] = await Promise.all([
         dashboardCache.get('health', 15000, gatherHealth).catch(() => ({ value: null, fetchedAt: now, stale: true })),
         tautulliConfigured()
           ? dashboardCache.get('tautulli-activity', 10000, () => tautulliApi('get_activity').then(d => d?.sessions || [])).catch(() => ({ value: null, fetchedAt: now, stale: true }))
@@ -1204,13 +1206,18 @@ function registerDashboardReadRoutes(app, deps) {
         arrSources().length
           ? dashboardCache.get('arr-queues', 15000, fetchArrQueues).catch(() => ({ value: [], fetchedAt: now, stale: true }))
           : Promise.resolve({ value: [], fetchedAt: now, stale: false }),
+        // Restart count and last start, through the same Docker access the Restart button uses.
+        dockerAccess
+          ? dashboardCache.get('container-facts', 30000, () => inspectContainers(CONFIG, BOARD_CONTAINERS)).catch(() => ({ value: {}, fetchedAt: now, stale: true }))
+          : Promise.resolve({ value: {}, fetchedAt: now, stale: false }),
       ]);
       const board = await gatherServicesBoard({
         config: CONFIG,
         health: healthEntry.value,
         queues: queueEntry.value || [],
         sessions: sessionsEntry.value || [],
-        canRestart: !!restartCapable(CONFIG),
+        canRestart: dockerAccess,
+        containers: containersEntry.value || {},
       });
       res.json({ ok: true, ageSeconds: Math.max(0, Math.round((Date.now() - now) / 1000)), ...board });
     } catch (_err) {

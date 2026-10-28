@@ -278,7 +278,7 @@ async function fetchSsdTemp(config, http = axios) {
 // Main entry: gather everything the Services tab needs. `deps` supplies the
 // already-wired functions from the bot (health, queues, tautulli). `http` is
 // an optional axios-compatible client for the ZFS/speedtest fetches (tests).
-async function gatherServicesBoard({ config, health, queues, sessions, canRestart, http }) {
+async function gatherServicesBoard({ config, health, queues, sessions, canRestart, http, containers = {} }) {
   const queueCounts = { sonarr: 0, radarr: 0, 'radarr-4k': 0 };
   const queueByLabel = { sonarr: [], radarr: [], 'radarr-4k': [] };
   for (const q of queues || []) {
@@ -337,6 +337,12 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
       canRestart: !!(canRestart && svc.container),
       container: svc.container || null,
     };
+    // Docker's restart count and last start for this card's container, when readable.
+    const facts = svc.container ? containers[svc.container] : null;
+    if (facts) {
+      if (facts.restartCount != null) entry.restarts = facts.restartCount;
+      if (facts.startedAt) entry.startedAt = facts.startedAt;
+    }
     if (svc.queueLabel && queueCounts[svc.queueLabel]) {
       entry.queue = queueCounts[svc.queueLabel];
       const downloads = cardDownloads(queueByLabel[svc.queueLabel]);

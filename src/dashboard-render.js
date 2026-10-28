@@ -520,6 +520,8 @@ function renderServicesPanel() {
 .svc-hidden-card small { font-size: 12px; color: var(--faint); }
 .svc-hidden-card code { font-family: var(--mono); font-size: 11.5px; color: var(--warn); overflow-wrap: anywhere; }
 @media (max-width: 520px) { .svc-hidden-card .svc-icon { display: none; } .svc-hidden-card code { font-size: 11px; } }
+.svc-facts { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; font-family: var(--mono); font-size: 11px; color: var(--faint); }
+.svc-facts .hot { color: var(--warn); }
 .svc-card.has-dl { grid-column: span 2; }
 @media (max-width: 720px) { .svc-card.has-dl { grid-column: 1 / -1; } }
 .svc-dl { display: grid; gap: 9px; margin-top: 10px; }
@@ -904,6 +906,26 @@ function renderServicesPanel() {
 
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
 
+  // Restart count and last start from Docker. That is all Docker keeps (no restart history), so
+  // that is all the card claims. Three or more restarts is worth a second look.
+  function startedAgo(iso) {
+    var t = Date.parse(iso);
+    if (!isFinite(t)) return '';
+    var m = Math.max(0, Math.round((Date.now() - t) / 60000));
+    if (m < 1) return 'just now';
+    if (m < 60) return m + 'm ago';
+    var h = Math.floor(m / 60);
+    if (h < 48) return h + 'h ago';
+    return Math.floor(h / 24) + 'd ago';
+  }
+  function factsHtml(s) {
+    if (s.restarts == null && !s.startedAt) return '';
+    var parts = [];
+    if (s.restarts != null) parts.push('<span' + (s.restarts >= 3 ? ' class="hot"' : '') + '>' + s.restarts + ' restart' + (s.restarts === 1 ? '' : 's') + '</span>');
+    if (s.startedAt) parts.push('<span title="' + esc(s.startedAt) + '">started ' + esc(startedAgo(s.startedAt)) + '</span>');
+    return '<div class="svc-facts">' + parts.join('') + '</div>';
+  }
+
   // Download rows on Sonarr/Radarr cards: progress, size left and time left, straight from the
   // queue the board already fetches. Time left shows only while actually downloading.
   var DL_STATE = { importing: 'Importing', paused: 'Paused', queued: 'Queued', warning: 'Needs a look' };
@@ -978,7 +1000,7 @@ function renderServicesPanel() {
     return '<a class="svc-card' + cls + '"' + attrs + '>' + qbadge +
       '<div class="svc-dot ' + dot + '"></div>' + more +
       '<div class="svc-top"><div class="svc-icon">' + iconFor(s.icon) + '</div><div class="svc-name">' + esc(s.name) + '</div></div>' +
-      (desc ? '<div class="svc-desc">' + desc + '</div>' : '') + downloadsHtml(s) + '</a>';
+      (desc ? '<div class="svc-desc">' + desc + '</div>' : '') + factsHtml(s) + downloadsHtml(s) + '</a>';
   }
 
   function specialCards(d) {
