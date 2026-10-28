@@ -23,6 +23,7 @@ const {
   renderSettingsGroup,
   renderAutomationRegistry,
   renderDirectorPanel,
+  renderServicesPanel,
 } = require('../../src/dashboard-render');
 
 test('dashboard-render: escapeHtml', () => {
@@ -384,4 +385,38 @@ test('dashboard-render: Director distinguishes warnings from unconfigured servic
   assert.match(html, /<strong>1<\/strong><span>Not configured<\/span>/);
   assert.match(html, /d-status warn">1 warning/);
   assert.doesNotMatch(html, /All systems go/);
+});
+
+test('dashboard-render: Director leads with exceptions and folds healthy services', () => {
+  const html = renderDirectorPanel({
+    overall: 'ok',
+    services: [
+      { state: 'ok', title: 'Plex', right: 'ok' },
+      { state: 'ok', title: 'Seerr', right: 'ok' },
+      { state: 'down', title: 'Radarr 4K', sub: 'ECONNREFUSED', right: 'down' },
+    ],
+    disks: [{ state: 'warn', title: '/data', sub: 'nearly full', right: '91% used', pct: 91 }],
+    totalFreeLabel: '1 TB',
+  });
+  assert.ok(html.indexOf('Radarr 4K') < html.indexOf('Plex'), 'the down service comes first');
+  assert.match(html, /<details class="d-healthy"><summary>[\s\S]*2 healthy services<\/summary>/);
+  assert.match(html, /<span class="warn" style="width:91%"/, 'a filling disk is drawn in the warning colour');
+});
+
+test('dashboard-render: Services board uses line icons, a visible actions button and pins', () => {
+  const html = renderServicesPanel();
+  assert.doesNotMatch(html, /&#1[0-9]{4,5};/, 'no emoji entities for icons');
+  assert.match(html, /class="svc-more"/);
+  assert.match(html, /svcPins/);
+  assert.doesNotMatch(html, /svcTaps|SMART SORT/);
+  assert.match(html, /aria-label="Open service links through"/);
+  // The action sheet must not reuse the tab-panel class, or tab switching hides it.
+  assert.doesNotMatch(html, /<div class="panel">/);
+  assert.match(html, /<div class="svc-sheet-panel">/);
+});
+
+test('dashboard-render: tabs only manage real panels and can show an attention count', () => {
+  const html = renderPage('Admin', '<section class="panel" data-panel="ops"></section>', { nav: [['ops', 'Operations', 2]], tabs: true });
+  assert.match(html, /querySelectorAll\('\.panel\[data-panel\]'\)/);
+  assert.match(html, /<span class="tab-count" aria-label="2 need attention">2<\/span>/);
 });

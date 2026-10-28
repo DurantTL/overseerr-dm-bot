@@ -39,6 +39,13 @@ advanced-infrastructure layer lives in `docs/`:
 - Seerr/Overseerr request approvals from Discord.
 - Secure download links (hashed tokens, expiry, optional one-time-use, access logs, rate limits).
 - Audit logging for admin/user/system actions.
+- Admin dashboard (`/admin`) on the Durant Logic design system (the same palette, type and liquid
+  glass as durantlogic.com). The **Services** tab opens with one status line and any service that is
+  down pinned on top with **Restart container** and **Open**. Every card has a **⋯** button (or
+  right-click; long-press on touch) for Open, Copy link, Pin to top of group, and Restart. Pinned
+  cards lead their group and stay put. Press **/** or **⌘K** to jump to a service. A
+  **Local / Tailscale** switch picks which address the links use (auto-detected until you choose).
+  Now Playing shows direct play vs transcode, quality and bitrate.
 - Admin dashboard (`/admin`) with health, pending items, and safe action endpoints. The
   **Director** tab is the fleet health board: every service the media server runs
   (Plex, *arrs, Prowlarr, Byparr, Huntarr, Recyclarr, Cleanuparr, rTorrent, Syncthing,
@@ -480,7 +487,7 @@ notification processing.
 - Enrol, rename, and revoke passkeys from the authenticated dashboard. The first passkey must be enrolled after a password login. Passkeys are discoverable platform credentials for Touch ID, Face ID, Windows Hello, and Android; multiple devices can be enrolled with separate labels.
 - Passkeys use `DASHBOARD_PUBLIC_URL` (defaulting to `https://TUNNEL_DOMAIN` if unset) as their exact relying-party ID/accepted origin. Enrol them through that public URL. Credentials enrolled on `localhost`, another hostname, or an HTTP origin will not work. Opening the dashboard at any other valid HTTPS hostname than the configured one (an IP, a different Cloudflare hostname, a reverse-proxy alias) makes the browser refuse passkey enrollment/sign-in — the dashboard detects that mismatch itself before calling the browser and links you to the correct URL. Set `DASHBOARD_PUBLIC_URL` explicitly only if the dashboard has its own dedicated public hostname distinct from downloads/webhooks.
 - Login is rate limited (5 attempts / 15 min per IP) to slow brute-force guessing.
-- The old `?password=` / `?token=` query-string auth has been **removed** (it leaked credentials into history and logs). For scripts/automation, use the `x-admin-password` or `x-admin-token` request headers — these still work.
+- The old `?password=` / `?token=` query-string auth has been **removed** (it leaked credentials into history and logs). For scripts/automation, use the `x-admin-password` or `x-admin-token` request headers — these still work. After 10 wrong header attempts from one client in 15 minutes, header auth from that client returns `429` until the window ends (each failure is audited as `dashboard_header_auth_failed`); signed-in browser sessions are unaffected.
 - Shows overall status, summary stat cards, color-coded integration health badges, and readable tables for pending users/requests, linked users, recent downloads, keep/delete decisions, and audit logs, plus safe action buttons (revoke-all asks for confirmation).
 - Sessions are signed with `SESSION_SECRET`, which is **required** whenever `DASHBOARD_ENABLED=true` — the bot refuses to start without it, so it can never fall back to deriving a signing key from your admin password/token (a captured cookie would otherwise be guessable offline). Generate one with `openssl rand -hex 32`. If you're upgrading an existing deployment, add `SESSION_SECRET` to your `.env`/`stack.env` and restart; every existing dashboard session is invalidated and users just log back in. Changing `SESSION_SECRET` later rotates sessions the same way. Changing `TUNNEL_DOMAIN` or `DASHBOARD_PUBLIC_URL` requires enrolling new passkeys for the new hostname.
 

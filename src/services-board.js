@@ -263,6 +263,10 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
     state: s.state || '',
     viewOffset: Number(s.view_offset) || 0,
     duration: Number(s.duration) || 0,
+    // How it's playing, so the board shows what is loading the server (same rules as describeSession).
+    decision: s.video_decision === 'transcode' ? 'transcode' : s.transcode_decision === 'copy' ? 'direct stream' : 'direct play',
+    quality: s.stream_video_full_resolution || s.video_full_resolution || '',
+    bandwidthKbps: Number(s.bandwidth) || 0,
   })).slice(0, 3);
 
   return {
