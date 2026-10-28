@@ -74,6 +74,11 @@ advanced-infrastructure layer lives in `docs/`:
   Sonarr/Radarr import webhooks and has Plex refresh just that item. With `AUTOPULSE_URL` set,
   `scripts/native-notifications.js` adds the webhook to each *arr (import, upgrade and rename only;
   never deletes). See [docs/autopulse.md](docs/autopulse.md).
+- Tailscale key expiry: once a day the bot lists the tailnet's devices with a read-only token
+  (OAuth scope `devices:core:read`) and warns when a headless node's key expires within 30 days
+  (`TAILSCALE_KEY_EXPIRY_DAYS`), posting at 30, 7 and 1 days out and on expiry. Headless means
+  Linux/FreeBSD devices that aren't PH viewers, or the names in `TAILSCALE_HEADLESS_NODES`.
+  `node scripts/tailscale-audit.js` prints the full report. Report-only.
 - Admin dashboard (`/admin`) with health, pending items, and safe action endpoints. The
   **Director** tab is the fleet health board: every service the media server runs
   (Plex, *arrs, Prowlarr, Byparr, Huntarr, Recyclarr, Cleanuparr, rTorrent, Syncthing,

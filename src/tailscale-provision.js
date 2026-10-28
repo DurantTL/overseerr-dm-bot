@@ -52,13 +52,14 @@ function buildAuthKeyPayload({ tag = 'tag:ph-viewer', expirySeconds = 1800, desc
   };
 }
 
-async function oauthAccessToken(config, http = axios) {
+// Defaults to the capability needed to mint tagged viewer auth keys. The key-expiry audit
+// (src/tailscale-audit.js) asks for the read-only devices:core:read scope with no tags instead.
+async function oauthAccessToken(config, http = axios, { scope = 'auth_keys', tags = config.viewerTag } = {}) {
   const form = new URLSearchParams();
   form.set('client_id', config.clientId);
   form.set('client_secret', config.clientSecret);
-  // Request only the capability needed to mint tagged auth keys.
-  form.set('scope', 'auth_keys');
-  form.set('tags', config.viewerTag);
+  form.set('scope', scope);
+  if (tags) form.set('tags', tags);
   const res = await http.post(OAUTH_TOKEN_URL, form.toString(), {
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     timeout: 15000,

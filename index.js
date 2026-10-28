@@ -66,6 +66,8 @@ const { normalizeGranularity, parseTvUnitId, resolvePromotableUnit, checkPromoti
 const { checkPublicOriginReadiness } = require('./src/public-origin-diagnostics');
 const { createDeadman } = require('./src/deadman');
 const { fetchIndexerHealth, evaluateIndexerFlips } = require('./src/indexer-health');
+const { auditConfigured: tailscaleAuditConfigured, listDevices: listTailscaleDevices, auditDevices: auditTailscaleDevices, newWarnings: newTailscaleKeyWarnings } = require('./src/tailscale-audit');
+const { provisionConfig: tailscaleProvisionConfig } = require('./src/tailscale-provision');
 const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderDirectorPanel, renderServicesPanel, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement, renderPasskeySetupBanner, renderAgentApiTokens, DASHBOARD_CSS } = require('./src/dashboard-render');
 const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, findAnimezIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, eraseTorrent, getRtorrentVersion, getRtorrentPaths, rtorrentCall } = require('./src/rtorrent');
@@ -190,6 +192,7 @@ function createAutomationDefinitions() {
     { id: 'tier-plan-stale-alert', label: 'Tier plan staleness', cadence: () => staticCadence(60, 'TIER_PLAN_STALE_DAYS'), prerequisite: () => enabled(true), firstRunDelayMs: 120000, runOnStartup: true, run: sweepTierPlanStaleAlerts, manual: scheduledOnly('Read-only operator alert; scheduled execution only.') },
     { id: 'service-alerts', label: 'Service-down alerts', cadence: () => staticCadence(CONFIG.SERVICE_ALERT_CHECK_MINUTES, 'SERVICE_ALERT_CHECK_MINUTES'), prerequisite: () => enabled(CONFIG.SERVICE_ALERTS_ENABLED, 'SERVICE_ALERTS_ENABLED is false'), firstRunDelayMs: 90000, run: sweepServiceAlerts, manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
     { id: 'indexer-health', label: 'Indexer health', cadence: () => staticCadence(CONFIG.INDEXER_ALERT_CHECK_MINUTES, 'INDEXER_ALERT_CHECK_MINUTES'), prerequisite: () => enabled(CONFIG.INDEXER_ALERTS_ENABLED && !!(CONFIG.PROWLARR_URL && CONFIG.PROWLARR_API_KEY), CONFIG.INDEXER_ALERTS_ENABLED ? 'Prowlarr is not configured.' : 'INDEXER_ALERTS_ENABLED is false'), firstRunDelayMs: 120000, run: sweepIndexerHealth, manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
+    { id: 'tailscale-keys', label: 'Tailscale key expiry', cadence: () => staticCadence(24 * 60, 'TAILSCALE_KEY_EXPIRY_DAYS'), prerequisite: () => enabled(CONFIG.TAILSCALE_KEY_ALERTS_ENABLED && tailscaleAuditConfigured(tailscaleProvisionConfig()), CONFIG.TAILSCALE_KEY_ALERTS_ENABLED ? 'Tailscale API (TAILSCALE_OAUTH_*) is not configured.' : 'TAILSCALE_KEY_ALERTS_ENABLED is false'), firstRunDelayMs: 300000, run: sweepTailscaleKeys, manual: scheduledOnly('Sends operator alerts; run scripts/tailscale-audit.js for a full report.') },
     { id: 'disk-space', label: 'Disk space & drive health', cadence: () => staticCadence(CONFIG.DISK_CHECK_MINUTES, 'DISK_CHECK_MINUTES'), prerequisite: () => enabled(true), firstRunDelayMs: 60000, run: sweepFleetDiskAlerts, preview: () => previewFleetDiskAlerts(), manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
     { id: 'pending-approvals', label: 'Pending approvals', cadence: () => runtimeCadence('PENDING_APPROVAL_CHECK_MINUTES'), prerequisite: () => enabled(true), run: sweepPendingApprovals, manual: scheduledOnly('Uses notification and expiry timing; scheduled execution only.') },
     { id: 'request-reconcile', label: 'Request reconciliation', cadence: () => staticCadence(CONFIG.REQUEST_RECONCILE_MINUTES, 'REQUEST_RECONCILE_MINUTES'), prerequisite: () => enabled(true), firstRunDelayMs: 60000, runOnStartup: true, run: sweepRequestStatuses, manual: scheduledOnly('May notify many requesters; scheduled execution only.') },
@@ -267,6 +270,41 @@ async function sweepServiceAlerts() {
     }
   }
   return { checked: results.length, down: results.filter(r => r.state === 'down').length, alerted: events.length };
+}
+
+// Tailscale key expiry (src/tailscale-audit.js): once a day, warn about headless nodes whose key
+// expires within TAILSCALE_KEY_EXPIRY_DAYS, posting once per stage (30d, 7d, 1d, expired) per key.
+async function sweepTailscaleKeys() {
+  const config = tailscaleProvisionConfig();
+  let rows;
+  try {
+    rows = auditTailscaleDevices(await listTailscaleDevices(config), { windowDays: CONFIG.TAILSCALE_KEY_EXPIRY_DAYS, names: CONFIG.TAILSCALE_HEADLESS_NODES, viewerTag: config.viewerTag });
+  } catch (err) {
+    // Never the request or response body: the token request carries the client secret.
+    const status = err?.response?.status;
+    // The axios error is deliberately not attached as `cause`: its request config carries the
+    // OAuth client secret, and only this message is recorded.
+    // eslint-disable-next-line preserve-caught-error
+    throw new Error(`Tailscale device list failed${status ? ` (HTTP ${status})` : ''}`);
+  }
+  let state;
+  try { state = JSON.parse(getSetting('tailscale_key_warnings') || '{}') || {}; } catch (_err) { state = {}; }
+  const { fresh, state: next } = newTailscaleKeyWarnings(rows, state);
+  setSetting('tailscale_key_warnings', JSON.stringify(next));
+  if (fresh.length) {
+    const expired = fresh.some(r => r.status === 'expired');
+    notifyChannel('system', { embeds: [brandedEmbed(expired ? COLORS.DANGER : COLORS.WARN)
+      .setTitle(`🔑 Tailscale key ${expired ? 'expired' : 'expiring'} on ${fresh.length === 1 ? fresh[0].name : `${fresh.length} headless nodes`}`)
+      .setDescription([
+        ...fresh.map(r => r.status === 'expired'
+          ? `🔴 **${r.name}** (${r.os}): key expired ${discordTimestamp(r.expiresAt, 'R')}. It is off the tailnet until it logs in again.`
+          : `🟠 **${r.name}** (${r.os}): key expires ${discordTimestamp(r.expiresAt, 'R')} (${discordTimestamp(r.expiresAt, 'D')})`),
+        '',
+        'Renew it, or turn key expiry off for that machine in the Tailscale admin console. Report only: nothing was changed.',
+      ].join('\n').slice(0, 4000))] });
+    audit('tailscale_key_expiry_warned', { nodes: fresh.map(r => `${r.name}:${r.stage}`).join(', ') });
+  }
+  return { checked: rows.length, warned: fresh.length };
 }
 
 // Prowlarr indexer-health flips (src/indexer-health.js): one post per sweep listing the indexers

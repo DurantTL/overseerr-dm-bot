@@ -600,6 +600,11 @@ const CONFIG = (() => {
   TAILSCALE_ENABLED: parseBool(process.env.TAILSCALE_ENABLED, false),
   TAILSCALE_SETUP_URL: process.env.TAILSCALE_SETUP_URL || 'https://tailscale.com/download',
   TAILSCALE_SERVER_ADDRESS: process.env.TAILSCALE_SERVER_ADDRESS || '',
+  // Key-expiry audit for headless nodes (src/tailscale-audit.js). Uses the TAILSCALE_OAUTH_* client
+  // with the read-only devices:core:read scope.
+  TAILSCALE_KEY_ALERTS_ENABLED: parseBool(process.env.TAILSCALE_KEY_ALERTS_ENABLED, true),
+  TAILSCALE_KEY_EXPIRY_DAYS: Math.max(1, Number.parseInt(process.env.TAILSCALE_KEY_EXPIRY_DAYS || '30', 10) || 30),
+  TAILSCALE_HEADLESS_NODES: String(process.env.TAILSCALE_HEADLESS_NODES || '').split(',').map(s => s.trim()).filter(Boolean),
   // ---- Regional tiering ("edge cache"): per-node curation of the replicated library ----
   // Planner knobs; per-node overrides (warm/fresh days) live in the tier_nodes table.
   TIER_CORE_TOP_K: Number.parseInt(process.env.TIER_CORE_TOP_K || '25', 10),
