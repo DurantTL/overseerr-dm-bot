@@ -159,6 +159,7 @@ See `.env.example` for full values.
 - `BYPARR_URL` — adds Byparr to health checks and `/indexers`; general status uses the fast
   `/openapi.json` liveness route, while `/indexers` keeps the slower browser-backed `/health`
   deep check
+- `PORTFOLIO_URL`, `BUSINESS_SITE_URL` — public site links for the Services tab's Websites group, opened as-is. Unset, each card waits in the "Not on the board yet" row.
 - `HUNTARR_URL`, `RECYCLARR_URL`, `CLEANUPARR_URL`, `SYNCTHING_URL` — base URLs that add
   Huntarr, Recyclarr, Cleanuparr, and Syncthing to the dashboard **Director** tab's fleet
   health board (any HTTP response under 500 counts as up; unset = "not configured")

@@ -56,8 +56,8 @@ const SERVICES = Object.freeze([
   { key: 'byparr', name: 'Byparr', desc: 'Captcha solving for indexers', icon: 'shield', group: 'Background Services', urlKey: 'BYPARR_URL', healthKey: 'byparr', compact: true, defaultPort: 8191 },
 
   // Websites
-  { key: 'durantxyz', name: 'durant.xyz', desc: 'Portfolio and personal site', icon: 'cloud', group: 'Websites', external: 'https://durant.xyz' },
-  { key: 'durantlogic', name: 'durantlogic.com', desc: 'Durant Logic — digital systems for small teams, churches, and event organizers', icon: 'cloud', group: 'Websites', external: 'https://durantlogic.com' },
+  { key: 'portfolio', name: 'Portfolio', desc: 'Personal site', icon: 'cloud', group: 'Websites', externalKey: 'PORTFOLIO_URL' },
+  { key: 'business-site', name: 'Business site', desc: 'Company site', icon: 'cloud', group: 'Websites', externalKey: 'BUSINESS_SITE_URL' },
 ]);
 
 function portFromUrl(url, fallback) {
@@ -80,6 +80,14 @@ async function probeUrl(url, timeoutMs = 4000) {
   }
 }
 
+// A direct link opened as-is (no LAN/Tailscale rewriting): fixed in the registry (`external`)
+// or read from an env variable (`externalKey`) so site addresses live in the stack, not the
+// public repo. Only http(s) values count; anything else is treated as unset.
+function externalLink(svc, config) {
+  const value = svc.external || (svc.externalKey ? config[svc.externalKey] : null);
+  return typeof value === 'string' && /^https?:\/\//i.test(value.trim()) ? value.trim() : null;
+}
+
 // One service's up/down state, shared by the Services board and the service-down
 // alert sweep (src/service-alerts.js) so both always agree on what "down" means.
 // A health key from gatherHealth() wins; otherwise the configured URL is probed.
@@ -97,7 +105,7 @@ async function resolveServiceState(svc, { config, health, probe = probeUrl }) {
   // reachable — prefer the probe for URL-less health misses.
   if (state === 'skip' && url) state = await probe(url);
   // External links and the dashboard itself are always "up" from here.
-  if ((svc.external || svc.self) && state === 'skip') state = 'ok';
+  if ((externalLink(svc, config) || svc.self) && state === 'skip') state = 'ok';
   return { url, state };
 }
 
@@ -247,9 +255,10 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
 
     // No dead cards: without a URL (or external/self link) and without a
     // down-state worth flagging, there is nothing actionable to show.
-    if (!url && !svc.external && !svc.self && state !== 'down') {
+    const link = externalLink(svc, config);
+    if (!url && !link && !svc.self && state !== 'down') {
       // Names only: never the value of a variable, which can embed credentials.
-      hidden.push({ key: svc.key, name: svc.name, group: svc.group, icon: svc.icon, missing: svc.urlKey || null });
+      hidden.push({ key: svc.key, name: svc.name, group: svc.group, icon: svc.icon, missing: svc.urlKey || svc.externalKey || null });
       continue;
     }
 
@@ -262,7 +271,7 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
       state,
       port: portFromUrl(url, svc.port),
       path: svc.path || '',
-      external: svc.external || null,
+      external: link,
       self: !!svc.self,
       compact: !!svc.compact,
       canRestart: !!(canRestart && svc.container),
@@ -311,4 +320,4 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
   };
 }
 
-module.exports = { GROUPS, SERVICES, gatherServicesBoard, resolveServiceState, portFromUrl, fetchSpeedtest, fetchZfsHealth, fetchSsdTemp };
+module.exports = { GROUPS, SERVICES, gatherServicesBoard, resolveServiceState, externalLink, portFromUrl, fetchSpeedtest, fetchZfsHealth, fetchSsdTemp };

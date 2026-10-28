@@ -25,7 +25,7 @@ const STAND_DOWN_AFTER = 24;
 // Services worth alerting on: configured with a URL on this box, not the dashboard itself, not an
 // external link, and not on the operator's ignore list.
 function alertableServices(config, ignore = new Set()) {
-  return SERVICES.filter(svc => !svc.self && !svc.external && !svc.special
+  return SERVICES.filter(svc => !svc.self && !svc.external && !svc.externalKey && !svc.special
     && svc.urlKey && config[svc.urlKey]
     && !ignore.has(svc.key));
 }

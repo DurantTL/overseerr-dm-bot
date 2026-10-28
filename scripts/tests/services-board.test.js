@@ -303,10 +303,30 @@ test('services-board: services without a URL are listed as hidden with the missi
   const plex = without.hidden.find(h => h.key === 'plex');
   assert.deepStrictEqual(plex, { key: 'plex', name: 'Plex', group: 'Media', icon: 'play', missing: 'PLEX_URL' });
   assert.ok(!without.services.some(s => s.key === 'plex'), 'not drawn as a card');
-  assert.ok(!without.hidden.some(h => h.key === 'director' || h.key === 'premiumize' || h.key === 'durantxyz'), 'self and external links are never hidden');
+  assert.ok(!without.hidden.some(h => h.key === 'director' || h.key === 'premiumize'), 'self and fixed external links are never hidden');
   assert.ok(!JSON.stringify(without.hidden).includes('hunter2'), 'hidden entries carry names only, never values');
 
   const withPlex = await gatherServicesBoard({ ...base, config: { PLEX_URL: 'http://192.0.2.10:32400' } });
   assert.ok(withPlex.services.some(s => s.key === 'plex'), 'Plex is a normal card once PLEX_URL is set');
   assert.ok(!withPlex.hidden.some(h => h.key === 'plex'), 'and leaves the hidden row');
+});
+
+test('services-board: website cards take their link from env and wait in the hidden row until it is set', async () => {
+  const base = { health: {}, queues: [], sessions: [], canRestart: false, http: { get: async () => ({ data: {} }) } };
+  const unset = await gatherServicesBoard({ ...base, config: {} });
+  assert.deepStrictEqual(unset.hidden.filter(h => h.group === 'Websites').map(h => h.missing).sort(), ['BUSINESS_SITE_URL', 'PORTFOLIO_URL']);
+  assert.ok(!unset.services.some(s => s.group === 'Websites'));
+
+  const set = await gatherServicesBoard({ ...base, config: { PORTFOLIO_URL: 'https://portfolio.example.test', BUSINESS_SITE_URL: 'javascript:alert(1)' } });
+  const portfolio = set.services.find(s => s.key === 'portfolio');
+  assert.strictEqual(portfolio.external, 'https://portfolio.example.test', 'opened as-is');
+  assert.strictEqual(portfolio.state, 'ok');
+  assert.ok(!set.services.some(s => s.key === 'business-site'), 'a non-http value counts as unset');
+});
+
+test('services-board: the registry carries no site addresses for the Websites group', () => {
+  for (const svc of SERVICES.filter(s => s.group === 'Websites')) {
+    assert.ok(!svc.external, `${svc.key} reads its link from ${svc.externalKey}`);
+    assert.ok(svc.externalKey);
+  }
 });

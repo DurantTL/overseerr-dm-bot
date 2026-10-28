@@ -36,6 +36,8 @@ test('service alerts: only configured, non-self, non-external, non-ignored servi
   assert.deepStrictEqual(keys.sort(), ['radarr', 'sonarr']);
   assert.ok(!keys.includes('director'), 'the dashboard itself is never checked');
   assert.ok(!keys.includes('premiumize'), 'external links are never checked');
+  const withSites = alertableServices({ PORTFOLIO_URL: 'https://portfolio.example.test' }).map(s => s.key);
+  assert.ok(!withSites.includes('portfolio'), 'website links are left to the external endpoint checker');
 });
 
 test('service alerts: checkServices uses the board state logic, health first then the URL probe', async () => {
