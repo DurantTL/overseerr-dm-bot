@@ -6,6 +6,7 @@ const { createTierAgentAuth } = require('./tier-agent-auth');
 const { createTierAgentReportLimiter, createTierAgentReadLimiter } = require('./tier-agent-report-limit');
 const { sanitizeNodeTelemetry, assessNodeTelemetry } = require('../node-telemetry');
 const { nextRepeatAlert } = require('../repeat-alert');
+const { findConflicts, diffConflicts } = require('../sync-conflicts');
 
 // §182 follow-up: validate the agent's per-folder Syncthing completion snapshot before it is
 // stored on the tier plan. Pure — capped at 25 folders, numeric fields only, completion clamped
@@ -36,6 +37,7 @@ function registerTierAgentRoutes(app, deps) {
     getTierPlan, recordTierAgentHeartbeat, recordTierAgentReport, recordTierErrorAlertState, recordTierSkipAlertState, recordTierMergedMountDiagnostics, recordTierFolderCompletion, markTierPlanConverged,
     getTierNode, listTierNodeFiles, replaceTierNodeFiles, parseAtimeMask, maskSuspectAtimes,
     notifyTelemetryTransition, notifyDriveMissing, notifyDriveRecovered, notifyAgentReport,
+    notifySyncConflicts = () => {},
     fileSystem = fs, projectRoot = path.join(__dirname, '..', '..'),
     auth = createTierAgentAuth({ getTierAgentTokenHash, sha256, safeEqual, audit }),
     readLimiter = createTierAgentReadLimiter({ limit: config.AGENT_READ_MAX_PER_MINUTE }),
@@ -130,6 +132,16 @@ function registerTierAgentRoutes(app, deps) {
         if (mask) files = maskSuspectAtimes(files, listTierNodeFiles(node), mask);
         replaceTierNodeFiles(node, files);
         inventoryStored = true;
+        // Item 13: new Syncthing conflict copies in this node's inventory (report-only).
+        const seenKey = `sync_conflicts_seen:${node}`;
+        let seen = [];
+        try { seen = JSON.parse(getSetting(seenKey) || '[]'); } catch (_e) { seen = []; }
+        const { fresh, keys } = diffConflicts(findConflicts(files), seen);
+        setSetting(seenKey, JSON.stringify(keys));
+        if (fresh.length) {
+          audit('sync_conflict_detected', { node, count: fresh.length, total: keys.length, paths: fresh.slice(0, 5).map(c => c.relPath).join('; ').slice(0, 500) });
+          notifySyncConflicts({ node, fresh, total: keys.length });
+        }
       } catch (err) {
         errors.push(`inventory store failed: ${err.message}`);
       }

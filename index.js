@@ -10635,6 +10635,15 @@ function startExpressServer() {
         '**Syncthing convergence has been suspended** — the agent will not write, prune, or re-inventory until the drive is back.',
         mountErrors.length ? `\n${mountErrors.slice(0, 6).map(e => `• ${e}`).join('\n')}` : null,
       ].filter(Boolean).join('\n').slice(0, 4000))] }),
+    // Item 13: new Syncthing conflict copies found in a node's inventory. Report-only.
+    notifySyncConflicts: ({ node, fresh, total }) => notifyChannel('system', { embeds: [brandedEmbed(COLORS.WARN)
+      .setTitle(`⚠️ ${fresh.length === 1 ? 'New Syncthing conflict file' : `${fresh.length} new Syncthing conflict files`} on ${node}`)
+      .setDescription([
+        ...fresh.slice(0, 10).map(c => `• \`${c.relPath}\`${c.at ? ` (${discordTimestamp(c.at, 'f')}, device ${c.device})` : ''}`),
+        fresh.length > 10 ? `…and ${fresh.length - 10} more.` : null,
+        '',
+        `Syncthing kept both versions; each copy sits next to its original. Nothing was changed. Compare them and delete the one you don't want.${total > fresh.length ? ` ${total} conflict file(s) on this node in all.` : ''}`,
+      ].filter(v => v !== null).join('\n').slice(0, 4000))] }),
     notifyDriveRecovered: ({ node }) => notifyChannel('system', { embeds: [brandedEmbed(COLORS.SUCCESS)
       .setTitle(`🟢 ${node} media drive back online`)
       .setDescription('The external media drive is mounted again and the tier agent has resumed converging Syncthing.')] }),
