@@ -102,7 +102,7 @@ function defaultRunScript(scriptPath, dryRun, { timeoutMs = 5 * 60 * 1000 } = {}
 }
 
 // ---- Space estimates ----
-// The preview tells Caleb *which* movies would sync; the estimate tells him how
+// The preview tells the operator *which* movies would sync; the estimate tells them how
 // much room Europe needs for them. Hardlinks cost nothing extra on the master,
 // but the 1TB Europe disk holds the actual bytes. Sizes come from du against the
 // script's own SOURCE/DEST dirs (parsed from its config) — never from a

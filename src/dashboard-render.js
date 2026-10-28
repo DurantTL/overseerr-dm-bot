@@ -16,8 +16,7 @@ function escapeHtml(str) {
 // narrow screens. All inline, no build step, dark Plex/Overseerr look.
 const DASHBOARD_CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400..700&family=Instrument+Serif:ital@0;1&family=Space+Mono:wght@400;700&display=swap');
-  /* Durant Logic theme from the shared Durant Sites design system (DurantTL/Websites
-     shared/durant-design, theme "logic"): the same palette, type and glass as durantlogic.com. */
+  /* Dashboard theme tokens: palette, type and liquid glass. */
   :root { --bg:#10232f; --panel:#173042; --panel2:#1d3a4e; --panel3:#24465c; --accent:#79d2d8; --accent-strong:#a9e4e8; --on-accent:#10232f;
     --text:#f3f7f8; --muted:#bdcfd7; --faint:#8fa9b5; --border:#3a5767; --line-strong:#6a90a1; --edge:rgba(137,180,200,.32);
     --glass:rgba(23,48,66,.42); --cool:#9cc27a; --ok:#5fd39a; --warn:#f2b94b; --down:#ff8a80; --skip:#8fa9b5; --focus:#79d2d8;
@@ -497,7 +496,7 @@ function renderServicesPanel() {
   // styles use the svc- prefix to avoid colliding with dashboard CSS.
   return `
 <style>
-.svc-wrap { /* Durant Logic theme from the shared Durant Sites design system (see DASHBOARD_CSS :root). */
+.svc-wrap { /* Uses the dashboard theme tokens (see DASHBOARD_CSS :root). */
   --svc-accent: var(--accent); --svc-ink: var(--text); --svc-ink2: var(--muted); --svc-ink3: var(--faint);
   --svc-glass: var(--glass); --svc-line: var(--edge);
   --svc-green: var(--ok); --svc-red: var(--down); --svc-amber: var(--warn); --svc-cool: var(--cool);
@@ -845,7 +844,7 @@ function renderServicesPanel() {
     return m >= 60 ? Math.floor(m / 60) + 'h ' + (m % 60) + 'm' : m + ' min';
   }
 
-  // Line icons (1.6 stroke) shared with durantlogic.com and durant.xyz, replacing emoji.
+  // Line icons (1.6 stroke), replacing emoji.
   var P = {
     bolt: '<path d="M13 3 5 13.5h6L10 21l8-10.5h-6z"/>',
     disk: '<ellipse cx="12" cy="6" rx="7" ry="2.5"/><path d="M5 6v12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V6M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5"/>',
@@ -1543,7 +1542,7 @@ function renderPasskeyManagement(passkeys, rpID, expectedOrigin = '') {
   return `<div class="card" id="passkeys" data-passkey-origin="${escapeHtml(expectedOrigin)}">
     <h2>Passkeys<span class="sub">Platform passkeys for ${escapeHtml(rpID)}, at ${escapeHtml(expectedOrigin || `https://${rpID}`)}. This exact origin is the relying party and cannot be changed without enrolling again — set DASHBOARD_PUBLIC_URL to move it.</span></h2>
     ${rows}
-    <div class="setting-foot"><input type="text" id="passkey-label" maxlength="64" placeholder="Device label, e.g. Caleb's iPhone" aria-label="New passkey label"><button class="btn primary" type="button" id="passkey-enroll" aria-describedby="passkey-note">Enroll passkey</button><span class="save-note" id="passkey-note" role="status" aria-live="polite"></span></div>
+    <div class="setting-foot"><input type="text" id="passkey-label" maxlength="64" placeholder="Device label, e.g. My iPhone" aria-label="New passkey label"><button class="btn primary" type="button" id="passkey-enroll" aria-describedby="passkey-note">Enroll passkey</button><span class="save-note" id="passkey-note" role="status" aria-live="polite"></span></div>
   </div>`;
 }
 

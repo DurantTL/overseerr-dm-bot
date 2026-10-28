@@ -33,7 +33,7 @@ function fixture() {
     rateLimit: require('express-rate-limit').rateLimit,
     escapeHtml,
     getGuildMembers: async () => [],
-    fetchDiscordUser: async id => ({ id, username: 'caleb', tag: 'caleb', bot: false, send: async () => {} }),
+    fetchDiscordUser: async id => ({ id, username: 'alex', tag: 'alex', bot: false, send: async () => {} }),
     handlers: {
       link: stub('link'),
       unlink: stub('unlink'),
@@ -88,13 +88,13 @@ test('link validates input and dispatches with the resolved Discord user', async
     const missing = await post(port, '/admin/action/user/link', { discordId: '123456789012345678' }, AUTH);
     assert.strictEqual(missing.statusCode, 400);
 
-    const ok = await post(port, '/admin/action/user/link', { discordId: '123456789012345678', email: 'caleb@example.com' }, AUTH);
+    const ok = await post(port, '/admin/action/user/link', { discordId: '123456789012345678', email: 'alex@example.com' }, AUTH);
     assert.strictEqual(ok.statusCode, 200);
     assert.strictEqual(ok.json.ok, true);
     assert.match(ok.json.html, /ok:link/);
     assert.strictEqual(seen.link.admin, true, 'handlers run with admin permissions');
     assert.strictEqual(seen.link.userId, 'dashboard');
-    assert.strictEqual(seen.link.options.email, 'caleb@example.com');
+    assert.strictEqual(seen.link.options.email, 'alex@example.com');
     assert.strictEqual(seen.link.targetUser.id, '123456789012345678');
   } finally {
     await close(server);
@@ -112,9 +112,9 @@ test('unlink, invite, reinvite, assign-server, reshare-all dispatch correctly', 
     assert.strictEqual(seen.unlink.admin, true);
     assert.strictEqual(seen.unlink.targetUser.id, '123456789012345678');
 
-    const invite = await post(port, '/admin/action/user/invite', { discordId: '123456789012345678', email: 'caleb@example.com', server: 'ph' }, AUTH);
+    const invite = await post(port, '/admin/action/user/invite', { discordId: '123456789012345678', email: 'alex@example.com', server: 'ph' }, AUTH);
     assert.strictEqual(invite.statusCode, 200);
-    assert.strictEqual(seen.invite.options.email, 'caleb@example.com');
+    assert.strictEqual(seen.invite.options.email, 'alex@example.com');
     assert.strictEqual(seen.invite.options.server, 'ph');
 
     const inviteDefaultServer = await post(port, '/admin/action/user/invite', { discordId: '123456789012345678' }, AUTH);
@@ -122,9 +122,9 @@ test('unlink, invite, reinvite, assign-server, reshare-all dispatch correctly', 
     assert.strictEqual(seen.invite.options.server, 'primary');
     assert.strictEqual(seen.invite.options.email, null);
 
-    const reinvite = await post(port, '/admin/action/user/reinvite', { email: 'caleb@example.com' }, AUTH);
+    const reinvite = await post(port, '/admin/action/user/reinvite', { email: 'alex@example.com' }, AUTH);
     assert.strictEqual(reinvite.statusCode, 200);
-    assert.strictEqual(seen.reinvite.options.email, 'caleb@example.com');
+    assert.strictEqual(seen.reinvite.options.email, 'alex@example.com');
     assert.strictEqual(seen.reinvite.targetUser, null);
 
     const badServer = await post(port, '/admin/action/user/assign-server', { discordId: '123456789012345678', server: 'moon' }, AUTH);

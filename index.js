@@ -7662,7 +7662,7 @@ async function handleRtorrentCommand(interaction) {
 
 // /downsize — swap an existing movie file for a smaller staged replacement.
 //
-// Caleb is downsizing the 4K library: same quality, smaller files. Radarr only imports
+// The 4K library is being downsized: same quality, smaller files. Radarr only imports
 // F4: /duplicates — overlap detection across HD/4K libraries. A movie with a file in BOTH
 // libraries is flagged; the HD copy's size counts as reclaimable waste (the 4K copy supersedes
 // it — informational only, never auto-deletes).
