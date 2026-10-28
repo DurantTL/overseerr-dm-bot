@@ -568,6 +568,12 @@ const CONFIG = (() => {
   PH_TUNNEL_HEALTH_URL: omitPlaceholder(process.env.PH_TUNNEL_HEALTH_URL),
   PH_TUNNEL_CHECK_MINUTES: Number.parseInt(process.env.PH_TUNNEL_CHECK_MINUTES || '5', 10),
   PH_TUNNEL_FAILS_BEFORE_ALERT: Number.parseInt(process.env.PH_TUNNEL_FAILS_BEFORE_ALERT || '3', 10),
+  // Service-down alerts (src/service-alerts.js): container-level checks of every configured
+  // Services-board service, posted to the system channel with a Restart button. Plex is ignored
+  // by default because the external endpoint checker already alerts on it.
+  SERVICE_ALERTS_ENABLED: parseBool(process.env.SERVICE_ALERTS_ENABLED, true),
+  SERVICE_ALERT_CHECK_MINUTES: Number.parseInt(process.env.SERVICE_ALERT_CHECK_MINUTES || '5', 10),
+  SERVICE_ALERTS_IGNORE: process.env.SERVICE_ALERTS_IGNORE ?? 'plex',
   // Tailscale as an *optional* reachability path for PH viewers: CGNAT + no IPv6 means normal
   // Plex remote access can't reach the box, and the Cloudflare tunnel is reserved for the bot's
   // own HTTP routes (never media, per Plex's ToS). Nothing here invites anyone automatically —
@@ -755,6 +761,9 @@ function validateConfig() {
     || !(CONFIG.DISK_URGENT_FREE_PCT < CONFIG.DISK_WARN_FREE_PCT) || !(CONFIG.DISK_WARN_FREE_PCT <= 100)
     || CONFIG.DISK_CLEAR_MARGIN_PCT < 0) {
     throw new Error('DISK_WARN_FREE_PCT / DISK_URGENT_FREE_PCT must satisfy 0 < urgent < warn <= 100, DISK_CLEAR_MARGIN_PCT must be >= 0, DISK_CHECK_MINUTES must be > 0');
+  }
+  if (!Number.isFinite(CONFIG.SERVICE_ALERT_CHECK_MINUTES) || !(CONFIG.SERVICE_ALERT_CHECK_MINUTES > 0)) {
+    throw new Error('SERVICE_ALERT_CHECK_MINUTES must be a whole number of minutes greater than 0');
   }
 }
 
