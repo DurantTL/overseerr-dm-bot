@@ -8,6 +8,7 @@
 const axios = require('axios');
 const { fetchUpsStatus, nutConfigured } = require('./nut');
 const { fetchUnifiNetwork, hasNetworkData } = require('./unifi');
+const { queuePercent } = require('./util');
 
 // Groups in display order.
 const GROUPS = Object.freeze([
@@ -94,6 +95,48 @@ function urlFormat(svc) {
   if (svc.urlFormat) return svc.urlFormat;
   if (svc.externalKey) return 'https://<site address>';
   return svc.defaultPort ? `http://<host>:${svc.defaultPort}` : 'http://<host>:<port>';
+}
+
+// Sonarr/Radarr `timeleft` is "HH:MM:SS" or "D.HH:MM:SS"; null when unknown (stalled, queued).
+function timeleftSeconds(value) {
+  const text = String(value || '').trim();
+  const dot = text.indexOf('.');
+  const days = dot > -1 ? text.slice(0, dot) : '0';
+  const parts = (dot > -1 ? text.slice(dot + 1) : text).split(':');
+  if (parts.length !== 3 || ![days, ...parts].every(p => /^\d+$/.test(p))) return null;
+  const [h, m, sec] = parts.map(Number);
+  return Number(days) * 86400 + h * 3600 + m * 60 + sec;
+}
+
+const DOWNLOADS_PER_CARD = 3;
+
+// The few downloads worth showing on a Sonarr/Radarr card: from the queue the board already
+// fetches, matched by queue label (records can arrive without series or episode objects, so
+// nothing here depends on them). Downloading first, then anything that needs a look, then
+// importing, then the rest, each by progress.
+function cardDownloads(queueItems) {
+  const RANK = { downloading: 0, warning: 1, importing: 2 };
+  const rank = d => (d.state in RANK ? RANK[d.state] : 3);
+  return (queueItems || [])
+    .filter(q => Number(q.size) > 0)
+    .map(q => {
+      const status = String(q.status || '').toLowerCase();
+      const unhealthy = q.trackedStatus === 'warning' || status === 'warning' || status === 'failed';
+      const state = unhealthy ? 'warning'
+        : status === 'completed' ? 'importing'
+          : status === 'downloading' ? 'downloading'
+            : status === 'paused' ? 'paused'
+              : 'queued';
+      return {
+        title: String(q.title || 'Unknown').slice(0, 120),
+        pct: queuePercent(q),
+        sizeLeft: Math.max(0, Number(q.sizeleft) || 0),
+        eta: state === 'downloading' ? timeleftSeconds(q.timeleft) : null,
+        state,
+      };
+    })
+    .sort((a, b) => rank(a) - rank(b) || b.pct - a.pct)
+    .slice(0, DOWNLOADS_PER_CARD);
 }
 
 // One service's up/down state, shared by the Services board and the service-down
@@ -237,9 +280,13 @@ async function fetchSsdTemp(config, http = axios) {
 // an optional axios-compatible client for the ZFS/speedtest fetches (tests).
 async function gatherServicesBoard({ config, health, queues, sessions, canRestart, http }) {
   const queueCounts = { sonarr: 0, radarr: 0, 'radarr-4k': 0 };
+  const queueByLabel = { sonarr: [], radarr: [], 'radarr-4k': [] };
   for (const q of queues || []) {
     const label = q.source?.label;
-    if (label in queueCounts) queueCounts[label]++;
+    if (label in queueCounts) {
+      queueCounts[label]++;
+      queueByLabel[label].push(q);
+    }
   }
 
   const [ups, zfs, speedtest, networkRead, ssdTemp] = await Promise.all([
@@ -292,6 +339,8 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
     };
     if (svc.queueLabel && queueCounts[svc.queueLabel]) {
       entry.queue = queueCounts[svc.queueLabel];
+      const downloads = cardDownloads(queueByLabel[svc.queueLabel]);
+      if (downloads.length) entry.downloads = downloads;
     }
     if (state === 'down' && health?.errors?.[svc.healthKey]) entry.detail = String(health.errors[svc.healthKey]).slice(0, 120);
     services.push(entry);
@@ -333,4 +382,4 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
   };
 }
 
-module.exports = { GROUPS, SERVICES, gatherServicesBoard, resolveServiceState, externalLink, urlFormat, portFromUrl, fetchSpeedtest, fetchZfsHealth, fetchSsdTemp };
+module.exports = { GROUPS, SERVICES, gatherServicesBoard, cardDownloads, timeleftSeconds, resolveServiceState, externalLink, urlFormat, portFromUrl, fetchSpeedtest, fetchZfsHealth, fetchSsdTemp };
