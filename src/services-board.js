@@ -237,13 +237,21 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
   const network = networkRead && (networkRead.error || hasNetworkData(networkRead)) ? networkRead : null;
 
   const services = [];
+  // Services the board can't check because their URL variable isn't set. They used to vanish
+  // silently; now they're listed with the variable that would bring them back. Recomputed on every
+  // request, so a card moves into its group as soon as its variable appears.
+  const hidden = [];
   for (const svc of SERVICES) {
     if (svc.special) continue; // handled as dedicated cards below
     const { url, state } = await resolveServiceState(svc, { config, health });
 
     // No dead cards: without a URL (or external/self link) and without a
     // down-state worth flagging, there is nothing actionable to show.
-    if (!url && !svc.external && !svc.self && state !== 'down') continue;
+    if (!url && !svc.external && !svc.self && state !== 'down') {
+      // Names only: never the value of a variable, which can embed credentials.
+      hidden.push({ key: svc.key, name: svc.name, group: svc.group, icon: svc.icon, missing: svc.urlKey || null });
+      continue;
+    }
 
     const entry = {
       key: svc.key,
@@ -286,6 +294,7 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
 
   return {
     services,
+    hidden,
     groups: GROUPS.filter(g => services.some(s => s.group === g) || (g === 'System Health' && (ups || zfs || speedtest || ssdTemp || (network && !network.error))) || (g === 'Network' && network)),
     ups,
     zfs,
