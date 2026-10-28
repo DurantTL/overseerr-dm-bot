@@ -87,6 +87,12 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
+      # Busts the cached apt layer once a day so Debian security fixes reach the image even when
+      # node:24-slim hasn't changed (see the Dockerfile's APT_REFRESH note).
+      - name: Pick apt refresh key
+        id: apt
+        run: echo "day=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
       # Build once locally and scan it before anything is published: a vulnerable image must never
       # be discoverable only after it already reached GHCR and Watchtower auto-updated the host.
       # The publish step below reuses this build's cache, so it does not pay for the build twice.
@@ -99,6 +105,7 @@ jobs:
           tags: overseerr-dm-bot:scan-target
           build-args: |
             GIT_SHA=sha-${{ github.sha }}
+            APT_REFRESH=${{ steps.apt.outputs.day }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -121,6 +128,7 @@ jobs:
           # Baked into the image so the bot's "Bot Online" deploy ping can report its version.
           build-args: |
             GIT_SHA=sha-${{ github.sha }}
+            APT_REFRESH=${{ steps.apt.outputs.day }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           sbom: true

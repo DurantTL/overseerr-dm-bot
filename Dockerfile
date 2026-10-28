@@ -12,7 +12,12 @@ FROM node:24-slim
 # the tier agent does this on edge nodes; nothing else on the master runs smartctl.
 # The upgrade picks up Debian security point-releases (e.g. libpcre2-8-0) between node:24-slim
 # base image refreshes, without waiting on a new upstream base image tag.
-RUN apt-get update \
+# APT_REFRESH changes daily in CI (build-image.yml) so a cached copy of this layer can't keep
+# serving packages from before a security fix; without it the gha build cache reuses the layer
+# and the upgrade never re-runs until node:24-slim itself changes.
+ARG APT_REFRESH=
+RUN echo "apt refresh: ${APT_REFRESH:-none}" \
+  && apt-get update \
   && apt-get install -y --no-install-recommends rclone ca-certificates smartmontools \
   && apt-get upgrade -y \
   && rm -rf /var/lib/apt/lists/*
