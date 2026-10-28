@@ -424,7 +424,7 @@ test('dashboard-render: tabs only manage real panels and can show an attention c
 test('renderServicesPanel: draws the hidden-services row from the API with the missing variable', () => {
   const html = renderServicesPanel();
   assert.match(html, /Not on the board yet/);
-  assert.match(html, /d\.hidden\.map/);
+  assert.match(html, /hiddenShown\.map/, 'the row draws the hidden list, filtered by the search box');
   assert.match(html, /svc-hidden-card/);
   assert.match(html, /not on the board/, 'the summary line counts hidden services');
 });
@@ -445,4 +445,16 @@ test('renderServicesPanel: draws the admin-only Config gaps card with one copy b
   assert.match(html, /Admin only/);
   assert.match(html, /data-copy-env/);
   assert.match(html, /copyText\(line\)/, 'reuses the existing clipboard helper');
+});
+
+test('renderServicesPanel: Services has find, Down only and collapsible groups', () => {
+  const html = renderServicesPanel();
+  assert.match(html, /id="svcFind"[^>]*type="search"/);
+  assert.match(html, /id="svcDownOnly"[^>]*aria-pressed="false"/);
+  assert.match(html, /svc-group-toggle/);
+  assert.match(html, /aria-expanded/);
+  assert.match(html, /svcCollapsed/, 'collapsed groups are remembered per browser');
+  assert.match(html, /\.svc-grid\[hidden\] \{ display: none; \}/, 'a collapsed grid is really hidden despite display:grid');
+  assert.match(html, /data-clear-filter/);
+  assert.match(html, /x\.state !== 'down'/, 'Down only keeps only down services');
 });
