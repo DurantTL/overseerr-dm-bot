@@ -135,9 +135,9 @@ The bridge only recognizes the known onboarding embed titles; request notificati
 - `src/setup-discord-enhancements.js` — `/send-setup`, Plex read-back verification, and optional Tailscale provisioning interception.
 - `src/setup-device-state.js` — persistent PH device confirmations and PH device dashboard.
 - `src/setup-request-ui.js` — mobile Request Media modal/select flow that routes into the existing `/request` handler.
-- `src/setup-dm-bridge.js` — adds the state-aware setup entry point to existing welcome/setup-completion DMs.
+- `src/setup-dm-bridge.js` — `withSetupButton()`, which `index.js` calls explicitly on the welcome DM, the setup-complete reply, and `dmUser` to add the setup entry point.
 - `src/tailscale-provision.js` — optional scoped Tailscale OAuth/auth-key client for intentionally tagged appliance mode.
-- `bootstrap.js` — installs all guided-setup layers, including the DM bridge, before `index.js` starts.
+- `bootstrap.js` — validates config, then starts `index.js`. No guided-setup layer patches Discord prototypes; each registers explicitly in `index.js` (#257).
 
 ## Review hardening added before merge
 

@@ -65,6 +65,7 @@ const { runEdgeDiagnostics } = require('./src/edge-diagnostics');
 const { normalizeGranularity, parseTvUnitId, resolvePromotableUnit, checkPromotionCap, previewTvGranularity, mapSonarrSeriesList, mapSonarrEpisodeFiles } = require('./src/tv-granularity');
 const { checkPublicOriginReadiness } = require('./src/public-origin-diagnostics');
 const { createDeadman } = require('./src/deadman');
+const { withSetupButton } = require('./src/setup-dm-bridge');
 const { inventory: backupInventory, verifyBackups, backupTransitions } = require('./src/backup-inventory');
 const { fetchIndexerHealth, evaluateIndexerFlips } = require('./src/indexer-health');
 const { auditConfigured: tailscaleAuditConfigured, listDevices: listTailscaleDevices, auditDevices: auditTailscaleDevices, newWarnings: newTailscaleKeyWarnings } = require('./src/tailscale-audit');
@@ -4919,11 +4920,11 @@ client.on('guildMemberAdd', async member => {
   // recognizes them as mid-onboarding instead of silently dropping their reply.
   setPendingEmail(member.id);
   try {
-    await member.send({ embeds: [brandedEmbed(COLORS.PLEX)
+    await member.send(withSetupButton({ embeds: [brandedEmbed(COLORS.PLEX)
       .setTitle('👋 Welcome to Durant Media Server!')
       .setDescription('Glad to have you here! To request access, just **reply to this message with the email on your Plex account**.\n\nOnce an admin approves you, you\'ll get a Plex invite and a DM confirming you\'re all set. 🍿'
         + (phServerConfigured() ? '\n\nOn the **Philippines server**? Tap the button below before you reply so I invite you to the right one — otherwise I\'ll default you to the main (USA) servers.' : ''))],
-      components: phServerConfigured() ? [homeServerPickerRow()] : [] });
+      components: phServerConfigured() ? [homeServerPickerRow()] : [] }));
   } catch (err) {
     log.warn(`Could not DM ${member.user.tag}: ${err.message}`);
     notifyChannel('system', { embeds: [brandedEmbed(COLORS.WARN)
@@ -5033,11 +5034,11 @@ client.on('messageCreate', async message => {
     const { absorbed, plexStatus, seerrStatus, plexOk, seerrOk } = await applyFullChainLink(message.author.id, email, message.author.username);
     audit('user_linked', { targetDiscordId: message.author.id, email, source: 'admin_invite_auto', absorbedPlexRow: absorbed?.discord_id || null });
     const hadAccess = plexStatus.includes('already');
-    await message.reply({ embeds: [brandedEmbed(plexOk ? COLORS.SUCCESS : COLORS.WARN)
+    await message.reply(withSetupButton({ embeds: [brandedEmbed(plexOk ? COLORS.SUCCESS : COLORS.WARN)
       .setTitle(plexOk ? '🎉 You\'re In!' : '⚠️ Your Setup Needs Attention')
       .setDescription(plexOk
         ? (hadAccess ? `You're all set — \`${email}\` already has Plex access. Use \`/help\` here to see everything I can do. 🍿` : `📬 A Plex invite was sent to \`${email}\` — accept it and you're set. Use \`/help\` here to see everything I can do. 🍿`)
-        : `The Plex invite to \`${email}\` failed. An admin has the failure details and can retry your setup.`)] });
+        : `The Plex invite to \`${email}\` failed. An admin has the failure details and can retry your setup.`)] }));
     notifyChannel('audit', { embeds: [brandedEmbed(plexOk && seerrOk ? COLORS.SUCCESS : COLORS.WARN)
       .setTitle(plexOk && seerrOk ? '✅ Admin Invite Completed' : '⚠️ Admin Invite Needs Attention')
       .setDescription(`<@${message.author.id}> replied with \`${email}\`.`)
@@ -11128,7 +11129,9 @@ async function dmUser(discordId, payload) {
   if (!isSnowflake(discordId)) return false;
   try {
     const user = await client.users.fetch(discordId);
-    await user.send(payload);
+    // The setup-complete DMs ("You're In!" / "Your Setup Needs Attention") gain the Setup button
+    // here; every other payload passes through withSetupButton unchanged.
+    await user.send(withSetupButton(payload));
     return true;
   } catch (_e) {
     // Mirrors the guildMemberAdd welcome-DM failure alert: every other dmUser caller (approval,
