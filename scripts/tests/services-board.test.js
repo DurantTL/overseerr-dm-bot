@@ -385,3 +385,16 @@ test('services-board: download rows attach to the card whose queue label matches
   assert.deepStrictEqual(sonarr.downloads.map(d => [d.title, d.pct, d.eta]), [['Show S01E01', 75, 60], ['Show S01E02', 75, 60]]);
   assert.ok(!board.services.find(s => s.key === 'radarr').downloads, 'no downloads on a card with an empty queue');
 });
+
+test('services-board: cards carry Docker restart count and last start for their container', async () => {
+  const board = await gatherServicesBoard({
+    config: { RADARR_URL: 'http://radarr:7878', TAUTULLI_URL: 'http://tautulli:8181' },
+    health: { radarr: 'ok', tautulli: 'ok' }, queues: [], sessions: [], canRestart: true,
+    http: { get: async () => ({ data: {} }) },
+    containers: { radarr: { restartCount: 4, startedAt: '2026-10-28T12:02:00Z', status: 'running', image: 'radarr:5' } },
+  });
+  const radarr = board.services.find(s => s.key === 'radarr');
+  assert.strictEqual(radarr.restarts, 4);
+  assert.strictEqual(radarr.startedAt, '2026-10-28T12:02:00Z');
+  assert.ok(!('restarts' in board.services.find(s => s.key === 'tautulli')), 'no container, no facts');
+});

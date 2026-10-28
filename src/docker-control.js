@@ -55,6 +55,55 @@ async function restartViaPortainer({ url, apiKey, endpointId, container }) {
   return true;
 }
 
+// Docker keeps a restart count and the last start time per container, not a restart history, so
+// these are the only lifecycle facts the board can show honestly. Inspect also returns the
+// container's environment (Config.Env), which holds secrets: only the fields below ever leave
+// this function, and nothing here is logged.
+function containerFacts(inspect) {
+  const state = (inspect && inspect.State) || {};
+  const started = typeof state.StartedAt === 'string' && !state.StartedAt.startsWith('0001-') ? state.StartedAt : null;
+  return {
+    restartCount: Number.isInteger(inspect && inspect.RestartCount) ? inspect.RestartCount : null,
+    startedAt: started,
+    status: typeof state.Status === 'string' ? state.Status : null,
+    image: typeof inspect?.Config?.Image === 'string' ? inspect.Config.Image : null,
+  };
+}
+
+// { name: facts | null } for the given container names, through the same access restart uses
+// (Docker socket or Portainer). A container that can't be read maps to null; nothing throws.
+async function inspectContainers(config, names) {
+  const cap = restartCapable(config);
+  const out = {};
+  const wanted = [...new Set((names || []).filter(n => /^[a-z0-9][a-z0-9_.-]*$/i.test(n)))];
+  if (!cap || !wanted.length) return out;
+  if (cap.via === 'socket') {
+    await Promise.all(wanted.map(async name => {
+      try {
+        const { status, body } = await dockerSocketRequest(cap.socketPath, 'GET', `/containers/${encodeURIComponent(name)}/json`, 8000);
+        out[name] = status === 200 ? containerFacts(JSON.parse(body)) : null;
+      } catch { out[name] = null; }
+    }));
+    return out;
+  }
+  const base = cap.url.replace(/\/$/, '');
+  const headers = { 'X-API-Key': cap.apiKey };
+  let list = [];
+  try {
+    const res = await axios.get(`${base}/api/endpoints/${cap.endpointId}/docker/containers/json`, { headers, params: { all: 1 }, timeout: 10000 });
+    list = Array.isArray(res.data) ? res.data : [];
+  } catch { return out; }
+  await Promise.all(wanted.map(async name => {
+    const match = list.find(c => (c.Names || []).some(n => n.replace(/^\//, '') === name));
+    if (!match) { out[name] = null; return; }
+    try {
+      const res = await axios.get(`${base}/api/endpoints/${cap.endpointId}/docker/containers/${match.Id}/json`, { headers, timeout: 10000 });
+      out[name] = containerFacts(res.data);
+    } catch { out[name] = null; }
+  }));
+  return out;
+}
+
 function restartCapable(config) {
   const socketPath = config.DOCKER_SOCKET || '/var/run/docker.sock';
   if (config.DOCKER_SOCKET !== '' && socketAvailable(socketPath)) return { via: 'socket', socketPath };
@@ -73,4 +122,4 @@ async function restartContainer(config, container) {
   return restartViaPortainer({ ...cap, container });
 }
 
-module.exports = { restartCapable, restartContainer, socketAvailable };
+module.exports = { restartCapable, restartContainer, socketAvailable, containerFacts, inspectContainers };
