@@ -532,3 +532,17 @@ test('dashboard-render: a job row opens with its own settings groups, and only g
   assert.match(renderAutomationRegistry([job]), /pack_size_fix/);
   assert.match(renderSettingsGroup({ id: 'stuck', title: 'Stuck', blurb: '', settings: [{ key: 'X', type: 'bool', value: true, overridden: true }] }), /<details class="card set-group" data-group="stuck">[\s\S]*1 overridden/);
 });
+
+test('dashboard-render: activity rows carry a category for the filter chips', () => {
+  const { renderActivity, activityCategory } = require('../../src/dashboard-render');
+  assert.strictEqual(activityCategory('request_approved'), 'requests');
+  assert.strictEqual(activityCategory('service_down_alerted'), 'services');
+  assert.strictEqual(activityCategory('plex_invite_sent'), 'people');
+  assert.strictEqual(activityCategory('tier_agent_report'), 'fleet');
+  assert.strictEqual(activityCategory('dashboard_sweep'), 'system');
+  const html = renderActivity([{ id: 3, at: Date.now(), action: 'request_approved', details: '{"requestId":1}' }, { id: 2, at: Date.now(), action: 'dashboard_sweep', details: '{}' }]);
+  assert.match(html, /data-filter-btn="requests">Requests<span class="seg-n">1/);
+  assert.match(html, /data-cat="requests" data-key="audit-3"/);
+  assert.doesNotMatch(html, /data-filter-btn="fleet"/);
+  assert.match(html, /data-page="15"/);
+});

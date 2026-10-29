@@ -8,7 +8,7 @@ const { INBOX_ACTIONS, alertInbox } = require('../service-alerts');
 const { uptimeSummary } = require('../service-uptime');
 const { FEED_ACTION_NAMES, feedItems } = require('../dashboard-feed');
 const { gatherTrends } = require('../dashboard-trends');
-const { renderAlertInbox, renderRecentlyAdded, renderQuickActions, renderQuickActionSheet, renderFeed, renderTrends } = require('../dashboard-render');
+const { renderAlertInbox, renderRecentlyAdded, renderQuickActions, renderQuickActionSheet, renderFeed, renderTrends, renderActivity } = require('../dashboard-render');
 const tautulliRecent = require('../tautulli');
 const { buildFleetSync } = require('../fleet-sync');
 
@@ -236,7 +236,7 @@ function registerDashboardReadRoutes(app, deps) {
       }).join('')
     }</tbody></table></div>` : '<p class="muted">No linked users yet.</p>';
     const recentDownloads = db.prepare('SELECT * FROM download_access_log ORDER BY id DESC LIMIT 25').all();
-    const auditRows = db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 50').all();
+    const auditRows = db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 200').all();
     const linkedTotal = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
     const activeLinks = db.prepare('SELECT COUNT(*) AS c FROM download_tokens WHERE revoked = 0 AND expires_at > ?').get(now).c;
 
@@ -455,7 +455,7 @@ function registerDashboardReadRoutes(app, deps) {
 
     const requestRows = recentRequests.map(r => ({ title: r.title, status: r.status, type: mediaTypeLabel(r.media_type, r.is_4k), seerr: r.overseerr_request_id || 'provisional', requester: r.requested_by_discord_id || '—', when: fmtAgo(sqliteUtcMs(r.created_at)) }));
     const downloadRows = recentDownloads.map(d => ({ when: fmtAgo(sqliteUtcMs(d.created_at)), file: (d.file_path || '').split('/').pop() || '—', status: d.status, sent: d.bytes_sent ? fmtSpace(d.bytes_sent) : '', ip: d.ip || '' }));
-    const auditTableRows = auditRows.map(a => ({ when: fmtAgo(sqliteUtcMs(a.created_at)), action: a.action, details: String(a.metadata_json || '').slice(0, 160) }));
+    const edgeFailing = (edgeChecks || []).filter(c => c.status === 'fail').length;
 
     const unavailable = which => `<p class="muted">${escapeHtml(which)} unreachable or not configured.</p>`;
 
@@ -614,11 +614,19 @@ function registerDashboardReadRoutes(app, deps) {
       </section>
 
       <section class="panel" data-panel="fleet" data-label="Fleet">
-        <div class="card">
-          <h2>Tier Nodes</h2>
+        <div class="segs" data-segs role="group" aria-label="Fleet views">
+          <button type="button" class="seg-btn" data-seg-btn="nodes">Nodes<span class="seg-n">${tierItems.length}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="plan">Plan</button>
+          <button type="button" class="seg-btn" data-seg-btn="europe">Europe sync</button>
+          <button type="button" class="seg-btn" data-seg-btn="readiness">Readiness${edgeFailing ? `<span class="seg-n">${edgeFailing} failing</span>` : ''}</button>
+          <button type="button" class="seg-btn" data-seg-btn="manage">Folders and members</button>
+          <button type="button" class="seg-btn" data-seg-btn="setup">Set up a node</button>
+        </div>
+        <div class="card" data-seg-panel="nodes" data-rows-open>
+          <h2>Tier nodes<span class="sub">Tap a node for its details and buttons.</span></h2>
           ${renderItemList(tierItems, 'No tier nodes registered yet.')}
         </div>
-        <div class="card" id="tier-planning">
+        <div class="card" id="tier-planning" data-seg-panel="plan">
           <h2>Tier Planning<span class="sub">Dry-run the planner — shows keep/drop per node, writes nothing until you apply.</span></h2>
           <div class="tier-plan-controls">
             <label>Node <select id="tier-plan-node"><option value="">All nodes</option>${tierPlanNodeOptions}</select></label>
@@ -627,8 +635,8 @@ function registerDashboardReadRoutes(app, deps) {
           </div>
           <div id="tier-plan-results"></div>
         </div>
-        ${renderTierNodeSetup(tierNodes.map(node => ({ ...node, folders: listTierNodeFolders(node.name) })))}
-        <div class="card" id="tier-node-manage">
+        <div data-seg-panel="setup">${renderTierNodeSetup(tierNodes.map(node => ({ ...node, folders: listTierNodeFolders(node.name) })))}</div>
+        <div class="card" id="tier-node-manage" data-seg-panel="manage">
           <h2>Tier Node Management<span class="sub">Folders and restricted-node members. Changes apply immediately and are audited.</span></h2>
           <h3 class="setup-subheading">Syncthing folders</h3>
           <form id="tier-folder-add-form">
@@ -652,15 +660,22 @@ function registerDashboardReadRoutes(app, deps) {
           </form>` : ''}
           ${tierMemberManageHtml}
         </div>
-        ${europeSyncHtml}
-        <div class="card">
-          <h2>Edge Readiness</h2>
+        <div data-seg-panel="europe">${europeSyncHtml}</div>
+        <div class="card" data-seg-panel="readiness">
+          <h2>Edge readiness</h2>
           ${renderItemList(edgeChecks.map(c => ({ state: c.status === 'fail' ? 'down' : c.status, title: c.name, sub: c.detail })), 'No edge checks available.')}
         </div>
       </section>
 
       <section class="panel" data-panel="people" data-label="People">
-        <div class="card">
+        <div class="segs" data-segs role="group" aria-label="People views">
+          <button type="button" class="seg-btn" data-seg-btn="members">Members<span class="seg-n">${linkedTotal}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="pending">Pending Plex<span class="seg-n">${pendingPlex.length}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="add">Add someone</button>
+          <button type="button" class="seg-btn" data-seg-btn="downloads">Downloads</button>
+          <button type="button" class="seg-btn" data-seg-btn="reshare">Reshare all</button>
+        </div>
+        <div class="card" data-seg-panel="add">
           <h2>Add User<span class="sub">Runs the real /link and /invite commands — same Plex + Seerr chain, same audits.</span></h2>
           <div class="setup-grid">
             <form id="user-link-form">
@@ -682,22 +697,22 @@ function registerDashboardReadRoutes(app, deps) {
             </form>
           </div>
         </div>
-        <div class="card">
-          <h2>Pending Plex Users</h2>
+        <div class="card" data-seg-panel="pending">
+          <h2>Pending Plex users</h2>
           ${pendingUsersHtml}
         </div>
-        <div class="card">
-          <h2>Linked Users</h2>
+        <div class="card" data-seg-panel="members">
+          <h2>Linked users</h2>
           ${linkedUsersHtml}
         </div>
-        <div class="card">
-          <h2>Reshare All<span class="sub">Re-push the Plex share to every invited user — e.g. after a server rebuild.</span></h2>
+        <div class="card" data-seg-panel="reshare">
+          <h2>Reshare all<span class="sub">Re-push the Plex share to every invited user — e.g. after a server rebuild.</span></h2>
           <button class="btn" type="button" data-post="/admin/action/reshare-all" data-body='{"mode":"preview"}' data-inline="true">Preview</button>
           <button class="btn danger" type="button" data-post="/admin/action/reshare-all" data-body='{"mode":"apply"}' data-inline="true" data-confirm="Re-push the Plex share to EVERY invited user?">Apply</button>
           <span class="action-result" aria-live="polite"></span>
         </div>
-              <div class="card">
-          <h2>Recent Downloads</h2>
+        <div class="card" data-seg-panel="downloads">
+          <h2>Recent downloads</h2>
           ${renderTable(downloadRows)}
         </div>
       </section>
@@ -705,8 +720,8 @@ function registerDashboardReadRoutes(app, deps) {
       <section class="panel" data-panel="activity" data-label="Activity">
         <div data-live="activity"><!--live:activity-->
         <div class="card">
-          <h2>Recent Audit Log</h2>
-          ${renderTable(auditTableRows)}
+          <h2>Activity<span class="sub">Everything the bot and the dashboard did, newest first. The last ${auditRows.length} entries.</span></h2>
+          ${renderActivity(auditRows.map(a => ({ id: a.id, at: sqliteUtcMs(a.created_at), action: a.action, details: String(a.metadata_json || '').slice(0, 160) })))}
         </div>
         <!--/live:activity--></div>
       </section>

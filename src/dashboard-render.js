@@ -505,6 +505,33 @@ function renderFeed(items) {
     <time class="feed-when"${Number.isFinite(i.at) ? ` datetime="${new Date(i.at).toISOString()}"` : ''}>${Number.isFinite(i.at) ? escapeHtml(fmtAgo(i.at)) : ''}</time></li>`).join('')}</ol>`;
 }
 
+// Activity: the audit log as filterable rows, 15 at a time ([data-filter-list] in the shell).
+const ACTIVITY_CATEGORIES = [
+  ['requests', 'Requests', /^(media_|request|seerr_|season_|episode_|grab_|escalation|stuck_|pack_|release_group|watchlist|issue_|stage|staged|guided_import|manual_import|arr_|keep_|evict|deletion|retention|downsize|not_watchable)/],
+  ['services', 'Services', /^(service_|dashboard_service|indexer_|transcode|ph_tunnel|smart_|disk|tunnel|premiumize|rtorrent|backup|migration)/],
+  ['people', 'People', /^(user_|plex_|member_|invite|tailscale|email_|notification_|support_case|setup_guide|ph_device)/],
+  ['fleet', 'Fleet', /^(tier_|edge_|sync_|europe|fleet|dashboard_tier|dashboard_europe)/],
+];
+function activityCategory(action) {
+  const hit = ACTIVITY_CATEGORIES.find(([, , re]) => re.test(String(action || '')));
+  return hit ? hit[0] : 'system';
+}
+function renderActivity(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return '<p class="muted">No records.</p>';
+  const counts = {};
+  list.forEach(r => { const c = activityCategory(r.action); counts[c] = (counts[c] || 0) + 1; });
+  const chips = [['all', 'All', list.length], ...ACTIVITY_CATEGORIES.map(([id, label]) => [id, label, counts[id] || 0]), ['system', 'System', counts.system || 0]]
+    .filter(([id, , n]) => id === 'all' || n)
+    .map(([id, label, n]) => `<button type="button" class="seg-btn" data-filter-btn="${id}">${escapeHtml(label)}<span class="seg-n">${n}</span></button>`).join('');
+  return `<div class="segs" role="group" aria-label="Filter activity">${chips}</div>
+  <div data-filter-list data-page="15"><ol class="activity">${list.map(r => `<li class="act-row" data-cat="${activityCategory(r.action)}" data-key="audit-${escapeHtml(String(r.id))}">
+    <time class="act-when"${Number.isFinite(r.at) ? ` datetime="${new Date(r.at).toISOString()}"` : ''}>${Number.isFinite(r.at) ? escapeHtml(fmtAgo(r.at)) : ''}</time>
+    <span class="act-what">${escapeHtml(String(r.action || '').replace(/_/g, ' '))}</span>
+    ${r.details && r.details !== '{}' ? `<span class="act-details">${escapeHtml(r.details)}</span>` : ''}</li>`).join('')}</ol>
+  <button type="button" class="btn act-more" data-more-btn hidden>Show more</button></div>`;
+}
+
 function sparkPath(series, w, h) {
   const vals = series.map(p => p.v);
   const min = Math.min(...vals);
@@ -2592,6 +2619,8 @@ module.exports = {
   renderItemList,
   renderAlertInbox,
   renderFeed,
+  renderActivity,
+  activityCategory,
   renderTrends,
   renderFleetSync,
   renderRecentlyAdded,

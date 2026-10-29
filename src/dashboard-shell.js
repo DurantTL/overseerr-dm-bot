@@ -181,6 +181,16 @@ const SHELL_CSS = `
   details.set-group > summary .tag { flex:none; }
   details.set-group[open] > summary { margin-bottom:10px; }
   .seg-btn .seg-n { font-family:var(--mono); font-size:12px; margin-left:4px; opacity:.8; }
+  /* ---- Activity ---- */
+  .activity { list-style:none; margin:0; padding:0; }
+  .act-row { display:grid; grid-template-columns:96px minmax(0,1fr); gap:2px 12px; padding:9px 0; border-top:1px solid var(--border); font-size:14px; }
+  .act-row:first-child { border-top:none; }
+  .act-row[hidden] { display:none; }
+  .act-when { font-family:var(--mono); font-size:11px; color:var(--faint); grid-row:span 2; padding-top:2px; white-space:nowrap; }
+  .act-what { font-weight:600; }
+  .act-details { grid-column:2; font-family:var(--mono); font-size:11.5px; color:var(--muted); overflow-wrap:anywhere; }
+  .act-more { display:block; margin:12px auto 0; }
+  .act-more[hidden] { display:none; }
   /* ---- Openable rows: one line each, tap for details and buttons ---- */
   [data-rows-open] .item { cursor:pointer; align-items:center; min-height:44px; padding:10px 4px; border-radius:8px; }
   [data-rows-open] .item:hover { background:rgb(var(--tint) / .04); }
@@ -329,6 +339,24 @@ const SHELL_SCRIPT = `
       [].forEach.call(panel.querySelectorAll('[data-seg-btn]'), function (b) { b.setAttribute('aria-pressed', String(b.dataset.segBtn === v)); });
       [].forEach.call(panel.querySelectorAll('[data-seg-panel]'), function (p) { p.hidden = p.dataset.segPanel !== v; });
     });
+    // Filtered lists, a page at a time: the filter and how many show are kept on the tab's panel.
+    [].forEach.call(document.querySelectorAll('[data-filter-list]'), function (list) {
+      var panel = list.closest('.panel[data-panel]') || list.parentNode;
+      var filter = panel.getAttribute('data-filter') || 'all';
+      var page = Number(list.getAttribute('data-page')) || 15;
+      var shown = Number(panel.getAttribute('data-shown')) || page;
+      var scope = list.parentNode;
+      if (!scope.querySelector('[data-filter-btn="' + filter + '"]')) filter = 'all';
+      [].forEach.call(scope.querySelectorAll('[data-filter-btn]'), function (b) { b.setAttribute('aria-pressed', String(b.dataset.filterBtn === filter)); });
+      var n = 0;
+      [].forEach.call(list.querySelectorAll('[data-cat]'), function (row) {
+        var match = filter === 'all' || row.getAttribute('data-cat') === filter;
+        if (match) n++;
+        row.hidden = !match || n > shown;
+      });
+      var more = list.querySelector('[data-more-btn]');
+      if (more) { more.hidden = n <= shown; more.textContent = 'Show ' + Math.min(page, n - shown) + ' more'; }
+    });
     [].forEach.call(document.querySelectorAll('[data-rows-open] .item'), function (row) {
       if (!row.hasAttribute('tabindex')) { row.setAttribute('tabindex', '0'); row.setAttribute('role', 'button'); }
     });
@@ -345,6 +373,17 @@ const SHELL_SCRIPT = `
     if (window.DashLive) window.DashLive.refreshVisible();
   });
   document.addEventListener('dash:refreshed', syncSegs);
+  document.addEventListener('click', function (e) {
+    var f = e.target.closest('[data-filter-btn]'), m = e.target.closest('[data-more-btn]');
+    if (!f && !m) return;
+    var list = (f || m).closest('.card, .panel').querySelector('[data-filter-list]') || (f || m).closest('[data-filter-list]');
+    if (!list) return;
+    var panel = list.closest('.panel[data-panel]') || list.parentNode;
+    var page = Number(list.getAttribute('data-page')) || 15;
+    if (f) { panel.setAttribute('data-filter', f.dataset.filterBtn); panel.setAttribute('data-shown', String(page)); }
+    else panel.setAttribute('data-shown', String((Number(panel.getAttribute('data-shown')) || page) + page));
+    syncSegs();
+  });
 
   // ---- Openable rows ----
   var detail = document.getElementById('detailSheet'), detailBody = document.getElementById('detailBody'), detailReturn = null, detailMoved = [];
@@ -617,6 +656,11 @@ const SHELL_SCRIPT = `
   setInterval(paintStatus, 5000);
   document.addEventListener('visibilitychange', function () { if (!document.hidden) refreshVisible(); });
   show((location.hash || '').slice(1));
+  // Links to #tab (and the back button) switch tabs without a reload.
+  window.addEventListener('hashchange', function () {
+    var id = (location.hash || '').slice(1);
+    if (id && id !== document.body.dataset.view) show(id, { top: true });
+  });
   firstPaint = false;
 })();
 `;
