@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const express = require('express');
 const { rateLimit } = require('express-rate-limit');
 const { runMemberCommand } = require('../member-surface');
+const { icon: shellIcon, SHELL_CSS, THEME_HEAD_SCRIPT } = require('../dashboard-shell');
 
 const MEMBER_COOKIE = 'member_session';
 const MEMBER_SESSION_TTL_MS = 30 * 24 * 3600 * 1000; // 30 days
@@ -22,40 +23,52 @@ const CODE_MAX_PER_HOUR = 3;
 // Extra styling on top of the shared dashboard CSS: mobile-first member layout, the
 // converted command-result embeds, and the request search results.
 const MEMBER_CSS = `
-.member-header{background:#141414;border-bottom:1px solid #2a2a2a;position:sticky;top:0;z-index:10;}
-.member-header-inner{max-width:760px;margin:0 auto;padding:10px 12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
-.member-brand{font-weight:700;font-size:1.05rem;}
-.member-header nav{display:flex;gap:2px;flex-wrap:wrap;margin-left:auto;}
-.member-header nav a{color:#ccc;text-decoration:none;padding:6px 9px;border-radius:8px;font-size:.9rem;}
-.member-header nav a.active,.member-header nav a:hover{background:#2a2a2a;color:#fff;}
-.member-main{max-width:760px;margin:0 auto;padding:14px 12px 48px;}
-.member-nav-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin:14px 0;}
-.member-nav-card{display:block;background:#1b1b1b;border:1px solid #2c2c2c;border-radius:12px;padding:14px;color:#fff;text-decoration:none;}
-.member-nav-card:hover{border-color:#4a4a4a;}
-.member-nav-card .icon{font-size:1.4rem;}
-.member-nav-card .label{font-weight:600;margin-top:6px;}
-.member-nav-card .desc{color:#999;font-size:.82rem;margin-top:4px;}
-.member-result-embed{background:#1b1b1b;border:1px solid #2c2c2c;border-radius:12px;padding:14px;margin:12px 0;}
+body.member-shell{padding-bottom:calc(76px + env(safe-area-inset-bottom));}
+.member-header{position:sticky;top:0;z-index:20;background:color-mix(in srgb, var(--bg) 92%, transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-bottom:1px solid var(--border);padding-top:env(safe-area-inset-top);}
+.member-header-inner{max-width:980px;margin:0 auto;padding:10px 16px;display:flex;align-items:center;gap:14px;}
+.member-brand{display:flex;align-items:center;gap:10px;font-weight:650;font-size:1.02rem;color:var(--text);text-decoration:none;}
+.member-header nav{display:none;gap:4px;margin-left:auto;}
+.member-header nav a{color:var(--muted);text-decoration:none;padding:8px 12px;border-radius:999px;font-size:.93rem;font-weight:600;}
+.member-header nav a[aria-current="page"],.member-header nav a:hover{background:color-mix(in srgb, var(--accent) 18%, transparent);color:var(--text);}
+.member-main{max-width:980px;margin:0 auto;padding:18px 16px 40px;}
+.member-main h1{font-size:1.6rem;letter-spacing:-.02em;margin:6px 0 14px;}
+.member-hero h1{font-size:1.9rem;line-height:1.15;}
+.member-hero h1 em{font-family:var(--serif);font-style:italic;font-weight:400;color:var(--accent);}
+.member-search{display:flex;gap:8px;margin:0 0 18px;}
+.member-search input{flex:1;min-width:0;min-height:52px;padding:0 16px;border-radius:14px;border:1px solid var(--edge);background:var(--panel);color:var(--text);font-size:1rem;}
+.member-search button{min-height:52px;padding:0 18px;border-radius:14px;}
+.member-nav-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:14px 0 22px;}
+@media (min-width:721px){.member-nav-cards{grid-template-columns:repeat(4,minmax(0,1fr));}}
+.member-nav-card{display:flex;flex-direction:column;gap:4px;background:var(--glass);border:1px solid var(--edge);border-radius:16px;padding:14px;color:var(--text);text-decoration:none;min-height:44px;}
+.member-nav-card:hover{border-color:var(--accent);}
+.member-nav-card .icon{width:34px;height:34px;border-radius:10px;background:var(--panel2);color:var(--accent);display:flex;align-items:center;justify-content:center;}
+.member-nav-card .label{font-weight:650;margin-top:4px;}
+.member-nav-card .desc{color:var(--muted);font-size:.84rem;}
+.member-result-embed{background:var(--glass);border:1px solid var(--edge);border-radius:16px;padding:16px;margin:12px 0;}
 .member-result-embed h3{margin:0 0 8px;font-size:1.05rem;}
 .member-result-desc{line-height:1.55;}
 .member-result-fields{margin:12px 0 0;display:grid;gap:10px;}
-.member-result-field dt{color:#999;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em;}
+.member-result-field dt{color:var(--faint);font-family:var(--mono);font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;}
 .member-result-field dd{margin:2px 0 0;line-height:1.5;}
 .member-result-text{line-height:1.6;}
-.seerr-result{display:flex;gap:10px;align-items:center;width:100%;text-align:left;background:#1b1b1b;border:1px solid #2c2c2c;border-radius:10px;padding:10px;margin-top:8px;color:#fff;cursor:pointer;}
-.seerr-result:hover{border-color:#e8823c;}
-.seerr-result .t{font-weight:600;}
-.seerr-result .m{color:#999;font-size:.85rem;}
-.member-form label{display:block;margin:12px 0 4px;font-weight:600;}
-.member-form input[type=text],.member-form input[type=search],.member-form input[type=number],.member-form textarea,.member-form select{width:100%;box-sizing:border-box;background:#111;border:1px solid #333;border-radius:10px;color:#fff;padding:10px;font-size:1rem;}
-.member-form textarea{min-height:90px;resize:vertical;}
-.member-form .check{display:flex;align-items:center;gap:8px;font-weight:400;}
-.member-form .check input{width:auto;}
+.seerr-result{display:flex;gap:10px;align-items:center;width:100%;min-height:56px;text-align:left;background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:10px 14px;margin-top:8px;color:var(--text);cursor:pointer;font:inherit;}
+.seerr-result:hover{border-color:var(--accent);}
+.seerr-result .t{font-weight:600;flex:1;min-width:0;}
+.seerr-result .m{color:var(--muted);font-size:.85rem;}
+.member-form label{display:block;margin:14px 0 6px;font-weight:600;}
+.member-form input[type=text],.member-form input[type=search],.member-form input[type=number],.member-form textarea,.member-form select{width:100%;box-sizing:border-box;min-height:48px;background:var(--panel);border:1px solid var(--edge);border-radius:12px;color:var(--text);padding:10px 14px;font-size:1rem;}
+.member-form textarea{min-height:100px;resize:vertical;}
+.member-form .check{display:flex;align-items:center;gap:10px;font-weight:500;min-height:44px;}
+.member-form .check input{width:20px;height:20px;}
+.member-form .btn{min-height:48px;margin-top:16px;}
 .form-row{display:flex;gap:10px;align-items:end;flex-wrap:wrap;}
 .form-row>*{flex:1;min-width:120px;}
-.cancel-row{display:flex;align-items:center;gap:10px;background:#1b1b1b;border:1px solid #2c2c2c;border-radius:10px;padding:10px;margin-top:8px;}
-.cancel-row .t{flex:1;}
-.error{background:#3a1d1d;border:1px solid #7a2e2e;color:#ffb4b4;border-radius:10px;padding:10px 12px;margin:12px 0;}
+.cancel-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--glass);border:1px solid var(--edge);border-radius:12px;padding:10px 12px;margin-top:8px;}
+.cancel-row .t{flex:1;min-width:160px;}
+.error{background:color-mix(in srgb, var(--down) 14%, transparent);border:1px solid color-mix(in srgb, var(--down) 45%, transparent);color:var(--text);border-radius:12px;padding:10px 12px;margin:12px 0;}
+.member-logout{margin-top:28px;}
+.bottombar a.bb-item{text-decoration:none;}
+@media (min-width:721px){body.member-shell{padding-bottom:0;}.member-header nav{display:flex;}.member-logout{display:block;}}
 `;
 
 function readCookie(req, name) {
@@ -163,23 +176,28 @@ function registerMemberRoutes(app, deps) {
     }));
   }
 
+  // Same look as the admin dashboard: Durant tokens and theme, a top nav on wide screens and a
+  // bottom bar on the phone (Home, Request, My requests, Downloads, Me).
   function layout({ title, body, active, isAdmin = false }) {
     const links = [
-      ['/member', '🏠', 'Home'],
-      ['/member/request', '🎬', 'Request'],
-      ['/member/requests', '🧾', 'My Requests'],
-      ['/member/downloads', '📥', 'Downloads'],
-      ['/member/report', '🛠️', 'Report'],
-      ['/member/me', '👤', 'Me'],
+      ['/member', 'home', 'Home'],
+      ['/member/request', 'plus', 'Request'],
+      ['/member/requests', 'requests', 'My requests'],
+      ['/member/downloads', 'download', 'Downloads'],
+      ['/member/report', 'report', 'Report'],
+      ['/member/me', 'user', 'Me'],
     ];
-    if (isAdmin) links.push(['/member/admin', '🛡️', 'Admin']);
-    const nav = links.map(([href, icon, label]) =>
-      `<a href="${href}" class="${active === href ? 'active' : ''}">${icon} ${label}</a>`).join('');
-    return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)} — Durant Media</title><style>${css}</style><style>${MEMBER_CSS}</style></head><body>`
-      + `<header class="member-header"><div class="member-header-inner"><span class="member-brand">🎬 Durant Media</span><nav>${nav}</nav></div></header>`
+    if (isAdmin) links.push(['/member/admin', 'shield', 'Admin']);
+    const current = href => (active === href ? ' aria-current="page"' : '');
+    const nav = links.map(([href, , label]) => `<a href="${href}"${current(href)}>${label}</a>`).join('');
+    const barLinks = links.filter(([href]) => ['/member', '/member/request', '/member/requests', '/member/downloads', '/member/me'].includes(href));
+    const bar = `<nav class="bottombar" aria-label="Member sections">${barLinks.map(([href, ic, label]) =>
+      `<a class="bb-item" href="${href}"${current(href)}><span class="bb-pill">${shellIcon(ic, 24)}</span><span class="bb-label">${label}</span></a>`).join('')}</nav>`;
+    return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#10232f"><title>${escapeHtml(title)} — Durant Media</title><script>${THEME_HEAD_SCRIPT}</script><style>${css}${SHELL_CSS}</style><style>${MEMBER_CSS}</style></head><body class="member-shell">`
+      + `<header class="member-header"><div class="member-header-inner"><a class="member-brand" href="/member"><span class="brand-mark" aria-hidden="true">d<span>l</span>.</span><span>Durant Media</span></a><nav aria-label="Member sections">${nav}</nav></div></header>`
       + `<main class="member-main">${body}`
-      + `<form method="POST" action="/member/logout" style="margin-top:28px"><button class="btn" type="submit">Log out</button></form>`
-      + `</main></body></html>`;
+      + `<form class="member-logout" method="POST" action="/member/logout"><button class="btn" type="submit">Log out</button></form>`
+      + `</main>${bar}</body></html>`;
   }
 
   // Shorthand: every member page renders through this so the admin nav link and
@@ -215,7 +233,7 @@ function registerMemberRoutes(app, deps) {
           <label>Discord username or ID<input type="text" name="handle" value="${escapeHtml(handle)}" required autocomplete="username" autofocus></label>
           <button class="btn primary" type="submit">Send me a code</button>
         </form>`;
-    return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Member login — Durant Media</title><style>${css}</style><style>${MEMBER_CSS}</style></head><body><main class="member-main">${body}</main></body></html>`;
+    return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>Member login — Durant Media</title><script>${THEME_HEAD_SCRIPT}</script><style>${css}${SHELL_CSS}</style><style>${MEMBER_CSS}</style></head><body><main class="member-main" style="max-width:460px">${body}</main></body></html>`;
   }
 
   async function resolveHandle(handle) {
@@ -299,18 +317,17 @@ function registerMemberRoutes(app, deps) {
     const name = req.member.user.plex_username || req.member.user.email || 'member';
     const recentHtml = await runAsMember(req, handlers.myRequests, {}).catch(err => `<div class="error">${escapeHtml(err.message)}</div>`);
     const cards = [
-      ['/member/request', '🎬', 'Request', 'Ask for a movie or show.'],
-      ['/member/requests', '🧾', 'My Requests', 'Status, progress, and cancel.'],
-      ['/member/downloads', '📥', 'Downloads', 'Secure download links.'],
-      ['/member/report', '🛠️', 'Report a Problem', 'Bad audio, subs, wrong file…'],
-      ['/member/stats', '📊', 'My Stats', 'Requests and watching.'],
-      ['/member/keep', '📌', 'Keep List', 'Titles safe from cleanup.'],
-      ['/member/status', '💚', 'Server Status', 'Are Plex and the *arrs up?'],
-    ].map(([href, icon, label, desc]) =>
-      `<a class="member-nav-card" href="${href}"><div class="icon">${icon}</div><div class="label">${label}</div><div class="desc">${desc}</div></a>`).join('');
+      ['/member/report', 'report', 'Report a problem', 'Bad audio, subs, wrong file.'],
+      ['/member/keep', 'shield', 'Keep list', 'Titles safe from cleanup.'],
+      ['/member/stats', 'activity', 'My stats', 'Requests and watching.'],
+      ['/member/status', 'services', 'Server status', 'Are Plex and the apps up?'],
+    ].map(([href, ic, label, desc]) =>
+      `<a class="member-nav-card" href="${href}"><div class="icon">${shellIcon(ic, 20)}</div><div class="label">${label}</div><div class="desc">${desc}</div></a>`).join('');
     res.send(page(req, {
       title: 'Home', active: '/member',
-      body: `<h1>Hey, ${escapeHtml(name)} 👋</h1><div class="member-nav-cards">${cards}</div><h2>Your recent requests</h2>${recentHtml}`,
+      body: `<div class="member-hero"><h1>Hi ${escapeHtml(name)}. <em>What do you want to watch?</em></h1></div>
+        <form class="member-search" method="GET" action="/member/request" role="search"><input type="search" name="q" placeholder="Search for a movie or show" aria-label="Search for a movie or show" autocomplete="off" enterkeyhint="search"><button class="btn primary" type="submit">Search</button></form>
+        <h2>Your requests</h2>${recentHtml}<div class="member-nav-cards">${cards}</div>`,
     }));
   });
 
@@ -357,7 +374,7 @@ function registerMemberRoutes(app, deps) {
   app.get('/member/request', requireMember, (_req, res) => {
     res.send(page(_req, {
       title: 'Request', active: '/member/request',
-      body: `<h1>🎬 Request a movie or show</h1>
+      body: `<h1>Request a movie or show</h1>
       <form class="member-form" id="request-form" method="POST" action="/member/request">
         <label>Search<input type="search" id="seerr-q" placeholder="Start typing a title…" autocomplete="off"></label>
         <div id="seerr-results"></div>
@@ -377,6 +394,9 @@ function registerMemberRoutes(app, deps) {
         var hidden = document.getElementById('req-title');
         var submit = document.getElementById('req-submit');
         var timer = null;
+        // Arrived from Home's search box: start with that search.
+        var initial = new URLSearchParams(location.search).get('q');
+        if (initial) setTimeout(function () { q.value = initial; q.dispatchEvent(new Event('input')); }, 0);
         function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); }
         window.pickSeerr = function (mediaType, tmdbId, label) {
           hidden.value = mediaType + ':' + tmdbId + ':' + label;
@@ -450,7 +470,7 @@ function registerMemberRoutes(app, deps) {
         + `<a class="btn" href="/member/requests/status?media_id=${encodeURIComponent(r.media_id)}">Status</a>`
         + `<form method="POST" action="/member/requests/cancel" onsubmit="return confirm('Withdraw your request for ${escapeHtml(r.title).replace(/'/g, '&#39;')}?')"><input type="hidden" name="media_id" value="${escapeHtml(r.media_id)}"><button class="btn danger" type="submit">Cancel</button></form></div>`).join('')
       : '';
-    res.send(page(req, { title: 'My Requests', active: '/member/requests', body: `<h1>🧾 My requests</h1>${listHtml}${cancelHtml}` }));
+    res.send(page(req, { title: 'My Requests', active: '/member/requests', body: `<h1>My requests</h1>${listHtml}${cancelHtml}` }));
   });
 
   app.get('/member/requests/status', requireMember, async (req, res) => {
