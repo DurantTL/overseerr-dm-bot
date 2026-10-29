@@ -522,3 +522,13 @@ test('renderRecentlyAdded: escaped labels, lazy posters through the proxy, an em
   assert.match(html, /role="list"/);
   assert.match(renderRecentlyAdded([]), /Nothing has been added recently/);
 });
+
+test('dashboard-render: a job row opens with its own settings groups, and only groups that exist', () => {
+  const job = { id: 'season-pack', label: 'Season packs', enabled: true, cadence: { minutes: 30, source: 'compose', mutable: true }, manual: { enabled: true }, state: null };
+  const html = renderAutomationRegistry([job], { settingGroups: ['season_pack'] });
+  assert.match(html, /data-rows-open/);
+  assert.match(html, /data-detail-move="\[data-group=&quot;season_pack&quot;\]"/);
+  assert.doesNotMatch(html, /pack_size_fix/);
+  assert.match(renderAutomationRegistry([job]), /pack_size_fix/);
+  assert.match(renderSettingsGroup({ id: 'stuck', title: 'Stuck', blurb: '', settings: [{ key: 'X', type: 'bool', value: true, overridden: true }] }), /<details class="card set-group" data-group="stuck">[\s\S]*1 overridden/);
+});

@@ -581,19 +581,23 @@ function registerDashboardReadRoutes(app, deps) {
       </section>
 
       <section class="panel" data-panel="automation" data-label="Automation">
-        <p class="panel-intro">These take effect on the next sweep — no redeploy. Compose stays the default:
-          <strong>Reset to compose</strong> drops the override and the stack file's value applies again.
-          ${overriddenCount ? `<strong>${overriddenCount}</strong> setting${overriddenCount === 1 ? ' is' : 's are'} currently overridden here.` : 'Nothing is overridden right now.'}</p>
+        <p class="panel-intro">Settings take effect on the next sweep, no redeploy. <strong>Reset to compose</strong> drops an override so the stack file applies again.
+          ${overriddenCount ? `<strong>${overriddenCount}</strong> setting${overriddenCount === 1 ? ' is' : 's are'} overridden here.` : 'Nothing is overridden right now.'}</p>
         ${renderQuickActions(quickActions.automation)}
-        <div data-live="automation-jobs"><!--live:automation-jobs-->
-        <div class="card">
-          <h2>Season-search alert stand-downs<span class="sub">Searches still run. Only repeated identical no-release messages are muted.</span></h2>
-          ${renderItemList(seasonAlertItems, 'No season-search alerts are stood down.')}
+        <div class="segs" data-segs role="group" aria-label="Automation views">
+          <button type="button" class="seg-btn" data-seg-btn="jobs">Jobs<span class="seg-n">${automationInventory.length}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="settings">Settings<span class="seg-n">${settingsGroups.length}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="manual">Manual</button>
+          <button type="button" class="seg-btn" data-seg-btn="muted">Muted alerts<span class="seg-n">${seasonAlertItems.length}</span></button>
         </div>
-        ${renderAutomationRegistry(automationInventory, { heartbeatIssues: getAutomationRegistry()?.heartbeatIssues?.() || [] })}
+        <div data-live="automation-jobs" data-seg-panel="jobs"><!--live:automation-jobs-->
+        ${renderAutomationRegistry(automationInventory, { heartbeatIssues: getAutomationRegistry()?.heartbeatIssues?.() || [], settingGroups: settingsGroups.map(g => g.id) })}
         <!--/live:automation-jobs--></div>
-        <div class="card">
-          <h2>Manual Actions</h2>
+        <div data-live="automation-settings" data-seg-panel="settings"><!--live:automation-settings-->
+        ${settingsGroups.map(renderSettingsGroup).join('')}
+        <!--/live:automation-settings--></div>
+        <div class="card" data-seg-panel="manual">
+          <h2>Manual actions</h2>
           ${renderItemList(sweepItems, '')}
           <div class="actions">
             <a class="btn" href="/admin/health">Health JSON</a>
@@ -603,7 +607,10 @@ function registerDashboardReadRoutes(app, deps) {
             <button class="btn danger" type="button" onclick="revokeAll()">Revoke All Download Links</button>
           </div>
         </div>
-              ${settingsGroups.map(renderSettingsGroup).join('')}
+        <div class="card" data-seg-panel="muted" data-live="automation-muted"><!--live:automation-muted-->
+          <h2>Season-search alert stand-downs<span class="sub">Searches still run. Only repeated identical no-release messages are muted.</span></h2>
+          ${renderItemList(seasonAlertItems, 'No season-search alerts are stood down.')}
+        <!--/live:automation-muted--></div>
       </section>
 
       <section class="panel" data-panel="fleet" data-label="Fleet">
@@ -1201,11 +1208,15 @@ function registerDashboardReadRoutes(app, deps) {
               if (!r.ok || body.ok === false) { note(group, (body.errors || ['Failed: ' + r.status]).join('; '), 'bad'); return; }
               window.__dirtySettings = false;
               note(group, okText, 'ok');
-              setTimeout(function () { location.reload(); }, 700);
+              // Only the settings and jobs refresh (in place); an open job sheet refreshes when it closes.
+              if (window.DashLive) window.DashLive.refreshVisible();
             } catch (err) { note(group, String(err && err.message || err), 'bad'); }
           };
-          document.querySelectorAll('[data-preview]').forEach(function (btn) {
-            btn.addEventListener('click', async function () {
+          // Delegated, so the buttons keep working after a live refresh or inside a job's sheet.
+          document.addEventListener('click', async function (event) {
+            var btn = event.target.closest('[data-preview]');
+            if (!btn) return;
+            {
               var group = btn.dataset.preview;
               var values = {};
               inputsFor(group).forEach(function (el) {
@@ -1233,24 +1244,25 @@ function registerDashboardReadRoutes(app, deps) {
                 }
                 note(group, 'Preview uses the unsaved values above.', 'ok');
               } catch (err) { note(group, String(err && err.message || err), 'bad'); }
-            });
+            }
           });
-          document.querySelectorAll('[data-save]').forEach(function (btn) {
-            btn.addEventListener('click', function () {
+          document.addEventListener('click', function (event) {
+            var btn = event.target.closest('[data-save]');
+            if (btn) {
               var group = btn.dataset.save;
               var values = {};
               inputsFor(group).forEach(function (el) {
                 values[el.dataset.key] = el.dataset.type === 'bool' ? (el.checked ? '1' : '0') : el.value;
               });
               post('/admin/settings', { values: values }, group, 'Saved.');
-            });
-          });
-          document.querySelectorAll('[data-reset]').forEach(function (btn) {
-            btn.addEventListener('click', function () {
-              var group = btn.dataset.reset;
+              return;
+            }
+            btn = event.target.closest('[data-reset]');
+            if (btn) {
+              var resetGroup = btn.dataset.reset;
               if (!confirm('Drop the overrides for this group and use the compose values again?')) return;
-              post('/admin/settings/reset', { keys: inputsFor(group).map(function (el) { return el.dataset.key; }) }, group, 'Reset to compose.');
-            });
+              post('/admin/settings/reset', { keys: inputsFor(resetGroup).map(function (el) { return el.dataset.key; }) }, resetGroup, 'Reset to compose.');
+            }
           });
         })();
       </script>`;

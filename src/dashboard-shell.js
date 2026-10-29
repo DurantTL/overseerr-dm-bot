@@ -173,11 +173,24 @@ const SHELL_CSS = `
   .segs::-webkit-scrollbar { display:none; }
   .seg-btn { flex:none; min-height:40px; padding:0 14px; border-radius:999px; border:1px solid var(--border); background:transparent; color:var(--muted); font:inherit; font-size:14px; font-weight:600; cursor:pointer; white-space:nowrap; }
   .seg-btn[aria-pressed="true"] { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }
+  details.set-group > summary { list-style:none; cursor:pointer; display:flex; align-items:center; gap:10px; min-height:44px; }
+  details.set-group > summary::-webkit-details-marker { display:none; }
+  details.set-group > summary h2 { margin:0; flex:1; min-width:0; }
+  details.set-group > summary::after { content:"›"; color:var(--faint); font-size:20px; transition:transform .2s; }
+  details.set-group[open] > summary::after { transform:rotate(90deg); }
+  details.set-group > summary .tag { flex:none; }
+  details.set-group[open] > summary { margin-bottom:10px; }
   .seg-btn .seg-n { font-family:var(--mono); font-size:12px; margin-left:4px; opacity:.8; }
   /* ---- Openable rows: one line each, tap for details and buttons ---- */
   [data-rows-open] .item { cursor:pointer; align-items:center; min-height:44px; padding:10px 4px; border-radius:8px; }
   [data-rows-open] .item:hover { background:rgb(var(--tint) / .04); }
-  [data-rows-open] .item-actions, [data-rows-open] .action-result { display:none; }
+  [data-rows-open] .item-actions, [data-rows-open] .action-result, .item-more { display:none; }
+  #detailBody .item-more { display:block; margin-top:12px; font-size:13.5px; color:var(--muted); }
+  #detailBody .item-more p { margin:0 0 6px; overflow-wrap:anywhere; }
+  #detailBody .job-row .item-right { display:none; }
+  #detailBody > .card, #detailBody > details.card { margin:16px 0 0; }
+  #detailBody > details.set-group > summary { pointer-events:none; }
+  #detailBody > details.set-group > summary::after { display:none; }
   [data-rows-open] .item-sub { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   [data-rows-open] .item::after { content:"›"; color:var(--faint); font-size:20px; line-height:1; flex:none; }
   [data-rows-open] .item > .dot { margin-top:0; }
@@ -328,11 +341,13 @@ const SHELL_SCRIPT = `
     panel.setAttribute('data-seg', b.dataset.segBtn);
     try { localStorage.setItem('seg:' + panel.dataset.panel, b.dataset.segBtn); } catch (e2) {}
     syncSegs();
+    // A list that was hidden may be stale; bring it current now that it shows.
+    if (window.DashLive) window.DashLive.refreshVisible();
   });
   document.addEventListener('dash:refreshed', syncSegs);
 
   // ---- Openable rows ----
-  var detail = document.getElementById('detailSheet'), detailBody = document.getElementById('detailBody'), detailReturn = null;
+  var detail = document.getElementById('detailSheet'), detailBody = document.getElementById('detailBody'), detailReturn = null, detailMoved = [];
   function openDetail(row) {
     if (!detail) return;
     detailReturn = row;
@@ -342,6 +357,19 @@ const SHELL_SCRIPT = `
     if (right && anchor && anchor.parentNode) anchor.parentNode.insertBefore(right, anchor.nextSibling);
     detailBody.innerHTML = '';
     detailBody.appendChild(copy);
+    // data-detail-move: real elements (for example a job's settings form) shown in the sheet and
+    // put back on close, so their own listeners and the one set of inputs keep working.
+    var sel = row.getAttribute('data-detail-move');
+    if (sel) {
+      [].forEach.call(document.querySelectorAll(sel), function (el) {
+        if (detailBody.contains(el)) return;
+        var ph = document.createComment('detail-move');
+        el.parentNode.insertBefore(ph, el);
+        detailMoved.push({ el: el, ph: ph, open: el.open });
+        if (el.tagName === 'DETAILS') el.open = true;
+        detailBody.appendChild(el);
+      });
+    }
     var t = copy.querySelector('.item-title');
     detail.setAttribute('aria-label', t ? t.textContent.trim() : 'Details');
     detail.hidden = false;
@@ -352,6 +380,11 @@ const SHELL_SCRIPT = `
   function closeDetail() {
     if (!detail || detail.hidden) return;
     detail.hidden = true;
+    detailMoved.forEach(function (m) {
+      if (m.ph.parentNode) m.ph.parentNode.replaceChild(m.el, m.ph);
+      if (m.el.tagName === 'DETAILS') m.el.open = !!m.open;
+    });
+    detailMoved = [];
     detailBody.innerHTML = '';
     window.__actionsInFlight = Math.max(0, (window.__actionsInFlight || 0) - 1);
     if (detailReturn && document.contains(detailReturn)) detailReturn.focus();

@@ -2352,8 +2352,9 @@ function renderSettingsGroup(group) {
       <div class="setting-ctl">${origin}${control}</div>
     </div>`;
   }).join('');
-  return `<div class="card" data-group="${escapeHtml(group.id)}">
-    <h2>${escapeHtml(group.title)}<span class="sub">${escapeHtml(group.blurb)}</span></h2>
+  const overridden = group.settings.filter(x => x.overridden).length;
+  return `<details class="card set-group" data-group="${escapeHtml(group.id)}">
+    <summary><h2>${escapeHtml(group.title)}<span class="sub">${escapeHtml(group.blurb)}</span></h2>${overridden ? `<span class="tag on">${overridden} overridden</span>` : ''}</summary>
     ${rows}
     <div class="setting-foot">
       <button class="btn primary" type="button" data-save="${escapeHtml(group.id)}">Save changes</button>
@@ -2362,7 +2363,7 @@ function renderSettingsGroup(group) {
       <span class="save-note" data-note="${escapeHtml(group.id)}"></span>
     </div>
     ${previewable ? `<div class="setting-preview" data-preview-result="${escapeHtml(group.id)}" aria-live="polite"></div>` : ''}
-  </div>`;
+  </details>`;
 }
 
 // Dead-man line for a job with a push URL (src/deadman.js): the window to set on the monitor and
@@ -2378,11 +2379,32 @@ function deadmanLine(item) {
   return `Dead-man: ${window} · ${last}`;
 }
 
-function renderAutomationRegistry(items, { heartbeatIssues = [] } = {}) {
+// Which runtime-settings groups (src/runtime-settings.js) belong to which scheduled job, so a
+// job's row opens with its own settings beside it. Groups with no job stay under Settings only.
+const JOB_SETTINGS = {
+  'pending-approvals': ['pending_approvals'],
+  'request-reconcile': ['request_progress'],
+  'disk-space': ['capacity'],
+  stuck: ['stuck'],
+  escalation: ['escalation'],
+  'season-pack': ['season_pack', 'pack_size_fix'],
+  'episode-recovery': ['episode_recovery'],
+  premiumize: ['premiumize', 'release_group_blocklist'],
+  'not-watchable-digest': ['not_watchable_digest'],
+  'viewing-insights': ['viewing_insights'],
+  'quiet-digest': ['quiet_hours'],
+  'ratio-cleanup': ['ratio_cleanup'],
+};
+
+// Automation: one line per scheduled job (state, name, cadence and last run, status). Tapping a
+// row opens every fact the registry has, Run now, and the job's settings (moved in, not copied).
+function renderAutomationRegistry(items, { heartbeatIssues = [], settingGroups = null } = {}) {
+  const known = settingGroups ? new Set(settingGroups) : null;
   const rows = (items || []).map(item => {
     const state = item.state || {};
     const cadence = item.cadence || {};
     const status = item.running ? 'running' : !item.enabled ? 'disabled' : state.status || 'not run';
+    const dot = item.running ? 'warn' : !item.enabled ? 'skip' : state.status === 'failed' ? 'down' : state.finishedAt ? 'ok' : 'skip';
     const outcome = state.status === 'failed'
       ? state.error || 'failed'
       : state.resultSummary || 'No completed run recorded.';
@@ -2400,18 +2422,25 @@ function renderAutomationRegistry(items, { heartbeatIssues = [] } = {}) {
       ? `${item.previewable ? 'Preview and run-now available.' : 'Run-now available.'}`
       : `Manual unavailable: ${item.manual?.reason || 'scheduled execution only.'}`;
     const action = item.manual?.enabled
-      ? `<button class="btn" type="button" data-post="/admin/action/sweep" data-body="${escapeHtml(JSON.stringify({ name: item.id }))}"${item.enabled ? '' : ' disabled'}>Run now</button>`
+      ? `<div class="item-actions"><button class="btn" type="button" data-post="/admin/action/sweep" data-body="${escapeHtml(JSON.stringify({ name: item.id }))}"${item.enabled ? '' : ' disabled'}>Run now</button></div>`
       : '';
-    return `<div class="setting">
-      <div class="setting-main"><div class="setting-name">${escapeHtml(item.label)} <span class="tag${item.enabled ? ' on' : ''}">${escapeHtml(status)}</span></div>
-      <div class="setting-help">Job id ${escapeHtml(item.id)} · ${escapeHtml(item.enabled ? cadenceText : `Disabled: ${item.disabledReason} · ${cadenceText}`)} · ${escapeHtml(timing)}<br>${escapeHtml(outcome)} · ${escapeHtml(next)} · ${escapeHtml(manual)}${item.heartbeat ? `<br>${escapeHtml(deadmanLine(item))}` : ''}</div></div>
-      <div class="setting-ctl">${action}</div>
+    const groups = (JOB_SETTINGS[item.id] || []).filter(g => !known || known.has(g));
+    const short = [cadence.minutes > 0 ? `every ${cadence.minutes} min` : 'off', state.finishedAt ? `ran ${fmtAgo(state.finishedAt)}` : 'not run yet', state.status === 'failed' ? 'failed' : null].filter(Boolean).join(' · ');
+    return `<div class="item job-row" data-key="job-${escapeHtml(item.id)}"${groups.length ? ` data-detail-move="${escapeHtml(groups.map(g => `[data-group="${g}"]`).join(','))}"` : ''}>
+      <span class="dot ${dot}"></span>
+      <div class="item-main"><div class="item-title">${escapeHtml(item.label)}</div>
+      <div class="item-sub">${escapeHtml(short)}</div>
+      <div class="item-more"><p><span class="tag${item.enabled ? ' on' : ''}">${escapeHtml(status)}</span> Job id ${escapeHtml(item.id)}</p>
+        <p>${escapeHtml(item.enabled ? cadenceText : `Disabled: ${item.disabledReason} · ${cadenceText}`)}</p>
+        <p>Last run: ${escapeHtml(timing)}</p>${state.finishedAt || state.status === 'failed' ? `<p>${escapeHtml(outcome)}</p>` : ''}<p>${escapeHtml(next)} · ${escapeHtml(manual)}</p>${item.heartbeat ? `<p>${escapeHtml(deadmanLine(item))}</p>` : ''}${groups.length ? '<p class="muted">Its settings are below.</p>' : ''}</div>
+      ${action}</div>
+      <div class="item-right">${escapeHtml(status)}</div>
     </div>`;
   }).join('');
   const issues = heartbeatIssues.length
     ? `<p class="muted">DEADMAN_PING_URLS has entries that were ignored: ${escapeHtml(heartbeatIssues.join(', '))}. Each entry is job-id=https://… using a job id from this list.</p>`
     : '';
-  return `<div class="card" id="automation-registry"><h2>Automation registry<span class="sub">Every scheduled worker, its effective source, persisted outcome, and safe manual policy.</span></h2>${issues}${rows || '<p class="muted">Registry is starting.</p>'}</div>`;
+  return `<div class="card" id="automation-registry" data-rows-open><h2>Jobs<span class="sub">Every scheduled worker. Tap one for its last run, Run now and its settings.</span></h2>${issues}${rows ? `<div class="items">${rows}</div>` : '<p class="muted">Registry is starting.</p>'}</div>`;
 }
 
 // F14 Quick Actions bar for one tab. Each action is one of:
