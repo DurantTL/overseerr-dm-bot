@@ -38,11 +38,10 @@ test('parseScriptConfig extracts source, dest, and the year window', () => {
   const config = parseScriptConfig(SAMPLE_SCRIPT);
   assert.strictEqual(config.source, '/mnt/raid/media/media/Movies');
   assert.strictEqual(config.dest, '/mnt/raid/media/media/latest-movies');
-  assert.strictEqual(config.yearsBack, 2);
+  assert.strictEqual(config.version, 1);
   assert.strictEqual(config.dryRunDefault, true);
   const thisYear = new Date().getFullYear();
-  assert.strictEqual(config.yearMax, thisYear);
-  assert.strictEqual(config.yearMin, thisYear - 2);
+  assert.deepStrictEqual(config.window, { kind: 'years', yearsBack: 2, yearMin: thisYear - 2, yearMax: thisYear });
 });
 
 test('parseScriptConfig returns null for scripts missing the expected lines', () => {
@@ -234,4 +233,101 @@ test('estimateSizes returns nulls without source/dest', async () => {
   const estimate = await estimateSizes({ adds: [{ name: 'X (2024)' }] });
   assert.strictEqual(estimate.estimatedNewBytes, null);
   assert.strictEqual(estimate.totalFolders, 1);
+});
+
+// ---- v2 (deployed Oct 22, 2026): rolling MONTHS_BACK window, DRY_RUN read from the environment ----
+
+const V2_SCRIPT = `#!/bin/bash
+set -euo pipefail
+SOURCE="/mnt/raid/media/media/Movies"
+DEST="/mnt/raid/media/media/latest-movies"
+MONTHS_BACK=24
+DRY_RUN="\${DRY_RUN:-false}"
+`;
+
+test('parseScriptConfig reads the v2 script: MONTHS_BACK and the DRY_RUN env-default line', () => {
+  const { describeWindow } = require('../../src/europe-sync');
+  const config = parseScriptConfig(V2_SCRIPT, { now: new Date(2026, 9, 29) });
+  assert.strictEqual(config.version, 2);
+  assert.strictEqual(config.source, '/mnt/raid/media/media/Movies');
+  assert.strictEqual(config.dest, '/mnt/raid/media/media/latest-movies');
+  assert.strictEqual(config.dryRunDefault, false);
+  assert.deepStrictEqual(config.window, { kind: 'months', monthsBack: 24, cutoff: '2024-10-01' });
+  assert.match(describeWindow(config.window), /released within the last 24 months \(on or after October 1, 2024/);
+  assert.doesNotMatch(describeWindow(config.window), /2024–2026/);
+  // A literal DRY_RUN line is still accepted alongside MONTHS_BACK.
+  assert.strictEqual(parseScriptConfig(V2_SCRIPT.replace('DRY_RUN="${DRY_RUN:-false}"', 'DRY_RUN=true')).dryRunDefault, true);
+  // Neither a window nor a recognised DRY_RUN line: refused, never guessed.
+  assert.strictEqual(parseScriptConfig(V2_SCRIPT.replace('MONTHS_BACK=24\n', '')), null);
+  assert.strictEqual(parseScriptConfig(V2_SCRIPT.replace('DRY_RUN="${DRY_RUN:-false}"', 'DRY_RUN="$1"')), null);
+});
+
+test('monthsCutoff anchors to the first of the month, the way the script does', () => {
+  const { monthsCutoff } = require('../../src/europe-sync');
+  assert.strictEqual(monthsCutoff(24, new Date(2026, 9, 29)), '2024-10-01');
+  assert.strictEqual(monthsCutoff(24, new Date(2026, 9, 1)), '2024-10-01');
+  assert.strictEqual(monthsCutoff(1, new Date(2026, 2, 31)), '2026-02-01');
+  assert.strictEqual(monthsCutoff(14, new Date(2026, 0, 15)), '2024-11-01');
+});
+
+test('parseScriptOutput keeps lines it does not recognise instead of dropping them', () => {
+  const parsed = parseScriptOutput('=== Window: released on/after 2024-10-01 ===\nWOULD ADD: Wicked (2024) (released: 2024-11-22)\nWOULD SKIP (no video file): Shrek 5 (2027)\nsomething new: X\n=== Done ===\n');
+  assert.deepStrictEqual(parsed.adds, [{ name: 'Wicked (2024)', year: '2024-11-22' }]);
+  assert.deepStrictEqual(parsed.skips.map(x => x.name), ['Shrek 5 (2027)']);
+  assert.deepStrictEqual(parsed.other, ['something new: X']);
+});
+
+// v2-style fixture: decides with the env-default DRY_RUN line, like the deployed script.
+function writeV2Fixture() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'europe-sync-v2-'));
+  const file = path.join(dir, 'sync-latest-movies.sh');
+  fs.writeFileSync(file, `#!/bin/bash
+SOURCE="/src"
+DEST="/dst"
+MONTHS_BACK=24
+DRY_RUN="\${DRY_RUN:-false}"
+if [ "$DRY_RUN" = true ]; then
+  echo "WOULD ADD: Wicked (2024) (year: 2024)"
+  echo "WOULD REMOVE (aged out): Old Movie (2019)"
+  echo "SKIPPED (no video file - likely placeholder): Shrek 5 (2027)"
+else
+  echo "ADDED: Wicked (2024) (year: 2024)"
+  echo "REMOVED (aged out): Old Movie (2019)"
+fi
+`, { mode: 0o755 });
+  return { dir, file };
+}
+
+test('v2 preview matches a direct DRY_RUN=true run, run audits, and the script file never changes', async () => {
+  const { execFileSync } = require('node:child_process');
+  const { dir, file } = writeV2Fixture();
+  const before = fs.readFileSync(file);
+  const audits = [];
+  const app = routeFixture(file, audits);
+  const server = await listen(app, 0);
+  const prevEnv = process.env.DRY_RUN;
+  // Even with DRY_RUN=false in the bot's own environment, a preview must stay dry.
+  process.env.DRY_RUN = 'false';
+  try {
+    const port = server.address().port;
+    const direct = parseScriptOutput(execFileSync('bash', [file], { env: { ...process.env, DRY_RUN: 'true' } }).toString());
+    const { createEuropeSync } = require('../../src/europe-sync');
+    const viaBot = await createEuropeSync({ scriptPath: file }).preview();
+    assert.deepStrictEqual({ adds: viaBot.adds, removes: viaBot.removes, skips: viaBot.skips }, { adds: direct.adds, removes: direct.removes, skips: direct.skips });
+    const preview = await post(port, '/admin/action/europe-sync/preview', AUTH);
+    assert.strictEqual(preview.statusCode, 200);
+    assert.match(preview.json.html, /Dry run/);
+    assert.match(preview.json.html, /Wicked/);
+    assert.strictEqual(audits.filter(a => a.action === 'dashboard_europe_sync_run').length, 0);
+    const run = await post(port, '/admin/action/europe-sync/run', AUTH);
+    assert.strictEqual(run.statusCode, 200);
+    assert.match(run.json.html, /Sync complete: 1 added, 1 removed/);
+    const runAudit = audits.find(a => a.action === 'dashboard_europe_sync_run');
+    assert.deepStrictEqual({ added: runAudit.details.added, removed: runAudit.details.removed }, { added: 1, removed: 1 });
+    assert.ok(fs.readFileSync(file).equals(before), 'the server script file is byte-for-byte unchanged');
+  } finally {
+    if (prevEnv === undefined) delete process.env.DRY_RUN; else process.env.DRY_RUN = prevEnv;
+    await close(server);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

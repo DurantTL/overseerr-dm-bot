@@ -88,7 +88,7 @@ test('parseIngest keeps the checker judgment and rejects anything malformed', ()
   assert.strictEqual(uptime.parseIngest({ results: [{ key: 'plex-funnel', up: true, checked_at: (NOW - MIN) / 1000 }] }, NOW)[0].checkedAt, NOW - MIN);
   const bad = [
     [null, /results array/],
-    [{ results: [] }, /between 1 and 4/],
+    [{ results: [] }, /between 1 and 8/],
     [{ results: [{ key: 'grafana', up: true }] }, /Unknown endpoint key: grafana/],
     [{ results: [{ key: 'plex-funnel', up: 'yes' }] }, /up: true or false/],
     [{ results: [{ key: 'plex-funnel', up: true }, { key: 'plex-funnel', up: true }] }, /twice/],
@@ -169,7 +169,7 @@ test('ingest endpoint: checker-style post stored; unauthenticated, unknown keys 
     assert.strictEqual((await request(port, 'GET', '/admin/api/uptime')).status, 401);
     const read = await request(port, 'GET', '/admin/api/uptime', { headers: { 'x-admin': '1' } });
     assert.strictEqual(read.body.ok, true);
-    assert.deepStrictEqual(read.body.endpoints.map(e => [e.key, e.current.up]), [['plex-funnel', true], ['dashboard-funnel', true], ['bot-cloudflare', false], ['seedbox-rutorrent', true]]);
+    assert.deepStrictEqual(read.body.endpoints.filter(e => e.kind === 'path').map(e => [e.key, e.current.up]), [['plex-funnel', true], ['dashboard-funnel', true], ['bot-cloudflare', false], ['seedbox-rutorrent', true]]);
     assert.ok(!JSON.stringify(read.body).includes(token));
   } finally {
     await close(server);
@@ -198,4 +198,27 @@ test('ingest endpoint is rate limited', async () => {
   } finally {
     await close(server);
   }
+});
+
+test('fleet nodes: stored and summarised like the paths, one row per node, unknown devices refused', () => {
+  const db = memDb();
+  const rows = uptime.parseIngest({ checked_at: new Date(NOW - MIN).toISOString(), results: [
+    { key: 'node-durant-server', up: true, detail: 'online' },
+    { key: 'node-ph-server', up: false, detail: 'offline since 2026-10-29T10:00:00Z' },
+  ] }, NOW);
+  uptime.recordSamples(db, rows);
+  const rep = uptime.uptimeReport(db, NOW);
+  assert.deepStrictEqual(rep.filter(e => e.kind === 'node').map(e => e.name), ['durant-server', 'ph-server', 'southcentral-server', 'cali-plex-server']);
+  assert.deepStrictEqual(rep.filter(e => e.kind === 'path').map(e => e.key), ['plex-funnel', 'dashboard-funnel', 'bot-cloudflare', 'seedbox-rutorrent']);
+  const ph = rep.find(e => e.key === 'node-ph-server');
+  assert.strictEqual(ph.current.up, false);
+  assert.strictEqual(ph.periods['24h'].covered, false, 'one sample is collecting history, not 0% for a day');
+  assert.deepStrictEqual(rep.find(e => e.key === 'node-cali-plex-server').blocks, Array(24).fill(null));
+  // A second record for one node in a run is refused, so it can never become a second row; retired
+  // registrations and the watcher are not endpoints.
+  assert.throws(() => uptime.parseIngest({ results: [{ key: 'node-durant-server', up: true }, { key: 'node-durant-server', up: false }] }, NOW), /twice/);
+  for (const key of ['node-media-imac-pro', 'node-racknerd-ba2728f', 'node-europe']) {
+    assert.throws(() => uptime.parseIngest({ results: [{ key, up: true }] }, NOW), /Unknown endpoint key/);
+  }
+  assert.strictEqual(new Set(rep.map(e => e.key)).size, rep.length);
 });

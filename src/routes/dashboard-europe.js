@@ -64,6 +64,9 @@ function registerEuropeSyncRoutes(app, deps) {
       + section(live ? 'Added' : 'Would add', result.adds, 'Nothing to add.')
       + section(live ? 'Removed' : 'Would remove', result.removes, 'Nothing to remove.')
       + section('Skipped (no video file — likely unreleased placeholders)', result.skips, 'Nothing skipped.')
+      + ((result.other || []).length
+        ? `<details><summary>${result.other.length} other output line${result.other.length === 1 ? '' : 's'} from the script</summary><pre class="europe-sync-other">${escapeHtml(result.other.slice(0, 200).join('\n'))}</pre></details>`
+        : '')
       + `</div>`;
   }
 

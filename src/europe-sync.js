@@ -14,45 +14,93 @@
 //
 // The script is executed from a temp copy with only the DRY_RUN line rewritten,
 // so the server's script file is never modified by the bot.
+//
+// Two script versions are understood; the deployed script is the system of record and this module
+// adapts to it, never the other way round:
+//   v1  YEARS_BACK=<n> (calendar years) and a literal DRY_RUN=true|false line.
+//   v2  MONTHS_BACK=<n>, a rolling window anchored to the first of the current month (cutoff = the
+//       first of the month N months before that), and DRY_RUN="${DRY_RUN:-false}". A literal
+//       DRY_RUN=true|false line is accepted in v2 too.
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const ADD_RE = /^(?:WOULD ADD|ADDED):\s*(.+?)\s*(?:\(year:\s*(\d{4})\))?\s*$/;
-const REMOVE_RE = /^(?:WOULD REMOVE|REMOVED)\s*(?:\([^)]*\))?:\s*(.+?)\s*$/;
-const SKIP_RE = /^SKIPPED\s*(?:\([^)]*\))?:\s*(.+?)\s*$/;
+// Output markers. ADD and REMOVE/SKIP accept an optional "(reason)" before the colon, and ADD an
+// optional trailing "(year: 2024)" or "(released: 2025-03-14)"-style note.
+const ADD_RE = /^(?:WOULD ADD|ADDED)\s*(?:\([^)]*\))?:\s*(.+?)\s*(?:\((?:year|released|release|date|release date):\s*([^)]+)\))?\s*$/i;
+const REMOVE_RE = /^(?:WOULD REMOVE|REMOVED)\s*(?:\([^)]*\))?:\s*(.+?)\s*$/i;
+const SKIP_RE = /^(?:WOULD SKIP|SKIPPED)\s*(?:\([^)]*\))?:\s*(.+?)\s*$/i;
+// Banner and summary lines the script prints around the list; not items, not "unrecognised".
+const NOISE_RE = /^(?:={3,}.*|-{3,}.*|#.*|Done\.?|Summary.*|DRY RUN.*|Dry run.*)$/i;
 
-function parseScriptConfig(text) {
+// The DRY_RUN line in either accepted form: a literal true|false, or the v2 environment default.
+const DRY_RUN_LINE_RE = /^DRY_RUN=(?:(true|false)|"\$\{DRY_RUN:-(true|false)\}")[ \t]*$/m;
+
+// The first of the month `monthsBack` months before the first of `now`'s month, the way the v2
+// script computes its cutoff (date -d "$(date +%Y-%m-01) -N months"). Local time, like the script.
+function monthsCutoff(monthsBack, now = new Date()) {
+  const d = new Date(now.getFullYear(), now.getMonth() - monthsBack, 1);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-01`;
+}
+
+function parseScriptConfig(text, { now = new Date() } = {}) {
   const get = re => {
     const m = re.exec(text);
     return m ? m[1] : null;
   };
-  const source = get(/^SOURCE="([^"]*)"/m);
-  const dest = get(/^DEST="([^"]*)"/m);
-  const yearsBack = parseInt(get(/^YEARS_BACK=(\d+)/m) || '', 10);
-  const dryRun = get(/^DRY_RUN=(true|false)/m);
-  if (!source || !dest || !Number.isInteger(yearsBack) || !dryRun) return null;
-  const yearMax = new Date().getFullYear();
-  return { source, dest, yearsBack, dryRunDefault: dryRun === 'true', yearMin: yearMax - yearsBack, yearMax };
+  // A plain value or a "${VAR:-value}" default, quoted or not.
+  const value = name => {
+    const m = new RegExp(`^${name}=(?:"\\$\\{${name}:-([^}"]*)\\}"|"([^"]*)"|(\\S+))`, 'm').exec(text);
+    return m ? (m[1] ?? m[2] ?? m[3]) : null;
+  };
+  const source = get(/^SOURCE="([^"]*)"/m) || value('SOURCE');
+  const dest = get(/^DEST="([^"]*)"/m) || value('DEST');
+  const dry = DRY_RUN_LINE_RE.exec(text);
+  if (!source || !dest || !dry) return null;
+  const dryRunDefault = (dry[1] || dry[2]) === 'true';
+  const months = /^\d+$/.test(value('MONTHS_BACK') || '') ? Number(value('MONTHS_BACK')) : null;
+  if (months != null) {
+    return { version: 2, source, dest, dryRunDefault, window: { kind: 'months', monthsBack: months, cutoff: monthsCutoff(months, now) } };
+  }
+  const yearsBack = /^\d+$/.test(value('YEARS_BACK') || '') ? Number(value('YEARS_BACK')) : null;
+  if (yearsBack == null) return null;
+  const yearMax = now.getFullYear();
+  return { version: 1, source, dest, dryRunDefault, window: { kind: 'years', yearsBack, yearMin: yearMax - yearsBack, yearMax } };
+}
+
+// How the card describes the window: rolling months for v2, a year range for v1.
+function describeWindow(window) {
+  if (!window) return '';
+  if (window.kind === 'months') {
+    const [y, m] = window.cutoff.split('-').map(Number);
+    const label = new Date(y, m - 1, 1).toLocaleDateString('en-US', { day: 'numeric', month: 'long', year: 'numeric' });
+    return `movies released within the last ${window.monthsBack} months (on or after ${label}, a rolling window from the first of this month)`;
+  }
+  return `movies ${window.yearMin}–${window.yearMax}`;
 }
 
 function parseScriptOutput(stdout) {
   const adds = [];
   const removes = [];
   const skips = [];
+  // Lines that are neither an item nor known banner noise: shown to the operator rather than
+  // silently dropped, so a marker the script changes can't hide part of a run.
+  const other = [];
   for (const rawLine of String(stdout || '').split('\n')) {
     const line = rawLine.trim();
     if (!line) continue;
     let m = ADD_RE.exec(line);
-    if (m) { adds.push({ name: m[1], year: m[2] || null }); continue; }
+    if (m) { adds.push({ name: m[1], year: m[2] ? m[2].trim() : null }); continue; }
     m = REMOVE_RE.exec(line);
     if (m) { removes.push({ name: m[1] }); continue; }
     m = SKIP_RE.exec(line);
-    if (m) { skips.push({ name: m[1] }); }
+    if (m) { skips.push({ name: m[1] }); continue; }
+    if (!NOISE_RE.test(line)) other.push(line);
   }
-  return { adds, removes, skips };
+  return { adds, removes, skips, other };
 }
 
 // Default runner: copy the script to a temp file with the DRY_RUN line rewritten,
@@ -67,15 +115,19 @@ function defaultRunScript(scriptPath, dryRun, { timeoutMs = 5 * 60 * 1000 } = {}
       reject(new Error(`Sync script not found at ${scriptPath}`));
       return;
     }
-    if (!/^DRY_RUN=(true|false)/m.test(source)) {
-      reject(new Error('Sync script has no DRY_RUN line — refusing to run an unknown variant.'));
+    if (!DRY_RUN_LINE_RE.test(source)) {
+      reject(new Error('Sync script has no recognised DRY_RUN line — refusing to run an unknown variant.'));
       return;
     }
-    const rewritten = source.replace(/^DRY_RUN=(true|false)/m, `DRY_RUN=${dryRun ? 'true' : 'false'}`);
+    // Only the DRY_RUN line changes in the temp copy (either form becomes a literal), and the
+    // child gets no inherited DRY_RUN either, so the mode is exactly the one asked for.
+    const rewritten = source.replace(DRY_RUN_LINE_RE, `DRY_RUN=${dryRun ? 'true' : 'false'}`);
     const tmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'europe-sync-')), 'sync-latest-movies.sh');
     fs.writeFileSync(tmp, rewritten, { mode: 0o755 });
 
-    const child = spawn('bash', [tmp], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const env = { ...process.env };
+    delete env.DRY_RUN;
+    const child = spawn('bash', [tmp], { stdio: ['ignore', 'pipe', 'pipe'], env });
     let stdout = '';
     let stderr = '';
     const timer = setTimeout(() => {
@@ -203,4 +255,4 @@ function createEuropeSync({ scriptPath, runScript = defaultRunScript } = {}) {
   return { getStatus, preview, run, estimateSizes, parseScriptConfig, parseScriptOutput };
 }
 
-module.exports = { createEuropeSync, parseScriptConfig, parseScriptOutput, estimateSizes, defaultRunScript };
+module.exports = { createEuropeSync, parseScriptConfig, parseScriptOutput, describeWindow, monthsCutoff, estimateSizes, defaultRunScript };
