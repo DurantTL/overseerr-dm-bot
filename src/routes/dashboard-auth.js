@@ -13,9 +13,14 @@ function readCookie(req, name) {
   return undefined;
 }
 
-function createDashboardSession({ secret, ttlHours, now = Date.now, cookieSecure = false }) {
+// Sessions are stateless HMAC tokens, so on their own they can only expire. The payload also
+// carries a session generation (`g`); verify() rejects any token whose generation isn't the
+// current one, so bumping the generation ends every outstanding session at once. `generation`
+// returns the current number (see createSessionGeneration below); the default keeps a fixed 0
+// for callers and tests that don't need revocation.
+function createDashboardSession({ secret, ttlHours, now = Date.now, cookieSecure = false, generation = () => 0 }) {
   function sign(ttlMs = ttlHours * 3600000) {
-    const payload = Buffer.from(JSON.stringify({ exp: now() + ttlMs })).toString('base64url');
+    const payload = Buffer.from(JSON.stringify({ exp: now() + ttlMs, g: generation() })).toString('base64url');
     const signature = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
     return `${payload}.${signature}`;
   }
@@ -28,8 +33,9 @@ function createDashboardSession({ secret, ttlHours, now = Date.now, cookieSecure
     const expectedBuffer = Buffer.from(expected);
     if (actualBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(actualBuffer, expectedBuffer)) return false;
     try {
-      const { exp } = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-      return typeof exp === 'number' && now() < exp;
+      const { exp, g } = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+      // A token from before generations existed has no `g` and is rejected like an old one.
+      return typeof exp === 'number' && now() < exp && typeof g === 'number' && g === generation();
     } catch (_err) {
       return false;
     }
@@ -42,6 +48,40 @@ function createDashboardSession({ secret, ttlHours, now = Date.now, cookieSecure
   }
 
   return { sign, verify, setCookie, readCookie };
+}
+
+// The current session generation, kept in app_settings so it survives restarts. bump() ends every
+// session signed before it. syncCredentials() runs at startup: it keeps a keyed fingerprint of the
+// admin password and token (an HMAC under SESSION_SECRET, so the stored value reveals neither) and
+// bumps the generation when it differs from the one stored last time, i.e. when either credential
+// was changed. The first run only records the fingerprint.
+const SESSION_GENERATION_KEY = 'dashboard_session_generation';
+const SESSION_CREDENTIALS_KEY = 'dashboard_session_credentials_fp';
+function createSessionGeneration({ store, secret }) {
+  let cached = null;
+  function current() {
+    if (cached === null) {
+      const n = Number.parseInt(store.get(SESSION_GENERATION_KEY) || '0', 10);
+      cached = Number.isSafeInteger(n) && n >= 0 ? n : 0;
+    }
+    return cached;
+  }
+  function bump() {
+    const next = current() + 1;
+    store.set(SESSION_GENERATION_KEY, String(next));
+    cached = next;
+    return next;
+  }
+  function syncCredentials({ password = '', token = '' }) {
+    const fingerprint = crypto.createHmac('sha256', secret)
+      .update(`dashboard-credentials\u0000${password}\u0000${token}`).digest('base64url');
+    const previous = store.get(SESSION_CREDENTIALS_KEY);
+    if (previous === fingerprint) return { changed: false };
+    store.set(SESSION_CREDENTIALS_KEY, fingerprint);
+    if (!previous) return { changed: false, recorded: true };
+    return { changed: true, generation: bump() };
+  }
+  return { current, bump, syncCredentials };
 }
 
 function dashboardActor(req) {
@@ -156,6 +196,7 @@ function registerDashboardAuthRoutes(app, {
   revokePasskey,
   passkeyClientPath,
   webauthnBrowserPath,
+  sessionGeneration,
   // ({ scope, limit, windowMs }) => an express-rate-limit store for the sign-in limiters (the
   // password form and passkey authenticate), so their counts survive restarts. Unset = in memory.
   loginStore = () => undefined,
@@ -333,12 +374,37 @@ function registerDashboardAuthRoutes(app, {
     }
     if (!revokePasskey(credentialId)) return res.status(404).json({ error: 'Passkey not found.' });
     audit('dashboard_passkey_revoked', dashboardActor(req));
+    // A revoked device may still hold a signed-in session: end every session. The admin doing the
+    // revoking proved who they are on this request, so a browser session gets a fresh cookie and
+    // stays signed in; header-authenticated callers have no cookie to replace.
+    const hadSession = session.verify(session.readCookie(req, 'dm_session'));
+    const generation = sessionGeneration.bump();
+    audit('dashboard_session_generation_bumped', { ...dashboardActor(req), reason: 'passkey_revoked', generation });
+    if (hadSession) session.setCookie(req, res);
     return res.json({ ok: true });
+  });
+  // Sign out everywhere: ends every dashboard session, this browser's included. The confirmation
+  // is in the dashboard UI; this route only ever runs for an authenticated admin.
+  app.post('/admin/sessions/sign-out-everywhere', rateLimit({
+    windowMs: 15 * 60000,
+    limit: 60,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+  }), dashboardAuth, (req, res) => {
+    const generation = sessionGeneration.bump();
+    audit('dashboard_sign_out_everywhere', { ...dashboardActor(req), generation });
+    res.setHeader('Set-Cookie', 'dm_session=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0');
+    res.append('Set-Cookie', `${SETUP_NUDGE_COOKIE}=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0`);
+    return res.json({ ok: true, redirect: '/admin/login' });
   });
 }
 
 module.exports = {
   createDashboardSession,
+  createSessionGeneration,
+  SESSION_GENERATION_KEY,
+  SESSION_CREDENTIALS_KEY,
   createHeaderAuthThrottle,
   createDashboardAuth,
   createDashboardGateActor,

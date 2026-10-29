@@ -2673,6 +2673,15 @@ function renderPasskeyManagement(passkeys, rpID, expectedOrigin = '') {
   </div>`;
 }
 
+// Signed-in sessions: how long one lasts, and a confirmed "Sign out everywhere" that ends every
+// dashboard session at once, this browser's included. A plain button, so it works the same by tap.
+function renderSessionManagement(ttlHours) {
+  return `<div class="card" id="sessions">
+    <h2>Sessions<span class="sub">A sign-in lasts up to ${escapeHtml(String(ttlHours))} hours. Changing the admin password or token ends every session; revoking a passkey ends every session except this browser's.</span></h2>
+    <div class="setting-foot"><button class="btn danger" type="button" id="sign-out-everywhere" aria-describedby="sessions-note">Sign out everywhere</button><span class="save-note" id="sessions-note" role="status" aria-live="polite"></span></div>
+  </div>`;
+}
+
 // Shown once, at the top of /admin, when this browser session signed in with the password
 // fallback and no passkey is enrolled yet: the guided path from "account created" to "passkey
 // enrolled", instead of hunting for the Passkeys card further down the page.
@@ -3053,6 +3062,7 @@ module.exports = {
   tierNodeStatus,
   renderTierNodeSetup,
   renderPasskeyManagement,
+  renderSessionManagement,
   renderPasskeySetupBanner,
   renderAgentApiTokens,
   renderDirectorPanel,

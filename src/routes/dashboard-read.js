@@ -84,6 +84,7 @@ function registerDashboardReadRoutes(app, deps) {
     renderItemList,
     renderPage,
     renderPasskeyManagement,
+    renderSessionManagement = () => '',
     renderPasskeySetupBanner = () => '',
     renderSettingsGroup,
     renderStat,
@@ -762,6 +763,7 @@ function registerDashboardReadRoutes(app, deps) {
           <button type="button" class="btn" data-home-edit>Make Home yours</button>
         </div>
         ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID, PASSKEY_RP.origin)}
+        ${renderSessionManagement(CONFIG.SESSION_TTL_HOURS)}
         ${renderAgentApiTokens(agentApiTokens, { legacyConfigured: !!CONFIG.AGENT_API_TOKEN_HASH })}
         <div class="card">
           <h2>Integrations</h2>
@@ -881,6 +883,26 @@ function registerDashboardReadRoutes(app, deps) {
               try { await post('/admin/passkey/revoke', { credentialId: row.dataset.passkey }); location.reload(); }
               catch (error) { note.textContent = error.message || String(error); note.className = 'save-note bad'; }
             });
+          });
+        })();
+        (function () {
+          // Sign out everywhere: confirm, end every session (this one too), go to the login page.
+          var button = document.getElementById('sign-out-everywhere');
+          var note = document.getElementById('sessions-note');
+          if (!button) return;
+          button.addEventListener('click', async function () {
+            if (!confirm('Sign out everywhere? Every browser signed in to this dashboard, this one included, will need to sign in again.')) return;
+            button.disabled = true;
+            try {
+              var response = await fetch('/admin/sessions/sign-out-everywhere', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+              var result = await response.json().catch(function () { return {}; });
+              if (!response.ok) throw new Error(result.error || 'Could not sign out everywhere.');
+              location.assign(result.redirect || '/admin/login');
+            } catch (error) {
+              note.textContent = error.message || String(error);
+              note.className = 'save-note bad';
+              button.disabled = false;
+            }
           });
         })();
         (function () {
