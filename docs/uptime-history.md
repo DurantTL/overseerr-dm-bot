@@ -12,6 +12,36 @@ change it also sends each run's results to the bot, which stores them and shows 
 | `bot-cloudflare` | Bot via Cloudflare Tunnel: `media.durantlogic.com/live` |
 | `seedbox-rutorrent` | EvoSeedbox ruTorrent: `pace.myseedbox.site/rutorrent/` |
 
+### Fleet nodes (tailscale monitor)
+
+The RackNerd tailscale monitor already tracks the fleet's Tailscale nodes in
+`/opt/tailscale-monitor/device_states.json` and owns their down/recovery alerts. Its node states
+use the same ingest endpoint and table as the paths; there's no second history system.
+
+| Key | Node |
+|---|---|
+| `node-durant-server` | durant-server |
+| `node-ph-server` | ph-server |
+| `node-southcentral-server` | southcentral-server |
+| `node-cali-plex-server` | cali-plex-server |
+
+A node is up when the monitor's `reported_status` is `online`; the bot adds no judgment and no
+alerting.
+
+Not in v1:
+- the watcher itself (`racknerd-ba2728f`);
+- retired registrations (`media-imac-pro`);
+- nodes without a monitor feed (Central Iowa, Europe).
+
+These aren't endpoints, so a post naming them is refused and they never become rows.
+
+**Duplicates:** if the state file holds two records for one node, for example a Tailscale
+re-registration named `durant-server-1`, the post step sends one result for that node:
+- the online record wins;
+- if both are offline, the record that went offline most recently wins.
+
+The bot also refuses a run that names one node twice. Either way a node can't show as two rows.
+
 ## Bot side
 
 - `POST /api/uptime/ingest` with `Authorization: Bearer <UPTIME_INGEST_TOKEN>`:
@@ -139,6 +169,30 @@ line-numbered diff. Paste `check.py` into the session and I'll return a line-exa
   `this_runs_results` stands for whatever list or dict the run already builds. The only
   requirement is one `(url, up, detail)` per probed URL.
 
+### 3. Tailscale monitor post step
+
+`deploy/racknerd/tailscale_uptime_post.py` in this repo is the whole post step:
+- It reads the monitor's state file itself, so the monitor needs no code change, only one extra
+  command after each run.
+- It uses the same two environment values as the checker: `UPTIME_INGEST_URL` and
+  `UPTIME_INGEST_TOKEN`.
+- It posts nothing when the state file is more than 20 minutes old, so a stopped monitor shows as
+  grey hours instead of a repeated old state.
+- It always exits 0, so it can't fail the monitor's run.
+
+Copy it to the VM:
+
+```sh
+cp tailscale_uptime_post.py /opt/tailscale-monitor/
+```
+
+Then run it right after the monitor, in whatever already schedules the monitor (cron line or
+systemd unit), for example:
+
+```sh
+... && python3 /opt/tailscale-monitor/tailscale_uptime_post.py
+```
+
 ### Verify after applying
 
 ```sh
@@ -146,4 +200,5 @@ line-numbered diff. Paste `check.py` into the session and I'll return a line-exa
 python3 /opt/reachability-check/check.py
 ```
 
-Then open the dashboard: Services → Uptime should show "checked 1 min ago" on all four rows.
+Then open the dashboard: Services → Uptime should show "checked 1 min ago" on the four path rows,
+and on the four fleet-node rows once the monitor has run with the post step.

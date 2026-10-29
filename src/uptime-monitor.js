@@ -1,10 +1,11 @@
 'use strict';
 
-// Outside-in uptime history for the Services board's Uptime section. The RackNerd reachability
-// checker already probes four public paths every 5 minutes and alerts on Discord when one flips;
-// it decides up or down itself. After each run it now also POSTs its results here, and this module
-// only stores them and summarises what was stored. No judgment of its own: a sample is up or down
-// because the checker said so. Nothing here alerts.
+// Uptime history for the Services board's Uptime section, from two RackNerd feeds that already
+// exist and already own their own alerts: the reachability checker (four public paths, probed every
+// 5 minutes) and the tailscale monitor (the fleet's Tailscale nodes, online or offline). Each POSTs
+// its results here after a run; this module only stores them and summarises what was stored. No
+// judgment of its own: a sample is up or down because the checker or monitor said so. Nothing here
+// alerts.
 //
 // Never invents history: a period with no samples has no percentage, an hour with no samples is
 // "no data" (grey, never green), and a period the stored samples do not yet cover is reported as
@@ -22,12 +23,19 @@ const MAX_AGE_MS = DAY;
 const MAX_SKEW_MS = 10 * MINUTE;
 const DETAIL_MAX = 200;
 
-// Exactly the four paths the checker probes, in its order. Keys are what the checker posts.
+// Exactly the four paths the checker probes, in its order, then the fleet's Tailscale nodes the
+// RackNerd tailscale monitor tracks (online/offline as it reports them). Keys are what each posts.
+// Nodes without a monitor feed (Central Iowa, Europe), retired registrations and the watcher itself
+// are not listed, so a post naming them is refused and they never become rows.
 const ENDPOINTS = Object.freeze([
-  { key: 'plex-funnel', name: 'Plex via Tailscale Funnel', target: 'durant-server.end-cobra.ts.net/identity' },
-  { key: 'dashboard-funnel', name: 'Bot dashboard via Funnel', target: 'durant-server.end-cobra.ts.net/dashboard' },
-  { key: 'bot-cloudflare', name: 'Bot via Cloudflare Tunnel', target: 'media.durantlogic.com/live' },
-  { key: 'seedbox-rutorrent', name: 'EvoSeedbox ruTorrent', target: 'pace.myseedbox.site/rutorrent/' },
+  { key: 'plex-funnel', kind: 'path', name: 'Plex via Tailscale Funnel', target: 'durant-server.end-cobra.ts.net/identity' },
+  { key: 'dashboard-funnel', kind: 'path', name: 'Bot dashboard via Funnel', target: 'durant-server.end-cobra.ts.net/dashboard' },
+  { key: 'bot-cloudflare', kind: 'path', name: 'Bot via Cloudflare Tunnel', target: 'media.durantlogic.com/live' },
+  { key: 'seedbox-rutorrent', kind: 'path', name: 'EvoSeedbox ruTorrent', target: 'pace.myseedbox.site/rutorrent/' },
+  { key: 'node-durant-server', kind: 'node', name: 'durant-server', target: 'Tailscale node' },
+  { key: 'node-ph-server', kind: 'node', name: 'ph-server', target: 'Tailscale node' },
+  { key: 'node-southcentral-server', kind: 'node', name: 'southcentral-server', target: 'Tailscale node' },
+  { key: 'node-cali-plex-server', kind: 'node', name: 'cali-plex-server', target: 'Tailscale node' },
 ]);
 const KEYS = new Set(ENDPOINTS.map(e => e.key));
 
@@ -142,7 +150,7 @@ function uptimeReport(database, now = Date.now()) {
     const list = by.get(r.endpoint);
     if (list) list.push({ checkedAt: r.checked_at, up: r.up === 1, detail: r.detail });
   }
-  return ENDPOINTS.map(e => ({ key: e.key, name: e.name, target: e.target, ...summarizeEndpoint(by.get(e.key), now) }));
+  return ENDPOINTS.map(e => ({ key: e.key, kind: e.kind, name: e.name, target: e.target, ...summarizeEndpoint(by.get(e.key), now) }));
 }
 
 module.exports = { ENDPOINTS, RETAIN_MS, IngestError, parseIngest, recordSamples, pruneSamples, summarizeEndpoint, uptimeReport };

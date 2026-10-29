@@ -939,6 +939,8 @@ function renderServicesPanel({ needs = '' } = {}) {
 .ut-list { display: grid; gap: 8px; margin-bottom: 28px; }
 .ut-list[hidden] { display: none; }
 .ut-note { margin: 0 2px 2px; font-size: 12.5px; color: var(--svc-ink2); }
+.ut-sub { margin: 10px 2px 0; font-size: 13px; font-weight: 650; color: var(--svc-ink); }
+.ut-sub small { display: block; font-size: 12px; font-weight: 400; color: var(--svc-ink2); }
 .ut-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name state" "pct pct" "out out" "hours hours"; gap: 6px 12px;
   padding: 12px 14px; border: 1px solid var(--svc-line); border-radius: 14px; background: var(--glass); }
 .ut-state { grid-area: state; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 650; white-space: nowrap; }
@@ -2375,6 +2377,11 @@ function renderServicesPanel({ needs = '' } = {}) {
         '<div class="ut-axis"><span>24 h ago</span><span>now</span></div></div>' +
       '</div>';
   }
+  function uptimeGroup(title, how, list, now) {
+    if (!list.length) return '';
+    return '<h3 class="ut-sub" data-key="ut-sub-' + esc(title) + '">' + esc(title) + '<small>' + esc(how) + '</small></h3>' +
+      list.map(function (e) { return uptimeRowHtml(e, now); }).join('');
+  }
   function renderUptime(d) {
     var open = collapsed.indexOf('Uptime') === -1;
     var down = d.endpoints.filter(function (e) { return e.current && !e.current.up; }).length;
@@ -2384,8 +2391,9 @@ function renderServicesPanel({ needs = '' } = {}) {
       '<svg class="chev" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button></h2>' +
       '<span class="sum">' + esc(sum) + '</span><div class="line"></div></div>' +
       '<div class="ut-list" id="svcg-uptime"' + (open ? '' : ' hidden') + '>' +
-      '<p class="ut-note">Checked from outside every 5 minutes by the reachability checker. Grey hours have no stored check.</p>' +
-      d.endpoints.map(function (e) { return uptimeRowHtml(e, d.now); }).join('') + '</div>');
+      '<p class="ut-note">Grey hours have no stored check. Display only: alerts stay with the checker and the tailscale monitor.</p>' +
+      uptimeGroup('Public paths', 'checked from outside every 5 minutes by the reachability checker', d.endpoints.filter(function (e) { return e.kind !== 'node'; }), d.now) +
+      uptimeGroup('Fleet nodes', 'online or offline as the tailscale monitor reports them', d.endpoints.filter(function (e) { return e.kind === 'node'; }), d.now) + '</div>');
   }
   function loadUptime(scheduled) {
     if (uptimeLoading) return uptimeLoading;
