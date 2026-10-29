@@ -26,9 +26,10 @@ function registerHealthAndDownloadRoutes(app, {
       if (publicHealthCache.value && Date.now() - publicHealthCache.at < 30000) {
         return res.status(publicHealthCache.value.overall === 'ok' ? 200 : 503).json(publicHealthCache.value);
       }
+      // Public and unauthenticated: only the overall state and when it was taken. The per-service
+      // detail stays behind dashboard sign-in at GET /admin/health.
       publicHealthCache.pending ||= gatherHealth().then(value => {
-        const publicValue = { ...value };
-        delete publicValue.errors;
+        const publicValue = { overall: value.overall, timestamp: value.timestamp };
         publicHealthCache = { at: Date.now(), value: publicValue, pending: null };
         return publicValue;
       }).catch(err => {
@@ -37,8 +38,8 @@ function registerHealthAndDownloadRoutes(app, {
       });
       const value = await publicHealthCache.pending;
       return res.status(value.overall === 'ok' ? 200 : 503).json(value);
-    } catch (err) {
-      return res.status(503).json({ overall: 'down', error: err.message });
+    } catch (_err) {
+      return res.status(503).json({ overall: 'down', timestamp: new Date().toISOString() });
     }
   });
 

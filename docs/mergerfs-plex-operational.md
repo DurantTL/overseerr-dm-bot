@@ -411,7 +411,7 @@ configured, instead of being a one-time hand check:
   presence, remote-branch read-only (parsed from `/proc/mounts`, never proven by writing), remote
   reachability (a dead/stale mount fails the same as an unmounted one), and local-first precedence
   for the configured sample paths. Nothing here ever creates, writes, or deletes anything.
-- `/doctor` (and `GET /admin/doctor`) surfaces the latest report per enabled node as
+- `/doctor` (and `GET /admin/doctor/edge`) surfaces the latest report per enabled node as
   `Merged mount (<node>) — <check>`; a report older than `EDGE_MOUNT_DIAG_STALE_HOURS` (default 12)
   shows as a single stale warning instead of stale-but-green sub-checks.
 - A node that hasn't set `EDGE_MERGED_ROOT` yet contributes no checks at all — this is silent, not
