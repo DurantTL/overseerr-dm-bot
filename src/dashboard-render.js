@@ -919,6 +919,23 @@ function renderServicesPanel({ needs = '' } = {}) {
 .svc-sheet-facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0 0 10px; padding: 12px 14px;
   border: 1px solid var(--svc-line); border-radius: 14px; background: rgb(var(--tint) / .03); font-size: 13px; }
 .svc-sheet-facts[hidden] { display: none; }
+/* Edit order: drag tiles (touch, pen or mouse) or arrow keys. */
+.svc-edit svg { width: 16px; height: 16px; flex: none; }
+.svc-edit[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text); }
+/* Phone: Tiles and Edit show only their icons so Find keeps its width. */
+@media (max-width: 480px) { .svc-dense .lbl, .svc-edit .lbl { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); } .svc-dense, .svc-edit { padding: 0 12px; } }
+.svc-editbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin: 0 0 14px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 14px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent); font-size: 13px; color: var(--svc-ink2); }
+.svc-editbar[hidden] { display: none; }
+.svc-editbar span { flex: 1 1 200px; }
+.svc-editbar .svc-clear { min-height: 40px; margin: 0; }
+.svc-editbar .svc-clear.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+#svcBoard.editing .svc-grid > .svc-card[data-key] { touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none;
+  outline: 1px dashed color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: 2px; }
+#svcBoard.editing .svc-card:hover { transform: none; }
+#svcBoard.editing .svc-more { display: none; }
+#svcBoard.editing .svc-card.dragging { position: relative; z-index: 6; cursor: grabbing; transition: none; box-shadow: 0 18px 40px rgba(0,0,0,.45); opacity: .95; }
+#svcBoard.editing .svc-card:focus-visible { outline: 3px solid var(--accent); }
 .ut-list { display: grid; gap: 8px; margin-bottom: 28px; }
 .ut-list[hidden] { display: none; }
 .ut-note { margin: 0 2px 2px; font-size: 12.5px; color: var(--svc-ink2); }
@@ -1180,8 +1197,10 @@ function renderServicesPanel({ needs = '' } = {}) {
   <div class="svc-filter" role="search">
     <label class="svc-find" for="svcFind"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg><input id="svcFind" type="search" placeholder="Find a service" autocomplete="off" enterkeyhint="search" aria-label="Find a service by name"></label>
     <button type="button" class="svc-downonly" id="svcDownOnly" aria-pressed="false"><span class="dot" aria-hidden="true"></span>Down only</button>
-    <button type="button" class="svc-downonly svc-dense" id="svcDense" aria-pressed="true" title="Show services as small tiles or full cards"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg>Tiles</button>
+    <button type="button" class="svc-downonly svc-dense" id="svcDense" aria-pressed="true" title="Show services as small tiles or full cards"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg><span class="lbl">Tiles</span></button>
+    <button type="button" class="svc-downonly svc-edit" id="svcEdit" aria-pressed="false" title="Rearrange the tiles"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg><span class="lbl" id="svcEditLabel">Edit</span></button>
   </div>
+  <div class="svc-editbar" id="svcEditBar" hidden><span>Drag tiles to rearrange them. On a keyboard, focus a tile and use the arrow keys.</span><button type="button" class="svc-clear" id="svcEditReset">Reset order</button><button type="button" class="svc-clear primary" id="svcEditDone">Done</button></div>
   <div id="svcBoard"><div class="svc-loading">Loading services…</div></div>
   <section id="svcUptime" aria-label="Uptime"></section>
 </div>
@@ -1801,6 +1820,7 @@ function renderServicesPanel({ needs = '' } = {}) {
     // Patch, don't replace: only cards whose data changed are touched, so hover states, open
     // menus and the bars' fill animations survive each refresh.
     patchHtml(board, html || '<div class="svc-loading">No services configured yet.</div>');
+    applyOrder();
     if (netBoard) {
       var netHtml = (d.network || d.speedtest)
         ? '<div class="svc-head"><h2>Network</h2><span class="sum">UDR7 · live</span><div class="line"></div></div>' +
@@ -2057,6 +2077,110 @@ function renderServicesPanel({ needs = '' } = {}) {
     board.innerHTML = '';
     rerender();
   });
+  // ---- Edit: drag tiles into your own order (pencil). Saved per browser, per group ----
+  // Order is applied after each render by moving nodes, so it survives live refreshes; tiles not in
+  // a saved order (new services) keep their usual place after the ordered ones.
+  var editMode = false, drag = null;
+  var editEl = document.getElementById('svcEdit'), editBar = document.getElementById('svcEditBar');
+  var order = {};
+  try { order = JSON.parse(localStorage.getItem('svcOrder') || '{}') || {}; } catch (e) { order = {}; }
+  function saveOrder() { try { localStorage.setItem('svcOrder', JSON.stringify(order)); } catch (e) {} }
+  function tilesOf(grid) { return [].slice.call(grid.children).filter(function (c) { return c.matches('.svc-card[data-key]'); }); }
+  function applyOrder() {
+    [].forEach.call(board.querySelectorAll('.svc-grid'), function (grid) {
+      var saved = order[grid.id];
+      if (!Array.isArray(saved) || !saved.length) return;
+      var tiles = tilesOf(grid);
+      var rank = function (t) { var i = saved.indexOf(t.dataset.key); return i === -1 ? saved.length + tiles.indexOf(t) : i; };
+      var sorted = tiles.slice().sort(function (a, b) { return rank(a) - rank(b); });
+      if (sorted.every(function (t, i) { return t === tiles[i]; })) return;
+      sorted.forEach(function (t) { grid.appendChild(t); });
+    });
+  }
+  function rememberGrid(grid) { order[grid.id] = tilesOf(grid).map(function (t) { return t.dataset.key; }); saveOrder(); }
+  function setEdit(on) {
+    editMode = on;
+    board.classList.toggle('editing', on);
+    editEl.setAttribute('aria-pressed', String(on));
+    document.getElementById('svcEditLabel').textContent = on ? 'Done' : 'Edit';
+    editEl.title = on ? 'Finish rearranging' : 'Rearrange the tiles';
+    editBar.hidden = !on;
+    [].forEach.call(board.querySelectorAll('.svc-grid > .svc-card[data-key]'), function (t) {
+      if (on) { t.setAttribute('tabindex', '0'); t.setAttribute('aria-roledescription', 'movable tile'); }
+      else { t.removeAttribute('tabindex'); t.removeAttribute('aria-roledescription'); }
+    });
+    if (!on) load();
+  }
+  editEl.addEventListener('click', function () { setEdit(!editMode); });
+  document.getElementById('svcEditDone').addEventListener('click', function () { setEdit(false); editEl.focus(); });
+  document.getElementById('svcEditReset').addEventListener('click', function () {
+    order = {}; saveOrder(); setEdit(false); rerender(); setEdit(true);
+  });
+  // While editing, a tap never opens a tile, a link or a sheet.
+  board.addEventListener('click', function (e) {
+    if (editMode && e.target.closest('.svc-card')) { e.preventDefault(); e.stopPropagation(); }
+  }, true);
+  board.addEventListener('contextmenu', function (e) { if (editMode && e.target.closest('.svc-card')) { e.preventDefault(); e.stopPropagation(); } }, true);
+  board.addEventListener('pointerdown', function (e) {
+    if (!editMode || drag || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    var tile = e.target.closest('.svc-grid > .svc-card[data-key]');
+    if (!tile) return;
+    e.preventDefault();
+    drag = { tile: tile, grid: tile.parentElement, id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, dy: 0 };
+    try { tile.setPointerCapture(e.pointerId); } catch (err) {}
+    tile.classList.add('dragging');
+  });
+  board.addEventListener('pointermove', function (e) {
+    if (!drag || e.pointerId !== drag.id) return;
+    e.preventDefault();
+    var tile = drag.tile;
+    tile.style.transform = 'translate(' + (e.clientX - drag.x) + 'px,' + (e.clientY - drag.y) + 'px)';
+    // Which tile in this group is under the finger? Rects, not elementFromPoint, since the dragged
+    // tile itself is under the pointer.
+    var over = null;
+    tilesOf(drag.grid).forEach(function (t) {
+      if (t === tile) return;
+      var r = t.getBoundingClientRect();
+      if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) over = t;
+    });
+    if (over) {
+      var before = tile.getBoundingClientRect();
+      var tiles = tilesOf(drag.grid);
+      drag.grid.insertBefore(tile, tiles.indexOf(over) > tiles.indexOf(tile) ? over.nextSibling : over);
+      // Keep the tile under the finger: it was drawn at its old rect; its new slot is the new rect.
+      tile.style.transform = '';
+      var after = tile.getBoundingClientRect();
+      drag.x = e.clientX - (before.left - after.left);
+      drag.y = e.clientY - (before.top - after.top);
+      tile.style.transform = 'translate(' + (e.clientX - drag.x) + 'px,' + (e.clientY - drag.y) + 'px)';
+    }
+    // Near the screen edge, scroll so a tile can travel the whole board on a phone.
+    if (e.clientY < 90) window.scrollBy(0, -12); else if (e.clientY > window.innerHeight - 110) window.scrollBy(0, 12);
+  });
+  function endDrag(e) {
+    if (!drag || (e && e.pointerId !== drag.id)) return;
+    drag.tile.classList.remove('dragging');
+    drag.tile.style.transform = '';
+    rememberGrid(drag.grid);
+    drag = null;
+  }
+  board.addEventListener('pointerup', endDrag);
+  board.addEventListener('pointercancel', endDrag);
+  board.addEventListener('keydown', function (e) {
+    if (!editMode) return;
+    var tile = e.target.closest && e.target.closest('.svc-grid > .svc-card[data-key]');
+    if (!tile) return;
+    var step = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key];
+    if (e.key === 'Escape') { setEdit(false); editEl.focus(); return; }
+    if (!step) return;
+    e.preventDefault();
+    var tiles = tilesOf(tile.parentElement), i = tiles.indexOf(tile), j = i + step;
+    if (j < 0 || j >= tiles.length) return;
+    tile.parentElement.insertBefore(tile, step > 0 ? tiles[j].nextSibling : tiles[j]);
+    rememberGrid(tile.parentElement);
+    tile.focus();
+  });
+
   function toggleGroup(toggle) {
     var g = toggle.getAttribute('data-group');
     var at = collapsed.indexOf(g);
@@ -2190,7 +2314,7 @@ function renderServicesPanel({ needs = '' } = {}) {
   // Hidden tab, an open sheet or palette, or an action in flight: skip this beat rather than move
   // things under you.
   function blocked() {
-    return document.hidden || window.__actionsInFlight > 0 ||
+    return document.hidden || window.__actionsInFlight > 0 || editMode ||
       (sheet && sheet.classList.contains('open')) || pal.classList.contains('open') ||
       !!(window.__dashboardRefreshBlocked && window.__dashboardRefreshBlocked());
   }
