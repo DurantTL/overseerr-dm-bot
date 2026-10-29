@@ -4,7 +4,9 @@ const assert = require('node:assert');
 const http = require('node:http');
 const path = require('node:path');
 const { rateLimit } = require('express-rate-limit');
+const Database = require('better-sqlite3');
 const { createApp, listen, close } = require('../../src/app');
+const { SqliteRollingWindowStore } = require('../../src/rate-limit');
 const {
   createDashboardSession,
   createHeaderAuthThrottle,
@@ -39,9 +41,13 @@ function createFixture(overrides = {}) {
     ...overrides.config,
   };
   const session = createDashboardSession({ secret: 'test-session-secret', ttlHours: 1, cookieSecure: config.COOKIE_SECURE !== false });
-  const dashboardAuth = createDashboardAuth({ config, session, safeEqual: (a, b) => a === b });
-  const passkeys = overrides.passkeys || [];
   const audits = [];
+  const dashboardAuth = createDashboardAuth({
+    config, session, safeEqual: (a, b) => a === b,
+    ...(overrides.headerThrottle ? { headerThrottle: overrides.headerThrottle, clientKey: () => 'test-client' } : {}),
+    onHeaderAuthFailure: failure => audits.push({ event: 'dashboard_header_auth_failed', metadata: failure }),
+  });
+  const passkeys = overrides.passkeys || [];
   const app = createApp({ trustProxy: true });
   registerDashboardAuthRoutes(app, {
     config,
@@ -62,6 +68,7 @@ function createFixture(overrides = {}) {
     revokePasskey: overrides.revokePasskey || (() => false),
     passkeyClientPath: path.join(__dirname, '..', '..', 'src', 'passkey-client.js'),
     webauthnBrowserPath: require.resolve('@simplewebauthn/browser'),
+    ...(overrides.loginStore ? { loginStore: overrides.loginStore } : {}),
   });
   app.get('/admin', rateLimit({ windowMs: 60000, limit: 120 }), dashboardAuth, (_req, res) => res.send('dashboard'));
   app.post('/admin/protected', rateLimit({ windowMs: 60000, limit: 120 }), dashboardAuth, (_req, res) => res.json({ ok: true }));
@@ -279,5 +286,114 @@ test('wrong admin headers are throttled per client without affecting cookie sess
     assert.strictEqual(reopened.statusCode, 200);
   } finally {
     await close(server);
+  }
+});
+
+// Restart-survival: the sign-in limiters and header-failure counter keep their counts in SQLite.
+// "Restart" here is a brand-new app, limiters and throttle built over the same database file,
+// which is exactly what a container restart does (in-memory state gone, SQLite kept).
+function limitDb() {
+  const db = new Database(':memory:');
+  db.exec(`CREATE TABLE rate_limit_hits (
+    scope TEXT NOT NULL, identity TEXT NOT NULL, hit_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+  ); CREATE INDEX idx_rate_limit_bucket ON rate_limit_hits(scope, identity, expires_at);`);
+  return db;
+}
+function persistentFixture(db, clock, overrides = {}) {
+  return createFixture({
+    ...overrides,
+    loginStore: ({ scope, limit, windowMs }) => new SqliteRollingWindowStore({ db, scope, limit, windowMs, now: () => clock.now }),
+    headerThrottle: createHeaderAuthThrottle({
+      limit: 10, windowMs: 15 * 60000,
+      store: new SqliteRollingWindowStore({ db, scope: 'dashboard-header-auth-failures', limit: 10, windowMs: 15 * 60000, now: () => clock.now }),
+    }),
+  });
+}
+
+test('password login limit (5 per 15 min) survives a restart and still answers 429', async () => {
+  const db = limitDb();
+  const clock = { now: 1_000_000 };
+  let fx = persistentFixture(db, clock);
+  let server = await listen(fx.app, 0);
+  try {
+    let port = server.address().port;
+    for (let i = 0; i < 5; i++) {
+      const wrong = await request(port, { method: 'POST', path: '/admin/login', form: { password: `guess-${i}` } });
+      assert.strictEqual(wrong.statusCode, 302);
+      assert.strictEqual(wrong.headers.location, '/admin/login?error=1');
+    }
+    assert.strictEqual(fx.audits.filter(a => a.event === 'dashboard_login_failed').length, 5, 'each failure audited as before');
+    await close(server);
+
+    fx = persistentFixture(db, clock);
+    server = await listen(fx.app, 0);
+    port = server.address().port;
+    const limited = await request(port, { method: 'POST', path: '/admin/login', form: { password: 'correct-password' } });
+    assert.strictEqual(limited.statusCode, 429, 'still limited after the restart');
+    assert.strictEqual(limited.body, 'login:false:Too many attempts. Try again in a few minutes.:false', 'same 429 page');
+
+    clock.now += 15 * 60000;
+    const reopened = await request(port, { method: 'POST', path: '/admin/login', form: { password: 'correct-password' } });
+    assert.strictEqual(reopened.statusCode, 302, 'window over: sign-in works');
+    assert.strictEqual(reopened.headers.location, '/admin');
+  } finally {
+    await close(server);
+    db.close();
+  }
+});
+
+test('passkey authenticate limit (10 per 15 min) survives a restart', async () => {
+  const db = limitDb();
+  const clock = { now: 1_000_000 };
+  const failing = { authenticationOptions: async () => ({}), finishAuthentication: async () => { throw new Error('bad'); } };
+  let fx = persistentFixture(db, clock, { passkeyService: failing });
+  let server = await listen(fx.app, 0);
+  try {
+    let port = server.address().port;
+    for (let i = 0; i < 10; i++) {
+      assert.strictEqual((await request(port, { method: 'POST', path: '/admin/passkey/authenticate', body: {} })).statusCode, 401);
+    }
+    await close(server);
+    fx = persistentFixture(db, clock);
+    server = await listen(fx.app, 0);
+    port = server.address().port;
+    const limited = await request(port, { method: 'POST', path: '/admin/passkey/authenticate', body: { answer: 'valid' } });
+    assert.strictEqual(limited.statusCode, 429);
+    assert.deepStrictEqual(JSON.parse(limited.body), { error: 'Too many attempts. Try again in a few minutes.' });
+    clock.now += 15 * 60000;
+    const ok = await request(port, { method: 'POST', path: '/admin/passkey/authenticate', body: { answer: 'valid' } });
+    assert.strictEqual(ok.statusCode, 200, 'a valid passkey works once the window is over');
+  } finally {
+    await close(server);
+    db.close();
+  }
+});
+
+test('header-auth failures (10 per 15 min) survive a restart; cookie sessions are never throttled', async () => {
+  const db = limitDb();
+  const clock = { now: 1_000_000 };
+  let fx = persistentFixture(db, clock);
+  let server = await listen(fx.app, 0);
+  try {
+    let port = server.address().port;
+    assert.strictEqual((await request(port, { path: '/admin', headers: { 'x-admin-token': 'header-token' } })).statusCode, 200, 'right header works');
+    for (let i = 0; i < 10; i++) {
+      assert.strictEqual((await request(port, { path: '/admin', headers: { 'x-admin-token': `guess-${i}` } })).statusCode, 401);
+    }
+    assert.deepStrictEqual(fx.audits.filter(a => a.event === 'dashboard_header_auth_failed').map(a => a.metadata.attempt), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    await close(server);
+
+    fx = persistentFixture(db, clock);
+    server = await listen(fx.app, 0);
+    port = server.address().port;
+    assert.strictEqual((await request(port, { path: '/admin', headers: { 'x-admin-token': 'header-token' } })).statusCode, 429, 'still blocked after the restart, even with the right token');
+    const cookie = `dm_session=${fx.session.sign()}`;
+    assert.strictEqual((await request(port, { path: '/admin', headers: { cookie, 'x-admin-token': 'stale' } })).statusCode, 200, 'a signed-in browser is unaffected');
+
+    clock.now += 15 * 60000;
+    assert.strictEqual((await request(port, { path: '/admin', headers: { 'x-admin-token': 'header-token' } })).statusCode, 200, 'window over: header auth works');
+  } finally {
+    await close(server);
+    db.close();
   }
 });

@@ -76,3 +76,18 @@ test('HTTP rate limit store: decrement and resetKey affect only the selected buc
   assert.throws(() => store.init({ windowMs: 5000 }), /window mismatch/);
   db.close();
 });
+
+test('HTTP rate limit store: get() counts live hits without adding one', () => {
+  const db = database();
+  let now = 1000;
+  const store = new SqliteRollingWindowStore({ db, scope: 'dashboard-header-auth-failures', limit: 3, windowMs: 60000, now: () => now });
+  assert.deepStrictEqual(store.get('a'), { totalHits: 0, resetTime: undefined });
+  store.increment('a');
+  store.increment('a');
+  assert.strictEqual(store.get('a').totalHits, 2);
+  assert.strictEqual(store.get('a').totalHits, 2, 'reading does not count');
+  assert.strictEqual(store.get('a').resetTime.getTime(), 61000);
+  now = 61000;
+  assert.strictEqual(store.get('a').totalHits, 0, 'expired hits are not counted');
+  db.close();
+});

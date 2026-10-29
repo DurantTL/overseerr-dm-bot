@@ -90,7 +90,8 @@ const { registerUserAdminRoutes } = require('./src/routes/dashboard-users');
 const { registerEuropeSyncRoutes } = require('./src/routes/dashboard-europe');
 const { registerMemberRoutes } = require('./src/routes/member');
 const { createTtlCache } = require('./src/dashboard-cache');
-const { createDashboardSession, createDashboardAuth, createDashboardGateActor, dashboardActor, registerDashboardAuthRoutes } = require('./src/routes/dashboard-auth');
+const { createDashboardSession, createHeaderAuthThrottle, createDashboardAuth, createDashboardGateActor, dashboardActor, registerDashboardAuthRoutes } = require('./src/routes/dashboard-auth');
+const { SqliteRollingWindowStore } = require('./src/rate-limit');
 const { createApp } = require('./src/app');
 const { createRuntimeLifecycle, createDiscordReadyGuard } = require('./src/runtime-lifecycle');
 const { createAutomationRegistry } = require('./src/automation-registry');
@@ -156,6 +157,12 @@ const dashboardAuth = createDashboardAuth({
   session: dashboardSession,
   safeEqual,
   clientKey: httpRateLimitKey,
+  // Header-auth failures are counted in SQLite so a restart doesn't reset them (10 per 15 min).
+  headerThrottle: createHeaderAuthThrottle({
+    limit: 10,
+    windowMs: 15 * 60000,
+    store: new SqliteRollingWindowStore({ db, scope: 'dashboard-header-auth-failures', limit: 10, windowMs: 15 * 60000 }),
+  }),
   onHeaderAuthFailure: ({ ip, attempt }) => audit('dashboard_header_auth_failed', { ip, attempt }),
 });
 const dashboardGateActor = createDashboardGateActor({ sha256 });
@@ -11052,6 +11059,8 @@ function startExpressServer() {
       revokePasskey,
       passkeyClientPath,
       webauthnBrowserPath,
+      // Sign-in limiter counts live in SQLite so a restart doesn't reset them.
+      loginStore: ({ scope, limit, windowMs }) => new SqliteRollingWindowStore({ db, scope, limit, windowMs }),
     });
 
     registerDashboardReadRoutes(app, {
