@@ -540,29 +540,37 @@ function registerDashboardReadRoutes(app, deps) {
 
       <section class="panel" data-panel="requests" data-label="Requests">
         <div data-live="requests"><!--live:requests-->
-        ${renderQuickActions(quickActions.operations)}
-        <div class="card">
-          <h2>Pending Approval<span class="sub">Requests waiting for an administrator. Quota changes are warnings and do not block approval.</span></h2>
+        <div class="segs" data-segs role="group" aria-label="Which requests">
+          <button type="button" class="seg-btn" data-seg-btn="pending">Pending<span class="seg-n" data-count>${approvalItems.length}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="incomplete">Not watchable${incomplete === null ? '' : `<span class="seg-n" data-count>${incomplete.length}</span>`}</button>
+          <button type="button" class="seg-btn" data-seg-btn="jobs">Jobs<span class="seg-n" data-count>${jobItems.length}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="watching">Watching<span class="seg-n" data-count>${watchItems.length}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="pinned">Pinned<span class="seg-n" data-count>${priorityItems.length}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="recent">Recent</button>
+        </div>
+        <div class="card" data-seg-panel="pending" data-rows-open>
+          <h2>Pending approval<span class="sub">Tap a request for its details and buttons. Quota changes are warnings and do not block approval.</span></h2>
+          ${renderQuickActions(quickActions.operations)}
           ${renderItemList(approvalItems, 'No requests are waiting for approval.')}
         </div>
-        <div class="card">
-          <h2>Not Watchable Yet<span class="sub">Requests still missing content — including series Seerr already calls "available" but that are missing aired episodes. Worst first.</span></h2>
+        <div class="card" data-seg-panel="incomplete" data-rows-open>
+          <h2>Not watchable yet<span class="sub">Requests still missing content, including series Seerr already calls "available" but that are missing aired episodes. Worst first.</span></h2>
           ${incomplete === null ? unavailable('Sonarr') : renderItemList(incomplete, 'Every request is complete — nothing missing.')}
         </div>
-        <div class="card">
-          <h2>Active Jobs</h2>
+        <div class="card" data-seg-panel="jobs" data-rows-open>
+          <h2>Active jobs</h2>
           ${renderItemList(jobItems, 'No seedbox grabs or staging copies running.')}
         </div>
-        <div class="card">
-          <h2>Watching / Scheduled</h2>
+        <div class="card" data-seg-panel="watching" data-rows-open>
+          <h2>Watching and scheduled</h2>
           ${renderItemList(watchItems, 'No escalation watches or pending deletions.')}
         </div>
-        <div class="card">
-          <h2>Pinned Media<span class="sub">Pinned titles run first in capped Sonarr sweeps. Reorder them here.</span></h2>
+        <div class="card" data-seg-panel="pinned" data-rows-open>
+          <h2>Pinned media<span class="sub">Pinned titles run first in capped Sonarr sweeps. Tap one to reorder or unpin it.</span></h2>
           ${renderItemList(priorityItems, 'No titles are pinned.')}
         </div>
-        <div class="card">
-          <h2>Recent Media Requests</h2>
+        <div class="card" data-seg-panel="recent">
+          <h2>Recent media requests</h2>
           ${renderTable(requestRows)}
         </div>
         <!--/live:requests--></div>
@@ -772,6 +780,7 @@ function registerDashboardReadRoutes(app, deps) {
               buttonStates.forEach(function (state) { state.button.disabled = state.disabled; });
             } finally {
               window.__actionsInFlight = Math.max(0, (window.__actionsInFlight || 0) - 1);
+              document.dispatchEvent(new CustomEvent('dash:action', { detail: { ok: !!ok, inline: !!btn.dataset.inline } }));
               if (ok && window.DashLive) window.DashLive.refreshVisible();
             }
         });

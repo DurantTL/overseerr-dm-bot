@@ -70,7 +70,16 @@ function renderShellNav(items, { escapeHtml, showLogout = true } = {}) {
       <div class="he-foot"><button type="button" class="btn" data-home-reset>Reset Home</button><button type="button" class="btn primary" data-home-close>Done</button></div>
     </div>
   </div>`;
-  return { rail, bar, sheet, homeSheet };
+  // Detail sheet for openable rows ([data-rows-open]): a bottom sheet on the phone, a panel docked
+  // on the right on wide screens. The row's own content and buttons are shown in it.
+  const detailSheet = `<div class="detail-sheet" id="detailSheet" role="dialog" aria-modal="true" aria-label="Details" hidden>
+    <div class="more-scrim" data-detail-close></div>
+    <div class="more-panel detail-panel"><div class="more-grab" aria-hidden="true"></div>
+      <button type="button" class="detail-x" data-detail-close aria-label="Close">×</button>
+      <div id="detailBody"></div>
+    </div>
+  </div>`;
+  return { rail, bar, sheet, homeSheet, detailSheet };
 }
 
 const SHELL_CSS = `
@@ -159,6 +168,40 @@ const SHELL_CSS = `
   html[data-theme="light"] { --bg:#f3f6f7; --panel:#ffffff; --panel2:#eef3f5; --panel3:#e2eaee; --accent:#1d7c84; --accent-strong:#15646a; --on-accent:#ffffff; --text:#10232f; --muted:#3d5866; --faint:#5c7682; --border:#d3dee3; --line-strong:#9fb3bd; --edge:rgba(16,35,47,.16); --glass:rgba(255,255,255,.72); --cool:#4f7a2c; --ok:#1c8f5a; --warn:#a86b12; --down:#c2413a; --skip:#5c7682; --focus:#1d7c84; --tint:16 35 47; --well:rgba(16,35,47,.05); --down-ink:#b3332c; color-scheme:light; }
   @media (prefers-color-scheme: light) { html[data-theme="auto"] { --bg:#f3f6f7; --panel:#ffffff; --panel2:#eef3f5; --panel3:#e2eaee; --accent:#1d7c84; --accent-strong:#15646a; --on-accent:#ffffff; --text:#10232f; --muted:#3d5866; --faint:#5c7682; --border:#d3dee3; --line-strong:#9fb3bd; --edge:rgba(16,35,47,.16); --glass:rgba(255,255,255,.72); --cool:#4f7a2c; --ok:#1c8f5a; --warn:#a86b12; --down:#c2413a; --skip:#5c7682; --focus:#1d7c84; --tint:16 35 47; --well:rgba(16,35,47,.05); --down-ink:#b3332c; color-scheme:light; } }
   html[data-theme="light"] .svc-orb, html[data-theme="auto"] .svc-orb { opacity:.35; }
+  /* ---- Segments: one list at a time ---- */
+  .segs { display:flex; gap:6px; overflow-x:auto; scrollbar-width:none; margin:0 0 12px; padding:2px; }
+  .segs::-webkit-scrollbar { display:none; }
+  .seg-btn { flex:none; min-height:40px; padding:0 14px; border-radius:999px; border:1px solid var(--border); background:transparent; color:var(--muted); font:inherit; font-size:14px; font-weight:600; cursor:pointer; white-space:nowrap; }
+  .seg-btn[aria-pressed="true"] { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }
+  .seg-btn .seg-n { font-family:var(--mono); font-size:12px; margin-left:4px; opacity:.8; }
+  /* ---- Openable rows: one line each, tap for details and buttons ---- */
+  [data-rows-open] .item { cursor:pointer; align-items:center; min-height:44px; padding:10px 4px; border-radius:8px; }
+  [data-rows-open] .item:hover { background:rgb(var(--tint) / .04); }
+  [data-rows-open] .item-actions, [data-rows-open] .action-result { display:none; }
+  [data-rows-open] .item-sub { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  [data-rows-open] .item::after { content:"›"; color:var(--faint); font-size:20px; line-height:1; flex:none; }
+  [data-rows-open] .item > .dot { margin-top:0; }
+  @media (max-width:720px) { [data-rows-open] .item { flex-wrap:nowrap; } [data-rows-open] .item-right { flex-basis:auto; margin:0; max-width:34%; text-align:right; } }
+  .detail-sheet { position:fixed; inset:0; z-index:61; display:flex; align-items:flex-end; }
+  .detail-sheet[hidden] { display:none; }
+  .detail-panel { padding:8px 18px calc(20px + env(safe-area-inset-bottom)); }
+  .detail-x { position:absolute; top:8px; right:10px; width:44px; height:44px; border:0; background:transparent; color:var(--muted); font-size:26px; cursor:pointer; border-radius:10px; }
+  #detailBody .item { display:block; border:0; padding:6px 0 0; }
+  #detailBody .item > .dot { display:none; }
+  #detailBody .item-title { font-size:20px; padding-right:44px; }
+  #detailBody .item-sub { font-size:14px; margin-top:6px; }
+  #detailBody .item-right { font-size:13px; text-align:left; max-width:none; margin:6px 0 0; color:var(--faint); }
+  #detailBody .item-actions { display:grid; gap:8px; margin-top:16px; }
+  #detailBody .item-actions .btn { min-height:48px; font-size:15px; }
+  #detailBody .action-result { display:block; margin-top:10px; }
+  @media (min-width:721px) { .detail-sheet { align-items:center; justify-content:center; } .detail-panel { max-width:460px; border-radius:20px; border:1px solid var(--edge); } }
+  @media (min-width:1100px) {
+    .detail-sheet { align-items:stretch; justify-content:flex-end; }
+    .detail-sheet .more-scrim { background:rgba(0,0,0,.25); }
+    .detail-panel { max-width:420px; max-height:none; height:100%; border-radius:0; border:0; border-left:1px solid var(--edge); padding:22px 22px 28px; animation:detailIn .28s cubic-bezier(.2,.9,.25,1); }
+    .detail-panel .more-grab { display:none; }
+  }
+  @keyframes detailIn { from { transform:translateX(40px); opacity:0; } }
   /* ---- Make Home yours ---- */
   .home-more { display:flex; flex-direction:column; }
   .home-sheet { position:fixed; inset:0; z-index:62; display:flex; align-items:flex-end; }
@@ -254,6 +297,79 @@ const SHELL_SCRIPT = `
     if (st) { var h = st.closest('.hdr'); h.classList.toggle('search-open'); if (h.classList.contains('search-open')) { var i = h.querySelector('.topbar-search input'); if (i) i.focus(); } }
   });
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') { closeSheet(); closeHome(); } });
+
+  // ---- Segments: [data-segs] buttons ([data-seg-btn]) show one [data-seg-panel] at a time ----
+  // The choice is kept on the tab's panel (outside any live region) and per browser, and re-applied
+  // after each live refresh, so a refresh never flips the list under you.
+  function segChoice(panel) {
+    var v = panel.getAttribute('data-seg');
+    if (!v) { try { v = localStorage.getItem('seg:' + panel.dataset.panel); } catch (e) {} }
+    var btns = panel.querySelectorAll('[data-seg-btn]');
+    var valid = [].some.call(btns, function (b) { return b.dataset.segBtn === v; });
+    return valid ? v : (btns[0] && btns[0].dataset.segBtn);
+  }
+  function syncSegs() {
+    [].forEach.call(document.querySelectorAll('.panel[data-panel]'), function (panel) {
+      if (!panel.querySelector('[data-segs]')) return;
+      var v = segChoice(panel);
+      panel.setAttribute('data-seg', v || '');
+      [].forEach.call(panel.querySelectorAll('[data-seg-btn]'), function (b) { b.setAttribute('aria-pressed', String(b.dataset.segBtn === v)); });
+      [].forEach.call(panel.querySelectorAll('[data-seg-panel]'), function (p) { p.hidden = p.dataset.segPanel !== v; });
+    });
+    [].forEach.call(document.querySelectorAll('[data-rows-open] .item'), function (row) {
+      if (!row.hasAttribute('tabindex')) { row.setAttribute('tabindex', '0'); row.setAttribute('role', 'button'); }
+    });
+  }
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-seg-btn]');
+    if (!b) return;
+    var panel = b.closest('.panel[data-panel]');
+    if (!panel) return;
+    panel.setAttribute('data-seg', b.dataset.segBtn);
+    try { localStorage.setItem('seg:' + panel.dataset.panel, b.dataset.segBtn); } catch (e2) {}
+    syncSegs();
+  });
+  document.addEventListener('dash:refreshed', syncSegs);
+
+  // ---- Openable rows ----
+  var detail = document.getElementById('detailSheet'), detailBody = document.getElementById('detailBody'), detailReturn = null;
+  function openDetail(row) {
+    if (!detail) return;
+    detailReturn = row;
+    var copy = row.cloneNode(true);
+    copy.removeAttribute('tabindex'); copy.removeAttribute('role');
+    var right = copy.querySelector('.item-right'), anchor = copy.querySelector('.item-sub') || copy.querySelector('.item-title');
+    if (right && anchor && anchor.parentNode) anchor.parentNode.insertBefore(right, anchor.nextSibling);
+    detailBody.innerHTML = '';
+    detailBody.appendChild(copy);
+    var t = copy.querySelector('.item-title');
+    detail.setAttribute('aria-label', t ? t.textContent.trim() : 'Details');
+    detail.hidden = false;
+    var f = detailBody.querySelector('.item-actions .btn:not(:disabled)') || detail.querySelector('.detail-x');
+    if (f) f.focus();
+    window.__actionsInFlight = (window.__actionsInFlight || 0) + 1;
+  }
+  function closeDetail() {
+    if (!detail || detail.hidden) return;
+    detail.hidden = true;
+    detailBody.innerHTML = '';
+    window.__actionsInFlight = Math.max(0, (window.__actionsInFlight || 0) - 1);
+    if (detailReturn && document.contains(detailReturn)) detailReturn.focus();
+    if (window.DashLive) window.DashLive.refreshVisible();
+  }
+  document.addEventListener('click', function (e) {
+    if (e.target.closest('[data-detail-close]')) { closeDetail(); return; }
+    var row = e.target.closest('[data-rows-open] .item');
+    if (!row || e.target.closest('button, a, input, select, textarea, label')) return;
+    openDetail(row);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { closeDetail(); return; }
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('[data-rows-open] .item')) { e.preventDefault(); openDetail(e.target); }
+  });
+  // A finished action that is not an inline one has done its job; close and show the updated list.
+  document.addEventListener('dash:action', function (e) { if (e.detail && e.detail.ok && !e.detail.inline && detail && !detail.hidden) closeDetail(); });
+  syncSegs();
 
   // ---- Make Home yours: theme, and which Home cards show in what order (this browser only) ----
   var homeSheet = document.getElementById('homeSheet'), homeReturn = null;
@@ -455,7 +571,7 @@ const SHELL_SCRIPT = `
     inflight[name] = true;
     fetch('/admin/fragment/' + encodeURIComponent(name), { headers: { Accept: 'application/json' }, cache: 'no-store' })
       .then(function (r) { if (r.status === 401) { location.href = '/admin/login'; throw new Error('signed out'); } return r.json(); })
-      .then(function (j) { if (!j.ok) throw new Error(j.error || 'refresh failed'); if (!blocked()) { morph(el, j.html); syncNavCounts(); } ok(); })
+      .then(function (j) { if (!j.ok) throw new Error(j.error || 'refresh failed'); if (!blocked()) { morph(el, j.html); syncNavCounts(); document.dispatchEvent(new CustomEvent('dash:refreshed', { detail: { name: name } })); } ok(); })
       .catch(function () { fail(); })
       .then(function () { inflight[name] = false; });
   }

@@ -412,7 +412,7 @@ function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, s
 }
 
 function renderShellPage(title, bodyHtml, { showLogout, searchQuery, items }) {
-  const { rail, bar, sheet, homeSheet } = renderShellNav(items, { escapeHtml, showLogout });
+  const { rail, bar, sheet, homeSheet, detailSheet } = renderShellNav(items, { escapeHtml, showLogout });
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#10232f">
@@ -433,6 +433,7 @@ function renderShellPage(title, bodyHtml, { showLogout, searchQuery, items }) {
   ${bar}
   ${sheet}
   ${homeSheet}
+  ${detailSheet}
   <script>${SHELL_SCRIPT}</script>
   </body></html>`;
 }
