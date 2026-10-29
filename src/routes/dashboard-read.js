@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const { readCookie, SETUP_NUDGE_COOKIE } = require('./dashboard-auth');
-const { parseScriptConfig } = require('../europe-sync');
+const { parseScriptConfig, describeWindow } = require('../europe-sync');
 const { HEALTH_KEYS, healthLabel } = require('../health');
 const { INBOX_ACTIONS, alertInbox } = require('../service-alerts');
 const { uptimeSummary } = require('../service-uptime');
@@ -427,9 +427,9 @@ function registerDashboardReadRoutes(app, deps) {
     const europeStatusLine = !europeScriptText
       ? `<p class="muted">Sync script not found at <code>${escapeHtml(europeScriptPath || '(not configured)')}</code> on this host — preview and run are unavailable.</p>`
       : !europeConfig
-        ? `<p class="muted">Script found at <code>${escapeHtml(europeScriptPath)}</code>, but its SOURCE / DEST / YEARS_BACK lines couldn't be parsed — preview and run are disabled.</p>`
+        ? `<p class="muted">Script found at <code>${escapeHtml(europeScriptPath)}</code>, but its SOURCE / DEST / MONTHS_BACK (or YEARS_BACK) / DRY_RUN lines couldn't be parsed — preview and run are disabled.</p>`
         : `<p>Syncing <code>${escapeHtml(europeConfig.source)}</code> → <code>${escapeHtml(europeConfig.dest)}</code> · `
-          + `movies ${escapeHtml(String(europeConfig.yearMin))}–${escapeHtml(String(europeConfig.yearMax))} with a real video file. `
+          + `${escapeHtml(describeWindow(europeConfig.window))} with a real video file. `
           + `Hardlinks only — no extra disk on the master; aged-out titles leave the Europe library.</p>`
           + (europeLastRun ? `<p class="muted">Last sync ${escapeHtml(fmtAgo(europeLastRun.created_at))}.</p>` : '<p class="muted">No sync has run from the dashboard yet.</p>');
     const europeButtonsDisabled = (!europeScriptText || !europeConfig) ? ' disabled' : '';
