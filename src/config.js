@@ -134,6 +134,7 @@ const CONFIG = (() => {
   RECYCLARR_URL: (process.env.RECYCLARR_URL || '').replace(/\/$/, ''),
   CLEANUPARR_URL: (process.env.CLEANUPARR_URL || '').replace(/\/$/, ''),
   SYNCTHING_URL: (process.env.SYNCTHING_URL || '').replace(/\/$/, ''),
+  PLEX_URL: (process.env.PLEX_URL || '').replace(/\/$/, ''),
   TAUTULLI_URL: (process.env.TAUTULLI_URL || '').replace(/\/$/, ''),
   // ---- Services tab: optional service URLs, smart-network hosts, and adapters ----
   // Standalone web UIs probed for liveness on the Services tab. Empty = card hidden.
