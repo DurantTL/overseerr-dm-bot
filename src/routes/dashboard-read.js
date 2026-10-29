@@ -6,7 +6,9 @@ const { parseScriptConfig } = require('../europe-sync');
 const { HEALTH_KEYS, healthLabel } = require('../health');
 const { INBOX_ACTIONS, alertInbox } = require('../service-alerts');
 const { uptimeSummary } = require('../service-uptime');
-const { renderAlertInbox, renderRecentlyAdded, renderQuickActions, renderQuickActionSheet } = require('../dashboard-render');
+const { FEED_ACTION_NAMES, feedItems } = require('../dashboard-feed');
+const { gatherTrends } = require('../dashboard-trends');
+const { renderAlertInbox, renderRecentlyAdded, renderQuickActions, renderQuickActionSheet, renderFeed, renderTrends } = require('../dashboard-render');
 const tautulliRecent = require('../tautulli');
 const { buildFleetSync } = require('../fleet-sync');
 
@@ -181,6 +183,21 @@ function registerDashboardReadRoutes(app, deps) {
         `SELECT id, action, created_at, metadata_json FROM audit_log WHERE action IN (${INBOX_ACTIONS.map(() => '?').join(',')}) ORDER BY id DESC LIMIT 500`
       ).all(...INBOX_ACTIONS));
     } catch (_e) { /* left null: the card says the audit log is unavailable */ }
+
+    // Home's "What just happened": recent events people care about, as plain sentences.
+    let feed = null;
+    try {
+      const titleFor = db.prepare('SELECT title FROM requests WHERE overseerr_request_id = ?');
+      const serviceNames = new Map(SERVICES.map(svc => [svc.key, svc.name]));
+      feed = feedItems(db.prepare(
+        `SELECT id, action, created_at, metadata_json FROM audit_log WHERE action IN (${FEED_ACTION_NAMES.map(() => '?').join(',')}) ORDER BY id DESC LIMIT 60`
+      ).all(...FEED_ACTION_NAMES), {
+        requestTitle: id => (id == null ? null : titleFor.get(String(id))?.title || null),
+        serviceName: key => serviceNames.get(key) || key || 'A service',
+        toMs: sqliteUtcMs,
+      });
+    } catch (_e) { /* left null: the card says the audit log is unavailable */ }
+    const trends = gatherTrends(db);
 
     const pendingPlex = db.prepare('SELECT * FROM users WHERE invited = 0 ORDER BY requested_at DESC LIMIT 25').all();
     const pendingRequestCount = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get().c;
@@ -483,32 +500,42 @@ function registerDashboardReadRoutes(app, deps) {
     const body = `
       <section class="panel" data-panel="home" data-label="Home">
         ${servicesPanelHtml.includes('data-live="home-needs"') ? servicesPanelHtml : homeNeedsHtml + servicesPanelHtml}
-        <div data-live="home-more"><!--live:home-more-->
-        <div class="card">
+        <div data-live="home-more" class="home-more"><!--live:home-more-->
+        <div class="card" data-home="downloading" data-home-label="Downloading">
           <h2>Downloading</h2>
           ${renderQuickActions(quickActions.overview)}
           ${queue === null ? unavailable('Radarr/Sonarr') : renderItemList(queueItems, 'Nothing in the download queues.')}
         </div>
       
-        ${renderDirectorPanel({
+        <div class="card feed-card" data-home="feed" data-home-label="What just happened">
+          <h2>What just happened</h2>
+          ${feed === null ? unavailable('Audit log') : renderFeed(feed)}
+        </div>
+
+        <div data-home="storage" data-home-label="Disk space and fleet sync">${renderDirectorPanel({
           overall: health.overall,
           services: directorItems,
           disks: disks === null ? null : diskItems,
           totalFreeLabel: (disks === null || (disks || []).length === 0) ? null : fmtSpace(disks.reduce((n, d) => n + (d.freeSpace || 0), 0)),
           fleetSync: buildFleetSync(tierNodes, { getTierPlan, listTierNodeFolders }),
           compact: true,
-        })}
+        })}</div>
       
-        <div class="card">
+        <div class="card trends-card" data-home="trends" data-home-label="Trends">
+          <h2>Trends</h2>
+          ${renderTrends(trends, { fmtSpace })}
+        </div>
+        <div class="card" data-home="recent" data-home-label="Recently added">
           <h2>Recently added<span class="sub">From Tautulli, newest first.</span></h2>
           ${recentEntry.value === null ? unavailable('Tautulli') : renderRecentlyAdded(recentEntry.value)}
         </div>
-        <div class="card">
+        <div class="card" data-home="alerts" data-home-label="Alert inbox">
           <h2>Alert inbox<span class="sub">Service-down alerts, last 20. Read from the audit log the alert sweep already writes.</span></h2>
           ${alertIncidents === null ? unavailable('Audit log') : renderAlertInbox(alertIncidents)}
         </div>
-        <div class="card glance"><h2>At a glance<span class="sub">Data as of ${dataAsOf < now ? fmtAgo(dataAsOf) : 'just now'}.</span></h2><div class="stats">${stats}</div></div>
+        <div class="card glance" data-home="glance" data-home-label="At a glance"><h2>At a glance<span class="sub">Data as of ${dataAsOf < now ? fmtAgo(dataAsOf) : 'just now'}.</span></h2><div class="stats">${stats}</div></div>
         <!--/live:home-more--></div>
+        <button type="button" class="btn home-edit-btn" data-home-edit>Make Home yours</button>
       </section>
 
       <section class="panel" data-panel="requests" data-label="Requests">
@@ -671,6 +698,10 @@ function registerDashboardReadRoutes(app, deps) {
 
       <section class="panel" data-panel="settings" data-label="Settings">
         ${showPasskeySetupBanner ? renderPasskeySetupBanner() : ''}
+        <div class="card appearance-card">
+          <h2>Appearance and Home<span class="sub">Theme, and which cards Home shows in what order. Saved in this browser.</span></h2>
+          <button type="button" class="btn" data-home-edit>Make Home yours</button>
+        </div>
         ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID, PASSKEY_RP.origin)}
         ${renderAgentApiTokens(agentApiTokens, { legacyConfigured: !!CONFIG.AGENT_API_TOKEN_HASH })}
         <div class="card">
@@ -1305,8 +1336,8 @@ function registerDashboardReadRoutes(app, deps) {
   // Services tab: one JSON payload backing the card board — service states,
   // UPS/ZFS/Speedtest adapters, Plex now-playing, and smart-network hosts.
   // Cached per source so a 30s client poll doesn't multiply upstream traffic.
-  // Poster for the recently-added strip, proxied through Tautulli so the browser never needs a
-  // Plex token or the Tautulli API key. Only items in the current strip are served.
+  // Poster for the recently-added strip and Now playing, proxied through Tautulli so the browser
+  // never needs a Plex token or the Tautulli API key. Only items on screen right now are served.
   app.get('/admin/api/poster/:ratingKey', rateLimit({
     windowMs: 60000,
     limit: 120,
@@ -1319,10 +1350,17 @@ function registerDashboardReadRoutes(app, deps) {
     if (!/^\d{1,12}$/.test(key) || !tautulliConfigured()) return res.status(404).end();
     try {
       const recent = await dashboardCache.get('tautulli-recent', RECENT_TTL_MS, () => fetchRecentlyAdded(12));
-      const item = (recent.value || []).find(i => i.ratingKey === key);
-      if (!item?.thumb) return res.status(404).end();
+      let thumb = (recent.value || []).find(i => i.ratingKey === key)?.thumb;
+      if (!thumb) {
+        // Or something playing right now (the board's Now playing strip): the show's poster for an
+        // episode, the film's own for a movie.
+        const sessions = await dashboardCache.get('tautulli-activity', 10000, () => tautulliApi('get_activity').then(d => d?.sessions || []));
+        const s = (sessions.value || []).find(x => String(x.grandparent_rating_key || '') === key || String(x.rating_key || '') === key);
+        if (s) thumb = String(s.grandparent_rating_key || '') === key ? s.grandparent_thumb : s.thumb;
+      }
+      if (!thumb) return res.status(404).end();
       // Not kept in dashboardCache (it never evicts old keys); the browser caches it for a day.
-      const poster = await fetchPoster(item.thumb);
+      const poster = await fetchPoster(thumb);
       res.set('Cache-Control', 'private, max-age=86400');
       return res.type(poster.type).send(poster.body);
     } catch (_err) {

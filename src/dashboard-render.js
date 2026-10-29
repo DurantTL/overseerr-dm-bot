@@ -5,7 +5,7 @@ const { normalizeTierFolders, serializeTierFolders } = require('./tier-node-setu
 const { HEALTH_KEYS, healthLabel } = require('./health');
 const { telemetrySummary } = require('./node-telemetry');
 
-const { renderShellNav, SHELL_CSS, SHELL_SCRIPT, icon: shellIcon } = require('./dashboard-shell');
+const { renderShellNav, SHELL_CSS, SHELL_SCRIPT, THEME_HEAD_SCRIPT, icon: shellIcon } = require('./dashboard-shell');
 
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
@@ -22,6 +22,7 @@ const DASHBOARD_CSS = `
   :root { --bg:#10232f; --panel:#173042; --panel2:#1d3a4e; --panel3:#24465c; --accent:#79d2d8; --accent-strong:#a9e4e8; --on-accent:#10232f;
     --text:#f3f7f8; --muted:#bdcfd7; --faint:#8fa9b5; --border:#3a5767; --line-strong:#6a90a1; --edge:rgba(137,180,200,.32);
     --glass:rgba(23,48,66,.42); --cool:#9cc27a; --ok:#5fd39a; --warn:#f2b94b; --down:#ff8a80; --skip:#8fa9b5; --focus:#79d2d8;
+    --tint:255 255 255; --well:rgba(0,0,0,.3); --down-ink:#fca5a5;
     --sans:"Instrument Sans","Helvetica Neue",Arial,sans-serif; --serif:"Instrument Serif",Georgia,serif; --mono:"Space Mono",ui-monospace,SFMono-Regular,monospace; }
   * { box-sizing: border-box; }
   html { -webkit-text-size-adjust:100%; color-scheme:dark; }
@@ -80,7 +81,7 @@ const DASHBOARD_CSS = `
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); white-space:nowrap; max-width:340px; overflow:hidden; text-overflow:ellipsis; }
   th { color:var(--muted); font-weight:600; text-transform:uppercase; font-size:11px; letter-spacing:.04em; }
-  tbody tr:nth-child(odd) { background:rgba(255,255,255,.02); }
+  tbody tr:nth-child(odd) { background:rgb(var(--tint) / .02); }
   .table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
   .muted { color:var(--muted); font-style:italic; font-size:13px; }
   .actions { display:flex; flex-wrap:wrap; gap:10px; }
@@ -291,7 +292,7 @@ const DASHBOARD_CSS = `
   .qa-sheet.open { display:flex; }
   .qa-sheet .qa-scrim { position:absolute; inset:0; background:rgba(0,0,0,.55); }
   .qa-sheet .qa-panel { position:relative; width:100%; max-width:520px; max-height:88vh; max-height:88dvh; display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--border); border-bottom:none; border-radius:20px 20px 0 0; padding:12px 16px calc(16px + env(safe-area-inset-bottom)); }
-  .qa-sheet .qa-grab { width:40px; height:4px; border-radius:99px; background:rgba(255,255,255,.18); margin:0 auto 12px; }
+  .qa-sheet .qa-grab { width:40px; height:4px; border-radius:99px; background:rgb(var(--tint) / .18); margin:0 auto 12px; }
   .qa-sheet h3 { margin:0 0 4px; font-size:17px; text-align:center; }
   .qa-sheet .qa-sub { margin:0 0 12px; font-size:13px; color:var(--muted); text-align:center; }
   .qa-sheet .qa-body { flex:1; min-height:0; overflow:auto; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; }
@@ -411,11 +412,12 @@ function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, s
 }
 
 function renderShellPage(title, bodyHtml, { showLogout, searchQuery, items }) {
-  const { rail, bar, sheet } = renderShellNav(items, { escapeHtml, showLogout });
+  const { rail, bar, sheet, homeSheet } = renderShellNav(items, { escapeHtml, showLogout });
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#10232f">
   <title>${escapeHtml(title)} — Durant Media Server</title>
+  <script>${THEME_HEAD_SCRIPT}</script>
   <style>${DASHBOARD_CSS}${SHELL_CSS}</style></head><body class="shell">
   <a class="skip-link" href="#main-content">Skip to content</a>
   ${rail}
@@ -430,6 +432,7 @@ function renderShellPage(title, bodyHtml, { showLogout, searchQuery, items }) {
   <main class="container" id="main-content" tabindex="-1">${bodyHtml}</main>
   ${bar}
   ${sheet}
+  ${homeSheet}
   <script>${SHELL_SCRIPT}</script>
   </body></html>`;
 }
@@ -489,6 +492,52 @@ function renderRecentlyAdded(items) {
     </div>`;
   }).join('')}</div>
   <script>document.addEventListener('error', function (e) { var t = e.target; if (t && t.matches && t.matches('.recent-poster img')) t.remove(); }, true);</script>`;
+}
+
+// Home's "What just happened" feed (src/dashboard-feed.js). Each row is keyed by its audit id,
+// so a live refresh keeps the rows already shown and only new ones slide in.
+function renderFeed(items) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return '<p class="muted">Nothing new yet. Requests, outages, restarts and imports show up here as they happen.</p>';
+  return `<ol class="feed">${list.map(i => `<li class="feed-row tone-${escapeHtml(i.tone)}" data-key="feed-${escapeHtml(String(i.id))}">
+    <span class="feed-dot" aria-hidden="true"></span><span class="feed-text">${escapeHtml(i.text)}</span>
+    <time class="feed-when"${Number.isFinite(i.at) ? ` datetime="${new Date(i.at).toISOString()}"` : ''}>${Number.isFinite(i.at) ? escapeHtml(fmtAgo(i.at)) : ''}</time></li>`).join('')}</ol>`;
+}
+
+function sparkPath(series, w, h) {
+  const vals = series.map(p => p.v);
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const span = max - min || 1;
+  const t0 = series[0].t;
+  const tSpan = (series[series.length - 1].t - t0) || 1;
+  return series.map((p, i) => `${i ? 'L' : 'M'}${((p.t - t0) / tSpan * w).toFixed(1)},${(h - 2 - ((p.v - min) / span) * (h - 4)).toFixed(1)}`).join(' ');
+}
+
+// Home's Trends card (src/dashboard-trends.js): disk free over 30 days, uptime per day for a
+// week, requests per day for two weeks. Short history says so rather than drawing a guess.
+function renderTrends(trends, { fmtSpace = b => `${Math.round(b / 1e9)} GB` } = {}) {
+  const t = trends || {};
+  const blocks = [];
+  const disks = (t.disks || []).filter(d => d.series.length > 1);
+  blocks.push(`<div class="trend"><div class="trend-h">Disk free · 30 days</div>${disks.length ? disks.slice(0, 4).map(d => {
+    const days = d.spanMs / 86400000;
+    const change = d.change === 0 ? 'no change' : `${d.change > 0 ? '+' : '−'}${fmtSpace(Math.abs(d.change))} in ${days >= 1 ? `${Math.round(days)} d` : `${Math.max(1, Math.round(d.spanMs / 3600000))} h`}`;
+    return `<div class="trend-disk" data-key="trend-disk-${escapeHtml(d.root)}"><div class="trend-row"><span class="trend-name" title="${escapeHtml(d.root)}">${escapeHtml(d.root)}</span><span class="trend-val">${escapeHtml(fmtSpace(d.free))} free</span></div>
+      <svg class="spark" viewBox="0 0 120 28" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(`${d.root}: ${fmtSpace(d.free)} free, ${change}`)}"><path d="${sparkPath(d.series, 120, 28)}"/></svg>
+      <div class="trend-sub${d.change < 0 ? ' down' : ''}">${escapeHtml(change)}</div></div>`;
+  }).join('') : '<p class="muted">Collecting. Disk samples build up over the first day.</p>'}</div>`);
+  const up = (t.uptime || []);
+  const upDays = up.filter(d => d.pct != null);
+  const dayName = ms => new Date(ms).toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' });
+  blocks.push(`<div class="trend"><div class="trend-h">Services up · 7 days</div>${upDays.length ? `<div class="bars" role="img" aria-label="${escapeHtml(upDays.map(d => `${dayName(d.day)} ${d.pct}%`).join(', '))}">${up.map(d => `<div class="bar-col"><div class="bar${d.pct == null ? ' none' : d.pct < 99 ? ' warn' : ''}" style="--h:${d.pct == null ? 4 : Math.max(6, Math.round((d.pct - 90) * 10))}%"></div><span>${escapeHtml(dayName(d.day).slice(0, 2))}</span></div>`).join('')}</div>
+    <div class="trend-sub">${escapeHtml(`${upDays[upDays.length - 1].pct}% today · lowest ${Math.min(...upDays.map(d => d.pct))}%`)}</div>` : '<p class="muted">Collecting. Uptime builds from the service checks every few minutes.</p>'}</div>`);
+  const req = t.requests || [];
+  const total = req.reduce((n, d) => n + d.n, 0);
+  const peak = Math.max(1, ...req.map(d => d.n));
+  blocks.push(`<div class="trend"><div class="trend-h">Requests · 14 days</div>${req.length ? `<div class="bars" role="img" aria-label="${escapeHtml(`${total} requests in 14 days`)}">${req.map(d => `<div class="bar-col"><div class="bar req${d.n ? '' : ' none'}" style="--h:${d.n ? Math.max(8, Math.round(d.n / peak * 100)) : 4}%"></div></div>`).join('')}</div>
+    <div class="trend-sub">${escapeHtml(total ? `${total} in 14 days · busiest day ${peak}` : 'No requests in 14 days')}</div>` : '<p class="muted">Request history is unavailable.</p>'}</div>`);
+  return `<div class="trends">${blocks.join('')}</div>`;
 }
 
 // Overview's alert inbox: service-down incidents from src/service-alerts.js alertInbox(), newest
@@ -730,6 +779,8 @@ function renderServicesPanel({ needs = '' } = {}) {
 .svc-downonly { flex: none; min-height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 0 14px; border-radius: 14px; border: 1px solid var(--edge); background: var(--glass); color: var(--text); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
 .svc-downonly .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--down); }
 .svc-downonly[aria-pressed="true"] { border-color: var(--down); background: color-mix(in srgb, var(--down) 16%, transparent); color: var(--down); }
+.svc-dense svg { width: 16px; height: 16px; flex: none; }
+.svc-dense[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text); }
 .svc-group-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; margin: -10px 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
 .svc-group-toggle:disabled { cursor: default; }
 .svc-group-toggle .chev { width: 16px; height: 16px; transition: transform .18s; }
@@ -787,7 +838,9 @@ function renderServicesPanel({ needs = '' } = {}) {
 .svc-np .np-poster { width: 52px; height: 76px; border-radius: 10px; flex: none;
   background: linear-gradient(135deg, color-mix(in srgb, var(--svc-accent) 14%, transparent), color-mix(in srgb, var(--svc-accent) 4%, transparent));
   border: 1px solid var(--svc-line); display: flex; align-items: center; justify-content: center;
-  font-size: 22px; overflow: hidden; }
+  font-size: 22px; overflow: hidden; position: relative; }
+.svc-np .np-poster img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; animation: npFade .5s ease both; }
+@keyframes npFade { from { opacity: 0; } }
 .svc-np .np-info { flex: 1; min-width: 0; }
 .svc-np .np-kicker { font-size: 10px; letter-spacing: .14em; color: var(--svc-accent); font-weight: 700;
   margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
@@ -798,7 +851,7 @@ function renderServicesPanel({ needs = '' } = {}) {
 .svc-np .np-kicker .eq i:nth-child(3) { height: 40%; animation-delay: .4s; }
 .svc-np .np-title { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .svc-np .np-sub { font-size: 12px; color: var(--svc-ink2); margin-top: 2px; }
-.svc-np .np-progress { height: 4px; border-radius: 99px; background: rgba(255,255,255,.08); margin-top: 9px; overflow: hidden; }
+.svc-np .np-progress { height: 4px; border-radius: 99px; background: rgb(var(--tint) / .08); margin-top: 9px; overflow: hidden; }
 .svc-np .np-progress i { display: block; height: 100%; border-radius: 99px; background: var(--svc-accent); }
 .svc-np .np-time { font-size: 10px; color: var(--svc-ink3); margin-top: 4px; font-variant-numeric: tabular-nums; }
 @keyframes svcEq { 0%,100% { transform: scaleY(.5); } 50% { transform: scaleY(1); } }
@@ -813,21 +866,21 @@ function renderServicesPanel({ needs = '' } = {}) {
 .svc-sheet .svc-sheet-panel { position: relative; width: 100%; max-width: 420px; background: var(--panel); border: 1px solid var(--svc-line);
   border-bottom: none; border-radius: 20px 20px 0 0; padding: 12px 16px 28px; animation: svcSlideUp .28s cubic-bezier(.2,.9,.25,1.1); }
 @keyframes svcSlideUp { from { transform: translateY(60px); opacity: 0; } }
-.svc-sheet .grab { width: 40px; height: 4px; border-radius: 99px; background: rgba(255,255,255,.18); margin: 0 auto 14px; }
+.svc-sheet .grab { width: 40px; height: 4px; border-radius: 99px; background: rgb(var(--tint) / .18); margin: 0 auto 14px; }
 .svc-sheet .stitle { font-weight: 750; font-size: 16px; margin: 2px 0 2px; text-align: center; }
 .svc-sheet .ssub { font-size: 12px; color: var(--svc-ink2); margin-bottom: 14px; text-align: center; word-break: break-all; }
 .svc-action .a-ic { font-size: 16px; }
 .svc-action span:last-child { font-size: 14px; }
 .svc-action { display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px 16px; margin-top: 8px;
-  border: 1px solid var(--svc-line); background: rgba(255,255,255,.05); color: var(--svc-ink);
+  border: 1px solid var(--svc-line); background: rgb(var(--tint) / .05); color: var(--svc-ink);
   font-size: 15px; font-weight: 600; border-radius: 14px; cursor: pointer; text-align: left; backdrop-filter: blur(8px); }
 .svc-action:active { transform: scale(.98); }
-.svc-action.danger { color: #fca5a5; border-color: color-mix(in srgb, var(--svc-red) 30%, transparent); }
+.svc-action.danger { color: var(--down-ink); border-color: color-mix(in srgb, var(--svc-red) 30%, transparent); }
 .svc-action:disabled { opacity: .4; cursor: default; }
 .svc-sheet-facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0 0 10px; padding: 12px 14px;
-  border: 1px solid var(--svc-line); border-radius: 14px; background: rgba(255,255,255,.03); font-size: 13px; }
+  border: 1px solid var(--svc-line); border-radius: 14px; background: rgb(var(--tint) / .03); font-size: 13px; }
 .svc-sheet-facts[hidden] { display: none; }
-.svc-uptime { margin: 0 0 10px; padding: 12px 14px; border: 1px solid var(--svc-line); border-radius: 14px; background: rgba(255,255,255,.03); }
+.svc-uptime { margin: 0 0 10px; padding: 12px 14px; border: 1px solid var(--svc-line); border-radius: 14px; background: rgb(var(--tint) / .03); }
 .svc-uptime[hidden] { display: none; }
 .svc-uptime-head { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--svc-ink2); margin-bottom: 8px; }
 .svc-uptime-head strong { color: var(--svc-ink); font-weight: 650; }
@@ -835,7 +888,7 @@ function renderServicesPanel({ needs = '' } = {}) {
 .svc-uptime-strip i { border-radius: 2px; background: var(--ok, #5fd39a); opacity: .85; }
 .svc-uptime-strip i.down { background: var(--svc-red, #ff8a80); opacity: 1; }
 .svc-uptime-strip i.mixed { background: var(--warn, #f2b94b); opacity: 1; }
-.svc-uptime-strip i.none { background: rgba(255,255,255,.08); }
+.svc-uptime-strip i.none { background: rgb(var(--tint) / .08); }
 .svc-uptime-axis { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10.5px; color: var(--svc-ink2); margin-top: 6px; }
 /* Tiles: the whole board on one screen; tap a tile for its sheet. */
 #svcBoard.dense .svc-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-bottom: 18px; }
@@ -853,21 +906,21 @@ function renderServicesPanel({ needs = '' } = {}) {
 .svc-sheet-facts dt { color: var(--svc-ink2); }
 .svc-sheet-facts dd { margin: 0; color: var(--svc-ink); text-align: right; min-width: 0; overflow-wrap: anywhere; }
 .svc-sheet-facts dd.mono { font-family: var(--mono); font-size: 12px; }
-.svc-sheet-facts dd.down { color: #fca5a5; }
+.svc-sheet-facts dd.down { color: var(--down-ink); }
 .svc-sheet-facts dd.hot { color: var(--warn); }
 .svc-logview[hidden], #svcSheetMain[hidden] { display: none; }
 .svc-logview { display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .svc-sheet .svc-sheet-panel.logs { max-width: 760px; height: 88vh; height: 88dvh; display: flex; flex-direction: column; padding-bottom: 16px; }
 .svc-log-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .svc-log-meta { flex: 1; text-align: center; font-size: 12px; color: var(--svc-ink2); }
-.svc-log-btn { min-height: 44px; padding: 0 14px; border: 1px solid var(--svc-line); border-radius: 12px; background: rgba(255,255,255,.05);
+.svc-log-btn { min-height: 44px; padding: 0 14px; border: 1px solid var(--svc-line); border-radius: 12px; background: rgb(var(--tint) / .05);
   color: var(--svc-ink); font-size: 14px; font-weight: 600; cursor: pointer; }
 .svc-log-btn:disabled { opacity: .4; cursor: default; }
 .svc-log { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 10px 12px;
-  border: 1px solid var(--svc-line); border-radius: 12px; background: rgba(0,0,0,.35); font-family: var(--mono); font-size: 11.5px; line-height: 1.5; }
+  border: 1px solid var(--svc-line); border-radius: 12px; background: var(--well); font-family: var(--mono); font-size: 11.5px; line-height: 1.5; }
 .svc-log .ln { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--svc-ink); }
 .svc-log .ln + .ln { margin-top: 4px; }
-.svc-log .ln.err { color: #fca5a5; }
+.svc-log .ln.err { color: var(--down-ink); }
 .svc-log .ln time { color: var(--faint); margin-right: 8px; }
 .svc-log .empty { color: var(--svc-ink2); font-family: inherit; text-align: center; padding: 24px 8px; }
 .svc-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: color-mix(in srgb, var(--panel) 92%, transparent);
@@ -902,7 +955,7 @@ function renderServicesPanel({ needs = '' } = {}) {
   background: color-mix(in srgb, var(--svc-accent) 15%, transparent); border: 1px solid color-mix(in srgb, var(--svc-accent) 35%, transparent); color: var(--svc-accent);
   font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
 .svc-widget { display: flex; gap: 6px; margin-top: 8px; }
-.svc-widget .metric { flex: 1; background: rgba(0,0,0,.28); border: 1px solid rgba(255,255,255,.06); border-radius: 10px; padding: 8px 6px; text-align: center; }
+.svc-widget .metric { flex: 1; background: var(--well); border: 1px solid rgb(var(--tint) / .06); border-radius: 10px; padding: 8px 6px; text-align: center; }
 .svc-widget .metric .mv { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .svc-widget .metric .ml { font-size: 9px; color: var(--svc-ink3); letter-spacing: .08em; text-transform: uppercase; margin-top: 2px; }
 .svc-widget .metric.good .mv { color: var(--svc-green); }
@@ -910,12 +963,12 @@ function renderServicesPanel({ needs = '' } = {}) {
 .svc-bar-row { margin-top: 8px; }
 .svc-bar-row .bl { display: flex; justify-content: space-between; font-size: 10px; color: var(--svc-ink2); margin-bottom: 4px; letter-spacing: .04em; }
 .svc-bar-row .bl b { color: var(--svc-ink); font-variant-numeric: tabular-nums; }
-.svc-bar { height: 5px; border-radius: 99px; background: rgba(255,255,255,.07); overflow: hidden; }
+.svc-bar { height: 5px; border-radius: 99px; background: rgb(var(--tint) / .07); overflow: hidden; }
 .svc-bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--svc-accent), var(--accent-strong)); width: 0; animation: svcFillBar 1.4s .4s cubic-bezier(.2,.8,.2,1) forwards; }
 @keyframes svcFillBar { to { width: var(--w); } }
 .svc-batt-wrap { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
-.svc-batt { width: 64px; height: 32px; border: 2px solid rgba(255,255,255,.25); border-radius: 8px; position: relative; flex: none; padding: 3px; }
-.svc-batt::after { content: ""; position: absolute; right: -8px; top: 8px; width: 5px; height: 12px; border-radius: 0 3px 3px 0; background: rgba(255,255,255,.25); }
+.svc-batt { width: 64px; height: 32px; border: 2px solid rgb(var(--tint) / .25); border-radius: 8px; position: relative; flex: none; padding: 3px; }
+.svc-batt::after { content: ""; position: absolute; right: -8px; top: 8px; width: 5px; height: 12px; border-radius: 0 3px 3px 0; background: rgb(var(--tint) / .25); }
 .svc-batt i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--svc-green), #6ee7b7); width: 0; animation: svcFillBar 1.6s .5s cubic-bezier(.2,.8,.2,1) forwards; }
 .svc-batt-info .bv { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .svc-batt-info .bl2 { font-size: 10px; color: var(--svc-ink3); letter-spacing: .08em; text-transform: uppercase; margin-top: 1px; }
@@ -924,7 +977,7 @@ function renderServicesPanel({ needs = '' } = {}) {
 .svc-mains .mdot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; animation: svcPulse 2.2s ease-in-out infinite; }
 .svc-donut-wrap { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
 .svc-donut { width: 74px; height: 74px; flex: none; transform: rotate(-90deg); }
-.svc-donut .bg { stroke: rgba(255,255,255,.08); }
+.svc-donut .bg { stroke: rgb(var(--tint) / .08); }
 .svc-donut .fg1 { stroke: var(--svc-accent); stroke-linecap: round; }
 .svc-donut .fg2 { stroke: var(--svc-cool); stroke-linecap: round; }
 .svc-donut-c { font-size: 11px; color: var(--svc-ink2); }
@@ -933,11 +986,11 @@ function renderServicesPanel({ needs = '' } = {}) {
 .svc-talker { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; font-size: 12px; }
 .svc-talker .tn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .svc-talker .tv { color: var(--svc-ink2); font-variant-numeric: tabular-nums; font-size: 11px; }
-.svc-talker .tbar { grid-column: 1 / -1; height: 4px; border-radius: 99px; background: rgba(255,255,255,.07); overflow: hidden; }
+.svc-talker .tbar { grid-column: 1 / -1; height: 4px; border-radius: 99px; background: rgb(var(--tint) / .07); overflow: hidden; }
 .svc-talker .tbar i { display: block; height: 100%; border-radius: 99px; background: var(--svc-accent); width: 0; animation: svcFillBar 1.4s .4s cubic-bezier(.2,.8,.2,1) forwards; }
 .svc-kv { display: flex; justify-content: space-between; font-size: 11px; color: var(--svc-ink2); margin-top: 8px; }
 .svc-kv b { color: var(--svc-ink); font-variant-numeric: tabular-nums; }
-.svc-tput { position: relative; height: 92px; margin-top: 8px; border-radius: 12px; overflow: hidden; background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.05); }
+.svc-tput { position: relative; height: 92px; margin-top: 8px; border-radius: 12px; overflow: hidden; background: var(--well); border: 1px solid rgb(var(--tint) / .05); }
 .svc-tput canvas { width: 100%; height: 100%; display: block; }
 .svc-tput-legend { display: flex; gap: 14px; margin-top: 8px; font-size: 11px; color: var(--svc-ink2); }
 .svc-tput-legend b { color: var(--svc-ink); font-variant-numeric: tabular-nums; }
@@ -1048,17 +1101,17 @@ function renderServicesPanel({ needs = '' } = {}) {
       <p class="sub" id="svcSub">Use ⋯ on a card (or long-press it) for actions. Links use your local or Tailscale address.</p>
     </div>
     <div class="svc-tools">
-      <button class="svc-jump" id="svcJump" type="button" aria-haspopup="dialog" aria-label="Jump to a service (press /)"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg><span>Jump to a service</span><kbd>/</kbd></button>
+      <button class="svc-jump" id="svcJump" type="button" aria-haspopup="dialog" aria-label="Jump to anything (press /)"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg><span>Jump to anything</span><kbd>/</kbd></button>
       <div class="svc-seg" role="group" aria-label="Open service links through">
         <button type="button" data-net="lan" aria-pressed="false">Local</button>
         <button type="button" data-net="tail" aria-pressed="false">Tailscale</button>
       </div>
     </div>
   </div>
-  <div id="svcVitals"></div>
+  <div id="svcVitals" data-home="vitals" data-home-label="Vitals strip" data-home-group="board"></div>
   <div id="svcAttention"></div>
   ${needs}
-  <div id="svcNowPlaying"></div>
+  <div id="svcNowPlaying" data-home="nowplaying" data-home-label="Now playing" data-home-group="board"></div>
   <div class="svc-filter" role="search">
     <label class="svc-find" for="svcFind"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg><input id="svcFind" type="search" placeholder="Find a service" autocomplete="off" enterkeyhint="search" aria-label="Find a service by name"></label>
     <button type="button" class="svc-downonly" id="svcDownOnly" aria-pressed="false"><span class="dot" aria-hidden="true"></span>Down only</button>
@@ -1092,9 +1145,9 @@ function renderServicesPanel({ needs = '' } = {}) {
   </div>
 </div>
 <div class="svc-pal" id="svcPal">
-  <div class="svc-pal-box" role="dialog" aria-modal="true" aria-label="Jump to a service">
-    <input id="svcPalInput" type="text" placeholder="Jump to a service…" autocomplete="off" aria-controls="svcPalList" aria-label="Service name">
-    <ul id="svcPalList" role="listbox" aria-label="Services"></ul>
+  <div class="svc-pal-box" role="dialog" aria-modal="true" aria-label="Jump to anything">
+    <input id="svcPalInput" type="text" placeholder="Jump to a tab, a service, or search…" autocomplete="off" aria-controls="svcPalList" aria-label="Jump to anything">
+    <ul id="svcPalList" role="listbox" aria-label="Places and services"></ul>
   </div>
 </div>
 <div class="svc-toast" id="svcToast" role="status" aria-live="polite"></div>
@@ -1132,6 +1185,8 @@ function renderServicesPanel({ needs = '' } = {}) {
   }
   var lastData = null;
 
+  // A poster that fails to load leaves the film icon showing underneath.
+  document.addEventListener('error', function (e) { var t = e.target; if (t && t.matches && t.matches('.np-poster img')) t.remove(); }, true);
   function toast(msg) {
     var t = document.getElementById('svcToast');
     t.textContent = msg; t.classList.add('show');
@@ -1622,7 +1677,8 @@ function renderServicesPanel({ needs = '' } = {}) {
       paint(np, '<div class="svc-head"><h2>Now playing</h2><span class="sum">' + d.nowPlaying.length + ' stream' + (d.nowPlaying.length === 1 ? '' : 's') + '</span><div class="line"></div></div><div class="svc-np-list">' + d.nowPlaying.map(function (s) {
         var pct = s.duration > 0 ? Math.min(100, Math.round(s.viewOffset / s.duration * 100)) : 0;
         var rem = s.duration > s.viewOffset ? fmtHMS(s.duration - s.viewOffset) + ' remaining' : '';
-        return '<div class="svc-np"><div class="np-poster">' + iconFor('film') + '</div><div class="np-info">' +
+        return '<div class="svc-np" data-key="np-' + esc(s.posterKey || s.title) + '"><div class="np-poster">' + iconFor('film') +
+          (s.posterKey ? '<img src="/admin/api/poster/' + encodeURIComponent(s.posterKey) + '" alt="" loading="lazy" decoding="async">' : '') + '</div><div class="np-info">' +
           '<div class="np-kicker"><span class="eq"><i></i><i></i><i></i></span>' + (s.state === 'paused' ? 'PAUSED' : 'PLAYING') + '</div>' +
           '<div class="np-title">' + esc(s.title) + '</div>' +
           '<div class="np-sub">' + esc([s.user, s.player].filter(Boolean).join(' · ')) + '</div>' +
@@ -1924,22 +1980,43 @@ function renderServicesPanel({ needs = '' } = {}) {
 
   var pal = document.getElementById('svcPal'), palIn = document.getElementById('svcPalInput'), palList = document.getElementById('svcPalList');
   var palSel = 0, palRes = [], palReturn = null;
+  // Jump to anything: every tab and section in the navigation, every service, and a full search
+  // of requests, people, library and audit for whatever was typed.
+  function places() {
+    var seen = {};
+    return [].slice.call(document.querySelectorAll('.rail [data-tab]')).map(function (b) {
+      var label = (b.querySelector('span:not(.nav-badge)') || b).textContent.trim();
+      return { kind: 'place', name: label, tab: b.dataset.tab, scroll: b.dataset.scroll || '' };
+    }).filter(function (p) { var k = p.tab + p.scroll; if (seen[k]) return false; seen[k] = 1; return true; });
+  }
   function paintPal() {
     var q = palIn.value.trim().toLowerCase();
+    function hit(t) { return !q || String(t || '').toLowerCase().indexOf(q) > -1; }
     var list = (lastData && lastData.services) || [];
-    palRes = list.filter(function (x) { return !q || String(x.name).toLowerCase().indexOf(q) > -1 || String(x.desc || '').toLowerCase().indexOf(q) > -1; }).slice(0, 8);
+    var go = places().filter(function (p) { return hit(p.name); }).slice(0, q ? 4 : 9);
+    var svcs = list.filter(function (x) { return hit(x.name) || hit(x.desc); }).slice(0, q ? 6 : 0);
+    palRes = go.concat(svcs.map(function (x) { return { kind: 'svc', svc: x }; }));
+    if (q) palRes.push({ kind: 'search', q: palIn.value.trim() });
     palSel = Math.min(palSel, Math.max(0, palRes.length - 1));
-    palList.innerHTML = palRes.map(function (x, i) {
-      return '<li><button type="button" role="option" aria-selected="' + (i === palSel) + '" data-i="' + i + '"><span class="svc-icon">' + iconFor(x.icon) + '</span>' +
+    palList.innerHTML = palRes.map(function (r, i) {
+      var open = '<li><button type="button" role="option" aria-selected="' + (i === palSel) + '" data-i="' + i + '">';
+      if (r.kind === 'place') return open + '<span class="svc-icon">' + svg('open') + '</span><span class="grow">' + esc(r.name) + '<small>Go to</small></span></button></li>';
+      if (r.kind === 'search') return open + '<span class="svc-icon">' + svg('search') + '</span><span class="grow">Search everything for “' + esc(r.q) + '”<small>Requests, people, library, audit</small></span></button></li>';
+      var x = r.svc;
+      return open + '<span class="svc-icon">' + iconFor(x.icon) + '</span>' +
         '<span class="grow">' + esc(x.name) + '<small>' + esc(x.group) + (x.port ? ' · :' + x.port : '') + '</small></span>' +
         '<span class="svc-chip' + (x.state === 'down' ? ' hot' : '') + '">' + (x.state === 'down' ? 'Down' : x.state === 'skip' ? 'Off' : 'Up') + '</span></button></li>';
-    }).join('') || '<li class="svc-loading">No service matches.</li>';
+    }).join('') || '<li class="svc-loading">Nothing matches.</li>';
   }
-  function openPal() { if (!lastData) return; palReturn = document.activeElement; pal.classList.add('open'); palIn.value = ''; palSel = 0; paintPal(); palIn.focus(); }
+  function openPal() { palReturn = document.activeElement; pal.classList.add('open'); palIn.value = ''; palSel = 0; paintPal(); palIn.focus(); }
   function closePal() { if (!pal.classList.contains('open')) return; pal.classList.remove('open'); if (palReturn && palReturn.focus) palReturn.focus(); }
   function choosePal(i) {
-    var x = palRes[i]; if (!x) return;
+    var r = palRes[i]; if (!r) return;
     closePal();
+    if (r.kind === 'place') { if (window.DashNav) window.DashNav.show(r.tab, { scroll: r.scroll || undefined, top: !r.scroll }); return; }
+    if (r.kind === 'search') { location.href = '/admin/search?q=' + encodeURIComponent(r.q); return; }
+    var x = r.svc;
+    if (window.DashNav && board.closest('.panel') && board.closest('.panel').hidden) window.DashNav.show('home');
     var u = svcUrl(x);
     if (u) window.open(u, '_blank', 'noopener');
     else { var c = board.querySelector('.svc-card[data-key="' + x.key + '"]'); if (c) { c.scrollIntoView({ block: 'center' }); openSheet(c); } }
@@ -1954,8 +2031,6 @@ function renderServicesPanel({ needs = '' } = {}) {
   palList.addEventListener('click', function (e) { var b = e.target.closest('[data-i]'); if (b) choosePal(+b.dataset.i); });
   pal.addEventListener('click', function (e) { if (e.target === pal) closePal(); });
   document.addEventListener('keydown', function (e) {
-    var panel = board.closest('.panel');
-    if (panel && panel.hidden) return;
     var typing = /^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName || '');
     if ((e.key === 'k' && (e.metaKey || e.ctrlKey)) || (e.key === '/' && !typing)) { e.preventDefault(); if (pal.classList.contains('open')) closePal(); else openPal(); }
   });
@@ -2486,6 +2561,8 @@ module.exports = {
   renderBar,
   renderItemList,
   renderAlertInbox,
+  renderFeed,
+  renderTrends,
   renderFleetSync,
   renderRecentlyAdded,
   renderLogin,

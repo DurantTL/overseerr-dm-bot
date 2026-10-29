@@ -57,7 +57,20 @@ function renderShellNav(items, { escapeHtml, showLogout = true } = {}) {
       ${showLogout ? '<form class="logout-form" method="post" action="/admin/logout"><button class="more-item" type="submit"><span class="more-ic">' + icon('logout', 22) + '</span><span><b>Log out</b></span></button></form>' : ''}
     </div>
   </div>`;
-  return { rail, bar, sheet };
+  // Make Home yours: theme and Home's cards. Rows are built in the browser from the [data-home]
+  // sections on the page, so a new card only needs the attribute to show up here.
+  const homeSheet = `<div class="home-sheet" id="homeSheet" role="dialog" aria-modal="true" aria-labelledby="homeSheetTitle" hidden>
+    <div class="more-scrim" data-home-close></div>
+    <div class="more-panel"><div class="more-grab" aria-hidden="true"></div>
+      <h2 class="he-title" id="homeSheetTitle">Make Home yours</h2>
+      <div class="he-sec">Theme</div>
+      <div class="he-seg" role="group" aria-label="Theme"><button type="button" data-theme-set="dark">Dark</button><button type="button" data-theme-set="light">Light</button><button type="button" data-theme-set="auto">Auto</button></div>
+      <div class="he-sec">On the board</div><div id="heBoard"></div>
+      <div class="he-sec">Below the board</div><div id="heMore"></div>
+      <div class="he-foot"><button type="button" class="btn" data-home-reset>Reset Home</button><button type="button" class="btn primary" data-home-close>Done</button></div>
+    </div>
+  </div>`;
+  return { rail, bar, sheet, homeSheet };
 }
 
 const SHELL_CSS = `
@@ -79,7 +92,7 @@ const SHELL_CSS = `
   .more-scrim { position:absolute; inset:0; background:rgba(0,0,0,.55); animation:shFade .25s ease both; }
   .more-panel { position:relative; width:100%; max-height:80vh; overflow:auto; background:var(--panel); border-top:1px solid var(--edge); border-radius:20px 20px 0 0;
     padding:10px 16px calc(84px + env(safe-area-inset-bottom)); animation:shUp .32s cubic-bezier(.2,.9,.25,1.1) both; }
-  .more-grab { width:40px; height:4px; border-radius:99px; background:rgba(255,255,255,.18); margin:0 auto 8px; }
+  .more-grab { width:40px; height:4px; border-radius:99px; background:rgb(var(--tint) / .18); margin:0 auto 8px; }
   .more-item { width:100%; min-height:56px; display:flex; align-items:center; gap:14px; padding:0 6px; border:0; border-top:1px solid var(--border); background:transparent; color:var(--text); font:inherit; font-size:16px; text-align:left; cursor:pointer; }
   .more-panel > .more-item:first-of-type { border-top:0; }
   .more-item small { display:block; font-size:13px; color:var(--muted); font-weight:400; }
@@ -141,6 +154,53 @@ const SHELL_CSS = `
   @keyframes liveIn { from { opacity:0; transform:translateY(10px); } }
   .panel:not([hidden]) { animation:panelIn .35s cubic-bezier(.2,.75,.25,1) backwards; }
   /* backwards, not both: a transform left on the panel would trap every position:fixed sheet inside it. */
+  /* ---- Theme: dark (default), light, or follow the device ---- */
+  :root { color-scheme:dark; }
+  html[data-theme="light"] { --bg:#f3f6f7; --panel:#ffffff; --panel2:#eef3f5; --panel3:#e2eaee; --accent:#1d7c84; --accent-strong:#15646a; --on-accent:#ffffff; --text:#10232f; --muted:#3d5866; --faint:#5c7682; --border:#d3dee3; --line-strong:#9fb3bd; --edge:rgba(16,35,47,.16); --glass:rgba(255,255,255,.72); --cool:#4f7a2c; --ok:#1c8f5a; --warn:#a86b12; --down:#c2413a; --skip:#5c7682; --focus:#1d7c84; --tint:16 35 47; --well:rgba(16,35,47,.05); --down-ink:#b3332c; color-scheme:light; }
+  @media (prefers-color-scheme: light) { html[data-theme="auto"] { --bg:#f3f6f7; --panel:#ffffff; --panel2:#eef3f5; --panel3:#e2eaee; --accent:#1d7c84; --accent-strong:#15646a; --on-accent:#ffffff; --text:#10232f; --muted:#3d5866; --faint:#5c7682; --border:#d3dee3; --line-strong:#9fb3bd; --edge:rgba(16,35,47,.16); --glass:rgba(255,255,255,.72); --cool:#4f7a2c; --ok:#1c8f5a; --warn:#a86b12; --down:#c2413a; --skip:#5c7682; --focus:#1d7c84; --tint:16 35 47; --well:rgba(16,35,47,.05); --down-ink:#b3332c; color-scheme:light; } }
+  html[data-theme="light"] .svc-orb, html[data-theme="auto"] .svc-orb { opacity:.35; }
+  /* ---- Make Home yours ---- */
+  .home-more { display:flex; flex-direction:column; }
+  .home-sheet { position:fixed; inset:0; z-index:62; display:flex; align-items:flex-end; }
+  .home-sheet[hidden] { display:none; }
+  .home-sheet .more-panel { padding:8px 16px calc(18px + env(safe-area-inset-bottom)); }
+  .he-title { margin:4px 4px 0; font-size:18px; }
+  @media (min-width:721px) { .home-sheet { align-items:center; justify-content:center; } .home-sheet .more-panel { max-width:480px; border-radius:20px; border:1px solid var(--edge); } }
+  .home-edit-btn { display:block; margin:6px auto 18px; }
+  .he-sec { font-family:var(--mono); font-size:11px; letter-spacing:1.2px; text-transform:uppercase; color:var(--faint); margin:14px 4px 6px; }
+  .he-seg { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
+  .he-seg button, .he-row button { min-height:44px; border-radius:10px; border:1px solid var(--border); background:var(--panel2); color:var(--text); font:inherit; font-size:14px; font-weight:600; cursor:pointer; }
+  .he-seg button[aria-pressed="true"] { background:color-mix(in srgb, var(--accent) 22%, transparent); border-color:var(--accent); }
+  .he-row { display:flex; align-items:center; gap:6px; padding:6px 4px; border-top:1px solid var(--border); }
+  .he-row:first-of-type { border-top:none; }
+  .he-name { flex:1; min-width:0; font-size:15px; }
+  .he-row.off .he-name { color:var(--faint); text-decoration:line-through; }
+  .he-row button { min-width:44px; padding:0 10px; }
+  .he-row button[data-he-toggle] { min-width:78px; }
+  .he-row button:disabled { opacity:.35; cursor:default; }
+  .he-foot { display:flex; justify-content:space-between; gap:8px; margin-top:14px; }
+  /* ---- Home: What just happened, Trends ---- */
+  .feed { list-style:none; margin:0; padding:0; }
+  .feed-row { display:grid; grid-template-columns:10px minmax(0,1fr) auto; gap:10px; align-items:baseline; padding:9px 0; border-top:1px solid var(--border); font-size:14px; }
+  .feed-row:first-child { border-top:none; }
+  .feed-dot { width:8px; height:8px; border-radius:50%; background:var(--accent); transform:translateY(-1px); }
+  .tone-ok .feed-dot { background:var(--ok); } .tone-warn .feed-dot { background:var(--warn); } .tone-down .feed-dot { background:var(--down); }
+  .feed-when { font-family:var(--mono); font-size:11px; color:var(--faint); white-space:nowrap; }
+  .trends { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:18px; }
+  .trend-h { font-family:var(--mono); font-size:11px; letter-spacing:1.2px; text-transform:uppercase; color:var(--faint); margin-bottom:8px; }
+  .trend-disk + .trend-disk { margin-top:10px; }
+  .trend-row { display:flex; justify-content:space-between; gap:8px; font-size:13px; }
+  .trend-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); min-width:0; }
+  .trend-val { font-weight:600; white-space:nowrap; }
+  .spark { display:block; width:100%; height:28px; margin:4px 0 2px; }
+  .spark path { fill:none; stroke:var(--accent); stroke-width:1.6; vector-effect:non-scaling-stroke; stroke-linejoin:round; }
+  .trend-sub { font-size:12px; color:var(--faint); margin-top:4px; }
+  .trend-sub.down { color:var(--warn); }
+  .bars { display:flex; align-items:flex-end; gap:4px; height:64px; }
+  .bar-col { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-end; height:100%; gap:4px; min-width:0; }
+  .bar-col span { font-family:var(--mono); font-size:10px; color:var(--faint); }
+  .bar { width:100%; height:var(--h); border-radius:3px 3px 1px 1px; background:var(--ok); transition:height .6s cubic-bezier(.2,.75,.25,1); }
+  .bar.warn { background:var(--warn); } .bar.req { background:var(--accent); } .bar.none { background:var(--border); }
   @keyframes panelIn { from { opacity:0; transform:translateY(8px); } }
   .card { transition:transform .25s cubic-bezier(.2,.75,.25,1), border-color .25s; }
   @media (hover:hover) { .card:hover { border-color:color-mix(in srgb, var(--accent) 35%, var(--edge)); } }
@@ -149,6 +209,9 @@ const SHELL_CSS = `
     .bb-pill, .rail-item, .card { transition:none !important; }
   }
 `;
+
+// Runs in <head> before first paint so a light theme never flashes dark.
+const THEME_HEAD_SCRIPT = `try{var t=localStorage.getItem('dashTheme');document.documentElement.dataset.theme=(t==='light'||t==='auto')?t:'dark';}catch(e){document.documentElement.dataset.theme='dark';}`;
 
 // Client side: navigation, the More sheet, and the live layer. Plain ES5 so it runs anywhere the
 // rest of the dashboard does.
@@ -190,7 +253,102 @@ const SHELL_SCRIPT = `
     var st = e.target.closest('[data-search-toggle]');
     if (st) { var h = st.closest('.hdr'); h.classList.toggle('search-open'); if (h.classList.contains('search-open')) { var i = h.querySelector('.topbar-search input'); if (i) i.focus(); } }
   });
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeSheet(); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') { closeSheet(); closeHome(); } });
+
+  // ---- Make Home yours: theme, and which Home cards show in what order (this browser only) ----
+  var homeSheet = document.getElementById('homeSheet'), homeReturn = null;
+  var homeStyle = document.createElement('style');
+  homeStyle.id = 'homePrefs';
+  document.head.appendChild(homeStyle);
+  function safeKey(k) { return /^[a-z][a-z0-9-]{0,30}$/.test(k) ? k : null; }
+  function homePrefs() {
+    try {
+      var p = JSON.parse(localStorage.getItem('dashHome') || '{}') || {};
+      return { hidden: (Array.isArray(p.hidden) ? p.hidden : []).filter(safeKey), order: (Array.isArray(p.order) ? p.order : []).filter(safeKey) };
+    } catch (e) { return { hidden: [], order: [] }; }
+  }
+  function saveHome(p) { try { localStorage.setItem('dashHome', JSON.stringify(p)); } catch (e) {} applyHome(); paintHome(); }
+  // Prefs live in a style element, not on the cards, so a live refresh that morphs the cards keeps them.
+  function applyHome() {
+    var p = homePrefs(), css = '';
+    p.hidden.forEach(function (k) { css += '[data-panel="home"] [data-home="' + k + '"]{display:none !important}'; });
+    p.order.forEach(function (k, i) { css += '.home-more > [data-home="' + k + '"]{order:' + (i + 1) + '}'; });
+    homeStyle.textContent = css;
+  }
+  function homeSections(group) {
+    var home = document.querySelector('[data-panel="home"]');
+    if (!home) return [];
+    return [].slice.call(home.querySelectorAll('[data-home]')).filter(function (el) {
+      return group === 'board' ? el.getAttribute('data-home-group') === 'board' : !!el.parentElement && el.parentElement.classList.contains('home-more');
+    }).map(function (el) { return { key: el.getAttribute('data-home'), label: el.getAttribute('data-home-label') || el.getAttribute('data-home') }; })
+      .filter(function (x) { return safeKey(x.key); });
+  }
+  function orderedMore() {
+    var p = homePrefs(), list = homeSections('more');
+    var rank = function (k) { var i = p.order.indexOf(k); return i === -1 ? 1000 : i; };
+    return list.map(function (x, i) { return [x, i]; }).sort(function (a, b) { return (rank(a[0].key) - rank(b[0].key)) || (a[1] - b[1]); }).map(function (x) { return x[0]; });
+  }
+  function rowHtml(x, i, n, movable, hidden) {
+    var off = hidden.indexOf(x.key) > -1;
+    return '<div class="he-row' + (off ? ' off' : '') + '"><span class="he-name">' + x.label.replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }) + '</span>' +
+      (movable ? '<button type="button" data-he-move="-1" data-key="' + x.key + '" aria-label="Move ' + x.key + ' up"' + (i === 0 ? ' disabled' : '') + '>↑</button>' +
+        '<button type="button" data-he-move="1" data-key="' + x.key + '" aria-label="Move ' + x.key + ' down"' + (i === n - 1 ? ' disabled' : '') + '>↓</button>' : '') +
+      '<button type="button" data-he-toggle="' + x.key + '" aria-pressed="' + !off + '">' + (off ? 'Hidden' : 'Shown') + '</button></div>';
+  }
+  function paintHome() {
+    if (!homeSheet) return;
+    var p = homePrefs();
+    var board = homeSections('board'), more = orderedMore();
+    document.getElementById('heBoard').innerHTML = board.map(function (x, i) { return rowHtml(x, i, board.length, false, p.hidden); }).join('');
+    document.getElementById('heMore').innerHTML = more.map(function (x, i) { return rowHtml(x, i, more.length, true, p.hidden); }).join('');
+    var theme = document.documentElement.dataset.theme || 'dark';
+    [].forEach.call(homeSheet.querySelectorAll('[data-theme-set]'), function (b) { b.setAttribute('aria-pressed', String(b.dataset.themeSet === theme)); });
+  }
+  function setTheme(t) {
+    document.documentElement.dataset.theme = t;
+    try { localStorage.setItem('dashTheme', t); } catch (e) {}
+    syncThemeColor();
+    paintHome();
+  }
+  function syncThemeColor() {
+    var t = document.documentElement.dataset.theme;
+    var light = t === 'light' || (t === 'auto' && window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches);
+    var m = document.querySelector('meta[name="theme-color"]');
+    if (m) m.setAttribute('content', light ? '#f3f6f7' : '#10232f');
+  }
+  function openHome() { if (!homeSheet) return; closeSheet(); homeReturn = document.activeElement; paintHome(); homeSheet.hidden = false; var f = homeSheet.querySelector('[data-theme-set]'); if (f) f.focus(); window.__actionsInFlight = (window.__actionsInFlight || 0) + 1; }
+  function closeHome() { if (!homeSheet || homeSheet.hidden) return; homeSheet.hidden = true; window.__actionsInFlight = Math.max(0, (window.__actionsInFlight || 0) - 1); if (homeReturn && homeReturn.focus) homeReturn.focus(); }
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (t.closest('[data-home-edit]')) { openHome(); return; }
+    if (!homeSheet || homeSheet.hidden) return;
+    if (t.closest('[data-home-close]')) { closeHome(); return; }
+    var th = t.closest('[data-theme-set]');
+    if (th) { setTheme(th.dataset.themeSet); return; }
+    var p = homePrefs();
+    var tog = t.closest('[data-he-toggle]');
+    if (tog) {
+      var k = tog.getAttribute('data-he-toggle'), at = p.hidden.indexOf(k);
+      if (at > -1) p.hidden.splice(at, 1); else p.hidden.push(k);
+      saveHome(p); return;
+    }
+    var mv = t.closest('[data-he-move]');
+    if (mv && !mv.disabled) {
+      var keys = orderedMore().map(function (x) { return x.key; });
+      var from = keys.indexOf(mv.dataset.key), to = from + Number(mv.dataset.heMove);
+      if (from < 0 || to < 0 || to >= keys.length) return;
+      keys.splice(to, 0, keys.splice(from, 1)[0]);
+      p.order = keys;
+      saveHome(p);
+      var again = homeSheet.querySelector('[data-he-move="' + mv.dataset.heMove + '"][data-key="' + mv.dataset.key + '"]');
+      if (again && !again.disabled) again.focus();
+      return;
+    }
+    if (t.closest('[data-home-reset]')) { try { localStorage.removeItem('dashHome'); } catch (e) {} applyHome(); paintHome(); }
+  });
+  applyHome();
+  syncThemeColor();
+  if (window.matchMedia) { var mq = matchMedia('(prefers-color-scheme: light)'); if (mq.addEventListener) mq.addEventListener('change', syncThemeColor); }
   panels.forEach(function (p) { p.setAttribute('role', 'region'); p.setAttribute('aria-label', p.dataset.label || p.dataset.panel); });
 
   // ---- Live layer ----
@@ -314,4 +472,4 @@ const SHELL_SCRIPT = `
 })();
 `;
 
-module.exports = { ICONS, TAB_ALIASES, icon, renderShellNav, SHELL_CSS, SHELL_SCRIPT };
+module.exports = { ICONS, TAB_ALIASES, icon, renderShellNav, SHELL_CSS, SHELL_SCRIPT, THEME_HEAD_SCRIPT };

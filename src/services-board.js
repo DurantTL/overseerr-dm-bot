@@ -368,6 +368,8 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
     decision: s.video_decision === 'transcode' ? 'transcode' : s.transcode_decision === 'copy' ? 'direct stream' : 'direct play',
     quality: s.stream_video_full_resolution || s.video_full_resolution || '',
     bandwidthKbps: Number(s.bandwidth) || 0,
+    // Show (or film) poster key for /admin/api/poster, which looks the image up server-side.
+    posterKey: /^\d{1,12}$/.test(String(s.grandparent_rating_key || s.rating_key || '')) ? String(s.grandparent_rating_key || s.rating_key) : null,
   })).slice(0, 3);
 
   return {
