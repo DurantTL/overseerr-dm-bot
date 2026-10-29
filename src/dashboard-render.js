@@ -5,6 +5,8 @@ const { normalizeTierFolders, serializeTierFolders } = require('./tier-node-setu
 const { HEALTH_KEYS, healthLabel } = require('./health');
 const { telemetrySummary } = require('./node-telemetry');
 
+const { renderShellNav, SHELL_CSS, SHELL_SCRIPT, THEME_HEAD_SCRIPT, icon: shellIcon } = require('./dashboard-shell');
+
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
 }
@@ -20,6 +22,7 @@ const DASHBOARD_CSS = `
   :root { --bg:#10232f; --panel:#173042; --panel2:#1d3a4e; --panel3:#24465c; --accent:#79d2d8; --accent-strong:#a9e4e8; --on-accent:#10232f;
     --text:#f3f7f8; --muted:#bdcfd7; --faint:#8fa9b5; --border:#3a5767; --line-strong:#6a90a1; --edge:rgba(137,180,200,.32);
     --glass:rgba(23,48,66,.42); --cool:#9cc27a; --ok:#5fd39a; --warn:#f2b94b; --down:#ff8a80; --skip:#8fa9b5; --focus:#79d2d8;
+    --tint:255 255 255; --well:rgba(0,0,0,.3); --down-ink:#fca5a5;
     --sans:"Instrument Sans","Helvetica Neue",Arial,sans-serif; --serif:"Instrument Serif",Georgia,serif; --mono:"Space Mono",ui-monospace,SFMono-Regular,monospace; }
   * { box-sizing: border-box; }
   html { -webkit-text-size-adjust:100%; color-scheme:dark; }
@@ -78,7 +81,7 @@ const DASHBOARD_CSS = `
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); white-space:nowrap; max-width:340px; overflow:hidden; text-overflow:ellipsis; }
   th { color:var(--muted); font-weight:600; text-transform:uppercase; font-size:11px; letter-spacing:.04em; }
-  tbody tr:nth-child(odd) { background:rgba(255,255,255,.02); }
+  tbody tr:nth-child(odd) { background:rgb(var(--tint) / .02); }
   .table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
   .muted { color:var(--muted); font-style:italic; font-size:13px; }
   .actions { display:flex; flex-wrap:wrap; gap:10px; }
@@ -289,7 +292,7 @@ const DASHBOARD_CSS = `
   .qa-sheet.open { display:flex; }
   .qa-sheet .qa-scrim { position:absolute; inset:0; background:rgba(0,0,0,.55); }
   .qa-sheet .qa-panel { position:relative; width:100%; max-width:520px; max-height:88vh; max-height:88dvh; display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--border); border-bottom:none; border-radius:20px 20px 0 0; padding:12px 16px calc(16px + env(safe-area-inset-bottom)); }
-  .qa-sheet .qa-grab { width:40px; height:4px; border-radius:99px; background:rgba(255,255,255,.18); margin:0 auto 12px; }
+  .qa-sheet .qa-grab { width:40px; height:4px; border-radius:99px; background:rgb(var(--tint) / .18); margin:0 auto 12px; }
   .qa-sheet h3 { margin:0 0 4px; font-size:17px; text-align:center; }
   .qa-sheet .qa-sub { margin:0 0 12px; font-size:13px; color:var(--muted); text-align:center; }
   .qa-sheet .qa-body { flex:1; min-height:0; overflow:auto; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; }
@@ -312,7 +315,10 @@ const DASHBOARD_CSS = `
 // server-rendered and present in the DOM; the script only toggles which one is visible, so the
 // page still works as one long document if scripting is unavailable (nothing is hidden until the
 // script runs). The active tab lives in location.hash for links and browser navigation.
-function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, searchQuery = '', nav = [], autoRefresh = false, tabs = false } = {}) {
+// `shell` (the admin dashboard) swaps the tab strip for the app shell in src/dashboard-shell.js:
+// side rail, bottom bar, More sheet and the live layer, which replaces the 60s page reload.
+function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, searchQuery = '', nav = [], autoRefresh = false, tabs = false, shell = null } = {}) {
+  if (shell) return renderShellPage(title, bodyHtml, { showLogout, searchQuery, items: shell.items });
   const navHtml = nav.length
     ? `<nav class="nav" aria-label="Dashboard sections"${tabs ? ' role="tablist"' : ''}>${nav.map(([id, label, count]) => (tabs
       ? `<button class="chip tab" role="tab" type="button" data-tab="${escapeHtml(id)}" aria-selected="false">${escapeHtml(label)}${count ? ` <span class="tab-count" aria-label="${escapeHtml(String(count))} need attention">${escapeHtml(String(count))}</span>` : ''}</button>`
@@ -415,6 +421,33 @@ function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, s
   </body></html>`;
 }
 
+function renderShellPage(title, bodyHtml, { showLogout, searchQuery, items }) {
+  const { rail, bar, sheet, homeSheet, detailSheet } = renderShellNav(items, { escapeHtml, showLogout });
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#10232f">
+  <title>${escapeHtml(title)} — Durant Media Server</title>
+  <script>${THEME_HEAD_SCRIPT}</script>
+  <style>${DASHBOARD_CSS}${SHELL_CSS}</style></head><body class="shell">
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  ${rail}
+  <header class="hdr">
+    <div class="topbar">
+      <h1><span class="brand-mark" aria-hidden="true">d<span>l</span>.</span><span><span class="brand">Durant</span> Media Server</span></h1>
+      <div class="hdr-live live-status" data-live-status role="status"><span class="live-dot"></span><span class="live-text">Live</span></div>
+      <button type="button" class="btn hdr-search-toggle" data-search-toggle aria-label="Search">${shellIcon('search', 18)}</button>
+      <form class="topbar-search" method="get" action="/admin/search"><input type="search" name="q" value="${escapeHtml(searchQuery)}" minlength="2" placeholder="Search requests, users, library, audit" aria-label="Search requests, users, library, audit"><button class="btn" type="submit">Search</button></form>
+    </div>
+  </header>
+  <main class="container" id="main-content" tabindex="-1">${bodyHtml}</main>
+  ${bar}
+  ${sheet}
+  ${homeSheet}
+  ${detailSheet}
+  <script>${SHELL_SCRIPT}</script>
+  </body></html>`;
+}
+
 // Epoch ms from a SQLite CURRENT_TIMESTAMP string ('YYYY-MM-DD HH:MM:SS', UTC) or anything
 // Date.parse understands; null when unparseable.
 function sqliteUtcMs(v) {
@@ -443,7 +476,8 @@ function renderBar(pct, label = '') {
 function renderItemList(items, emptyText = 'Nothing right now.') {
   if (!items || !items.length) return `<p class="muted">${escapeHtml(emptyText)}</p>`;
   return `<div class="items">${items.map(i => `
-    <div class="item">
+    <div class="item"${i.key ? ` data-key="${escapeHtml(i.key)}"` : ''}>
+      ${i.pick ? `<label class="pick"><input type="checkbox" data-pick="${escapeHtml(i.pick)}" aria-label="Select ${escapeHtml(i.title || '')}"></label>` : ''}
       <span class="dot ${['ok', 'warn', 'down', 'skip'].includes(i.state) ? i.state : 'skip'}"></span>
       <div class="item-main">
         <div class="item-title">${escapeHtml(i.title || '')}</div>
@@ -470,6 +504,79 @@ function renderRecentlyAdded(items) {
     </div>`;
   }).join('')}</div>
   <script>document.addEventListener('error', function (e) { var t = e.target; if (t && t.matches && t.matches('.recent-poster img')) t.remove(); }, true);</script>`;
+}
+
+// Home's "What just happened" feed (src/dashboard-feed.js). Each row is keyed by its audit id,
+// so a live refresh keeps the rows already shown and only new ones slide in.
+function renderFeed(items) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return '<p class="muted">Nothing new yet. Requests, outages, restarts and imports show up here as they happen.</p>';
+  return `<ol class="feed">${list.map(i => `<li class="feed-row tone-${escapeHtml(i.tone)}" data-key="feed-${escapeHtml(String(i.id))}">
+    <span class="feed-dot" aria-hidden="true"></span><span class="feed-text">${escapeHtml(i.text)}</span>
+    <time class="feed-when"${Number.isFinite(i.at) ? ` datetime="${new Date(i.at).toISOString()}"` : ''}>${Number.isFinite(i.at) ? escapeHtml(fmtAgo(i.at)) : ''}</time></li>`).join('')}</ol>`;
+}
+
+// Activity: the audit log as filterable rows, 15 at a time ([data-filter-list] in the shell).
+const ACTIVITY_CATEGORIES = [
+  ['requests', 'Requests', /^(media_|request|seerr_|season_|episode_|grab_|escalation|stuck_|pack_|release_group|watchlist|issue_|stage|staged|guided_import|manual_import|arr_|keep_|evict|deletion|retention|downsize|not_watchable)/],
+  ['services', 'Services', /^(service_|dashboard_service|indexer_|transcode|ph_tunnel|smart_|disk|tunnel|premiumize|rtorrent|backup|migration)/],
+  ['people', 'People', /^(user_|plex_|member_|invite|tailscale|email_|notification_|support_case|setup_guide|ph_device)/],
+  ['fleet', 'Fleet', /^(tier_|edge_|sync_|europe|fleet|dashboard_tier|dashboard_europe)/],
+];
+function activityCategory(action) {
+  const hit = ACTIVITY_CATEGORIES.find(([, , re]) => re.test(String(action || '')));
+  return hit ? hit[0] : 'system';
+}
+function renderActivity(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return '<p class="muted">No records.</p>';
+  const counts = {};
+  list.forEach(r => { const c = activityCategory(r.action); counts[c] = (counts[c] || 0) + 1; });
+  const chips = [['all', 'All', list.length], ...ACTIVITY_CATEGORIES.map(([id, label]) => [id, label, counts[id] || 0]), ['system', 'System', counts.system || 0]]
+    .filter(([id, , n]) => id === 'all' || n)
+    .map(([id, label, n]) => `<button type="button" class="seg-btn" data-filter-btn="${id}">${escapeHtml(label)}<span class="seg-n">${n}</span></button>`).join('');
+  return `<div class="segs" role="group" aria-label="Filter activity">${chips}</div>
+  <div data-filter-list data-page="15"><ol class="activity">${list.map(r => `<li class="act-row" data-cat="${activityCategory(r.action)}" data-key="audit-${escapeHtml(String(r.id))}">
+    <time class="act-when"${Number.isFinite(r.at) ? ` datetime="${new Date(r.at).toISOString()}"` : ''}>${Number.isFinite(r.at) ? escapeHtml(fmtAgo(r.at)) : ''}</time>
+    <span class="act-what">${escapeHtml(String(r.action || '').replace(/_/g, ' '))}</span>
+    ${r.details && r.details !== '{}' ? `<span class="act-details">${escapeHtml(r.details)}</span>` : ''}</li>`).join('')}</ol>
+  <button type="button" class="btn act-more" data-more-btn hidden>Show more</button></div>`;
+}
+
+function sparkPath(series, w, h) {
+  const vals = series.map(p => p.v);
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const span = max - min || 1;
+  const t0 = series[0].t;
+  const tSpan = (series[series.length - 1].t - t0) || 1;
+  return series.map((p, i) => `${i ? 'L' : 'M'}${((p.t - t0) / tSpan * w).toFixed(1)},${(h - 2 - ((p.v - min) / span) * (h - 4)).toFixed(1)}`).join(' ');
+}
+
+// Home's Trends card (src/dashboard-trends.js): disk free over 30 days, uptime per day for a
+// week, requests per day for two weeks. Short history says so rather than drawing a guess.
+function renderTrends(trends, { fmtSpace = b => `${Math.round(b / 1e9)} GB` } = {}) {
+  const t = trends || {};
+  const blocks = [];
+  const disks = (t.disks || []).filter(d => d.series.length > 1);
+  blocks.push(`<div class="trend"><div class="trend-h">Disk free · 30 days</div>${disks.length ? disks.slice(0, 4).map(d => {
+    const days = d.spanMs / 86400000;
+    const change = d.change === 0 ? 'no change' : `${d.change > 0 ? '+' : '−'}${fmtSpace(Math.abs(d.change))} in ${days >= 1 ? `${Math.round(days)} d` : `${Math.max(1, Math.round(d.spanMs / 3600000))} h`}`;
+    return `<div class="trend-disk" data-key="trend-disk-${escapeHtml(d.root)}"><div class="trend-row"><span class="trend-name" title="${escapeHtml(d.root)}">${escapeHtml(d.root)}</span><span class="trend-val">${escapeHtml(fmtSpace(d.free))} free</span></div>
+      <svg class="spark" viewBox="0 0 120 28" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(`${d.root}: ${fmtSpace(d.free)} free, ${change}`)}"><path d="${sparkPath(d.series, 120, 28)}"/></svg>
+      <div class="trend-sub${d.change < 0 ? ' down' : ''}">${escapeHtml(change)}</div></div>`;
+  }).join('') : '<p class="muted">Collecting. Disk samples build up over the first day.</p>'}</div>`);
+  const up = (t.uptime || []);
+  const upDays = up.filter(d => d.pct != null);
+  const dayName = ms => new Date(ms).toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' });
+  blocks.push(`<div class="trend"><div class="trend-h">Services up · 7 days</div>${upDays.length ? `<div class="bars" role="img" aria-label="${escapeHtml(upDays.map(d => `${dayName(d.day)} ${d.pct}%`).join(', '))}">${up.map(d => `<div class="bar-col"><div class="bar${d.pct == null ? ' none' : d.pct < 99 ? ' warn' : ''}" style="--h:${d.pct == null ? 4 : Math.max(6, Math.round((d.pct - 90) * 10))}%"></div><span>${escapeHtml(dayName(d.day).slice(0, 2))}</span></div>`).join('')}</div>
+    <div class="trend-sub">${escapeHtml(`${upDays[upDays.length - 1].pct}% today · lowest ${Math.min(...upDays.map(d => d.pct))}%`)}</div>` : '<p class="muted">Collecting. Uptime builds from the service checks every few minutes.</p>'}</div>`);
+  const req = t.requests || [];
+  const total = req.reduce((n, d) => n + d.n, 0);
+  const peak = Math.max(1, ...req.map(d => d.n));
+  blocks.push(`<div class="trend"><div class="trend-h">Requests · 14 days</div>${req.length ? `<div class="bars" role="img" aria-label="${escapeHtml(`${total} requests in 14 days`)}">${req.map(d => `<div class="bar-col"><div class="bar req${d.n ? '' : ' none'}" style="--h:${d.n ? Math.max(8, Math.round(d.n / peak * 100)) : 4}%"></div></div>`).join('')}</div>
+    <div class="trend-sub">${escapeHtml(total ? `${total} in 14 days · busiest day ${peak}` : 'No requests in 14 days')}</div>` : '<p class="muted">Request history is unavailable.</p>'}</div>`);
+  return `<div class="trends">${blocks.join('')}</div>`;
 }
 
 // Overview's alert inbox: service-down incidents from src/service-alerts.js alertInbox(), newest
@@ -550,7 +657,9 @@ function renderFleetSync(fleet) {
   }).join('');
 }
 
-function renderDirectorPanel({ overall, services, disks, totalFreeLabel, fleetSync }) {
+// `compact` (Home, under the Services board): no page heading or service list, which the board
+// already shows; just storage, fleet sync, and any integration that isn't healthy.
+function renderDirectorPanel({ overall, services, disks, totalFreeLabel, fleetSync, compact = false }) {
   const list = Array.isArray(services) ? services : [];
   const counts = { ok: 0, down: 0, warn: 0, skip: 0 };
   for (const s of list) counts[Object.hasOwn(counts, s.state) ? s.state : 'warn']++;
@@ -595,6 +704,33 @@ function renderDirectorPanel({ overall, services, disks, totalFreeLabel, fleetSy
             ${typeof d.pct === 'number' ? `<div class="d-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.max(0, Math.min(100, d.pct))}" aria-label="${escapeHtml(d.title || 'disk')} usage"><span class="${dotClass(d.state)}" style="width:${Math.max(0, Math.min(100, d.pct))}%"></span></div>` : ''}</div>
           <div class="d-node-right">${escapeHtml(d.right || '')}</div>
         </div>`).join('') : '<p class="d-lead-copy" style="padding:12px 0">No disks reported.</p>');
+  const fleetSyncCard = fleetSync === undefined ? '' : `
+      <div class="card d-card d-wide">
+        <div class="d-card-head">
+          <div><h2>Fleet sync</h2><p>What each tier node still has to pull, per folder. Read only, from the agents’ own reports.</p></div>
+        </div>
+        <div class="d-card-body">${renderFleetSync(fleetSync)}</div>
+      </div>`;
+  if (compact) {
+    return `
+      <div class="d-grid">
+      ${exceptions.length ? `<div class="card d-card">
+        <div class="d-card-head">
+          <div><h2>Integrations needing a look</h2><p>From the health check: the bot’s own view of each integration.</p></div>
+          <span class="d-status ${status}">${escapeHtml(statusText)}</span>
+        </div>
+        <div class="d-card-body">${exceptions.map(serviceRow).join('')}</div>
+      </div>` : ''}
+      <div class="card d-card">
+        <div class="d-card-head">
+          <div><h2>Disk space</h2><p>Free space and usage per volume.</p></div>
+          <div class="d-metric"><strong>${totalFreeLabel ? escapeHtml(totalFreeLabel) : '—'}</strong><span>Disk free · all volumes</span></div>
+        </div>
+        <div class="d-card-body">${diskRows}</div>
+      </div>
+      ${fleetSyncCard}
+      </div>`;
+  }
   return `
       <div class="d-page-lead">
         <div>
@@ -626,17 +762,12 @@ function renderDirectorPanel({ overall, services, disks, totalFreeLabel, fleetSy
         </div>
         <div class="d-card-body">${diskRows}</div>
       </div>
-      ${fleetSync === undefined ? '' : `
-      <div class="card d-card d-wide">
-        <div class="d-card-head">
-          <div><h2>Fleet sync</h2><p>What each tier node still has to pull, per folder. Read only, from the agents’ own reports.</p></div>
-        </div>
-        <div class="d-card-body">${renderFleetSync(fleetSync)}</div>
-      </div>`}
+      ${fleetSyncCard}
       </div>`;
 }
 
-function renderServicesPanel() {
+// `needs` (Home): server-rendered "needs you" content, placed right under the board's alerts.
+function renderServicesPanel({ needs = '' } = {}) {
   // Client-rendered Services board. The server ships the shell; the browser
   // fetches /admin/api/services and renders cards from live data. Scoped
   // styles use the svc- prefix to avoid colliding with dashboard CSS.
@@ -687,6 +818,8 @@ function renderServicesPanel() {
 .svc-downonly { flex: none; min-height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 0 14px; border-radius: 14px; border: 1px solid var(--edge); background: var(--glass); color: var(--text); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
 .svc-downonly .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--down); }
 .svc-downonly[aria-pressed="true"] { border-color: var(--down); background: color-mix(in srgb, var(--down) 16%, transparent); color: var(--down); }
+.svc-dense svg { width: 16px; height: 16px; flex: none; }
+.svc-dense[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text); }
 .svc-group-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; margin: -10px 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer; }
 .svc-group-toggle:disabled { cursor: default; }
 .svc-group-toggle .chev { width: 16px; height: 16px; transition: transform .18s; }
@@ -744,7 +877,9 @@ function renderServicesPanel() {
 .svc-np .np-poster { width: 52px; height: 76px; border-radius: 10px; flex: none;
   background: linear-gradient(135deg, color-mix(in srgb, var(--svc-accent) 14%, transparent), color-mix(in srgb, var(--svc-accent) 4%, transparent));
   border: 1px solid var(--svc-line); display: flex; align-items: center; justify-content: center;
-  font-size: 22px; overflow: hidden; }
+  font-size: 22px; overflow: hidden; position: relative; }
+.svc-np .np-poster img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; animation: npFade .5s ease both; }
+@keyframes npFade { from { opacity: 0; } }
 .svc-np .np-info { flex: 1; min-width: 0; }
 .svc-np .np-kicker { font-size: 10px; letter-spacing: .14em; color: var(--svc-accent); font-weight: 700;
   margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
@@ -755,7 +890,7 @@ function renderServicesPanel() {
 .svc-np .np-kicker .eq i:nth-child(3) { height: 40%; animation-delay: .4s; }
 .svc-np .np-title { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .svc-np .np-sub { font-size: 12px; color: var(--svc-ink2); margin-top: 2px; }
-.svc-np .np-progress { height: 4px; border-radius: 99px; background: rgba(255,255,255,.08); margin-top: 9px; overflow: hidden; }
+.svc-np .np-progress { height: 4px; border-radius: 99px; background: rgb(var(--tint) / .08); margin-top: 9px; overflow: hidden; }
 .svc-np .np-progress i { display: block; height: 100%; border-radius: 99px; background: var(--svc-accent); }
 .svc-np .np-time { font-size: 10px; color: var(--svc-ink3); margin-top: 4px; font-variant-numeric: tabular-nums; }
 @keyframes svcEq { 0%,100% { transform: scaleY(.5); } 50% { transform: scaleY(1); } }
@@ -770,38 +905,61 @@ function renderServicesPanel() {
 .svc-sheet .svc-sheet-panel { position: relative; width: 100%; max-width: 420px; background: var(--panel); border: 1px solid var(--svc-line);
   border-bottom: none; border-radius: 20px 20px 0 0; padding: 12px 16px 28px; animation: svcSlideUp .28s cubic-bezier(.2,.9,.25,1.1); }
 @keyframes svcSlideUp { from { transform: translateY(60px); opacity: 0; } }
-.svc-sheet .grab { width: 40px; height: 4px; border-radius: 99px; background: rgba(255,255,255,.18); margin: 0 auto 14px; }
+.svc-sheet .grab { width: 40px; height: 4px; border-radius: 99px; background: rgb(var(--tint) / .18); margin: 0 auto 14px; }
 .svc-sheet .stitle { font-weight: 750; font-size: 16px; margin: 2px 0 2px; text-align: center; }
 .svc-sheet .ssub { font-size: 12px; color: var(--svc-ink2); margin-bottom: 14px; text-align: center; word-break: break-all; }
 .svc-action .a-ic { font-size: 16px; }
 .svc-action span:last-child { font-size: 14px; }
 .svc-action { display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px 16px; margin-top: 8px;
-  border: 1px solid var(--svc-line); background: rgba(255,255,255,.05); color: var(--svc-ink);
+  border: 1px solid var(--svc-line); background: rgb(var(--tint) / .05); color: var(--svc-ink);
   font-size: 15px; font-weight: 600; border-radius: 14px; cursor: pointer; text-align: left; backdrop-filter: blur(8px); }
 .svc-action:active { transform: scale(.98); }
-.svc-action.danger { color: #fca5a5; border-color: color-mix(in srgb, var(--svc-red) 30%, transparent); }
+.svc-action.danger { color: var(--down-ink); border-color: color-mix(in srgb, var(--svc-red) 30%, transparent); }
 .svc-action:disabled { opacity: .4; cursor: default; }
 .svc-sheet-facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0 0 10px; padding: 12px 14px;
-  border: 1px solid var(--svc-line); border-radius: 14px; background: rgba(255,255,255,.03); font-size: 13px; }
+  border: 1px solid var(--svc-line); border-radius: 14px; background: rgb(var(--tint) / .03); font-size: 13px; }
 .svc-sheet-facts[hidden] { display: none; }
+.svc-uptime { margin: 0 0 10px; padding: 12px 14px; border: 1px solid var(--svc-line); border-radius: 14px; background: rgb(var(--tint) / .03); }
+.svc-uptime[hidden] { display: none; }
+.svc-uptime-head { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--svc-ink2); margin-bottom: 8px; }
+.svc-uptime-head strong { color: var(--svc-ink); font-weight: 650; }
+.svc-uptime-strip { display: grid; grid-template-columns: repeat(48, 1fr); gap: 2px; height: 26px; }
+.svc-uptime-strip i { border-radius: 2px; background: var(--ok, #5fd39a); opacity: .85; }
+.svc-uptime-strip i.down { background: var(--svc-red, #ff8a80); opacity: 1; }
+.svc-uptime-strip i.mixed { background: var(--warn, #f2b94b); opacity: 1; }
+.svc-uptime-strip i.none { background: rgb(var(--tint) / .08); }
+.svc-uptime-axis { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10.5px; color: var(--svc-ink2); margin-top: 6px; }
+/* Tiles: the whole board on one screen; tap a tile for its sheet. */
+#svcBoard.dense .svc-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-bottom: 18px; }
+#svcBoard.dense .svc-grid > [data-nosheet] { grid-column: 1 / -1; }
+#svcBoard.dense .svc-card.mini { min-height: 44px; padding: 8px 30px 8px 10px; gap: 8px; border-radius: 10px; }
+#svcBoard.dense .svc-card.mini .svc-icon { width: 24px; height: 24px; border-radius: 7px; flex: none; }
+#svcBoard.dense .svc-card.mini .svc-icon svg { width: 14px; height: 14px; }
+#svcBoard.dense .svc-card.mini .svc-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+#svcBoard.dense .svc-card.mini .svc-more { display: none; }
+#svcBoard.dense .svc-card.mini .svc-dot { right: 10px; }
+#svcBoard.dense .svc-qbadge { top: -6px; right: -4px; }
+@media (max-width: 720px) { #svcBoard.dense .svc-card.mini .svc-icon { display: none; } #svcBoard.dense .svc-card.mini { padding-left: 12px; } }
+@media (min-width: 721px) { #svcBoard.dense .svc-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; } #svcBoard.dense .svc-grid > [data-nosheet] { grid-column: span 2; } }
+@media (min-width: 1100px) { #svcBoard.dense .svc-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
 .svc-sheet-facts dt { color: var(--svc-ink2); }
 .svc-sheet-facts dd { margin: 0; color: var(--svc-ink); text-align: right; min-width: 0; overflow-wrap: anywhere; }
 .svc-sheet-facts dd.mono { font-family: var(--mono); font-size: 12px; }
-.svc-sheet-facts dd.down { color: #fca5a5; }
+.svc-sheet-facts dd.down { color: var(--down-ink); }
 .svc-sheet-facts dd.hot { color: var(--warn); }
 .svc-logview[hidden], #svcSheetMain[hidden] { display: none; }
 .svc-logview { display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .svc-sheet .svc-sheet-panel.logs { max-width: 760px; height: 88vh; height: 88dvh; display: flex; flex-direction: column; padding-bottom: 16px; }
 .svc-log-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .svc-log-meta { flex: 1; text-align: center; font-size: 12px; color: var(--svc-ink2); }
-.svc-log-btn { min-height: 44px; padding: 0 14px; border: 1px solid var(--svc-line); border-radius: 12px; background: rgba(255,255,255,.05);
+.svc-log-btn { min-height: 44px; padding: 0 14px; border: 1px solid var(--svc-line); border-radius: 12px; background: rgb(var(--tint) / .05);
   color: var(--svc-ink); font-size: 14px; font-weight: 600; cursor: pointer; }
 .svc-log-btn:disabled { opacity: .4; cursor: default; }
 .svc-log { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 10px 12px;
-  border: 1px solid var(--svc-line); border-radius: 12px; background: rgba(0,0,0,.35); font-family: var(--mono); font-size: 11.5px; line-height: 1.5; }
+  border: 1px solid var(--svc-line); border-radius: 12px; background: var(--well); font-family: var(--mono); font-size: 11.5px; line-height: 1.5; }
 .svc-log .ln { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--svc-ink); }
 .svc-log .ln + .ln { margin-top: 4px; }
-.svc-log .ln.err { color: #fca5a5; }
+.svc-log .ln.err { color: var(--down-ink); }
 .svc-log .ln time { color: var(--faint); margin-right: 8px; }
 .svc-log .empty { color: var(--svc-ink2); font-family: inherit; text-align: center; padding: 24px 8px; }
 .svc-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: color-mix(in srgb, var(--panel) 92%, transparent);
@@ -836,7 +994,7 @@ function renderServicesPanel() {
   background: color-mix(in srgb, var(--svc-accent) 15%, transparent); border: 1px solid color-mix(in srgb, var(--svc-accent) 35%, transparent); color: var(--svc-accent);
   font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
 .svc-widget { display: flex; gap: 6px; margin-top: 8px; }
-.svc-widget .metric { flex: 1; background: rgba(0,0,0,.28); border: 1px solid rgba(255,255,255,.06); border-radius: 10px; padding: 8px 6px; text-align: center; }
+.svc-widget .metric { flex: 1; background: var(--well); border: 1px solid rgb(var(--tint) / .06); border-radius: 10px; padding: 8px 6px; text-align: center; }
 .svc-widget .metric .mv { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .svc-widget .metric .ml { font-size: 9px; color: var(--svc-ink3); letter-spacing: .08em; text-transform: uppercase; margin-top: 2px; }
 .svc-widget .metric.good .mv { color: var(--svc-green); }
@@ -844,12 +1002,12 @@ function renderServicesPanel() {
 .svc-bar-row { margin-top: 8px; }
 .svc-bar-row .bl { display: flex; justify-content: space-between; font-size: 10px; color: var(--svc-ink2); margin-bottom: 4px; letter-spacing: .04em; }
 .svc-bar-row .bl b { color: var(--svc-ink); font-variant-numeric: tabular-nums; }
-.svc-bar { height: 5px; border-radius: 99px; background: rgba(255,255,255,.07); overflow: hidden; }
+.svc-bar { height: 5px; border-radius: 99px; background: rgb(var(--tint) / .07); overflow: hidden; }
 .svc-bar i { display: block; height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--svc-accent), var(--accent-strong)); width: 0; animation: svcFillBar 1.4s .4s cubic-bezier(.2,.8,.2,1) forwards; }
 @keyframes svcFillBar { to { width: var(--w); } }
 .svc-batt-wrap { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
-.svc-batt { width: 64px; height: 32px; border: 2px solid rgba(255,255,255,.25); border-radius: 8px; position: relative; flex: none; padding: 3px; }
-.svc-batt::after { content: ""; position: absolute; right: -8px; top: 8px; width: 5px; height: 12px; border-radius: 0 3px 3px 0; background: rgba(255,255,255,.25); }
+.svc-batt { width: 64px; height: 32px; border: 2px solid rgb(var(--tint) / .25); border-radius: 8px; position: relative; flex: none; padding: 3px; }
+.svc-batt::after { content: ""; position: absolute; right: -8px; top: 8px; width: 5px; height: 12px; border-radius: 0 3px 3px 0; background: rgb(var(--tint) / .25); }
 .svc-batt i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--svc-green), #6ee7b7); width: 0; animation: svcFillBar 1.6s .5s cubic-bezier(.2,.8,.2,1) forwards; }
 .svc-batt-info .bv { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .svc-batt-info .bl2 { font-size: 10px; color: var(--svc-ink3); letter-spacing: .08em; text-transform: uppercase; margin-top: 1px; }
@@ -858,7 +1016,7 @@ function renderServicesPanel() {
 .svc-mains .mdot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; animation: svcPulse 2.2s ease-in-out infinite; }
 .svc-donut-wrap { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
 .svc-donut { width: 74px; height: 74px; flex: none; transform: rotate(-90deg); }
-.svc-donut .bg { stroke: rgba(255,255,255,.08); }
+.svc-donut .bg { stroke: rgb(var(--tint) / .08); }
 .svc-donut .fg1 { stroke: var(--svc-accent); stroke-linecap: round; }
 .svc-donut .fg2 { stroke: var(--svc-cool); stroke-linecap: round; }
 .svc-donut-c { font-size: 11px; color: var(--svc-ink2); }
@@ -867,11 +1025,11 @@ function renderServicesPanel() {
 .svc-talker { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; font-size: 12px; }
 .svc-talker .tn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .svc-talker .tv { color: var(--svc-ink2); font-variant-numeric: tabular-nums; font-size: 11px; }
-.svc-talker .tbar { grid-column: 1 / -1; height: 4px; border-radius: 99px; background: rgba(255,255,255,.07); overflow: hidden; }
+.svc-talker .tbar { grid-column: 1 / -1; height: 4px; border-radius: 99px; background: rgb(var(--tint) / .07); overflow: hidden; }
 .svc-talker .tbar i { display: block; height: 100%; border-radius: 99px; background: var(--svc-accent); width: 0; animation: svcFillBar 1.4s .4s cubic-bezier(.2,.8,.2,1) forwards; }
 .svc-kv { display: flex; justify-content: space-between; font-size: 11px; color: var(--svc-ink2); margin-top: 8px; }
 .svc-kv b { color: var(--svc-ink); font-variant-numeric: tabular-nums; }
-.svc-tput { position: relative; height: 92px; margin-top: 8px; border-radius: 12px; overflow: hidden; background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.05); }
+.svc-tput { position: relative; height: 92px; margin-top: 8px; border-radius: 12px; overflow: hidden; background: var(--well); border: 1px solid rgb(var(--tint) / .05); }
 .svc-tput canvas { width: 100%; height: 100%; display: block; }
 .svc-tput-legend { display: flex; gap: 14px; margin-top: 8px; font-size: 11px; color: var(--svc-ink2); }
 .svc-tput-legend b { color: var(--svc-ink); font-variant-numeric: tabular-nums; }
@@ -935,10 +1093,22 @@ function renderServicesPanel() {
 .svc-action .a-ic svg { width: 17px; height: 17px; color: var(--svc-ink2); vertical-align: -3px; }
 .svc-action.danger .a-ic svg { color: currentColor; }
 @media (min-width: 721px) { .svc-sheet { align-items: center; } .svc-sheet .svc-sheet-panel { border-bottom: 1px solid var(--svc-line); border-radius: 20px; } }
+/* Wide screens: the sheet is a detail panel docked on the right, the board still visible beside it. */
+@media (min-width: 1100px) {
+  .svc-sheet { align-items: stretch; justify-content: flex-end; }
+  .svc-sheet .scrim { background: rgba(0,0,0,.25); backdrop-filter: none; }
+  .svc-sheet .svc-sheet-panel { max-width: 420px; height: 100%; overflow-y: auto; border-radius: 0; border: none; border-left: 1px solid var(--svc-line); padding: 22px 20px 28px; animation: svcSlideIn .28s cubic-bezier(.2,.9,.25,1); }
+  .svc-sheet .svc-sheet-panel.logs { max-width: 760px; height: 100%; }
+  .svc-sheet .grab { display: none; }
+  .svc-sheet .stitle, .svc-sheet .ssub { text-align: left; }
+  .svc-sheet .stitle { font-size: 20px; }
+}
+@keyframes svcSlideIn { from { transform: translateX(40px); opacity: 0; } }
 .svc-jump { display: inline-flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 10px 0 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: none; color: var(--svc-ink2); font-size: 13px; cursor: pointer; }
 .svc-jump svg { width: 15px; height: 15px; }
 .svc-jump kbd { padding: 1px 6px; border: 1px solid var(--svc-line); border-radius: 5px; font: 400 11px/1.6 var(--mono); color: var(--svc-ink3); }
 .svc-tools { display: grid; justify-items: end; gap: 10px; }
+@media (max-width: 720px) { .svc-tools { display: flex; align-items: center; gap: 8px; } }
 .svc-pal { position: fixed; inset: 0; z-index: 65; display: none; align-items: flex-start; justify-content: center; padding: 12vh 16px 16px; background: rgba(0,0,0,.45); }
 .svc-pal.open { display: flex; }
 .svc-pal-box { width: min(560px, 100%); padding: 8px; border: 1px solid var(--svc-line); border-radius: 18px; }
@@ -970,19 +1140,21 @@ function renderServicesPanel() {
       <p class="sub" id="svcSub">Use ⋯ on a card (or long-press it) for actions. Links use your local or Tailscale address.</p>
     </div>
     <div class="svc-tools">
-      <button class="svc-jump" id="svcJump" type="button" aria-haspopup="dialog" aria-label="Jump to a service (press /)"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg><span>Jump to a service</span><kbd>/</kbd></button>
+      <button class="svc-jump" id="svcJump" type="button" aria-haspopup="dialog" aria-label="Jump to anything (press /)"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg><span>Jump to anything</span><kbd>/</kbd></button>
       <div class="svc-seg" role="group" aria-label="Open service links through">
         <button type="button" data-net="lan" aria-pressed="false">Local</button>
         <button type="button" data-net="tail" aria-pressed="false">Tailscale</button>
       </div>
     </div>
   </div>
-  <div id="svcVitals"></div>
+  <div id="svcVitals" data-home="vitals" data-home-label="Vitals strip" data-home-group="board"></div>
   <div id="svcAttention"></div>
-  <div id="svcNowPlaying"></div>
+  ${needs}
+  <div id="svcNowPlaying" data-home="nowplaying" data-home-label="Now playing" data-home-group="board"></div>
   <div class="svc-filter" role="search">
     <label class="svc-find" for="svcFind"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg><input id="svcFind" type="search" placeholder="Find a service" autocomplete="off" enterkeyhint="search" aria-label="Find a service by name"></label>
     <button type="button" class="svc-downonly" id="svcDownOnly" aria-pressed="false"><span class="dot" aria-hidden="true"></span>Down only</button>
+    <button type="button" class="svc-downonly svc-dense" id="svcDense" aria-pressed="true" title="Show services as small tiles or full cards"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg>Tiles</button>
   </div>
   <div id="svcBoard"><div class="svc-loading">Loading services…</div></div>
 </div>
@@ -994,6 +1166,7 @@ function renderServicesPanel() {
     <div class="ssub" id="svcSheetSub"></div>
     <div id="svcSheetMain">
     <dl class="svc-sheet-facts" id="svcSheetFacts" hidden></dl>
+    <div class="svc-uptime" id="svcSheetUptime" hidden></div>
     <button class="svc-action" id="svcOpen"><span class="a-ic" data-icon="open"></span><span>Open</span></button>
     <button class="svc-action" id="svcCopy"><span class="a-ic" data-icon="copy"></span><span>Copy link</span></button>
     <button class="svc-action" id="svcPin"><span class="a-ic" data-icon="pin"></span><span id="svcPinLabel">Pin to top of group</span></button>
@@ -1011,9 +1184,9 @@ function renderServicesPanel() {
   </div>
 </div>
 <div class="svc-pal" id="svcPal">
-  <div class="svc-pal-box" role="dialog" aria-modal="true" aria-label="Jump to a service">
-    <input id="svcPalInput" type="text" placeholder="Jump to a service…" autocomplete="off" aria-controls="svcPalList" aria-label="Service name">
-    <ul id="svcPalList" role="listbox" aria-label="Services"></ul>
+  <div class="svc-pal-box" role="dialog" aria-modal="true" aria-label="Jump to anything">
+    <input id="svcPalInput" type="text" placeholder="Jump to a tab, a service, or search…" autocomplete="off" aria-controls="svcPalList" aria-label="Jump to anything">
+    <ul id="svcPalList" role="listbox" aria-label="Places and services"></ul>
   </div>
 </div>
 <div class="svc-toast" id="svcToast" role="status" aria-live="polite"></div>
@@ -1021,6 +1194,7 @@ function renderServicesPanel() {
 (function () {
   var board = document.getElementById('svcBoard');
   var np = document.getElementById('svcNowPlaying');
+  var netBoard = document.getElementById('netBoard');
   if (!board) return;
   var LAN = '', TAIL = '', mode = 'tail', manualMode = null;
   // Pinned services lead their group and stay put (replaces tap-count "smart sort",
@@ -1032,6 +1206,9 @@ function renderServicesPanel() {
   // the Down only filter opens every group so a match is never hidden inside a collapsed one.
   var findTerm = '';
   var downOnly = false;
+  // Tiles (dot, icon, name; the whole board on one screen) or full cards. Tiles by default.
+  var dense = true;
+  try { dense = localStorage.getItem('svcDense') !== '0'; } catch (e) {}
   var collapsed = [];
   try { collapsed = JSON.parse(localStorage.getItem('svcCollapsed') || '[]'); if (!Array.isArray(collapsed)) collapsed = []; } catch (e) { collapsed = []; }
   function saveCollapsed() { try { localStorage.setItem('svcCollapsed', JSON.stringify(collapsed)); } catch (e) {} }
@@ -1042,6 +1219,8 @@ function renderServicesPanel() {
   }
   var lastData = null;
 
+  // A poster that fails to load leaves the film icon showing underneath.
+  document.addEventListener('error', function (e) { var t = e.target; if (t && t.matches && t.matches('.np-poster img')) t.remove(); }, true);
   // Omitted readings mean unavailable telemetry, not an empty queue or a recovered service.
   function mergeData(previous, next) {
     if (!previous || !next || typeof previous !== 'object' || typeof next !== 'object') return next;
@@ -1099,6 +1278,8 @@ function renderServicesPanel() {
           patch(found, wanted);
         } else {
           found = wanted.cloneNode(true);
+          // Something new on a live refresh (a card, a stream, a down service) eases in.
+          if (!firstRender && found.nodeType === 1) found.classList.add('live-enter');
           current.insertBefore(found, cursor);
         }
         cursor = found.nextSibling;
@@ -1238,12 +1419,12 @@ function renderServicesPanel() {
     var more = '<button class="svc-more" type="button" aria-haspopup="dialog" aria-label="Actions for ' + esc(s.name) + '">' + svg('more') + '</button>';
     var attrs = ' data-key="' + esc(s.key) + '"' + (url ? ' data-url="' + esc(url) + '"' : '') +
       ' data-name="' + esc(s.name) + '" data-container="' + esc(s.container || '') + '" data-canrestart="' + (s.canRestart ? '1' : '') + '"';
-    if (s.compact) {
+    var qbadge = s.queue ? '<div class="svc-qbadge">' + s.queue + '</div>' : '';
+    if (s.compact || dense) {
       // Mini card: icon + name only, like the mockup's background-services row.
-      return '<a class="svc-card mini' + cls + '"' + attrs + '><div class="svc-dot ' + dot + '"></div>' + more +
+      return '<a class="svc-card mini' + cls + '"' + attrs + '>' + (dense ? qbadge : '') + '<div class="svc-dot ' + dot + '"></div>' + more +
         '<div class="svc-icon">' + iconFor(s.icon) + '</div><div class="svc-name">' + esc(s.name) + '</div></a>';
     }
-    var qbadge = s.queue ? '<div class="svc-qbadge">' + s.queue + '</div>' : '';
     var desc = s.detail ? esc(s.detail) : esc(s.desc || '');
     return '<a class="svc-card' + cls + '"' + attrs + '>' + qbadge +
       '<div class="svc-dot ' + dot + '"></div>' + more +
@@ -1251,9 +1432,10 @@ function renderServicesPanel() {
       (desc ? '<div class="svc-desc">' + desc + '</div>' : '') + factsHtml(s) + downloadsHtml(s) + '</a>';
   }
 
-  function specialCards(d) {
+  // which: 'system' (Home: UPS, ZFS, SSD) or 'net' (Network tab: speedtest, internet health).
+  function specialCards(d, which) {
     var out = '';
-    if (d.ups) {
+    if (d.ups && which !== 'net') {
       var u = d.ups;
       var dot = u.lowBattery ? 'down' : '';
       var onBatt = !!u.onBattery;
@@ -1269,7 +1451,7 @@ function renderServicesPanel() {
         '</div>' +
         '<div class="svc-mains' + (onBatt ? ' amber' : '') + '"><span class="mdot"></span>' + (onBatt ? 'ON BATTERY' : 'ON MAINS POWER') + '</div></div>';
     }
-    if (d.zfs) {
+    if (d.zfs && which !== 'net') {
       var z = d.zfs;
       if (z.error) {
         // Exporter unreachable: a deployment/networking problem, not a pool
@@ -1293,7 +1475,7 @@ function renderServicesPanel() {
         (z.issueCount ? '<span class="svc-badge">' + z.issueCount + ' issues</span>' : '') + '</div>';
       }
     }
-    if (d.speedtest) {
+    if (d.speedtest && which !== 'system') {
       var sp = d.speedtest;
       if (sp.error) {
         out += '<div class="svc-card" data-key="speedtest" data-nosheet="1"><div class="svc-dot skip"></div>' +
@@ -1311,7 +1493,7 @@ function renderServicesPanel() {
           '<div class="svc-widget"><div class="metric"><div class="mv">' + (sp.pingMs != null ? Number(sp.pingMs).toFixed(1) + '<small style="font-size:10px;color:var(--svc-ink2)"> ms</small>' : '—') + '</div><div class="ml">Ping</div></div></div></div>';
       }
     }
-    if (d.network && !d.network.error && d.network.wan) {
+    if (d.network && !d.network.error && d.network.wan && which !== 'system') {
       var w = d.network.wan;
       var wUp = w.up !== false;
       out += '<div class="svc-card" data-key="internet" data-nosheet="1"><div class="svc-dot' + (wUp ? '' : ' down') + '"></div>' +
@@ -1322,7 +1504,7 @@ function renderServicesPanel() {
         '<div class="metric"><div class="mv">' + (w.latencyMs != null ? Math.round(w.latencyMs) + '<small style="font-size:10px;color:var(--svc-ink2)"> ms</small>' : '—') + '</div><div class="ml">Latency</div></div>' +
         '</div></div>';
     }
-    if (d.ssdTemp) {
+    if (d.ssdTemp && which !== 'net') {
       var st = d.ssdTemp;
       if (st.error) {
         out += '<div class="svc-card" data-key="ssd" data-nosheet="1"><div class="svc-dot skip"></div>' +
@@ -1339,6 +1521,26 @@ function renderServicesPanel() {
     return out;
   }
 
+  // Home's one-card summary of the Network tab: internet state, live throughput, devices.
+  function netSummaryCard(d) {
+    var n = d.network;
+    if (!n) return '';
+    if (n.error) {
+      return '<a class="svc-card" data-key="net-summary" data-nosheet="1" href="#network" data-tab="network"><div class="svc-dot skip"></div>' +
+        '<div class="svc-top"><div class="svc-icon">' + iconFor('wifi') + '</div><div class="svc-name">Network</div></div>' +
+        '<div class="svc-desc">UDR7 unreachable: ' + esc(n.error) + '</div></a>';
+    }
+    var w = n.wan || {}, t = n.throughput || {}, c = n.clients || {};
+    var wUp = w.up !== false;
+    return '<a class="svc-card" data-key="net-summary" data-nosheet="1" href="#network" data-tab="network"><div class="svc-dot' + (wUp ? '' : ' down') + '"></div>' +
+      '<div class="svc-top"><div class="svc-icon green">' + iconFor('globe') + '</div><div class="svc-name">Network</div></div>' +
+      '<div class="svc-desc">' + (wUp ? 'Internet up' : 'Internet down') + (w.latencyMs != null ? ' · ' + Math.round(w.latencyMs) + ' ms' : '') + (w.isp ? ' · ' + esc(w.isp) : '') + '</div>' +
+      '<div class="svc-widget">' +
+      '<div class="metric"><div class="mv"><span data-count>' + (t.downMbps != null ? Math.round(t.downMbps) : '—') + '</span><small style="font-size:10px;color:var(--svc-ink2)"> ↓ Mb/s</small></div><div class="ml">Down</div></div>' +
+      '<div class="metric"><div class="mv"><span data-count>' + (t.upMbps != null ? Math.round(t.upMbps) : '—') + '</span><small style="font-size:10px;color:var(--svc-ink2)"> ↑ Mb/s</small></div><div class="ml">Up</div></div>' +
+      '<div class="metric"><div class="mv"><span data-count>' + (c.total || 0) + '</span></div><div class="ml">Devices</div></div>' +
+      '</div></a>';
+  }
   function fmtMbps(v) {
     if (v == null) return '—';
     return (Math.round(v * 10) / 10) + '<small> Mb/s</small>';
@@ -1493,10 +1695,11 @@ function renderServicesPanel() {
     if (vit) {
       patchHtml(vit, '<div class="svc-vitals">' +
         '<div class="svc-vital"><b>' + up + '<small>/' + all.length + '</small></b><span>Services up</span></div>' +
-        '<div class="svc-vital"><b>' + (sp.downloadMbps != null ? Math.round(sp.downloadMbps) : '—') + '<small> Mbps</small></b><span>Download</span></div>' +
-        '<div class="svc-vital"><b>' + (sp.uploadMbps != null ? Math.round(sp.uploadMbps * 10) / 10 : '—') + '<small> Mbps</small></b><span>Upload</span></div>' +
-        '<div class="svc-vital"><b>' + (sp.pingMs != null ? Number(sp.pingMs).toFixed(1) : '—') + '<small> ms</small></b><span>Ping</span></div>' +
-        '<div class="svc-vital"><b>' + (streams == null ? '—' : streams) + '<small> stream' + (streams === 1 ? '' : 's') + '</small></b><span>On Plex now</span></div>' +
+        // Only readings that exist: an unknown speed, ping or stream count is left out, not shown as a dash.
+        (sp.downloadMbps != null ? '<div class="svc-vital"><b>' + Math.round(sp.downloadMbps) + '<small> Mbps</small></b><span>Download</span></div>' : '') +
+        (sp.uploadMbps != null ? '<div class="svc-vital"><b>' + Math.round(sp.uploadMbps * 10) / 10 + '<small> Mbps</small></b><span>Upload</span></div>' : '') +
+        (sp.pingMs != null ? '<div class="svc-vital"><b>' + Number(sp.pingMs).toFixed(1) + '<small> ms</small></b><span>Ping</span></div>' : '') +
+        (streams != null ? '<div class="svc-vital"><b>' + streams + '<small> stream' + (streams === 1 ? '' : 's') + '</small></b><span>On Plex now</span></div>' : '') +
         '</div>');
     }
     // The one thing that needs you, pinned on top with its fix in reach.
@@ -1516,7 +1719,9 @@ function renderServicesPanel() {
     (d.groups || []).forEach(function (g, gi) {
       var items = (byGroup[g] || []).filter(matches);
       // Readings (UPS, ZFS, speed, network) aren't services, so a filter leaves them out.
-      var special = filtering() ? '' : (g === 'System Health' ? specialCards(d) : (g === 'Network' ? networkCards(d) : ''));
+      // Network lives on its own tab now; Home keeps a one-card summary in System Health.
+      if (g === 'Network' && netBoard) return;
+      var special = filtering() ? '' : (g === 'System Health' ? specialCards(d, netBoard ? 'system' : null) + (netBoard ? netSummaryCard(d) : '') : (g === 'Network' ? networkCards(d) : ''));
       if (!items.length && !special) return;
       shownCount += items.length + (special ? 1 : 0);
       var specialCount = (d.ups ? 1 : 0) + (d.zfs ? 1 : 0) + (d.speedtest ? 1 : 0);
@@ -1565,7 +1770,16 @@ function renderServicesPanel() {
       html = '<div class="svc-empty"><p>' + (downOnly && !findTerm ? 'Nothing is down.' : 'No service matches that.') + '</p>' +
         '<button type="button" class="svc-clear" data-clear-filter="1">Clear filter</button></div>';
     }
+    // Patch, don't replace: only cards whose data changed are touched, so hover states, open
+    // menus and the bars' fill animations survive each refresh.
     patchHtml(board, html || '<div class="svc-loading">No services configured yet.</div>');
+    if (netBoard) {
+      var netHtml = (d.network || d.speedtest)
+        ? '<div class="svc-head"><h2>Network</h2><span class="sum">UDR7 · live</span><div class="line"></div></div>' +
+          '<div class="svc-grid">' + networkCards(d) + specialCards(d, 'net') + '</div>'
+        : '<div class="svc-loading">No network source is configured. Set the UniFi (UDR7) or Speedtest Tracker variables to show it here.</div>';
+      patchHtml(netBoard, netHtml);
+    }
     var spark = document.getElementById('netSpark');
     if (spark && !unchangedCards.has('unifi-tput') && d.network && d.network.history && d.network.history.length > 1) {
       drawSparkline(spark, d.network.history);
@@ -1579,7 +1793,8 @@ function renderServicesPanel() {
       patchHtml(np, '<div class="svc-head"><h2>Now playing</h2><span class="sum">' + d.nowPlaying.length + ' stream' + (d.nowPlaying.length === 1 ? '' : 's') + '</span><div class="line"></div></div><div class="svc-np-list">' + d.nowPlaying.map(function (s) {
         var pct = s.duration > 0 ? Math.min(100, Math.round(s.viewOffset / s.duration * 100)) : 0;
         var rem = s.duration > s.viewOffset ? fmtHMS(s.duration - s.viewOffset) + ' remaining' : '';
-        return '<div class="svc-np" data-key="' + esc(JSON.stringify([s.user, s.player, s.title])) + '"><div class="np-poster">' + iconFor('film') + '</div><div class="np-info">' +
+        return '<div class="svc-np" data-key="' + esc(JSON.stringify([s.user, s.player, s.title])) + '"><div class="np-poster">' + iconFor('film') +
+          (s.posterKey ? '<img src="/admin/api/poster/' + encodeURIComponent(s.posterKey) + '" alt="" loading="lazy" decoding="async">' : '') + '</div><div class="np-info">' +
           '<div class="np-kicker"><span class="eq"><i></i><i></i><i></i></span>' + (s.state === 'paused' ? 'PAUSED' : 'PLAYING') + '</div>' +
           '<div class="np-title">' + esc(s.title) + '</div>' +
           '<div class="np-sub">' + esc([s.user, s.player].filter(Boolean).join(' · ')) + '</div>' +
@@ -1631,6 +1846,16 @@ function renderServicesPanel() {
     return rows.map(function (r) {
       return '<dt>' + esc(r[0]) + '</dt><dd' + (r[2] ? ' class="' + r[2] + '"' : '') + '>' + esc(r[1]) + '</dd>';
     }).join('');
+  }
+  // Last 24 hours from the stored service checks: share up, down spells and a 48-slot strip.
+  function uptimeHtml(u) {
+    if (!u || !u.checks) return '';
+    var spells = u.spells ? ' · ' + u.spells + ' down spell' + (u.spells === 1 ? '' : 's') : '';
+    var from = u.coversMs < 23 * 3600000 ? upFor(new Date(Date.now() - u.coversMs).toISOString()) + ' ago' : '24 h ago';
+    return '<div class="svc-uptime-head"><span>Last 24 hours</span><strong>' + esc(String(u.pct)) + '% up' + esc(spells) + '</strong></div>' +
+      '<div class="svc-uptime-strip" role="img" aria-label="' + esc(u.pct + '% up over the last 24 hours' + spells) + '">' +
+      u.slots.map(function (x) { return '<i class="' + (x || 'none') + '"></i>'; }).join('') + '</div>' +
+      '<div class="svc-uptime-axis"><span>' + esc(from) + '</span><span>now</span></div>';
   }
   function showSheetMain() {
     logSeq++;
@@ -1684,6 +1909,9 @@ function renderServicesPanel() {
     var factsEl = document.getElementById('svcSheetFacts');
     factsEl.innerHTML = sheetFactsHtml(rec);
     factsEl.hidden = !factsEl.innerHTML;
+    var upEl = document.getElementById('svcSheetUptime');
+    upEl.innerHTML = uptimeHtml(lastData && lastData.uptime && lastData.uptime[sheetKey]);
+    upEl.hidden = !upEl.innerHTML;
     document.getElementById('svcSheetTitle').textContent = sheetName;
     document.getElementById('svcSheetSub').textContent = sheetUrl || (sheetContainer ? 'container: ' + sheetContainer : '');
     document.getElementById('svcOpen').disabled = !sheetUrl;
@@ -1790,6 +2018,17 @@ function renderServicesPanel() {
     downEl.setAttribute('aria-pressed', String(downOnly));
     rerender();
   });
+  var denseEl = document.getElementById('svcDense');
+  function syncDense() { denseEl.setAttribute('aria-pressed', String(dense)); board.classList.toggle('dense', dense); }
+  syncDense();
+  denseEl.addEventListener('click', function () {
+    dense = !dense;
+    try { localStorage.setItem('svcDense', dense ? '1' : '0'); } catch (e) {}
+    syncDense();
+    // Cards and tiles are different markup, so replace the board rather than morph it.
+    board.innerHTML = '';
+    rerender();
+  });
   board.addEventListener('click', function (e) {
     var toggle = e.target.closest('.svc-group-toggle');
     if (toggle && !toggle.disabled) {
@@ -1826,6 +2065,7 @@ function renderServicesPanel() {
     // Special cards (UPS/ZFS/Speedtest) carry data-nosheet: they have no
     // actions, so a long-press must not open an empty action sheet.
     board.querySelectorAll('.svc-card[data-key]:not([data-nosheet])').forEach(function (card) {
+      // Patching keeps cards between refreshes, so wire each one once.
       if (card.__wired) return;
       card.__wired = true;
       var sx = 0, sy = 0;
@@ -1850,7 +2090,8 @@ function renderServicesPanel() {
         // does not also open.
         if (suppressClick) { suppressClick = false; return; }
         var url = card.dataset.url;
-        if (!url) { openSheet(card); return; }
+        // A tile is too small for a ⋯ button, so tapping it opens the sheet (Open is the first action there).
+        if (!url || dense) { openSheet(card); return; }
         window.open(url, '_blank', 'noopener');
       });
     });
@@ -1858,22 +2099,43 @@ function renderServicesPanel() {
 
   var pal = document.getElementById('svcPal'), palIn = document.getElementById('svcPalInput'), palList = document.getElementById('svcPalList');
   var palSel = 0, palRes = [], palReturn = null;
+  // Jump to anything: every tab and section in the navigation, every service, and a full search
+  // of requests, people, library and audit for whatever was typed.
+  function places() {
+    var seen = {};
+    return [].slice.call(document.querySelectorAll('.rail [data-tab]')).map(function (b) {
+      var label = (b.querySelector('span:not(.nav-badge)') || b).textContent.trim();
+      return { kind: 'place', name: label, tab: b.dataset.tab, scroll: b.dataset.scroll || '' };
+    }).filter(function (p) { var k = p.tab + p.scroll; if (seen[k]) return false; seen[k] = 1; return true; });
+  }
   function paintPal() {
     var q = palIn.value.trim().toLowerCase();
+    function hit(t) { return !q || String(t || '').toLowerCase().indexOf(q) > -1; }
     var list = (lastData && lastData.services) || [];
-    palRes = list.filter(function (x) { return !q || String(x.name).toLowerCase().indexOf(q) > -1 || String(x.desc || '').toLowerCase().indexOf(q) > -1; }).slice(0, 8);
+    var go = places().filter(function (p) { return hit(p.name); }).slice(0, q ? 4 : 9);
+    var svcs = list.filter(function (x) { return hit(x.name) || hit(x.desc); }).slice(0, q ? 6 : 0);
+    palRes = go.concat(svcs.map(function (x) { return { kind: 'svc', svc: x }; }));
+    if (q) palRes.push({ kind: 'search', q: palIn.value.trim() });
     palSel = Math.min(palSel, Math.max(0, palRes.length - 1));
-    palList.innerHTML = palRes.map(function (x, i) {
-      return '<li><button type="button" role="option" aria-selected="' + (i === palSel) + '" data-i="' + i + '"><span class="svc-icon">' + iconFor(x.icon) + '</span>' +
+    palList.innerHTML = palRes.map(function (r, i) {
+      var open = '<li><button type="button" role="option" aria-selected="' + (i === palSel) + '" data-i="' + i + '">';
+      if (r.kind === 'place') return open + '<span class="svc-icon">' + svg('open') + '</span><span class="grow">' + esc(r.name) + '<small>Go to</small></span></button></li>';
+      if (r.kind === 'search') return open + '<span class="svc-icon">' + svg('search') + '</span><span class="grow">Search everything for “' + esc(r.q) + '”<small>Requests, people, library, audit</small></span></button></li>';
+      var x = r.svc;
+      return open + '<span class="svc-icon">' + iconFor(x.icon) + '</span>' +
         '<span class="grow">' + esc(x.name) + '<small>' + esc(x.group) + (x.port ? ' · :' + x.port : '') + '</small></span>' +
         '<span class="svc-chip' + (x.state === 'down' ? ' hot' : '') + '">' + (x.state === 'down' ? 'Down' : x.state === 'skip' ? 'Off' : 'Up') + '</span></button></li>';
-    }).join('') || '<li class="svc-loading">No service matches.</li>';
+    }).join('') || '<li class="svc-loading">Nothing matches.</li>';
   }
-  function openPal() { if (!lastData) return; palReturn = document.activeElement; pal.classList.add('open'); palIn.value = ''; palSel = 0; paintPal(); palIn.focus(); }
+  function openPal() { palReturn = document.activeElement; pal.classList.add('open'); palIn.value = ''; palSel = 0; paintPal(); palIn.focus(); }
   function closePal() { if (!pal.classList.contains('open')) return; pal.classList.remove('open'); if (palReturn && palReturn.focus) palReturn.focus(); }
   function choosePal(i) {
-    var x = palRes[i]; if (!x) return;
+    var r = palRes[i]; if (!r) return;
     closePal();
+    if (r.kind === 'place') { if (window.DashNav) window.DashNav.show(r.tab, { scroll: r.scroll || undefined, top: !r.scroll }); return; }
+    if (r.kind === 'search') { location.href = '/admin/search?q=' + encodeURIComponent(r.q); return; }
+    var x = r.svc;
+    if (window.DashNav && board.closest('.panel') && board.closest('.panel').hidden) window.DashNav.show('home');
     var u = svcUrl(x);
     if (u) window.open(u, '_blank', 'noopener');
     else { var c = board.querySelector('.svc-card[data-key="' + x.key + '"]'); if (c) { c.scrollIntoView({ block: 'center' }); openSheet(c); } }
@@ -1888,15 +2150,17 @@ function renderServicesPanel() {
   palList.addEventListener('click', function (e) { var b = e.target.closest('[data-i]'); if (b) choosePal(+b.dataset.i); });
   pal.addEventListener('click', function (e) { if (e.target === pal) closePal(); });
   document.addEventListener('keydown', function (e) {
-    var panel = board.closest('.panel');
-    if (panel && panel.hidden) return;
     var typing = /^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName || '');
     if ((e.key === 'k' && (e.metaKey || e.ctrlKey)) || (e.key === '/' && !typing)) { e.preventDefault(); if (pal.classList.contains('open')) closePal(); else openPal(); }
   });
 
   var loading = null, missed = 0;
+  // Hidden tab, an open sheet or palette, or an action in flight: skip this beat rather than move
+  // things under you.
   function blocked() {
-    return document.hidden || (window.__dashboardRefreshBlocked && window.__dashboardRefreshBlocked());
+    return document.hidden || window.__actionsInFlight > 0 ||
+      (sheet && sheet.classList.contains('open')) || pal.classList.contains('open') ||
+      !!(window.__dashboardRefreshBlocked && window.__dashboardRefreshBlocked());
   }
   function load(scheduled) {
     if (loading) return loading;
@@ -1914,12 +2178,15 @@ function renderServicesPanel() {
         });
         if (changed) render(next, true);
         missed = 0;
+        if (window.DashLive) window.DashLive.ok();
         var stale = document.getElementById('svcStale');
         if (stale.style.visibility !== 'hidden') stale.style.visibility = 'hidden';
       })
       .catch(function () {
         if (blocked()) return;
         if (scheduled) missed++;
+        if (!lastData) board.innerHTML = '<div class="svc-loading">Could not reach the services API.</div>';
+        if (window.DashLive) window.DashLive.fail();
         var stale = document.getElementById('svcStale');
         if (missed >= 2 && stale.style.visibility !== 'visible') stale.style.visibility = 'visible';
       })
@@ -1930,6 +2197,9 @@ function renderServicesPanel() {
   setMode(mode);
   detectNetwork();
   load();
+  // Every 15 seconds while the page is visible; each service updates in its own card.
+  setInterval(function () { load(true); }, 15000);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) load(); });
 })();
 </script>`;
 }
@@ -2165,7 +2435,9 @@ function renderAgentApiTokens(tokens, { legacyConfigured = false } = {}) {
 }
 
 function renderStat(label, value) {
-  return `<div class="stat"><div class="n">${escapeHtml(String(value))}</div><div class="l">${escapeHtml(label)}</div></div>`;
+  // A plain number counts to its new value when the live layer refreshes it.
+  const counts = /^\d+$/.test(String(value)) ? ' data-count' : '';
+  return `<div class="stat" data-key="stat-${escapeHtml(label.toLowerCase().replace(/\s+/g, '-'))}"><div class="n"${counts}>${escapeHtml(String(value))}</div><div class="l">${escapeHtml(label)}</div></div>`;
 }
 
 function healthClass(v) {
@@ -2224,8 +2496,9 @@ function renderSettingsGroup(group) {
       <div class="setting-ctl">${origin}${control}</div>
     </div>`;
   }).join('');
-  return `<div class="card" data-group="${escapeHtml(group.id)}">
-    <h2>${escapeHtml(group.title)}<span class="sub">${escapeHtml(group.blurb)}</span></h2>
+  const overridden = group.settings.filter(x => x.overridden).length;
+  return `<details class="card set-group" data-group="${escapeHtml(group.id)}">
+    <summary><h2>${escapeHtml(group.title)}<span class="sub">${escapeHtml(group.blurb)}</span></h2>${overridden ? `<span class="tag on">${overridden} overridden</span>` : ''}</summary>
     ${rows}
     <div class="setting-foot">
       <button class="btn primary" type="button" data-save="${escapeHtml(group.id)}">Save changes</button>
@@ -2234,7 +2507,7 @@ function renderSettingsGroup(group) {
       <span class="save-note" data-note="${escapeHtml(group.id)}"></span>
     </div>
     ${previewable ? `<div class="setting-preview" data-preview-result="${escapeHtml(group.id)}" aria-live="polite"></div>` : ''}
-  </div>`;
+  </details>`;
 }
 
 // Dead-man line for a job with a push URL (src/deadman.js): the window to set on the monitor and
@@ -2250,11 +2523,32 @@ function deadmanLine(item) {
   return `Dead-man: ${window} · ${last}`;
 }
 
-function renderAutomationRegistry(items, { heartbeatIssues = [] } = {}) {
+// Which runtime-settings groups (src/runtime-settings.js) belong to which scheduled job, so a
+// job's row opens with its own settings beside it. Groups with no job stay under Settings only.
+const JOB_SETTINGS = {
+  'pending-approvals': ['pending_approvals'],
+  'request-reconcile': ['request_progress'],
+  'disk-space': ['capacity'],
+  stuck: ['stuck'],
+  escalation: ['escalation'],
+  'season-pack': ['season_pack', 'pack_size_fix'],
+  'episode-recovery': ['episode_recovery'],
+  premiumize: ['premiumize', 'release_group_blocklist'],
+  'not-watchable-digest': ['not_watchable_digest'],
+  'viewing-insights': ['viewing_insights'],
+  'quiet-digest': ['quiet_hours'],
+  'ratio-cleanup': ['ratio_cleanup'],
+};
+
+// Automation: one line per scheduled job (state, name, cadence and last run, status). Tapping a
+// row opens every fact the registry has, Run now, and the job's settings (moved in, not copied).
+function renderAutomationRegistry(items, { heartbeatIssues = [], settingGroups = null } = {}) {
+  const known = settingGroups ? new Set(settingGroups) : null;
   const rows = (items || []).map(item => {
     const state = item.state || {};
     const cadence = item.cadence || {};
     const status = item.running ? 'running' : !item.enabled ? 'disabled' : state.status || 'not run';
+    const dot = item.running ? 'warn' : !item.enabled ? 'skip' : state.status === 'failed' ? 'down' : state.finishedAt ? 'ok' : 'skip';
     const outcome = state.status === 'failed'
       ? state.error || 'failed'
       : state.resultSummary || 'No completed run recorded.';
@@ -2272,18 +2566,29 @@ function renderAutomationRegistry(items, { heartbeatIssues = [] } = {}) {
       ? `${item.previewable ? 'Preview and run-now available.' : 'Run-now available.'}`
       : `Manual unavailable: ${item.manual?.reason || 'scheduled execution only.'}`;
     const action = item.manual?.enabled
-      ? `<button class="btn" type="button" data-post="/admin/action/sweep" data-body="${escapeHtml(JSON.stringify({ name: item.id }))}"${item.enabled ? '' : ' disabled'}>Run now</button>`
+      ? `<div class="item-actions"><button class="btn" type="button" data-post="/admin/action/sweep" data-body="${escapeHtml(JSON.stringify({ name: item.id }))}"${item.enabled ? '' : ' disabled'}>Run now</button></div>`
       : '';
-    return `<div class="setting">
-      <div class="setting-main"><div class="setting-name">${escapeHtml(item.label)} <span class="tag${item.enabled ? ' on' : ''}">${escapeHtml(status)}</span></div>
-      <div class="setting-help">Job id ${escapeHtml(item.id)} · ${escapeHtml(item.enabled ? cadenceText : `Disabled: ${item.disabledReason} · ${cadenceText}`)} · ${escapeHtml(timing)}<br>${escapeHtml(outcome)} · ${escapeHtml(next)} · ${escapeHtml(manual)}${item.heartbeat ? `<br>${escapeHtml(deadmanLine(item))}` : ''}</div></div>
-      <div class="setting-ctl">${action}</div>
+    const groups = (JOB_SETTINGS[item.id] || []).filter(g => !known || known.has(g));
+    const short = [cadence.minutes > 0 ? `every ${cadence.minutes} min` : 'off', state.finishedAt ? `ran ${fmtAgo(state.finishedAt)}` : 'not run yet', state.status === 'failed' ? 'failed' : null].filter(Boolean).join(' · ');
+    return `<div class="item job-row" data-key="job-${escapeHtml(item.id)}"${groups.length ? ` data-detail-move="${escapeHtml(groups.map(g => `[data-group="${g}"]`).join(','))}"` : ''}>
+      <span class="dot ${dot}"></span>
+      <div class="item-main"><div class="item-title">${escapeHtml(item.label)}</div>
+      <div class="item-sub">${escapeHtml(short)}</div>
+      <div class="item-more"><p><span class="tag${item.enabled ? ' on' : ''}">${escapeHtml(status)}</span> Job id ${escapeHtml(item.id)}</p>
+        <p>${escapeHtml(item.enabled ? cadenceText : `Disabled: ${item.disabledReason} · ${cadenceText}`)}</p>
+        <p>Last run: ${escapeHtml(timing)}</p>${state.finishedAt || state.status === 'failed' ? `<p>${escapeHtml(outcome)}</p>` : ''}<p>${escapeHtml(next)} · ${escapeHtml(manual)}</p>${item.heartbeat ? `<p>${escapeHtml(deadmanLine(item))}</p>` : ''}${groups.length ? '<p class="muted">Its settings are below.</p>' : ''}</div>
+      ${action}</div>
+      <span class="job-col">${escapeHtml(cadence.minutes > 0 ? `every ${cadence.minutes} min` : 'off')}</span>
+      <span class="job-col">${escapeHtml(state.finishedAt ? fmtAgo(state.finishedAt) : 'not run yet')}</span>
+      <span class="job-col job-result${state.status === 'failed' ? ' bad' : ''}" title="${escapeHtml(state.finishedAt || state.status === 'failed' ? outcome : '')}">${escapeHtml(state.finishedAt || state.status === 'failed' ? outcome : 'no result yet')}</span>
+      <span class="job-col">${escapeHtml(state.nextRunAt && item.enabled ? fmtAgo(state.nextRunAt) : 'not scheduled')}</span>
+      <div class="item-right">${escapeHtml(status)}</div>
     </div>`;
   }).join('');
   const issues = heartbeatIssues.length
     ? `<p class="muted">DEADMAN_PING_URLS has entries that were ignored: ${escapeHtml(heartbeatIssues.join(', '))}. Each entry is job-id=https://… using a job id from this list.</p>`
     : '';
-  return `<div class="card" id="automation-registry"><h2>Automation registry<span class="sub">Every scheduled worker, its effective source, persisted outcome, and safe manual policy.</span></h2>${issues}${rows || '<p class="muted">Registry is starting.</p>'}</div>`;
+  return `<div class="card" id="automation-registry" data-rows-open><h2>Jobs<span class="sub">Every scheduled worker. Tap one for its last run, Run now and its settings.</span></h2>${issues}${rows ? `<div class="items job-table"><div class="job-headrow" aria-hidden="true"><span></span><span>Job</span><span>Cadence</span><span>Last run</span><span>Result</span><span>Next run</span><span>Status</span><span></span></div>${rows}</div>` : '<p class="muted">Registry is starting.</p>'}</div>`;
 }
 
 // F14 Quick Actions bar for one tab. Each action is one of:
@@ -2348,7 +2653,8 @@ function renderQuickActionSheet() {
     if (go.dataset.busy) return;
     sheet.classList.remove('open');
     if (isOpen) { window.__actionsInFlight = Math.max(0, (window.__actionsInFlight || 0) - 1); isOpen = false; }
-    if (done) { location.reload(); return; }
+    // Something changed: refresh the affected parts in place instead of reloading the page.
+    if (done) { if (window.DashLive) window.DashLive.refreshVisible(); else location.reload(); return; }
     if (opener) opener.focus();
   }
   async function post(payload) {
@@ -2365,22 +2671,25 @@ function renderQuickActionSheet() {
     if (plan.skipped.length) body.appendChild(list('Left alone', plan.skipped.map(function (s) { return { label: s.label, detail: s.reason }; })));
     go.hidden = !n; go.textContent = plan.verb + ' ' + n;
   }
-  async function preview(kind) {
+  // A [data-bulk] button inside a [data-picks] card acts on the ticked rows only.
+  async function preview(kind, only) {
     try {
-      var res = await post({ kind: kind });
+      var res = await post(only ? { kind: kind, only: only } : { kind: kind });
       if (!res.data.ok) { sub.textContent = ''; msg(res.data.error || 'Could not load the list (' + res.status + ').', false); return; }
-      showPlan(Object.assign({ verb: verbs[kind] || 'Run' }, res.data.plan));
+      showPlan(Object.assign({ verb: verbs[kind] || 'Run', only: only || null }, res.data.plan));
     } catch (err) { sub.textContent = ''; msg(String(err && err.message || err), false); }
   }
-  var verbs = ${JSON.stringify({ 'approve-pending': 'Approve', 'pause-downloads': 'Pause', 'resume-downloads': 'Resume', 'clear-imported': 'Clear' })};
+  var verbs = ${JSON.stringify({ 'approve-pending': 'Approve', 'deny-pending': 'Deny', 'pause-downloads': 'Pause', 'resume-downloads': 'Resume', 'clear-imported': 'Clear' })};
   go.addEventListener('click', async function () {
     if (!current) return;
     go.disabled = true; cancel.disabled = true; go.dataset.busy = '1'; go.textContent = 'Working…';
     try {
-      var res = await post({ kind: current.kind, listKey: current.listKey });
+      var payload = { kind: current.kind, listKey: current.listKey };
+      if (current.only) payload.only = current.only;
+      var res = await post(payload);
       delete go.dataset.busy; cancel.disabled = false;
       if (res.status === 409 && res.data.plan) {
-        showPlan(Object.assign({ verb: current.verb }, res.data.plan)); go.disabled = false;
+        showPlan(Object.assign({ verb: current.verb, only: current.only }, res.data.plan)); go.disabled = false;
         msg(res.data.error, false); return;
       }
       var result = res.data.result;
@@ -2406,11 +2715,17 @@ function renderQuickActionSheet() {
       body.appendChild(list('', rows));
     } catch (err) { sub.textContent = ''; msg(String(err && err.message || err), false); }
   }
-  document.querySelectorAll('[data-bulk]').forEach(function (btn) {
-    btn.addEventListener('click', function () { open(btn.dataset.title, btn); preview(btn.dataset.bulk); });
-  });
-  document.querySelectorAll('[data-doctor]').forEach(function (btn) {
-    btn.addEventListener('click', function () { open('Doctor', btn); cancel.textContent = 'Close'; doctor(); });
+  // Delegated, so buttons a live refresh swaps in work the same as the ones on first load.
+  document.addEventListener('click', function (e) {
+    var bulk = e.target.closest('[data-bulk]');
+    if (bulk && !bulk.disabled) {
+      var scope = bulk.hasAttribute('data-bulk-picked') ? bulk.closest('[data-picks]') : null;
+      var only = scope ? [].map.call(scope.querySelectorAll('input[data-pick]:checked'), function (c) { return c.getAttribute('data-pick'); }) : null;
+      if (scope && !only.length) return;
+      open(bulk.dataset.title, bulk); preview(bulk.dataset.bulk, only); return;
+    }
+    var doc = e.target.closest('[data-doctor]');
+    if (doc && !doc.disabled) { open('Doctor', doc); cancel.textContent = 'Close'; doctor(); }
   });
   cancel.addEventListener('click', close);
   document.getElementById('qaScrim').addEventListener('click', close);
@@ -2432,6 +2747,10 @@ module.exports = {
   renderBar,
   renderItemList,
   renderAlertInbox,
+  renderFeed,
+  renderActivity,
+  activityCategory,
+  renderTrends,
   renderFleetSync,
   renderRecentlyAdded,
   renderLogin,

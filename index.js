@@ -96,6 +96,7 @@ const { createAutomationRegistry } = require('./src/automation-registry');
 const { evaluateTierPlanStaleness } = require('./src/tier-plan-staleness');
 const { checkServices, evaluateServiceAlerts, parseIgnoreList } = require('./src/service-alerts');
 const { SERVICES: BOARD_SERVICES } = require('./src/services-board');
+const { recordServiceSamples, pruneServiceSamples } = require('./src/service-uptime');
 const { restartCapable, restartContainer } = require('./src/docker-control');
 const { mergeFleetDisks, evaluateFleetDiskAlerts, evaluateSmartTransitions, collectSmartHealth } = require('./src/fleet-disks');
 const { assessDiskLevel } = require('./src/node-telemetry');
@@ -254,6 +255,12 @@ async function sweepServiceAlerts() {
     log.warn(`service alerts: health gather failed, probing URLs only: ${err.message}`);
   }
   const results = await checkServices({ config: CONFIG, health, ignore: parseIgnoreList(CONFIG.SERVICE_ALERTS_IGNORE) });
+  try {
+    recordServiceSamples(db, results);
+    pruneServiceSamples(db);
+  } catch (err) {
+    log.warn(`service alerts: could not record uptime samples: ${err.message}`);
+  }
   const events = evaluateServiceAlerts({
     results,
     getAlertState: serviceAlertState,

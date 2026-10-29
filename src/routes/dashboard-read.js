@@ -5,9 +5,22 @@ const { readCookie, SETUP_NUDGE_COOKIE } = require('./dashboard-auth');
 const { parseScriptConfig } = require('../europe-sync');
 const { HEALTH_KEYS, healthLabel } = require('../health');
 const { INBOX_ACTIONS, alertInbox } = require('../service-alerts');
-const { renderAlertInbox, renderRecentlyAdded, renderQuickActions, renderQuickActionSheet } = require('../dashboard-render');
+const { uptimeSummary } = require('../service-uptime');
+const { FEED_ACTION_NAMES, feedItems } = require('../dashboard-feed');
+const { gatherTrends } = require('../dashboard-trends');
+const { renderAlertInbox, renderRecentlyAdded, renderQuickActions, renderQuickActionSheet, renderFeed, renderTrends, renderActivity } = require('../dashboard-render');
 const tautulliRecent = require('../tautulli');
 const { buildFleetSync } = require('../fleet-sync');
+
+// The HTML between <!--live:name--> and <!--/live:name--> in a rendered page, or null.
+function extractLiveFragment(page, name) {
+  const open = `<!--live:${name}-->`;
+  const start = page.indexOf(open);
+  if (start === -1) return null;
+  const end = page.indexOf(`<!--/live:${name}-->`, start);
+  if (end === -1) return null;
+  return page.slice(start + open.length, end);
+}
 
 const RECENT_TTL_MS = 5 * 60000;
 
@@ -86,14 +99,10 @@ function registerDashboardReadRoutes(app, deps) {
     tierNodeStatus,
     tunable,
   } = deps;
-  app.get('/admin', rateLimit({
-    windowMs: 15 * 60000,
-    limit: 300,
-    keyGenerator: httpRateLimitKey,
-    standardHeaders: 'draft-8',
-    legacyHeaders: false,
-    handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many dashboard requests. Wait a moment and try again.' }),
-  }), dashboardAuth, async (req, res) => {
+  // The whole dashboard page. /admin sends it; /admin/fragment/:name returns one live-refreshed
+  // part of it (marked <!--live:name--> … <!--/live:name-->) so the page can update a card in
+  // place instead of reloading. One render path means a fragment can never drift from the page.
+  async function renderAdmin(req) {
     const now = Date.now();
     const pendingApprovals = listPendingRequests();
     const passkeys = listPasskeys();
@@ -175,6 +184,21 @@ function registerDashboardReadRoutes(app, deps) {
       ).all(...INBOX_ACTIONS));
     } catch (_e) { /* left null: the card says the audit log is unavailable */ }
 
+    // Home's "What just happened": recent events people care about, as plain sentences.
+    let feed = null;
+    try {
+      const titleFor = db.prepare('SELECT title FROM requests WHERE overseerr_request_id = ?');
+      const serviceNames = new Map(SERVICES.map(svc => [svc.key, svc.name]));
+      feed = feedItems(db.prepare(
+        `SELECT id, action, created_at, metadata_json FROM audit_log WHERE action IN (${FEED_ACTION_NAMES.map(() => '?').join(',')}) ORDER BY id DESC LIMIT 60`
+      ).all(...FEED_ACTION_NAMES), {
+        requestTitle: id => (id == null ? null : titleFor.get(String(id))?.title || null),
+        serviceName: key => serviceNames.get(key) || key || 'A service',
+        toMs: sqliteUtcMs,
+      });
+    } catch (_e) { /* left null: the card says the audit log is unavailable */ }
+    const trends = gatherTrends(db);
+
     const pendingPlex = db.prepare('SELECT * FROM users WHERE invited = 0 ORDER BY requested_at DESC LIMIT 25').all();
     const pendingRequestCount = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get().c;
     const recentRequests = db.prepare('SELECT * FROM requests ORDER BY id DESC LIMIT 50').all();
@@ -212,7 +236,7 @@ function registerDashboardReadRoutes(app, deps) {
       }).join('')
     }</tbody></table></div>` : '<p class="muted">No linked users yet.</p>';
     const recentDownloads = db.prepare('SELECT * FROM download_access_log ORDER BY id DESC LIMIT 25').all();
-    const auditRows = db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 50').all();
+    const auditRows = db.prepare('SELECT * FROM audit_log ORDER BY id DESC LIMIT 200').all();
     const linkedTotal = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
     const activeLinks = db.prepare('SELECT COUNT(*) AS c FROM download_tokens WHERE revoked = 0 AND expires_at > ?').get(now).c;
 
@@ -222,6 +246,8 @@ function registerDashboardReadRoutes(app, deps) {
       const azAvailable = canEscalate(pending);
       const createdAt = typeof pending.createdAt === 'number' ? pending.createdAt : sqliteUtcMs(pending.createdAt);
       return {
+        key: `req-${pending.nonce}`,
+        pick: `req:${pending.nonce}`,
         state: quota.error || quota.warning ? 'warn' : 'ok',
         title: pending.label,
         sub: `${memberNames.get(pending.discordId) || pending.discordId} · ${mediaTypeLabel(pending.mediaType, pending.is4k)} · quota: ${quota.error ? `unavailable (${quota.error})` : (quota.warning || 'within limit')} · AvistaZ pre-auth ${azAvailable ? 'available' : 'unavailable'}`,
@@ -246,14 +272,6 @@ function registerDashboardReadRoutes(app, deps) {
       renderStat('Download links', activeLinks),
     ].join('');
 
-    const decisionLabel = s => (s.transcode_decision === 'transcode' || s.video_decision === 'transcode' ? '🔥 transcoding'
-      : s.transcode_decision === 'copy' ? '📼 direct stream' : '▶️ direct play');
-    const nowPlayingItems = (sessions || []).map(s => ({
-      state: (s.transcode_decision === 'transcode' || s.video_decision === 'transcode') ? 'warn' : 'ok',
-      title: s.full_title || 'Unknown',
-      sub: `${s.friendly_name || s.user || 'Unknown'} · ${decisionLabel(s)}${s.stream_video_full_resolution ? ` · ${s.stream_video_full_resolution}` : ''}${s.player ? ` · ${s.player}` : ''}`,
-      pct: Number(s.progress_percent) || 0,
-    }));
 
     const queueItems = (queue || []).map(q => ({
       state: queueItemLooksUnhealthy(q) ? 'warn' : 'ok',
@@ -336,6 +354,8 @@ function registerDashboardReadRoutes(app, deps) {
       ],
       operations: [
         { label: 'Approve all pending', bulk: 'approve-pending', count: pendingApprovals.length, disabled: !pendingApprovals.length, reason: pendingApprovals.length ? null : 'Nothing is waiting for approval.' },
+      ],
+      automation: [
         runNow('episode-recovery', 'Run episode recovery'),
         runNow('stuck', 'Check stuck downloads'),
       ],
@@ -437,7 +457,7 @@ function registerDashboardReadRoutes(app, deps) {
 
     const requestRows = recentRequests.map(r => ({ title: r.title, status: r.status, type: mediaTypeLabel(r.media_type, r.is_4k), seerr: r.overseerr_request_id || 'provisional', requester: r.requested_by_discord_id || '—', when: fmtAgo(sqliteUtcMs(r.created_at)) }));
     const downloadRows = recentDownloads.map(d => ({ when: fmtAgo(sqliteUtcMs(d.created_at)), file: (d.file_path || '').split('/').pop() || '—', status: d.status, sent: d.bytes_sent ? fmtSpace(d.bytes_sent) : '', ip: d.ip || '' }));
-    const auditTableRows = auditRows.map(a => ({ when: fmtAgo(sqliteUtcMs(a.created_at)), action: a.action, details: String(a.metadata_json || '').slice(0, 160) }));
+    const edgeFailing = (edgeChecks || []).filter(c => c.status === 'fail').length;
 
     const unavailable = which => `<p class="muted">${escapeHtml(which)} unreachable or not configured.</p>`;
 
@@ -454,88 +474,139 @@ function registerDashboardReadRoutes(app, deps) {
       return { state, title: healthLabel(k), sub, right: String(value) };
     });
 
-    const nav = [['director', 'Director'], ['services', 'Services'], ['overview', 'Overview'], ['operations', 'Operations', approvalItems.length || 0], ['automation', 'Automation'], ['edge', 'Edge'], ['people', 'People'], ['logs', 'Logs']];
+    const navItems = [
+      { id: 'home', label: 'Home', icon: 'home' },
+      { id: 'requests', label: 'Requests', icon: 'requests', count: approvalItems.length || 0 },
+      { id: 'network', label: 'Network', icon: 'network' },
+      { id: 'automation', label: 'Automation', icon: 'automation' },
+      { id: 'fleet', label: 'Fleet', icon: 'fleet', more: true, sub: 'Tier nodes and sync' },
+      { id: 'people', label: 'People', icon: 'people', more: true, sub: 'Members, invites, download links' },
+      { id: 'activity', label: 'Activity', icon: 'activity', more: true, sub: 'Everything that happened' },
+      { id: 'home', label: 'All services', icon: 'services', more: true, sub: 'The full list, by group', scrollTo: 'svcBoard' },
+      { id: 'settings', label: 'Settings', icon: 'settings', more: true, sub: 'Passkeys, API tokens, integrations' },
+    ];
     const settingsGroups = runtimeSettings.describeRuntimeSettings({ config: CONFIG, store: settingsStore });
     const overriddenCount = settingsGroups.reduce((n, g) => n + g.settings.filter(x => x.overridden).length, 0);
 
-    const body = `
-      <div class="overall ${health.overall === 'ok' ? 'ok' : 'warn'}">
-        <span>Overall: <strong>${escapeHtml(String(health.overall).toUpperCase())}</strong></span>
-        <span class="updated">rendered ${new Date(now).toISOString().slice(11, 19)} UTC${dataAsOf < now ? ` · data as of ${fmtAgo(dataAsOf)}` : ''}${dataStale ? ' · <strong>stale</strong> (an integration refresh failed; showing the last good value)' : ''} · auto-refreshes</span>
-      </div>
-      <div class="stats">${stats}</div>
-
-      <section class="panel d-panel" data-panel="director">
+    // Home's "needs you" block: a live fragment the Services board places under its alerts.
+    const homeNeedsHtml = `
+        <div data-live="home-needs"><!--live:home-needs-->
+        <span hidden data-nav-count="requests" data-value="${approvalItems.length || 0}"></span>
+        <div class="overall-line ${health.overall === 'ok' ? 'ok' : 'warn'}"><span class="needs-dot" aria-hidden="true"></span>Overall: <strong>${escapeHtml(String(health.overall).toUpperCase())}</strong>${dataStale ? ' · <strong>stale</strong> (an integration refresh failed; showing the last good value)' : ''}</div>
+        ${approvalItems.length ? `<a class="card needs-card" href="#requests" data-tab="requests"><span class="needs-dot" aria-hidden="true"></span><span><b data-count>${approvalItems.length}</b> request${approvalItems.length === 1 ? '' : 's'} waiting for approval</span><span class="needs-chev" aria-hidden="true">›</span></a>` : ''}
         ${renderQuickActions(quickActions.director)}
-        ${renderDirectorPanel({
+        <!--/live:home-needs--></div>
+`;
+
+    const servicesPanelHtml = renderServicesPanel({ needs: homeNeedsHtml });
+    const body = `
+      <section class="panel" data-panel="home" data-label="Home">
+        ${servicesPanelHtml.includes('data-live="home-needs"') ? servicesPanelHtml : homeNeedsHtml + servicesPanelHtml}
+        <div class="home-more-head"><span>More on Home</span><span class="hm-hint">Swipe for more</span></div>
+        <div data-live="home-more" class="home-more" tabindex="0" aria-label="More on Home: downloads, activity, storage, trends, recently added, alerts"><!--live:home-more-->
+        <div class="card" data-home="downloading" data-home-label="Downloading">
+          <h2>Downloading</h2>
+          ${renderQuickActions(quickActions.overview)}
+          ${queue === null ? unavailable('Radarr/Sonarr') : renderItemList(queueItems, 'Nothing in the download queues.')}
+        </div>
+      
+        <div class="card feed-card" data-home="feed" data-home-label="What just happened">
+          <h2>What just happened</h2>
+          ${feed === null ? unavailable('Audit log') : renderFeed(feed)}
+        </div>
+
+        <div data-home="storage" data-home-label="Disk space and fleet sync">${renderDirectorPanel({
           overall: health.overall,
           services: directorItems,
           disks: disks === null ? null : diskItems,
           totalFreeLabel: (disks === null || (disks || []).length === 0) ? null : fmtSpace(disks.reduce((n, d) => n + (d.freeSpace || 0), 0)),
           fleetSync: buildFleetSync(tierNodes, { getTierPlan, listTierNodeFolders }),
-        })}
-      </section>
-
-      <section class="panel" data-panel="services">
-        ${renderServicesPanel()}
-      </section>
-
-      <section class="panel" data-panel="overview">
-        ${renderQuickActions(quickActions.overview)}
-        ${showPasskeySetupBanner ? renderPasskeySetupBanner() : ''}
-        ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID, PASSKEY_RP.origin)}
-        ${renderAgentApiTokens(agentApiTokens, { legacyConfigured: !!CONFIG.AGENT_API_TOKEN_HASH })}
-        <div class="card">
+          compact: true,
+        })}</div>
+      
+        <div class="card trends-card" data-home="trends" data-home-label="Trends">
+          <h2>Trends</h2>
+          ${renderTrends(trends, { fmtSpace })}
+        </div>
+        <div class="card" data-home="recent" data-home-label="Recently added">
           <h2>Recently added<span class="sub">From Tautulli, newest first.</span></h2>
           ${recentEntry.value === null ? unavailable('Tautulli') : renderRecentlyAdded(recentEntry.value)}
         </div>
-        <div class="card">
+        <div class="card" data-home="alerts" data-home-label="Alert inbox">
           <h2>Alert inbox<span class="sub">Service-down alerts, last 20. Read from the audit log the alert sweep already writes.</span></h2>
           ${alertIncidents === null ? unavailable('Audit log') : renderAlertInbox(alertIncidents)}
         </div>
-        <div class="card">
-          <h2>Integrations</h2>
-          <div class="badges">${renderHealthBadges(health)}</div>
-          ${Object.keys(health.errors || {}).length ? renderItemList(Object.entries(health.errors).map(([name, error]) => ({ state: 'down', title: name, sub: error })), '') : ''}
-        </div>
-        <div class="card">
-          <h2>Now Streaming</h2>
-          ${sessions === null ? unavailable('Tautulli') : renderItemList(nowPlayingItems, 'Nobody is streaming right now.')}
-        </div>
-        <div class="card">
-          <h2>Downloading</h2>
-          ${queue === null ? unavailable('Radarr/Sonarr') : renderItemList(queueItems, 'Nothing in the download queues.')}
-        </div>
+        <div class="card glance" data-home="glance" data-home-label="At a glance"><h2>At a glance<span class="sub">Data as of ${dataAsOf < now ? fmtAgo(dataAsOf) : 'just now'}.</span></h2><div class="stats">${stats}</div></div>
+        <!--/live:home-more--></div>
+        <button type="button" class="btn home-edit-btn" data-home-edit>Make Home yours</button>
       </section>
 
-      <section class="panel" data-panel="operations">
-        ${renderQuickActions(quickActions.operations)}
-        <div class="card">
-          <h2>Pending Approval<span class="sub">Requests waiting for an administrator. Quota changes are warnings and do not block approval.</span></h2>
+      <section class="panel" data-panel="requests" data-label="Requests">
+        <div data-live="requests"><!--live:requests-->
+        <div class="segs" data-segs role="group" aria-label="Which requests">
+          <button type="button" class="seg-btn" data-seg-btn="pending">Pending<span class="seg-n" data-count>${approvalItems.length}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="incomplete">Not watchable${incomplete === null ? '' : `<span class="seg-n" data-count>${incomplete.length}</span>`}</button>
+          <button type="button" class="seg-btn" data-seg-btn="jobs">Jobs<span class="seg-n" data-count>${jobItems.length}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="watching">Watching<span class="seg-n" data-count>${watchItems.length}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="pinned">Pinned<span class="seg-n" data-count>${priorityItems.length}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="recent">Recent</button>
+        </div>
+        <div class="card" data-seg-panel="pending" data-rows-open data-picks>
+          <h2>Pending approval<span class="sub">Tap a request for its details and buttons, or tick several to approve or deny them together. Quota changes are warnings and do not block approval.</span></h2>
+          ${renderQuickActions(quickActions.operations)}
+          ${approvalItems.length ? `<div class="picks-bar" data-picks-bar>
+            <label class="pick pick-all"><input type="checkbox" data-pick-all aria-label="Select every pending request"><span>Select all</span></label>
+            <span class="picks-n" data-picks-count>None selected</span>
+            <button type="button" class="btn primary" data-bulk="approve-pending" data-bulk-picked data-title="Approve selected" disabled>Approve</button>
+            <button type="button" class="btn danger" data-bulk="deny-pending" data-bulk-picked data-title="Deny selected" disabled>Deny</button>
+          </div>` : ''}
           ${renderItemList(approvalItems, 'No requests are waiting for approval.')}
         </div>
-        <div class="card">
-          <h2>Not Watchable Yet<span class="sub">Requests still missing content — including series Seerr already calls "available" but that are missing aired episodes. Worst first.</span></h2>
+        <div class="card" data-seg-panel="incomplete" data-rows-open>
+          <h2>Not watchable yet<span class="sub">Requests still missing content, including series Seerr already calls "available" but that are missing aired episodes. Worst first.</span></h2>
           ${incomplete === null ? unavailable('Sonarr') : renderItemList(incomplete, 'Every request is complete — nothing missing.')}
         </div>
-        <div class="card">
-          <h2>Active Jobs</h2>
+        <div class="card" data-seg-panel="jobs" data-rows-open>
+          <h2>Active jobs</h2>
           ${renderItemList(jobItems, 'No seedbox grabs or staging copies running.')}
         </div>
-        <div class="card">
-          <h2>Watching / Scheduled</h2>
+        <div class="card" data-seg-panel="watching" data-rows-open>
+          <h2>Watching and scheduled</h2>
           ${renderItemList(watchItems, 'No escalation watches or pending deletions.')}
         </div>
-        <div class="card">
-          <h2>Pinned Media<span class="sub">Pinned titles run first in capped Sonarr sweeps. Reorder them here.</span></h2>
+        <div class="card" data-seg-panel="pinned" data-rows-open>
+          <h2>Pinned media<span class="sub">Pinned titles run first in capped Sonarr sweeps. Tap one to reorder or unpin it.</span></h2>
           ${renderItemList(priorityItems, 'No titles are pinned.')}
         </div>
-        <div class="card">
-          <h2>Recent Media Requests</h2>
+        <div class="card" data-seg-panel="recent">
+          <h2>Recent media requests</h2>
           ${renderTable(requestRows)}
         </div>
-        <div class="card">
-          <h2>Manual Actions</h2>
+        <!--/live:requests--></div>
+      </section>
+
+      <section class="panel" data-panel="network" data-label="Network">
+        <div class="svc-wrap" id="netBoard" aria-live="polite"><div class="svc-loading">Loading network…</div></div>
+      </section>
+
+      <section class="panel" data-panel="automation" data-label="Automation">
+        <p class="panel-intro">Settings take effect on the next sweep, no redeploy. <strong>Reset to compose</strong> drops an override so the stack file applies again.
+          ${overriddenCount ? `<strong>${overriddenCount}</strong> setting${overriddenCount === 1 ? ' is' : 's are'} overridden here.` : 'Nothing is overridden right now.'}</p>
+        ${renderQuickActions(quickActions.automation)}
+        <div class="segs" data-segs role="group" aria-label="Automation views">
+          <button type="button" class="seg-btn" data-seg-btn="jobs">Jobs<span class="seg-n">${automationInventory.length}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="settings">Settings<span class="seg-n">${settingsGroups.length}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="manual">Manual</button>
+          <button type="button" class="seg-btn" data-seg-btn="muted">Muted alerts<span class="seg-n">${seasonAlertItems.length}</span></button>
+        </div>
+        <div data-live="automation-jobs" data-seg-panel="jobs"><!--live:automation-jobs-->
+        ${renderAutomationRegistry(automationInventory, { heartbeatIssues: getAutomationRegistry()?.heartbeatIssues?.() || [], settingGroups: settingsGroups.map(g => g.id) })}
+        <!--/live:automation-jobs--></div>
+        <div data-live="automation-settings" data-seg-panel="settings"><!--live:automation-settings-->
+        ${settingsGroups.map(renderSettingsGroup).join('')}
+        <!--/live:automation-settings--></div>
+        <div class="card" data-seg-panel="manual">
+          <h2>Manual actions</h2>
           ${renderItemList(sweepItems, '')}
           <div class="actions">
             <a class="btn" href="/admin/health">Health JSON</a>
@@ -545,26 +616,26 @@ function registerDashboardReadRoutes(app, deps) {
             <button class="btn danger" type="button" onclick="revokeAll()">Revoke All Download Links</button>
           </div>
         </div>
-      </section>
-
-      <section class="panel" data-panel="automation">
-        <p class="panel-intro">These take effect on the next sweep — no redeploy. Compose stays the default:
-          <strong>Reset to compose</strong> drops the override and the stack file's value applies again.
-          ${overriddenCount ? `<strong>${overriddenCount}</strong> setting${overriddenCount === 1 ? ' is' : 's are'} currently overridden here.` : 'Nothing is overridden right now.'}</p>
-        <div class="card">
+        <div class="card" data-seg-panel="muted" data-live="automation-muted"><!--live:automation-muted-->
           <h2>Season-search alert stand-downs<span class="sub">Searches still run. Only repeated identical no-release messages are muted.</span></h2>
           ${renderItemList(seasonAlertItems, 'No season-search alerts are stood down.')}
-        </div>
-        ${renderAutomationRegistry(automationInventory, { heartbeatIssues: getAutomationRegistry()?.heartbeatIssues?.() || [] })}
-        ${settingsGroups.map(renderSettingsGroup).join('')}
+        <!--/live:automation-muted--></div>
       </section>
 
-      <section class="panel" data-panel="edge">
-        <div class="card">
-          <h2>Tier Nodes</h2>
+      <section class="panel" data-panel="fleet" data-label="Fleet">
+        <div class="segs" data-segs role="group" aria-label="Fleet views">
+          <button type="button" class="seg-btn" data-seg-btn="nodes">Nodes<span class="seg-n">${tierItems.length}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="plan">Plan</button>
+          <button type="button" class="seg-btn" data-seg-btn="europe">Europe sync</button>
+          <button type="button" class="seg-btn" data-seg-btn="readiness">Readiness${edgeFailing ? `<span class="seg-n">${edgeFailing} failing</span>` : ''}</button>
+          <button type="button" class="seg-btn" data-seg-btn="manage">Folders and members</button>
+          <button type="button" class="seg-btn" data-seg-btn="setup">Set up a node</button>
+        </div>
+        <div class="card" data-seg-panel="nodes" data-rows-open>
+          <h2>Tier nodes<span class="sub">Tap a node for its details and buttons.</span></h2>
           ${renderItemList(tierItems, 'No tier nodes registered yet.')}
         </div>
-        <div class="card" id="tier-planning">
+        <div class="card" id="tier-planning" data-seg-panel="plan">
           <h2>Tier Planning<span class="sub">Dry-run the planner — shows keep/drop per node, writes nothing until you apply.</span></h2>
           <div class="tier-plan-controls">
             <label>Node <select id="tier-plan-node"><option value="">All nodes</option>${tierPlanNodeOptions}</select></label>
@@ -573,8 +644,8 @@ function registerDashboardReadRoutes(app, deps) {
           </div>
           <div id="tier-plan-results"></div>
         </div>
-        ${renderTierNodeSetup(tierNodes.map(node => ({ ...node, folders: listTierNodeFolders(node.name) })))}
-        <div class="card" id="tier-node-manage">
+        <div data-seg-panel="setup">${renderTierNodeSetup(tierNodes.map(node => ({ ...node, folders: listTierNodeFolders(node.name) })))}</div>
+        <div class="card" id="tier-node-manage" data-seg-panel="manage">
           <h2>Tier Node Management<span class="sub">Folders and restricted-node members. Changes apply immediately and are audited.</span></h2>
           <h3 class="setup-subheading">Syncthing folders</h3>
           <form id="tier-folder-add-form">
@@ -598,15 +669,22 @@ function registerDashboardReadRoutes(app, deps) {
           </form>` : ''}
           ${tierMemberManageHtml}
         </div>
-        ${europeSyncHtml}
-        <div class="card">
-          <h2>Edge Readiness</h2>
+        <div data-seg-panel="europe">${europeSyncHtml}</div>
+        <div class="card" data-seg-panel="readiness">
+          <h2>Edge readiness</h2>
           ${renderItemList(edgeChecks.map(c => ({ state: c.status === 'fail' ? 'down' : c.status, title: c.name, sub: c.detail })), 'No edge checks available.')}
         </div>
       </section>
 
-      <section class="panel" data-panel="people">
-        <div class="card">
+      <section class="panel" data-panel="people" data-label="People">
+        <div class="segs" data-segs role="group" aria-label="People views">
+          <button type="button" class="seg-btn" data-seg-btn="members">Members<span class="seg-n">${linkedTotal}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="pending">Pending Plex<span class="seg-n">${pendingPlex.length}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="add">Add someone</button>
+          <button type="button" class="seg-btn" data-seg-btn="downloads">Downloads</button>
+          <button type="button" class="seg-btn" data-seg-btn="reshare">Reshare all</button>
+        </div>
+        <div class="card" data-seg-panel="add">
           <h2>Add User<span class="sub">Runs the real /link and /invite commands — same Plex + Seerr chain, same audits.</span></h2>
           <div class="setup-grid">
             <form id="user-link-form">
@@ -628,30 +706,47 @@ function registerDashboardReadRoutes(app, deps) {
             </form>
           </div>
         </div>
-        <div class="card">
-          <h2>Pending Plex Users</h2>
+        <div class="card" data-seg-panel="pending">
+          <h2>Pending Plex users</h2>
           ${pendingUsersHtml}
         </div>
-        <div class="card">
-          <h2>Linked Users</h2>
+        <div class="card" data-seg-panel="members">
+          <h2>Linked users</h2>
           ${linkedUsersHtml}
         </div>
-        <div class="card">
-          <h2>Reshare All<span class="sub">Re-push the Plex share to every invited user — e.g. after a server rebuild.</span></h2>
+        <div class="card" data-seg-panel="reshare">
+          <h2>Reshare all<span class="sub">Re-push the Plex share to every invited user — e.g. after a server rebuild.</span></h2>
           <button class="btn" type="button" data-post="/admin/action/reshare-all" data-body='{"mode":"preview"}' data-inline="true">Preview</button>
           <button class="btn danger" type="button" data-post="/admin/action/reshare-all" data-body='{"mode":"apply"}' data-inline="true" data-confirm="Re-push the Plex share to EVERY invited user?">Apply</button>
           <span class="action-result" aria-live="polite"></span>
         </div>
-      </section>
-
-      <section class="panel" data-panel="logs">
-        <div class="card">
-          <h2>Recent Downloads</h2>
+        <div class="card" data-seg-panel="downloads">
+          <h2>Recent downloads</h2>
           ${renderTable(downloadRows)}
         </div>
+      </section>
+
+      <section class="panel" data-panel="activity" data-label="Activity">
+        <div data-live="activity"><!--live:activity-->
         <div class="card">
-          <h2>Recent Audit Log</h2>
-          ${renderTable(auditTableRows)}
+          <h2>Activity<span class="sub">Everything the bot and the dashboard did, newest first. The last ${auditRows.length} entries.</span></h2>
+          ${renderActivity(auditRows.map(a => ({ id: a.id, at: sqliteUtcMs(a.created_at), action: a.action, details: String(a.metadata_json || '').slice(0, 160) })))}
+        </div>
+        <!--/live:activity--></div>
+      </section>
+
+      <section class="panel" data-panel="settings" data-label="Settings">
+        ${showPasskeySetupBanner ? renderPasskeySetupBanner() : ''}
+        <div class="card appearance-card">
+          <h2>Appearance and Home<span class="sub">Theme, and which cards Home shows in what order. Saved in this browser.</span></h2>
+          <button type="button" class="btn" data-home-edit>Make Home yours</button>
+        </div>
+        ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID, PASSKEY_RP.origin)}
+        ${renderAgentApiTokens(agentApiTokens, { legacyConfigured: !!CONFIG.AGENT_API_TOKEN_HASH })}
+        <div class="card">
+          <h2>Integrations</h2>
+          <div class="badges">${renderHealthBadges(health)}</div>
+          ${Object.keys(health.errors || {}).length ? renderItemList(Object.entries(health.errors).map(([name, error]) => ({ state: 'down', title: name, sub: error })), '') : ''}
         </div>
       </section>
 
@@ -665,8 +760,10 @@ function registerDashboardReadRoutes(app, deps) {
           alert(r.ok ? 'All active download links revoked.' : 'Failed: ' + r.status);
           if (r.ok) location.reload();
         }
-        document.querySelectorAll('[data-post]').forEach(function (btn) {
-          btn.addEventListener('click', async function () {
+        // One listener for every [data-post] button, including ones a live refresh adds later.
+        document.addEventListener('click', async function (event) {
+            var btn = event.target.closest('[data-post]');
+            if (!btn || btn.disabled) return;
             var prompt = btn.dataset.confirm;
             if (prompt && !confirm(prompt)) return;
             var body = JSON.parse(btn.dataset.body || '{}');
@@ -704,8 +801,8 @@ function registerDashboardReadRoutes(app, deps) {
                 note.className = 'action-result ' + (ok ? 'ok' : 'bad');
                 if (!ok && result.retryable) buttonStates.forEach(function (state) { state.button.disabled = state.disabled; });
               } else {
+                // The page refreshes the changed parts in place (finally below), not a full reload.
                 alert(message);
-                if (ok) location.reload();
               }
             } catch (err) {
               var message = String(err && err.message || err);
@@ -714,8 +811,9 @@ function registerDashboardReadRoutes(app, deps) {
               buttonStates.forEach(function (state) { state.button.disabled = state.disabled; });
             } finally {
               window.__actionsInFlight = Math.max(0, (window.__actionsInFlight || 0) - 1);
+              document.dispatchEvent(new CustomEvent('dash:action', { detail: { ok: !!ok, inline: !!btn.dataset.inline } }));
+              if (ok && window.DashLive) window.DashLive.refreshVisible();
             }
-          });
         });
         (function () {
           var enroll = document.getElementById('passkey-enroll');
@@ -741,7 +839,7 @@ function registerDashboardReadRoutes(app, deps) {
               var optionsJSON = await post('/admin/passkey/registration-options', { label: label });
               var response = await SimpleWebAuthnBrowser.startRegistration({ optionsJSON: optionsJSON });
               await post('/admin/passkey/register', response);
-              location.hash = 'overview';
+              location.hash = 'settings';
               location.reload();
             } catch (error) {
               note.textContent = window.PasskeyClient ? window.PasskeyClient.passkeyErrorMessage(error, window, expectedOrigin) : (error.message || String(error));
@@ -917,7 +1015,7 @@ function registerDashboardReadRoutes(app, deps) {
             var result = await r.json().catch(function () { return {}; });
             if (!r.ok || result.ok === false) { note.textContent = result.error || 'Registration failed.'; note.className = 'save-note bad'; return; }
             window.__dirtySettings = false;
-            location.hash = 'edge';
+            location.hash = 'fleet';
             location.reload();
           });
           if (installForm) installForm.addEventListener('submit', async function (event) {
@@ -1084,7 +1182,7 @@ function registerDashboardReadRoutes(app, deps) {
                 var body = await r.json().catch(function () { return {}; });
                 if (!r.ok || body.ok === false) { say(body.error || 'Failed: ' + r.status, 'bad'); return; }
                 say(body.message || 'Saved.', 'ok');
-                setTimeout(function () { location.hash = 'edge'; location.reload(); }, 800);
+                setTimeout(function () { location.hash = 'fleet'; location.reload(); }, 800);
               } catch (err) { say(String(err && err.message || err), 'bad'); }
             });
           };
@@ -1134,11 +1232,15 @@ function registerDashboardReadRoutes(app, deps) {
               if (!r.ok || body.ok === false) { note(group, (body.errors || ['Failed: ' + r.status]).join('; '), 'bad'); return; }
               window.__dirtySettings = false;
               note(group, okText, 'ok');
-              setTimeout(function () { location.reload(); }, 700);
+              // Only the settings and jobs refresh (in place); an open job sheet refreshes when it closes.
+              if (window.DashLive) window.DashLive.refreshVisible();
             } catch (err) { note(group, String(err && err.message || err), 'bad'); }
           };
-          document.querySelectorAll('[data-preview]').forEach(function (btn) {
-            btn.addEventListener('click', async function () {
+          // Delegated, so the buttons keep working after a live refresh or inside a job's sheet.
+          document.addEventListener('click', async function (event) {
+            var btn = event.target.closest('[data-preview]');
+            if (!btn) return;
+            {
               var group = btn.dataset.preview;
               var values = {};
               inputsFor(group).forEach(function (el) {
@@ -1166,28 +1268,62 @@ function registerDashboardReadRoutes(app, deps) {
                 }
                 note(group, 'Preview uses the unsaved values above.', 'ok');
               } catch (err) { note(group, String(err && err.message || err), 'bad'); }
-            });
+            }
           });
-          document.querySelectorAll('[data-save]').forEach(function (btn) {
-            btn.addEventListener('click', function () {
+          document.addEventListener('click', function (event) {
+            var btn = event.target.closest('[data-save]');
+            if (btn) {
               var group = btn.dataset.save;
               var values = {};
               inputsFor(group).forEach(function (el) {
                 values[el.dataset.key] = el.dataset.type === 'bool' ? (el.checked ? '1' : '0') : el.value;
               });
               post('/admin/settings', { values: values }, group, 'Saved.');
-            });
-          });
-          document.querySelectorAll('[data-reset]').forEach(function (btn) {
-            btn.addEventListener('click', function () {
-              var group = btn.dataset.reset;
+              return;
+            }
+            btn = event.target.closest('[data-reset]');
+            if (btn) {
+              var resetGroup = btn.dataset.reset;
               if (!confirm('Drop the overrides for this group and use the compose values again?')) return;
-              post('/admin/settings/reset', { keys: inputsFor(group).map(function (el) { return el.dataset.key; }) }, group, 'Reset to compose.');
-            });
+              post('/admin/settings/reset', { keys: inputsFor(resetGroup).map(function (el) { return el.dataset.key; }) }, resetGroup, 'Reset to compose.');
+            }
           });
         })();
       </script>`;
-    res.type('html').send(renderPage('Dashboard', body, { showLogout: true, showSearch: true, nav, autoRefresh: true, tabs: true }));
+    return renderPage('Dashboard', body, { showLogout: true, shell: { items: navItems } });
+  }
+  const adminPageLimiter = rateLimit({
+    windowMs: 15 * 60000,
+    limit: 300,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many dashboard requests. Wait a moment and try again.' }),
+  });
+  app.get('/admin', adminPageLimiter, dashboardAuth, async (req, res) => {
+    res.type('html').send(await renderAdmin(req));
+  });
+  // Live refresh of one part of the page. A separate limiter: every open tab polls a few of
+  // these every 30 seconds, which the page limiter (300 per 15 min) was never sized for.
+  const fragmentLimiter = rateLimit({
+    windowMs: 60000,
+    limit: 120,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many refreshes. Slowing down.' }),
+  });
+  app.get('/admin/fragment/:name', fragmentLimiter, dashboardAuth, async (req, res) => {
+    const name = String(req.params.name || '');
+    if (!/^[a-z][a-z0-9-]{0,40}$/.test(name)) return res.status(400).json({ ok: false, error: 'Unknown fragment.' });
+    try {
+      const html = extractLiveFragment(await renderAdmin(req), name);
+      if (html == null) return res.status(404).json({ ok: false, error: 'Unknown fragment.' });
+      res.set('Cache-Control', 'no-store');
+      return res.json({ ok: true, html });
+    } catch (_err) {
+      return res.status(500).json({ ok: false, error: 'Could not refresh this part of the page.' });
+    }
   });
 
   app.get('/admin/search', rateLimit({
@@ -1245,8 +1381,8 @@ function registerDashboardReadRoutes(app, deps) {
   // Services tab: one JSON payload backing the card board — service states,
   // UPS/ZFS/Speedtest adapters, Plex now-playing, and smart-network hosts.
   // Cached per source so a 30s client poll doesn't multiply upstream traffic.
-  // Poster for the recently-added strip, proxied through Tautulli so the browser never needs a
-  // Plex token or the Tautulli API key. Only items in the current strip are served.
+  // Poster for the recently-added strip and Now playing, proxied through Tautulli so the browser
+  // never needs a Plex token or the Tautulli API key. Only items on screen right now are served.
   app.get('/admin/api/poster/:ratingKey', rateLimit({
     windowMs: 60000,
     limit: 120,
@@ -1259,10 +1395,17 @@ function registerDashboardReadRoutes(app, deps) {
     if (!/^\d{1,12}$/.test(key) || !tautulliConfigured()) return res.status(404).end();
     try {
       const recent = await dashboardCache.get('tautulli-recent', RECENT_TTL_MS, () => fetchRecentlyAdded(12));
-      const item = (recent.value || []).find(i => i.ratingKey === key);
-      if (!item?.thumb) return res.status(404).end();
+      let thumb = (recent.value || []).find(i => i.ratingKey === key)?.thumb;
+      if (!thumb) {
+        // Or something playing right now (the board's Now playing strip): the show's poster for an
+        // episode, the film's own for a movie.
+        const sessions = await dashboardCache.get('tautulli-activity', 10000, () => tautulliApi('get_activity').then(d => d?.sessions || []));
+        const s = (sessions.value || []).find(x => String(x.grandparent_rating_key || '') === key || String(x.rating_key || '') === key);
+        if (s) thumb = String(s.grandparent_rating_key || '') === key ? s.grandparent_thumb : s.thumb;
+      }
+      if (!thumb) return res.status(404).end();
       // Not kept in dashboardCache (it never evicts old keys); the browser caches it for a day.
-      const poster = await fetchPoster(item.thumb);
+      const poster = await fetchPoster(thumb);
       res.set('Cache-Control', 'private, max-age=86400');
       return res.type(poster.type).send(poster.body);
     } catch (_err) {
@@ -1317,7 +1460,10 @@ function registerDashboardReadRoutes(app, deps) {
         if (board[key] && !Object.hasOwn(board[key], 'error')) board[key].error = null;
       }
       if (sessionsEntry.stale) delete board.nowPlaying;
-      res.json({ ok: true, ageSeconds: Math.max(0, Math.round((Date.now() - now) / 1000)), ...board });
+      // 24-hour history from the service-down sweep's stored checks; absent until it has run.
+      let uptime = {};
+      try { uptime = uptimeSummary(db); } catch (_err) { uptime = {}; }
+      res.json({ ok: true, ageSeconds: Math.max(0, Math.round((Date.now() - now) / 1000)), ...board, uptime });
     } catch (_err) {
       res.status(500).json({ ok: false, error: 'Services board unavailable.' });
     }
@@ -1355,4 +1501,4 @@ function registerDashboardReadRoutes(app, deps) {
   });
 }
 
-module.exports = { registerDashboardReadRoutes };
+module.exports = { registerDashboardReadRoutes, extractLiveFragment };

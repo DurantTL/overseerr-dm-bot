@@ -69,3 +69,31 @@ test('run keeps going past a failure and reports each one', async () => {
   assert.strictEqual(seen.length, 2);
   assert.deepStrictEqual(result, { attempted: 2, succeeded: 1, failed: [{ label: 'Downloading.Show.S01', error: 'rTorrent said no' }] });
 });
+
+test('approve or deny can be limited to the ticked requests, and the listKey covers only those', () => {
+  const pending = [
+    { nonce: 'aaaaaaaa', label: 'Dune', mediaType: 'movie' },
+    { nonce: 'bbbbbbbb', label: 'Shogun', mediaType: 'tv' },
+    { nonce: 'cccccccc', label: 'Arrival', mediaType: 'movie' },
+  ];
+  const picked = bulk.plan('deny-pending', { pending }, { only: ['req:cccccccc', 'req:aaaaaaaa'] });
+  assert.deepStrictEqual(picked.items.map(i => i.label), ['Dune', 'Arrival']);
+  assert.strictEqual(picked.label, 'Deny selected');
+  assert.notStrictEqual(picked.listKey, bulk.plan('deny-pending', { pending }).listKey);
+  assert.strictEqual(picked.listKey, bulk.plan('deny-pending', { pending }, { only: ['req:aaaaaaaa', 'req:cccccccc'] }).listKey);
+
+  const gone = bulk.plan('approve-pending', { pending }, { only: ['req:aaaaaaaa', 'req:dddddddd'] });
+  assert.deepStrictEqual(gone.items.map(i => i.label), ['Dune']);
+  assert.deepStrictEqual(gone.skipped, [{ label: '1 selected request', reason: 'no longer pending' }]);
+
+  assert.throws(() => bulk.plan('pause-downloads', { torrents: [] }, { only: ['req:aaaaaaaa'] }), /cannot be limited/);
+});
+
+test('parseOnly accepts request ids only, deduplicated and capped', () => {
+  assert.strictEqual(bulk.parseOnly(undefined), null);
+  assert.deepStrictEqual(bulk.parseOnly(['req:aaaaaaaa', 'req:aaaaaaaa']), ['req:aaaaaaaa']);
+  assert.throws(() => bulk.parseOnly([]), /Pick between/);
+  assert.throws(() => bulk.parseOnly('req:aaaaaaaa'), /Pick between/);
+  assert.throws(() => bulk.parseOnly(['tor:abc']), /Unknown item/);
+  assert.throws(() => bulk.parseOnly(Array.from({ length: bulk.MAX_ITEMS + 1 }, (_, i) => `req:${String(i).padStart(8, '0')}`)), /Pick between/);
+});

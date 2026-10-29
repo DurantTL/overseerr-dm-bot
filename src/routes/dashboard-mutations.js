@@ -424,7 +424,7 @@ function registerDashboardMutationRoutes(app, deps) {
   // F14 bulk Quick Actions: POST { kind } previews exactly what would be touched and returns a
   // listKey; POST { kind, listKey } re-plans and only runs if the list still matches that token.
   async function bulkSources(kind) {
-    if (kind === 'approve-pending') return { pending: listPendingRequests() };
+    if (kind === 'approve-pending' || kind === 'deny-pending') return { pending: listPendingRequests() };
     if (kind === 'pause-downloads' || kind === 'resume-downloads') {
       if (!rtorrentConfigured() || !rtorrentControl) throw Object.assign(new Error('rTorrent is not configured.'), { status: 400 });
       return { torrents: await listRtorrentTorrents() };
@@ -439,6 +439,11 @@ function registerDashboardMutationRoutes(app, deps) {
     if (kind === 'approve-pending') {
       const result = await approveGatedRequest({ nonce: item.ref, actor: dashboardGateActor(req), azPreAuth: false });
       const response = dashboardGateResponse(result, 'approve');
+      return response.ok ? { ok: true } : { ok: false, error: response.error };
+    }
+    if (kind === 'deny-pending') {
+      const result = await denyGatedRequest({ nonce: item.ref, actor: dashboardGateActor(req) });
+      const response = dashboardGateResponse(result, 'deny');
       return response.ok ? { ok: true } : { ok: false, error: response.error };
     }
     if (kind === 'pause-downloads' || kind === 'resume-downloads') {
@@ -464,7 +469,8 @@ function registerDashboardMutationRoutes(app, deps) {
     const kind = String(req.body.kind);
     const reviewed = req.body?.listKey == null ? null : String(req.body.listKey);
     try {
-      const planned = bulkActions.plan(kind, await bulkSources(kind));
+      const only = bulkActions.parseOnly(req.body?.only);
+      const planned = bulkActions.plan(kind, await bulkSources(kind), { only });
       if (reviewed == null) return res.json({ ok: true, preview: true, plan: bulkActions.publicPlan(planned) });
       if (reviewed !== planned.listKey) {
         audit('dashboard_bulk_action', { ...dashboardActor(req), ok: false, kind, reason: 'plan_changed' });
@@ -472,7 +478,7 @@ function registerDashboardMutationRoutes(app, deps) {
       }
       if (!planned.items.length) return res.json({ ok: true, message: 'Nothing to do.', result: { attempted: 0, succeeded: 0, failed: [] } });
       const result = await bulkActions.run(planned, (k, item) => bulkAct(req, k, item));
-      audit('dashboard_bulk_action', { ...dashboardActor(req), ok: result.failed.length === 0, kind, attempted: result.attempted, succeeded: result.succeeded, failed: result.failed.slice(0, 20) });
+      audit('dashboard_bulk_action', { ...dashboardActor(req), ok: result.failed.length === 0, kind, selected: !!only, attempted: result.attempted, succeeded: result.succeeded, failed: result.failed.slice(0, 20) });
       const verb = bulkActions.KINDS[kind].verb;
       const tail = result.failed.length ? ` ${result.failed.length} failed.` : '';
       return res.json({ ok: result.failed.length === 0, message: `${verb}: ${result.succeeded} of ${result.attempted} done.${tail}`, result });

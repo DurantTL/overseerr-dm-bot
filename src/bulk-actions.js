@@ -8,6 +8,9 @@
 //
 //   approve-pending   every pending request, approved one by one (plain approve, never the
 //                     AvistaZ pre-authorised variant)
+//   deny-pending      pending requests denied one by one through the same /gate deny path
+// Either request kind can be narrowed to the rows the admin ticked (`only`: item ids); the plan,
+// and so the listKey the run must match, then covers exactly those.
 //   pause-downloads   rTorrent torrents still downloading → stop. Seeding (complete) torrents are
 //                     never touched, so private-tracker ratio is unaffected.
 //   resume-downloads  rTorrent torrents still downloading → start (a no-op for running ones)
@@ -21,6 +24,7 @@ const MAX_ITEMS = 50;
 
 const KINDS = Object.freeze({
   'approve-pending': { label: 'Approve all pending', verb: 'Approve', needsDiscord: true },
+  'deny-pending': { label: 'Deny pending', verb: 'Deny', needsDiscord: true },
   'pause-downloads': { label: 'Pause all downloads', verb: 'Pause', needsDiscord: false },
   'resume-downloads': { label: 'Resume all downloads', verb: 'Resume', needsDiscord: false },
   'clear-imported': { label: 'Clear imported from queues', verb: 'Clear', needsDiscord: false },
@@ -31,7 +35,7 @@ const pct = (done, size) => (size > 0 ? `${Math.floor((done / size) * 100)}%` : 
 function planItems(kind, { pending = [], torrents = [], queue = [] }) {
   const items = [];
   const skipped = [];
-  if (kind === 'approve-pending') {
+  if (kind === 'approve-pending' || kind === 'deny-pending') {
     for (const p of pending) {
       items.push({ id: `req:${p.nonce}`, label: p.label || 'Request', detail: [p.mediaType === 'tv' ? 'TV' : p.mediaType === 'movie' ? 'Movie' : null, p.is4k ? '4K' : null].filter(Boolean).join(' · '), ref: p.nonce });
     }
@@ -62,12 +66,33 @@ function planListKey(kind, items) {
   return crypto.createHash('sha256').update(`${kind}\n${ids}`).digest('hex').slice(0, 16);
 }
 
+// Kinds that accept `only` (a ticked subset of their items).
+const SELECTABLE = new Set(['approve-pending', 'deny-pending']);
+
 // Read-only. { kind, label, items, skipped, listKey, truncated }
-function plan(kind, sources) {
+function plan(kind, sources, { only = null } = {}) {
   if (!Object.hasOwn(KINDS, kind)) throw Object.assign(new Error('Unknown bulk action'), { status: 400 });
-  const { items, skipped } = planItems(kind, sources);
+  let { items, skipped } = planItems(kind, sources);
+  let label = KINDS[kind].label;
+  if (only) {
+    if (!SELECTABLE.has(kind)) throw Object.assign(new Error('This action cannot be limited to a selection'), { status: 400 });
+    const wanted = new Set(only);
+    const gone = only.filter(id => !items.some(i => i.id === id)).length;
+    items = items.filter(i => wanted.has(i.id));
+    skipped = gone ? [{ label: `${gone} selected request${gone === 1 ? '' : 's'}`, reason: 'no longer pending' }] : [];
+    label = `${KINDS[kind].verb} selected`;
+  }
   const capped = items.slice(0, MAX_ITEMS);
-  return { kind, label: KINDS[kind].label, items: capped, skipped, listKey: planListKey(kind, capped), truncated: items.length > capped.length ? items.length - capped.length : 0 };
+  return { kind, label, items: capped, skipped, listKey: planListKey(kind, capped), truncated: items.length > capped.length ? items.length - capped.length : 0 };
+}
+
+// `only` from a request body: item ids like req:<8 hex>, at most MAX_ITEMS; null when absent.
+function parseOnly(raw) {
+  if (raw == null) return null;
+  if (!Array.isArray(raw) || !raw.length || raw.length > MAX_ITEMS) throw Object.assign(new Error('Pick between 1 and ' + MAX_ITEMS + ' items'), { status: 400 });
+  const ids = [...new Set(raw.map(String))];
+  if (!ids.every(id => /^req:[0-9a-f]{8}$/.test(id))) throw Object.assign(new Error('Unknown item in the selection'), { status: 400 });
+  return ids;
 }
 
 // What the browser sees: the plan without `ref`, which for queue items carries the *arr source
@@ -93,4 +118,4 @@ async function run(planned, act) {
   return { attempted: planned.items.length, succeeded, failed };
 }
 
-module.exports = { KINDS, MAX_ITEMS, plan, planItems, planListKey, publicPlan, run };
+module.exports = { KINDS, MAX_ITEMS, plan, parseOnly, planItems, planListKey, publicPlan, run };

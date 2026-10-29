@@ -411,3 +411,34 @@ test('bulk download actions refuse cleanly when rTorrent is not configured', asy
     await close(server);
   }
 });
+
+test('bulk approve or deny acts only on the ticked requests, through the single-item gate path', async () => {
+  const denied = [];
+  const approved = [];
+  const { app, state } = fixture({
+    listPendingRequests: () => [{ nonce: 'aaaaaaaa', label: 'Dune' }, { nonce: 'bbbbbbbb', label: 'Arrival' }, { nonce: 'cccccccc', label: 'Shogun' }],
+    approveGatedRequest: async ({ nonce }) => { approved.push(nonce); return { ok: true }; },
+    denyGatedRequest: async ({ nonce }) => { denied.push(nonce); return { ok: true }; },
+    dashboardGateResponse: result => result,
+  });
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const headers = { 'x-admin-token': 'secret' };
+    const only = ['req:cccccccc', 'req:aaaaaaaa'];
+    const plan = JSON.parse((await post(port, '/admin/action/bulk', { kind: 'deny-pending', only }, headers)).body).plan;
+    assert.deepStrictEqual(plan.items.map(i => i.label), ['Dune', 'Shogun']);
+    assert.strictEqual(denied.length, 0, 'a preview never acts');
+    // The listKey is for the ticked pair: running it without the same selection is refused.
+    assert.strictEqual((await post(port, '/admin/action/bulk', { kind: 'deny-pending', listKey: plan.listKey }, headers)).statusCode, 409);
+    const ran = JSON.parse((await post(port, '/admin/action/bulk', { kind: 'deny-pending', listKey: plan.listKey, only }, headers)).body);
+    assert.strictEqual(ran.ok, true);
+    assert.deepStrictEqual(denied, ['aaaaaaaa', 'cccccccc']);
+    assert.deepStrictEqual(approved, []);
+    assert.strictEqual((await post(port, '/admin/action/bulk', { kind: 'deny-pending', only: ['tor:x'] }, headers)).statusCode, 400);
+    assert.strictEqual((await post(port, '/admin/action/bulk', { kind: 'pause-downloads', only }, headers)).statusCode, 400);
+    assert.ok(state.audits.some(a => a.action === 'dashboard_bulk_action' && a.metadata.kind === 'deny-pending' && a.metadata.selected === true && a.metadata.succeeded === 2));
+  } finally {
+    await close(server);
+  }
+});

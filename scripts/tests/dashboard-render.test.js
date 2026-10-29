@@ -106,7 +106,8 @@ test('dashboard-render: passkey management escapes credential metadata', () => {
 });
 
 test('dashboard-render: renderStat', () => {
-  assert.match(renderStat('Label', 42), /<div class="n">42<\/div><div class="l">Label<\/div>/);
+  assert.match(renderStat('Label', 42), /<div class="n" data-count>42<\/div><div class="l">Label<\/div>/);
+  assert.match(renderStat('Tier nodes', '1/2'), /<div class="n">1\/2<\/div>/, 'only plain numbers count up');
 });
 
 test('dashboard-render: healthClass', () => {
@@ -520,4 +521,28 @@ test('renderRecentlyAdded: escaped labels, lazy posters through the proxy, an em
   assert.match(html, /Movies · 2h ago/);
   assert.match(html, /role="list"/);
   assert.match(renderRecentlyAdded([]), /Nothing has been added recently/);
+});
+
+test('dashboard-render: a job row opens with its own settings groups, and only groups that exist', () => {
+  const job = { id: 'season-pack', label: 'Season packs', enabled: true, cadence: { minutes: 30, source: 'compose', mutable: true }, manual: { enabled: true }, state: null };
+  const html = renderAutomationRegistry([job], { settingGroups: ['season_pack'] });
+  assert.match(html, /data-rows-open/);
+  assert.match(html, /data-detail-move="\[data-group=&quot;season_pack&quot;\]"/);
+  assert.doesNotMatch(html, /pack_size_fix/);
+  assert.match(renderAutomationRegistry([job]), /pack_size_fix/);
+  assert.match(renderSettingsGroup({ id: 'stuck', title: 'Stuck', blurb: '', settings: [{ key: 'X', type: 'bool', value: true, overridden: true }] }), /<details class="card set-group" data-group="stuck">[\s\S]*1 overridden/);
+});
+
+test('dashboard-render: activity rows carry a category for the filter chips', () => {
+  const { renderActivity, activityCategory } = require('../../src/dashboard-render');
+  assert.strictEqual(activityCategory('request_approved'), 'requests');
+  assert.strictEqual(activityCategory('service_down_alerted'), 'services');
+  assert.strictEqual(activityCategory('plex_invite_sent'), 'people');
+  assert.strictEqual(activityCategory('tier_agent_report'), 'fleet');
+  assert.strictEqual(activityCategory('dashboard_sweep'), 'system');
+  const html = renderActivity([{ id: 3, at: Date.now(), action: 'request_approved', details: '{"requestId":1}' }, { id: 2, at: Date.now(), action: 'dashboard_sweep', details: '{}' }]);
+  assert.match(html, /data-filter-btn="requests">Requests<span class="seg-n">1/);
+  assert.match(html, /data-cat="requests" data-key="audit-3"/);
+  assert.doesNotMatch(html, /data-filter-btn="fleet"/);
+  assert.match(html, /data-page="15"/);
 });
