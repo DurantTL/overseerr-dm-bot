@@ -208,6 +208,23 @@ const SHELL_CSS = `
   @media (max-width:480px) { .picks-bar { flex-wrap:nowrap; } .picks-bar .pick-all span { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); } }
   [data-picks].picking .picks-bar { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 8%, transparent); }
   #detailBody .pick { display:none; }
+  /* ---- People: the linked-users table stacks into cards until it fits as a table (1366px+) ---- */
+  @media (max-width:1365px) {
+    .people-table, .people-table tbody, .people-table tr, .people-table td { display:block; }
+    .people-table thead { display:none; }
+    .people-table tbody { display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:10px; }
+    .people-table tbody tr { border:1px solid var(--border); border-radius:12px; padding:8px 12px; background:var(--panel2); }
+    .people-table td { border:none; padding:3px 0; white-space:normal; max-width:none; display:flex; gap:10px; overflow:visible; }
+    .people-table td::before { content:attr(data-label); flex:0 0 84px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; padding-top:2px; }
+    .people-table .act-cell { width:auto; max-width:none; flex:1; min-width:0; }
+    .people-table .act-title { white-space:normal; }
+    .people-table td.user-actions { flex-wrap:wrap; }
+  }
+  /* ---- People: Last activity cell ---- */
+  .act-cell { display:block; min-width:0; width:180px; max-width:180px; }
+  .act-line { display:block; overflow-wrap:anywhere; }
+  .act-title { font-size:12px; color:var(--faint); font-style:italic; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  @media (max-width:720px) { .act-cell { width:auto; max-width:none; } .act-title { white-space:normal; } }
   /* ---- Activity ---- */
   .activity { list-style:none; margin:0; padding:0; }
   .act-row { display:grid; grid-template-columns:96px minmax(0,1fr); gap:2px 12px; padding:9px 0; border-top:1px solid var(--border); font-size:14px; }
