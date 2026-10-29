@@ -1200,7 +1200,7 @@ function renderServicesPanel({ needs = '' } = {}) {
     <button type="button" class="svc-downonly svc-dense" id="svcDense" aria-pressed="true" title="Show services as small tiles or full cards"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg><span class="lbl">Tiles</span></button>
     <button type="button" class="svc-downonly svc-edit" id="svcEdit" aria-pressed="false" title="Rearrange the tiles"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg><span class="lbl" id="svcEditLabel">Edit</span></button>
   </div>
-  <div class="svc-editbar" id="svcEditBar" hidden><span>Drag tiles to rearrange them. On a keyboard, focus a tile and use the arrow keys.</span><button type="button" class="svc-clear" id="svcEditReset">Reset order</button><button type="button" class="svc-clear primary" id="svcEditDone">Done</button></div>
+  <div class="svc-editbar" id="svcEditBar" hidden><span>Drag tiles and the cards below the board to rearrange them; drag a card's corner to resize it. On a keyboard, focus a tile or card and use the arrow keys.</span><button type="button" class="svc-clear" id="svcEditReset">Reset order</button><button type="button" class="svc-clear primary" id="svcEditDone">Done</button></div>
   <div id="svcBoard"><div class="svc-loading">Loading services…</div></div>
   <section id="svcUptime" aria-label="Uptime"></section>
 </div>
@@ -2109,8 +2109,11 @@ function renderServicesPanel({ needs = '' } = {}) {
       if (on) { t.setAttribute('tabindex', '0'); t.setAttribute('aria-roledescription', 'movable tile'); }
       else { t.removeAttribute('tabindex'); t.removeAttribute('aria-roledescription'); }
     });
+    // The shell turns on card dragging and resizing below the board at the same time.
+    document.dispatchEvent(new CustomEvent('dash:board-edit', { detail: { on: on } }));
     if (!on) load();
   }
+  window.__setBoardEdit = setEdit;
   editEl.addEventListener('click', function () { setEdit(!editMode); });
   document.getElementById('svcEditDone').addEventListener('click', function () { setEdit(false); editEl.focus(); });
   document.getElementById('svcEditReset').addEventListener('click', function () {
