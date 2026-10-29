@@ -1305,6 +1305,18 @@ function registerDashboardReadRoutes(app, deps) {
         canRestart: dockerAccess,
         containers: containersEntry.value || {},
       });
+      // An omitted field preserves the browser's last reading; successful empty reads must clear it.
+      for (const service of board.services) {
+        if (!queueEntry.stale && SERVICES.find(s => s.key === service.key)?.queueLabel) {
+          if (!Object.hasOwn(service, 'queue')) service.queue = 0;
+          if (!Object.hasOwn(service, 'downloads')) service.downloads = [];
+        }
+        if (!healthEntry.stale && healthEntry.value && service.state === 'ok') service.detail = null;
+      }
+      for (const key of ['zfs', 'speedtest', 'network', 'ssdTemp']) {
+        if (board[key] && !Object.hasOwn(board[key], 'error')) board[key].error = null;
+      }
+      if (sessionsEntry.stale) delete board.nowPlaying;
       res.json({ ok: true, ageSeconds: Math.max(0, Math.round((Date.now() - now) / 1000)), ...board });
     } catch (_err) {
       res.status(500).json({ ok: false, error: 'Services board unavailable.' });
