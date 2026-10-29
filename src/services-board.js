@@ -48,7 +48,7 @@ const SERVICES = Object.freeze([
   { key: 'grafana', name: 'Grafana', desc: 'Metrics dashboards and alerting', icon: 'chart', group: 'Monitoring', urlKey: 'GRAFANA_URL', healthKey: 'grafana', defaultPort: 3000 },
   { key: 'glances', name: 'Glances', desc: 'Host performance and processes', icon: 'cpu', group: 'Monitoring', urlKey: 'GLANCES_URL', healthKey: 'glances', defaultPort: 61208 },
   { key: 'scrutiny', name: 'Scrutiny', desc: 'SMART drive health tracking', icon: 'shield', group: 'Monitoring', urlKey: 'SCRUTINY_URL', healthKey: 'scrutiny', defaultPort: 8080 },
-  { key: 'portainer', name: 'Portainer', desc: 'Containers and Docker admin', icon: 'box', group: 'Monitoring', urlKey: 'PORTAINER_URL', healthKey: 'portainer', defaultPort: 9000 },
+  { key: 'portainer', name: 'Portainer', desc: 'Containers and Docker admin', icon: 'box', group: 'Monitoring', urlKey: 'PORTAINER_URL', healthKey: 'portainer', defaultPort: 9443, urlFormat: 'https://<host>:9443' },
 
   // Background Services (compact mini cards)
   { key: 'huntarr', name: 'Huntarr', desc: 'Missing and upgrade hunting', icon: 'search', group: 'Background Services', urlKey: 'HUNTARR_URL', healthKey: 'huntarr', compact: true, defaultPort: 9705 },
