@@ -787,7 +787,14 @@ function renderServicesPanel({ needs = '' } = {}) {
 .svc-enter { opacity: 0; animation: svcFadeUp .6s ease forwards; }
 .svc-head { display: flex; align-items: baseline; gap: 10px; margin: 0 0 12px; padding: 0 4px; }
 .svc-hidden { margin-top: 8px; padding: 14px; border: 1px dashed var(--line-strong); border-radius: 18px; }
-.svc-hidden .svc-head { margin-bottom: 6px; }
+.svc-hidden .svc-head { margin-bottom: 6px; align-items: center; }
+.svc-hidden .svc-head h2 { flex: 1; min-width: 0; }
+.svc-hidden .svc-head .svc-group-toggle { text-align: left; }
+.svc-hidden .svc-head .line { display: none; }
+.svc-hidden .svc-head .sum { margin-right: auto; }
+.svc-unset-btn { flex: none; min-height: 44px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: 999px; background: none; font: inherit; font-size: 13px; color: var(--muted); cursor: pointer; }
+.svc-unset-btn:hover { color: var(--text); }
+.svc-unset-off { margin: 8px 4px 20px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 13px; color: var(--muted); }
 .svc-hidden-note { margin: 0 4px 12px; font-size: 13px; color: var(--muted); max-width: 60ch; }
 .svc-hidden-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 148px), 1fr)); gap: 8px; }
 .svc-hidden-card { display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 10px 12px; border-radius: 14px; background: color-mix(in srgb, var(--panel) 70%, transparent); min-width: 0; }
@@ -1261,6 +1268,14 @@ function renderServicesPanel({ needs = '' } = {}) {
   var collapsed = [];
   try { collapsed = JSON.parse(localStorage.getItem('svcCollapsed') || '[]'); if (!Array.isArray(collapsed)) collapsed = []; } catch (e) { collapsed = []; }
   function saveCollapsed() { try { localStorage.setItem('svcCollapsed', JSON.stringify(collapsed)); } catch (e) {} }
+  // "Not on the board yet": collapses like a group (svcCollapsed) or is hidden outright (svcUnsetHidden).
+  var UNSET_GROUP = 'Not on the board yet';
+  var unsetHidden = false;
+  try { unsetHidden = localStorage.getItem('svcUnsetHidden') === '1'; } catch (e) { unsetHidden = false; }
+  function setUnsetHidden(on) {
+    unsetHidden = on;
+    try { if (on) localStorage.setItem('svcUnsetHidden', '1'); else localStorage.removeItem('svcUnsetHidden'); } catch (e) {}
+  }
   function filtering() { return !!findTerm || downOnly; }
   function matches(x) {
     if (downOnly && x.state !== 'down') return false;
@@ -1790,15 +1805,25 @@ function renderServicesPanel({ needs = '' } = {}) {
     // Services the board can't check yet, each with the variable that would add it.
     var hiddenShown = downOnly ? [] : (d.hidden || []).filter(function (h) { return !findTerm || String(h.name || '').toLowerCase().indexOf(findTerm) > -1; });
     shownCount += hiddenShown.length;
-    if (hiddenShown.length) {
+    // The row can be collapsed like a group, or hidden outright (per browser) and brought back
+    // from the one-line note left in its place. A search still shows matches from it.
+    if (hiddenShown.length && unsetHidden && !findTerm) {
+      html += '<p class="svc-unset-off' + entCls + '">' + hiddenShown.length + (hiddenShown.length === 1 ? ' service isn\\'t' : ' services aren\\'t') +
+        ' on the board yet. <button type="button" class="svc-unset-btn" data-unset-show="1">Show them</button></p>';
+    } else if (hiddenShown.length) {
+      var unsetOpen = filtering() || collapsed.indexOf(UNSET_GROUP) === -1;
       html += '<section class="svc-hidden' + entCls + '" aria-labelledby="svcHiddenTitle">' +
-        '<div class="svc-head"><h2 id="svcHiddenTitle">Not on the board yet</h2><span class="sum">' + hiddenShown.length + '</span><div class="line"></div></div>' +
+        '<div class="svc-head"><h2 id="svcHiddenTitle"><button type="button" class="svc-group-toggle" data-group="' + UNSET_GROUP + '" aria-expanded="' + unsetOpen + '" aria-controls="svcg-unset"' + (filtering() ? ' disabled' : '') + '>Not on the board yet' +
+        '<svg class="chev" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button></h2>' +
+        '<span class="sum">' + hiddenShown.length + '</span><div class="line"></div>' +
+        '<button type="button" class="svc-unset-btn" data-unset-hide="1" aria-label="Hide the not on the board yet row">Hide</button></div>' +
+        '<div id="svcg-unset"' + (unsetOpen ? '' : ' hidden') + '>' +
         '<p class="svc-hidden-note">These have no address set, so the board can\\'t check them. Each one moves into its group as soon as its variable is added.</p>' +
         '<div class="svc-hidden-grid">' + hiddenShown.map(function (h) {
           return '<div class="svc-hidden-card"><span class="svc-icon">' + iconFor(h.icon) + '</span>' +
             '<span class="grow"><b>' + esc(h.name) + '</b><small>' + esc(h.group) + '</small>' +
             (h.missing ? '<code>' + esc(h.missing) + '</code>' : '') + '</span></div>';
-        }).join('') + '</div></section>';
+        }).join('') + '</div>';
       // Config gaps: the fix list for the row above. The dashboard is admin-only; this card
       // shows variable names and value templates, never a configured value.
       var gaps = hiddenShown.filter(function (h) { return h.missing; });
@@ -1814,6 +1839,7 @@ function renderServicesPanel({ needs = '' } = {}) {
           }).join('') +
           '</section>';
       }
+      html += '</div></section>';
     }
     if (filtering() && !shownCount) {
       html = '<div class="svc-empty"><p>' + (downOnly && !findTerm ? 'Nothing is down.' : 'No service matches that.') + '</p>' +
@@ -2203,6 +2229,13 @@ function renderServicesPanel({ needs = '' } = {}) {
   board.addEventListener('click', function (e) {
     var toggle = e.target.closest('.svc-group-toggle');
     if (toggle && !toggle.disabled) { toggleGroup(toggle); return; }
+    if (e.target.closest('[data-unset-hide]')) { setUnsetHidden(true); rerender(); return; }
+    if (e.target.closest('[data-unset-show]')) {
+      setUnsetHidden(false); rerender();
+      var t = board.querySelector('[data-group="' + UNSET_GROUP + '"]');
+      if (t) t.focus();
+      return;
+    }
     if (e.target.closest('[data-clear-filter]')) {
       findTerm = ''; findEl.value = ''; downOnly = false; downEl.setAttribute('aria-pressed', 'false');
       rerender(); findEl.focus();
