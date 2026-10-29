@@ -1527,8 +1527,8 @@ function renderServicesPanel() {
         ? groupUp + ' of ' + (items.length - groupOff) + ' up' + (groupOff ? ' · ' + groupOff + ' not set up' : '')
         : (specialCount + netCount) + (specialCount + netCount === 1 ? ' reading' : ' readings');
       var isOpen = filtering() || collapsed.indexOf(g) === -1;
-      var gridId = 'svcg-' + gi;
-      html += '<div class="svc-head' + entCls + '"><h2><button type="button" class="svc-group-toggle" data-group="' + esc(g) + '" aria-expanded="' + isOpen + '" aria-controls="' + gridId + '"' + (filtering() ? ' disabled' : '') + '>' + esc(g) +
+      var gridId = 'svcg-' + g.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      html += '<div class="svc-head' + entCls + '" data-key="group:' + esc(g) + '"><h2><button type="button" class="svc-group-toggle" data-group="' + esc(g) + '" aria-expanded="' + isOpen + '" aria-controls="' + gridId + '"' + (filtering() ? ' disabled' : '') + '>' + esc(g) +
         '<svg class="chev" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button></h2>' +
         '<span class="sum">' + summary + '</span><div class="line"></div></div>';
       html += '<div class="svc-grid' + entCls + '" id="' + gridId + '"' + (isOpen ? '' : ' hidden') + '>' + special + items.map(cardHtml).join('') + '</div>';
