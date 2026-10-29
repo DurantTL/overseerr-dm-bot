@@ -538,7 +538,7 @@ function registerDashboardReadRoutes(app, deps) {
         </div>
         <div class="card glance" data-home="glance" data-home-label="At a glance"><h2>At a glance<span class="sub">Data as of ${dataAsOf < now ? fmtAgo(dataAsOf) : 'just now'}.</span></h2><div class="stats">${stats}</div></div>
         <!--/live:home-more--></div>
-        <button type="button" class="btn home-edit-btn" data-home-edit>Make Home yours</button>
+        <button type="button" class="btn home-edit-btn" data-home-edit-start>Make Home yours</button>
       </section>
 
       <section class="panel" data-panel="requests" data-label="Requests">

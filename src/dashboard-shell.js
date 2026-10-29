@@ -275,7 +275,6 @@ const SHELL_CSS = `
     /* Masonry: 8px rows, each card spans its own height (set by the shell script). */
     .home-more { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); grid-auto-rows:8px; gap:0 16px; align-items:start; }
     .home-more > [data-home] { margin:0; }
-    .home-more > [data-home="recent"] { grid-column:1 / -1; }
   }
   @media (min-width:1100px) { .home-more { grid-template-columns:repeat(3, minmax(0,1fr)); } }
   .home-sheet { position:fixed; inset:0; z-index:62; display:flex; align-items:flex-end; }
@@ -296,9 +295,39 @@ const SHELL_CSS = `
   .he-row button[data-he-toggle] { min-width:78px; }
   .he-row button:disabled { opacity:.35; cursor:default; }
   .he-foot { display:flex; justify-content:space-between; gap:8px; margin-top:14px; }
+  /* ---- Edit Home: drag and resize the cards below the board ---- */
+  .home-edit-pill { position:fixed; left:50%; transform:translateX(-50%); bottom:calc(84px + env(safe-area-inset-bottom)); z-index:40; display:flex; align-items:center; gap:8px;
+    padding:8px 8px 8px 16px; border-radius:999px; border:1px solid var(--accent); background:var(--panel); box-shadow:0 12px 34px rgba(0,0,0,.4); font-size:13px; color:var(--muted); max-width:calc(100% - 24px); }
+  .home-edit-pill[hidden] { display:none; }
+  .home-edit-pill .btn { min-height:40px; white-space:nowrap; }
+  @media (min-width:721px) { .home-edit-pill { bottom:24px; left:calc(50% + 116px); } }
+  @media (max-width:420px) { .home-edit-pill > span { display:none; } .home-edit-pill { padding-left:8px; } }
+  body.home-editing .home-more > [data-home] { position:relative; touch-action:none; cursor:grab; user-select:none; -webkit-user-select:none;
+    outline:1px dashed color-mix(in srgb, var(--accent) 70%, transparent); outline-offset:3px; border-radius:16px; }
+  body.home-editing .home-more > [data-home].dragging { z-index:8; cursor:grabbing; opacity:.95; box-shadow:0 22px 50px rgba(0,0,0,.45); }
+  body.home-editing .home-more > [data-home]:focus-visible { outline:3px solid var(--accent); }
+  /* The grip sits on the card's outside corner so it never covers what the card says. */
+  .hm-grip { position:absolute; right:-12px; bottom:-12px; z-index:4; width:36px; height:36px; display:flex; align-items:center; justify-content:center;
+    border-radius:50%; border:1px solid var(--accent); background:var(--accent); color:var(--on-accent); cursor:ew-resize; touch-action:none; box-shadow:0 4px 14px rgba(0,0,0,.35); }
+  .hm-grip svg { width:18px; height:18px; }
+  body.home-editing .home-more { padding:0 12px 12px 0; }
+  body.home-editing .hm-hint { display:none; }
+  .hm-move { position:absolute; top:6px; right:6px; z-index:3; width:44px; height:44px; display:flex; align-items:center; justify-content:center;
+    border-radius:12px; border:1px solid var(--accent); background:var(--panel); color:var(--accent); touch-action:none; cursor:grab; }
+  .hm-move svg { width:20px; height:20px; }
+  @media (min-width:721px) { .hm-move { display:none; } }
+  @media (max-width:720px) {
+    /* Stack while editing so cards can be dragged up and down by their handle; the rest of a card
+       still scrolls the page. Widths only matter on wider screens. */
+    body.home-editing .home-more { display:flex; flex-direction:column; gap:12px; overflow:visible; }
+    body.home-editing .home-more > [data-home] { touch-action:auto; cursor:default; }
+    .hm-grip { display:none; }
+  }
   /* ---- Home: What just happened, Trends ---- */
   .feed { list-style:none; margin:0; padding:0; }
   .feed-row { display:grid; grid-template-columns:10px minmax(0,1fr) auto; gap:10px; align-items:baseline; padding:9px 0; border-top:1px solid var(--border); font-size:14px; }
+  /* Long release names have no spaces: break them anywhere rather than run past the card. */
+  .feed-text { min-width:0; overflow-wrap:anywhere; }
   .feed-row:first-child { border-top:none; }
   .feed-dot { width:8px; height:8px; border-radius:50%; background:var(--accent); transform:translateY(-1px); }
   .tone-ok .feed-dot { background:var(--ok); } .tone-warn .feed-dot { background:var(--warn); } .tone-down .feed-dot { background:var(--down); }
@@ -527,9 +556,13 @@ const SHELL_SCRIPT = `
   function homePrefs() {
     try {
       var p = JSON.parse(localStorage.getItem('dashHome') || '{}') || {};
-      return { hidden: (Array.isArray(p.hidden) ? p.hidden : []).filter(safeKey), order: (Array.isArray(p.order) ? p.order : []).filter(safeKey) };
-    } catch (e) { return { hidden: [], order: [] }; }
+      var size = {};
+      if (p.size && typeof p.size === 'object') Object.keys(p.size).forEach(function (k) { var n = Number(p.size[k]); if (safeKey(k) && (n === 1 || n === 2 || n === 3)) size[k] = n; });
+      return { hidden: (Array.isArray(p.hidden) ? p.hidden : []).filter(safeKey), order: (Array.isArray(p.order) ? p.order : []).filter(safeKey), size: size };
+    } catch (e) { return { hidden: [], order: [], size: {} }; }
   }
+  var DEFAULT_SIZE = { recent: 3 };
+  function cardSize(p, key) { return p.size[key] || DEFAULT_SIZE[key] || 1; }
   function saveHome(p) { try { localStorage.setItem('dashHome', JSON.stringify(p)); } catch (e) {} applyHome(); paintHome(); }
   // Prefs live in a style element, not on the cards, so a live refresh that morphs the cards keeps them.
   function applyHome() {
@@ -538,6 +571,15 @@ const SHELL_SCRIPT = `
     // Cards missing from a saved order (new ones) go after the ordered ones, as in the editor.
     if (p.order.length) css += '.home-more > [data-home]{order:999}';
     p.order.forEach(function (k, i) { css += '.home-more > [data-home="' + k + '"]{order:' + (i + 1) + '}'; });
+    // Card widths on wider screens: 1, 2 or 3 columns (3 = the whole row). Recently added starts
+    // full width; everything else one column, until resized.
+    var two = '', three = '';
+    homeSections('more').forEach(function (x) {
+      var n = cardSize(p, x.key);
+      if (n >= 2) two += '.home-more > [data-home="' + x.key + '"]{grid-column:1 / -1}';
+      if (n === 2) three += '.home-more > [data-home="' + x.key + '"]{grid-column:span 2}';
+    });
+    css += '@media (min-width:721px){' + two + '}@media (min-width:1100px){' + three + '}';
     homeStyle.textContent = css;
     document.dispatchEvent(new CustomEvent('dash:home-prefs'));
   }
@@ -643,6 +685,179 @@ const SHELL_SCRIPT = `
   document.addEventListener('dash:home-prefs', queueMasonry);
   watchMasonry();
   queueMasonry();
+
+  // ---- Edit Home: drag the cards below the board, and resize them ----
+  // The board's pencil (or Make Home yours on Home) turns this on together with tile dragging. Each
+  // card gets a resize grip; drag it sideways to 1, 2 or 3 columns, or tap it to step through
+  // them. On the phone the cards stack while editing so they can be dragged up and down.
+  var homeEditing = false, cardDrag = null, sizeDrag = null;
+  var donePill = document.createElement('div');
+  donePill.className = 'home-edit-pill';
+  donePill.hidden = true;
+  donePill.innerHTML = '<span>Editing Home</span><button type="button" class="btn" data-home-edit-sheet>Theme and hiding</button><button type="button" class="btn primary" data-home-edit-done>Done</button>';
+  document.body.appendChild(donePill);
+  function cols() {
+    var hm = document.querySelector('.home-more');
+    return hm ? Math.max(1, getComputedStyle(hm).gridTemplateColumns.split(' ').length) : 1;
+  }
+  function cardsInOrder() { return orderedMore().map(function (x) { return document.querySelector('.home-more > [data-home="' + x.key + '"]'); }).filter(Boolean); }
+  function addGrips() {
+    homeSections('more').forEach(function (x) {
+      var el = document.querySelector('.home-more > [data-home="' + x.key + '"]');
+      if (!el || el.querySelector(':scope > .hm-grip')) return;
+      el.setAttribute('tabindex', '0');
+      el.setAttribute('aria-roledescription', 'movable card');
+      var g = document.createElement('button');
+      g.type = 'button';
+      g.className = 'hm-grip';
+      g.setAttribute('data-hm-size', x.key);
+      g.setAttribute('data-hm-label', x.label);
+      g.setAttribute('aria-label', 'Resize ' + x.label + ': ' + cardSize(homePrefs(), x.key) + ' of 3 columns');
+      g.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 20 20 9M14 20l6-6M19 20h1v-1"/></svg>';
+      el.appendChild(g);
+      // On a phone the card itself scrolls the page; this handle is what drags it.
+      var mv = document.createElement('span');
+      mv.className = 'hm-move';
+      mv.setAttribute('aria-hidden', 'true');
+      mv.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 9h14M5 15h14"/></svg>';
+      el.appendChild(mv);
+    });
+  }
+  function removeGrips() {
+    [].forEach.call(document.querySelectorAll('.hm-grip, .hm-move'), function (g) { g.remove(); });
+    [].forEach.call(document.querySelectorAll('.home-more > [data-home]'), function (el) { el.removeAttribute('tabindex'); el.removeAttribute('aria-roledescription'); el.style.transform = ''; el.classList.remove('dragging'); });
+  }
+  function setHomeEditing(on) {
+    if (on === homeEditing) return;
+    homeEditing = on;
+    document.body.classList.toggle('home-editing', on);
+    donePill.hidden = !on;
+    window.__actionsInFlight = Math.max(0, (window.__actionsInFlight || 0) + (on ? 1 : -1));
+    if (on) addGrips(); else { removeGrips(); if (window.DashLive) window.DashLive.refreshVisible(); }
+    queueMasonry();
+  }
+  document.addEventListener('dash:board-edit', function (e) { setHomeEditing(!!(e.detail && e.detail.on)); });
+  function setBoth(on) { if (window.__setBoardEdit) window.__setBoardEdit(on); else setHomeEditing(on); }
+  document.addEventListener('click', function (e) {
+    if (e.target.closest('[data-home-edit-done]')) { setBoth(false); return; }
+    if (e.target.closest('[data-home-edit-sheet]')) { openHome(); return; }
+    if (e.target.closest('[data-home-edit-start]')) {
+      setBoth(true);
+      var hm = document.querySelector('.home-more-head');
+      if (hm) hm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    // While editing, a tap inside a card never follows its links or buttons (except the grip).
+    if (homeEditing && e.target.closest('.home-more > [data-home]') && !e.target.closest('.hm-grip')) { e.preventDefault(); e.stopPropagation(); }
+  }, true);
+  function moveKey(key, targetKey, after) {
+    var p = homePrefs();
+    var keys = orderedMore().map(function (x) { return x.key; });
+    keys.splice(keys.indexOf(key), 1);
+    var at = keys.indexOf(targetKey) + (after ? 1 : 0);
+    keys.splice(at, 0, key);
+    p.order = keys;
+    try { localStorage.setItem('dashHome', JSON.stringify(p)); } catch (err) {}
+    applyHome();
+    masonry();
+  }
+  function setSize(key, n) {
+    var p = homePrefs();
+    p.size[key] = Math.max(1, Math.min(3, n));
+    try { localStorage.setItem('dashHome', JSON.stringify(p)); } catch (err) {}
+    applyHome();
+    masonry();
+    var g = document.querySelector('.hm-grip[data-hm-size="' + key + '"]');
+    if (g) g.setAttribute('aria-label', 'Resize ' + g.getAttribute('data-hm-label') + ': ' + p.size[key] + ' of 3 columns');
+  }
+  document.addEventListener('pointerdown', function (e) {
+    if (!homeEditing || cardDrag || sizeDrag || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    var grip = e.target.closest('.hm-grip');
+    if (grip) {
+      e.preventDefault();
+      var card = grip.parentElement;
+      sizeDrag = { key: grip.getAttribute('data-hm-size'), card: card, id: e.pointerId, x: e.clientX, moved: false };
+      try { grip.setPointerCapture(e.pointerId); } catch (err) {}
+      return;
+    }
+    var el = e.target.closest('.home-more > [data-home]');
+    if (!el) return;
+    if (e.pointerType === 'touch' && !e.target.closest('.hm-move')) return;
+    e.preventDefault();
+    cardDrag = { el: el, key: el.getAttribute('data-home'), id: e.pointerId, x: e.clientX, y: e.clientY };
+    try { el.setPointerCapture(e.pointerId); } catch (err) {}
+    el.classList.add('dragging');
+  });
+  document.addEventListener('pointermove', function (e) {
+    if (sizeDrag && e.pointerId === sizeDrag.id) {
+      e.preventDefault();
+      if (Math.abs(e.clientX - sizeDrag.x) > 6) sizeDrag.moved = true;
+      if (!sizeDrag.moved || cols() < 2) return;
+      var hm = document.querySelector('.home-more');
+      var hr = hm.getBoundingClientRect(), cr = sizeDrag.card.getBoundingClientRect();
+      var colW = hr.width / cols();
+      var want = Math.max(1, Math.min(cols(), Math.round((e.clientX - cr.left) / colW)));
+      var n = want >= cols() ? 3 : want;
+      if (n !== cardSize(homePrefs(), sizeDrag.key)) setSize(sizeDrag.key, n);
+      return;
+    }
+    if (!cardDrag || e.pointerId !== cardDrag.id) return;
+    e.preventDefault();
+    var el = cardDrag.el;
+    el.style.transform = 'translate(' + (e.clientX - cardDrag.x) + 'px,' + (e.clientY - cardDrag.y) + 'px)';
+    var over = null;
+    cardsInOrder().forEach(function (c) {
+      if (c === el) return;
+      var r = c.getBoundingClientRect();
+      if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) over = c;
+    });
+    if (over) {
+      var list = cardsInOrder();
+      var before = el.getBoundingClientRect();
+      moveKey(cardDrag.key, over.getAttribute('data-home'), list.indexOf(over) > list.indexOf(el));
+      el.style.transform = '';
+      var after = el.getBoundingClientRect();
+      cardDrag.x = e.clientX - (before.left - after.left);
+      cardDrag.y = e.clientY - (before.top - after.top);
+      el.style.transform = 'translate(' + (e.clientX - cardDrag.x) + 'px,' + (e.clientY - cardDrag.y) + 'px)';
+    }
+    if (e.clientY < 90) window.scrollBy(0, -14); else if (e.clientY > window.innerHeight - 120) window.scrollBy(0, 14);
+  });
+  function endHomeDrag(e) {
+    if (sizeDrag && (!e || e.pointerId === sizeDrag.id)) {
+      // A tap on the grip steps through the widths.
+      if (!sizeDrag.moved) setSize(sizeDrag.key, cardSize(homePrefs(), sizeDrag.key) % 3 + 1);
+      sizeDrag = null;
+      return;
+    }
+    if (!cardDrag || (e && e.pointerId !== cardDrag.id)) return;
+    cardDrag.el.classList.remove('dragging');
+    cardDrag.el.style.transform = '';
+    cardDrag = null;
+    paintHome();
+  }
+  document.addEventListener('pointerup', endHomeDrag);
+  document.addEventListener('pointercancel', endHomeDrag);
+  // Keyboard: arrows move a focused card; on its grip, left and right resize.
+  document.addEventListener('keydown', function (e) {
+    if (!homeEditing) return;
+    var grip = e.target.closest && e.target.closest('.hm-grip');
+    if (grip && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+      var k = grip.getAttribute('data-hm-size');
+      setSize(k, cardSize(homePrefs(), k) + (e.key === 'ArrowRight' ? 1 : -1));
+      grip.focus();
+      return;
+    }
+    var card = e.target.matches && e.target.matches('.home-more > [data-home]') ? e.target : null;
+    var step = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key];
+    if (!card || !step) return;
+    e.preventDefault();
+    var list = cardsInOrder(), i = list.indexOf(card), j = i + step;
+    if (j < 0 || j >= list.length) return;
+    moveKey(card.getAttribute('data-home'), list[j].getAttribute('data-home'), step > 0);
+    card.focus();
+  });
   if (window.matchMedia) { var mq = matchMedia('(prefers-color-scheme: light)'); if (mq.addEventListener) mq.addEventListener('change', syncThemeColor); }
   panels.forEach(function (p) { p.setAttribute('role', 'region'); p.setAttribute('aria-label', p.dataset.label || p.dataset.panel); });
 
