@@ -6,6 +6,7 @@ const { parseScriptConfig, describeWindow } = require('../europe-sync');
 const { HEALTH_KEYS, healthLabel } = require('../health');
 const { INBOX_ACTIONS, alertInbox } = require('../service-alerts');
 const { uptimeSummary } = require('../service-uptime');
+const { activityForMembers } = require('../member-activity');
 const { FEED_ACTION_NAMES, feedItems } = require('../dashboard-feed');
 const { gatherTrends } = require('../dashboard-trends');
 const { renderAlertInbox, renderRecentlyAdded, renderQuickActions, renderQuickActionSheet, renderFeed, renderTrends, renderActivity } = require('../dashboard-render');
@@ -74,6 +75,7 @@ function registerDashboardReadRoutes(app, deps) {
     queuePercent,
     quotaBlockReason,
     rateLimit,
+    plexAccountMaps = async () => ({ emailByAccount: new Map(), nameByAccount: new Map() }),
     renderAutomationRegistry = () => '',
     renderAgentApiTokens = () => '',
     renderDirectorPanel = () => '',
@@ -202,7 +204,16 @@ function registerDashboardReadRoutes(app, deps) {
     const pendingPlex = db.prepare('SELECT * FROM users WHERE invited = 0 ORDER BY requested_at DESC LIMIT 25').all();
     const pendingRequestCount = db.prepare("SELECT COUNT(*) AS c FROM requests WHERE status = 'pending'").get().c;
     const recentRequests = db.prepare('SELECT * FROM requests ORDER BY id DESC LIMIT 50').all();
-    const linkedUsers = db.prepare('SELECT discord_id, email, invited, requested_at, home_server FROM users ORDER BY requested_at DESC LIMIT 100').all();
+    const linkedUsers = db.prepare('SELECT discord_id, email, plex_username, invited, requested_at, home_server FROM users ORDER BY requested_at DESC LIMIT 100').all();
+    // People → Last watched (any server) and Last active on Discord. plex.tv supplies the account
+    // ID → email/username mapping (cached); if it's unreachable the columns say so per row.
+    let memberActivityByUser = new Map();
+    let plexMapsOk = true;
+    try {
+      let maps;
+      try { maps = await plexAccountMaps(); } catch (_e) { plexMapsOk = false; maps = { emailByAccount: new Map(), nameByAccount: new Map() }; }
+      memberActivityByUser = activityForMembers(db, linkedUsers, maps);
+    } catch (_e) { /* tables missing in an old fixture: columns read "no data" */ }
 
     // People tab: user administration. Per-row buttons reuse the page's inline
     // data-post mechanism; the routes return { ok, html } rendered from the real
@@ -218,8 +229,16 @@ function registerDashboardReadRoutes(app, deps) {
           + `<td>${did ? userBtn('Invite', '/admin/action/user/invite', { discordId: did, email: u.email || undefined }) : ''}<span class="action-result" aria-live="polite"></span></td></tr>`;
       }).join('')
     }</tbody></table></div>` : '<p class="muted">No pending users.</p>';
-    const linkedUsersHtml = linkedUsers.length ? `<div class="table-wrap"><table><thead><tr><th>Email</th><th>Discord</th><th>Server</th><th>Invited</th><th>Since</th><th>Actions</th></tr></thead><tbody>${
+    const linkedUsersHtml = linkedUsers.length ? `<div class="table-wrap"><table class="people-table"><thead><tr><th>Email</th><th>Discord</th><th>Server</th><th>Last activity</th><th>Invited</th><th>Since</th><th>Actions</th></tr></thead><tbody>${
       linkedUsers.map(u => {
+        const act = memberActivityByUser.get(u.discord_id) || {};
+        // One cell, up to three short lines: last play (any server), what it was, last Discord activity.
+        const watched = act.watched
+          ? `<span class="act-line">Watched ${escapeHtml(fmtAgo(act.watched.at))} · ${escapeHtml(act.watched.server)}</span>${act.watched.title ? `<span class="act-line act-title">${escapeHtml(act.watched.title)}</span>` : ''}`
+          : `<span class="act-line muted">${!plexMapsOk ? 'Plex: accounts unavailable' : act.plexMatched ? 'Plex: no plays recorded' : 'Plex: no account match'}</span>`;
+        const active = act.discord
+          ? `<span class="act-line">Discord ${escapeHtml(fmtAgo(act.discord.at))}${act.discord.place ? ` · ${escapeHtml(act.discord.place)}` : ''}</span>`
+          : '<span class="act-line muted">Discord: nothing recorded</span>';
         const did = u.discord_id || '';
         const isPh = u.home_server === 'ph';
         const actions = did ? [
@@ -230,6 +249,7 @@ function registerDashboardReadRoutes(app, deps) {
         return `<tr><td data-label="Email">${escapeHtml(u.email || '—')}</td>`
           + `<td data-label="Discord"><code>${escapeHtml(did)}</code></td>`
           + `<td data-label="Server">${isPh ? 'Philippines' : 'Main'}</td>`
+          + `<td data-label="Last activity"><span class="act-cell">${watched}${active}</span></td>`
           + `<td data-label="Invited">${u.invited ? '✅' : '⏳'}</td>`
           + `<td data-label="Since">${escapeHtml(fmtAgo(u.requested_at))}</td>`
           + `<td class="user-actions">${actions}<span class="action-result" aria-live="polite"></span></td></tr>`;

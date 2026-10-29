@@ -98,6 +98,7 @@ const { evaluateTierPlanStaleness } = require('./src/tier-plan-staleness');
 const { checkServices, evaluateServiceAlerts, parseIgnoreList } = require('./src/service-alerts');
 const { SERVICES: BOARD_SERVICES } = require('./src/services-board');
 const { recordServiceSamples, pruneServiceSamples } = require('./src/service-uptime');
+const memberActivity = require('./src/member-activity');
 const { restartCapable, restartContainer } = require('./src/docker-control');
 const { mergeFleetDisks, evaluateFleetDiskAlerts, evaluateSmartTransitions, collectSmartHealth } = require('./src/fleet-disks');
 const { assessDiskLevel } = require('./src/node-telemetry');
@@ -208,6 +209,7 @@ function createAutomationDefinitions() {
     { id: 'not-watchable-digest', label: 'Not Watchable Yet digest', cadence: () => staticCadence(15), prerequisite: () => enabled(tunable('NOT_WATCHABLE_DIGEST_ENABLED'), 'NOT_WATCHABLE_DIGEST_ENABLED is off.'), firstRunDelayMs: 120000, run: sweepNotWatchableDigest, manual: scheduledOnly('Posts weekly at the configured day and hour; scheduled execution only.') },
     { id: 'viewing-insights', label: 'Viewing insights', cadence: () => staticCadence(15), prerequisite: () => enabled(tunable('VIEWING_INSIGHTS_ENABLED') && tautulliConfigured(), tunable('VIEWING_INSIGHTS_ENABLED') ? 'Tautulli is not configured.' : 'VIEWING_INSIGHTS_ENABLED is off.'), firstRunDelayMs: 150000, run: sweepViewingInsights, manual: scheduledOnly('Posts weekly at the configured day and hour; scheduled execution only.') },
     { id: 'quiet-digest', label: 'Quiet-hours digest', cadence: () => staticCadence(5), prerequisite: () => enabled(true), firstRunDelayMs: 90000, run: sweepQuietDigest, manual: scheduledOnly('Posts the digest when quiet hours end; scheduled execution only.') },
+    { id: 'last-watched', label: 'Last watched and last active', cadence: () => staticCadence(6 * 60), prerequisite: () => enabled(true), firstRunDelayMs: 180000, runOnStartup: true, run: sweepMemberActivity, manual: safeManual },
     { id: 'backup-check', label: 'App backup check', cadence: () => staticCadence(24 * 60, 'BACKUP_CHECK_ENABLED'), prerequisite: () => enabled(CONFIG.BACKUP_CHECK_ENABLED, 'BACKUP_CHECK_ENABLED is false'), firstRunDelayMs: 600000, run: sweepBackupCheck, manual: safeManual },
     { id: 'disk-space', label: 'Disk space & drive health', cadence: () => staticCadence(CONFIG.DISK_CHECK_MINUTES, 'DISK_CHECK_MINUTES'), prerequisite: () => enabled(true), firstRunDelayMs: 60000, run: sweepFleetDiskAlerts, preview: () => previewFleetDiskAlerts(), manual: scheduledOnly('Sends operator alerts; scheduled execution only.') },
     { id: 'pending-approvals', label: 'Pending approvals', cadence: () => runtimeCadence('PENDING_APPROVAL_CHECK_MINUTES'), prerequisite: () => enabled(true), run: sweepPendingApprovals, manual: scheduledOnly('Uses notification and expiry timing; scheduled execution only.') },
@@ -228,6 +230,81 @@ function createAutomationDefinitions() {
     { id: 'tunnel', label: 'Tunnel health', cadence: () => staticCadence(CONFIG.PH_TUNNEL_CHECK_MINUTES, 'PH_TUNNEL_CHECK_MINUTES'), prerequisite: () => enabled(!!CONFIG.PH_TUNNEL_HEALTH_URL, 'PH_TUNNEL_HEALTH_URL is not configured.'), run: sweepTunnelHealth, manual: scheduledOnly('May send availability alerts; scheduled execution only.') },
     { id: 'episode-recovery', label: 'Episode recovery', cadence: () => runtimeCadence('EPISODE_RECOVERY_CHECK_MINUTES'), prerequisite: () => enabled(tunable('EPISODE_RECOVERY_ENABLED') && !!(CONFIG.SONARR_URL && CONFIG.PROWLARR_URL && CONFIG.RTORRENT_URL), tunable('EPISODE_RECOVERY_ENABLED') ? 'Sonarr, Prowlarr, and rTorrent are required.' : 'EPISODE_RECOVERY_ENABLED is off.'), firstRunDelayMs: 30000, runOnStartup: true, run: runEpisodeRecoverySweep, preview: values => previewEpisodeRecoverySweep(values), manual: safeManual },
   ];
+}
+
+// People → Last watched / Last active (src/member-activity.js). Read-only: fills in Plex plays from
+// before webhooks were recorded, from the main Tautulli and each fleet node's Tautulli or Plex
+// history, and once looks back through recent Discord channel history for members' last messages.
+async function sweepMemberActivity() {
+  const plays = [];
+  const failed = [];
+  if (tautulliConfigured()) {
+    try {
+      plays.push(...memberActivity.playsFromTautulli(await fetchHistoryRows(undefined, { afterDays: 90, length: 5000 }), 'Main (Tautulli)'));
+    } catch (err) { failed.push(`main Tautulli: ${err.message}`); }
+  }
+  for (const node of listTierNodes().filter(n => n.enabled)) {
+    try {
+      if (node.tautulli_url && node.tautulli_api_key) {
+        plays.push(...memberActivity.playsFromTautulli(await fetchHistoryRows({ url: node.tautulli_url, apiKey: node.tautulli_api_key }, { afterDays: 90, length: 5000 }), node.name));
+      } else if (node.plex_url && node.plex_token) {
+        plays.push(...memberActivity.playsFromPlex(await fetchPlexHistoryRows(node.plex_url, node.plex_token), node.name));
+      }
+    } catch (err) { failed.push(`${node.name}: ${err.message}`); }
+  }
+  const updated = memberActivity.recordPlays(db, plays);
+  let discordBackfill = null;
+  if (getSetting('discord_activity_backfill_v1') !== 'done' && client.isReady()) {
+    discordBackfill = await backfillDiscordActivity();
+    setSetting('discord_activity_backfill_v1', 'done');
+  }
+  if (failed.length) log.warn(`last-watched: ${failed.join('; ').slice(0, 400)}`);
+  return { plays: plays.length, updated, failedSources: failed.length, discordBackfill };
+}
+
+// Raw Plex history rows (accountID, viewedAt) for one server, newest 90 days.
+async function fetchPlexHistoryRows(url, token, { afterDays = 90, length = 5000 } = {}) {
+  const afterSec = Math.floor((Date.now() - afterDays * 86400000) / 1000);
+  const rows = [];
+  for (let start = 0; rows.length < length; start += 1000) {
+    const res = await axios.get(`${String(url).replace(/\/$/, '')}/status/sessions/history/all`, {
+      params: { 'viewedAt>': afterSec, 'X-Plex-Container-Start': start, 'X-Plex-Container-Size': 1000 },
+      headers: { 'X-Plex-Token': token, Accept: 'application/json' },
+      timeout: 15000,
+    });
+    const page = res.data?.MediaContainer?.Metadata || [];
+    rows.push(...page);
+    if (page.length < 1000) break;
+  }
+  return rows;
+}
+
+// One-time: the newest message per member in the most recent 500 messages of each text channel
+// the bot can read. Bounded and paced; members active since then are already recorded live.
+async function backfillDiscordActivity() {
+  const guild = client.guilds.cache.get(CONFIG.DISCORD_GUILD_ID) || client.guilds.cache.first();
+  if (!guild) return { channels: 0, members: 0 };
+  const newest = new Map();
+  let channels = 0;
+  for (const channel of guild.channels.cache.values()) {
+    if (!channel.isTextBased?.() || channel.isThread?.() || !channel.viewable) continue;
+    channels += 1;
+    let before;
+    for (let page = 0; page < 5; page++) {
+      let batch;
+      try { batch = await channel.messages.fetch({ limit: 100, before }); } catch (_err) { break; }
+      if (!batch.size) break;
+      for (const m of batch.values()) {
+        if (m.author?.bot) continue;
+        const prev = newest.get(m.author.id);
+        if (!prev || m.createdTimestamp > prev.at) newest.set(m.author.id, { at: m.createdTimestamp, place: `#${channel.name}` });
+      }
+      before = batch.last().id;
+      await new Promise(r => setTimeout(r, 300));
+    }
+  }
+  for (const [discordId, v] of newest) memberActivity.recordDiscordActivity(db, { discordId, at: v.at, place: v.place });
+  return { channels, members: newest.size };
 }
 
 // Service-down alerts (src/service-alerts.js): container-level checks the external endpoint
@@ -866,11 +943,23 @@ function httpRateLimitKey(req) {
   return ip === 'unknown' ? ip : ipKeyGenerator(ip);
 }
 
-const plexWebhookAccountCache = { expiresAt: 0, emails: new Map() };
+const plexWebhookAccountCache = { expiresAt: 0, emails: new Map(), names: new Map() };
 async function resolvePlexWebhookEmail(accountId) {
   const key = String(accountId ?? '');
   if (!key) return null;
-  if (Date.now() < plexWebhookAccountCache.expiresAt) return plexWebhookAccountCache.emails.get(key) || null;
+  await refreshPlexAccountCache();
+  return plexWebhookAccountCache.emails.get(key) || null;
+}
+
+// Plex account ID → email and username for every shared user plus the owner, from plex.tv, cached
+// for 10 minutes. Used by the webhook flow and by People's "Last watched" column.
+async function plexAccountMaps() {
+  await refreshPlexAccountCache();
+  return { emailByAccount: plexWebhookAccountCache.emails, nameByAccount: plexWebhookAccountCache.names };
+}
+
+async function refreshPlexAccountCache() {
+  if (Date.now() < plexWebhookAccountCache.expiresAt) return;
 
   const token = await getPlexToken();
   const [friendsResult, ownerResult] = await Promise.allSettled([
@@ -879,18 +968,22 @@ async function resolvePlexWebhookEmail(accountId) {
   ]);
   if (friendsResult.status === 'rejected') log.warn(`Could not resolve Plex webhook friends: ${friendsResult.reason.message}`);
   if (ownerResult.status === 'rejected') log.warn(`Could not resolve Plex webhook owner: ${ownerResult.reason.message}`);
-  if (friendsResult.status === 'rejected' && ownerResult.status === 'rejected') return null;
+  if (friendsResult.status === 'rejected' && ownerResult.status === 'rejected') return;
 
   const friends = friendsResult.status === 'fulfilled' ? friendsResult.value : [];
   const ownerData = ownerResult.status === 'fulfilled' ? ownerResult.value : null;
   const owner = ownerData?.user || ownerData?.data || ownerData;
   const emails = new Map();
+  const names = new Map();
   for (const account of [...friends, owner].filter(Boolean)) {
-    if (account.id != null && isValidEmail(account.email)) emails.set(String(account.id), account.email.toLowerCase().trim());
+    if (account.id == null) continue;
+    if (isValidEmail(account.email)) emails.set(String(account.id), account.email.toLowerCase().trim());
+    const name = account.username || account.title;
+    if (name) names.set(String(account.id), String(name));
   }
   plexWebhookAccountCache.emails = emails;
+  plexWebhookAccountCache.names = names;
   plexWebhookAccountCache.expiresAt = Date.now() + 10 * 60000;
-  return emails.get(key) || null;
 }
 
 function webhookUserKey(email) {
@@ -5249,6 +5342,25 @@ const commandFallbackFeature = createCommandFallbackFeature({
 
 client.on('messageCreate', message => {
   commandFallbackFeature.handleMessage(message).catch(err => log.error(`command-fallback: ${err.message}`));
+});
+
+// People → Last active on Discord: the newest message, DM or command per member. At most one write
+// per member per minute; content is never read or stored.
+const discordActivitySeen = new Map();
+function noteDiscordActivity(userId, place, at = Date.now()) {
+  if (!userId) return;
+  const last = discordActivitySeen.get(userId) || 0;
+  if (at - last < 60000) return;
+  discordActivitySeen.set(userId, at);
+  try { memberActivity.recordDiscordActivity(db, { discordId: userId, at, place }); } catch (err) { log.warn(`last-active: ${err.message}`); }
+}
+client.on('messageCreate', message => {
+  if (message.author?.bot) return;
+  noteDiscordActivity(message.author?.id, message.guild ? `#${message.channel?.name || 'channel'}` : 'DM to the bot', message.createdTimestamp || Date.now());
+});
+client.on('interactionCreate', interaction => {
+  if (interaction.user?.bot || !interaction.isChatInputCommand?.()) return;
+  noteDiscordActivity(interaction.user?.id, `/${interaction.commandName}`, interaction.createdTimestamp || Date.now());
 });
 
 client.on('interactionCreate', async interaction => {
@@ -10944,6 +11056,7 @@ function startExpressServer() {
 
     registerDashboardReadRoutes(app, {
       CONFIG,
+      plexAccountMaps,
       rtorrentConfigured,
       PASSKEY_RP,
       arrSources,
@@ -11421,6 +11534,13 @@ async function handleOverseerrWebhook(body) {
 }
 
 async function handlePlexWebhook(payload) {
+  // People → Last watched: every server's plays count, including servers the flows below ignore.
+  try {
+    const play = memberActivity.playFromWebhook(payload);
+    if (play) memberActivity.recordPlexPlay(db, play);
+  } catch (err) {
+    log.warn(`last-watched: could not record a Plex play: ${err.message}`);
+  }
   const { event, Account, Metadata, Server } = payload;
   // Scrobble = finished (eviction/delete flows). play/resume = playback START, used only to
   // promote a not-yet-cached title on the PH box (§2.2). Anything else is ignored.

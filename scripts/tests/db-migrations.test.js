@@ -249,7 +249,7 @@ test('v6 repairs tier_play_pins on databases that migrated past v1 before the ta
   const { db, runMigrations, schemaVersion } = handle;
   try {
     runMigrations();
-    assert.strictEqual(schemaVersion(), 9);
+    assert.strictEqual(schemaVersion(), 10);
 
     // Simulate the production state seen live Sep 2026: v1 ran before PR #286 added
     // tier_play_pins to its body, so the table is missing even though the recorded
@@ -261,7 +261,7 @@ test('v6 repairs tier_play_pins on databases that migrated past v1 before the ta
     assert.throws(() => db.prepare('SELECT COUNT(*) FROM tier_play_pins').get(), /no such table/);
 
     runMigrations();
-    assert.strictEqual(schemaVersion(), 9);
+    assert.strictEqual(schemaVersion(), 10);
     const row = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tier_play_pins'").get();
     assert.ok(row, 'the repair migration creates tier_play_pins');
     const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'tier_play_pins'").all().map(r => r.name);
@@ -270,7 +270,7 @@ test('v6 repairs tier_play_pins on databases that migrated past v1 before the ta
 
     // And the step is a no-op on a healthy database that already has the table.
     runMigrations();
-    assert.strictEqual(schemaVersion(), 9);
+    assert.strictEqual(schemaVersion(), 10);
   } finally {
     cleanup(handle);
   }
@@ -281,7 +281,7 @@ test('v7 repairs the monitor_only column on databases that migrated past v1 befo
   const { db, runMigrations, schemaVersion } = handle;
   try {
     runMigrations();
-    assert.strictEqual(schemaVersion(), 9);
+    assert.strictEqual(schemaVersion(), 10);
     const cols = () => db.prepare('PRAGMA table_info(tier_nodes)').all().map(c => c.name);
     assert.ok(cols().includes('monitor_only'));
 
@@ -295,12 +295,12 @@ test('v7 repairs the monitor_only column on databases that migrated past v1 befo
     assert.ok(!cols().includes('monitor_only'));
 
     runMigrations();
-    assert.strictEqual(schemaVersion(), 9);
+    assert.strictEqual(schemaVersion(), 10);
     assert.ok(cols().includes('monitor_only'), 'the repair migration re-adds monitor_only');
 
     // And the step is a no-op on a healthy database that already has the column.
     runMigrations();
-    assert.strictEqual(schemaVersion(), 9);
+    assert.strictEqual(schemaVersion(), 10);
   } finally {
     cleanup(handle);
   }

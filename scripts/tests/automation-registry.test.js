@@ -90,7 +90,7 @@ test('automation inventory is declarative and contains every recurring media wor
   const ids = [...block.matchAll(/id: '([^']+)'/g)].map(match => match[1]);
   assert.deepStrictEqual(ids.sort(), [
     'adoption', 'backup', 'backup-check', 'disk-space', 'episode-recovery', 'escalation', 'grab', 'indexer-health', 'janitor',
-    'monthly-recap', 'not-watchable-digest', 'pending-approvals', 'premiumize', 'quiet-digest', 'ratio-cleanup', 'request-reconcile',
+    'last-watched', 'monthly-recap', 'not-watchable-digest', 'pending-approvals', 'premiumize', 'quiet-digest', 'ratio-cleanup', 'request-reconcile',
     'season-pack', 'service-alerts', 'stage-queue', 'stage-reconcile', 'stuck', 'tailscale-keys', 'tier-plan-stale-alert', 'transcode', 'tunnel', 'viewing-insights',
   ]);
   assert.ok(!/setInterval\(/.test(source.slice(source.indexOf('async function startDiscordWorkers()'), source.indexOf("client.on('guildMemberAdd'"))), 'worker startup must schedule only through the registry');

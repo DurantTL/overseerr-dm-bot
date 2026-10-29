@@ -725,6 +725,27 @@ const MIGRATIONS = [
       `);
     },
   },
+  // People tab activity (src/member-activity.js): the newest Plex play per account and server,
+  // and the newest Discord message, DM or command per member.
+  {
+    version: 10,
+    run(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS plex_last_watched (
+          account_id TEXT NOT NULL,
+          server TEXT NOT NULL,
+          watched_at INTEGER NOT NULL,
+          title TEXT,
+          PRIMARY KEY (account_id, server)
+        );
+        CREATE TABLE IF NOT EXISTS discord_last_active (
+          discord_id TEXT PRIMARY KEY,
+          active_at INTEGER NOT NULL,
+          place TEXT
+        );
+      `);
+    },
+  },
 ];
 
 // The highest version this build's ledger knows about — what an up-to-date database's

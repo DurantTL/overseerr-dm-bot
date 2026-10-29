@@ -70,17 +70,23 @@ test('webhook-events: email identities prefer a linked Discord user', () => {
 
 test('webhook-events: Plex account resolution includes friends and the server owner', async () => {
   const calls = [];
-  const sandbox = loadSandbox(['resolvePlexWebhookEmail'], {
-    plexWebhookAccountCache: { expiresAt: 0, emails: new Map() },
+  const sandbox = loadSandbox(['resolvePlexWebhookEmail', 'refreshPlexAccountCache', 'plexAccountMaps'], {
+    plexWebhookAccountCache: { expiresAt: 0, emails: new Map(), names: new Map() },
     getPlexToken: async () => 'token',
-    fetchPlexFriends: async () => { calls.push('friends'); return [{ id: 7, email: 'friend@example.com' }]; },
-    plexApiGet: async path => { calls.push(path); return { id: 9, email: 'owner@example.com' }; },
+    fetchPlexFriends: async () => { calls.push('friends'); return [{ id: 7, email: 'friend@example.com', username: 'friendly' }]; },
+    plexApiGet: async path => { calls.push(path); return { id: 9, email: 'owner@example.com', username: 'caleb' }; },
     isValidEmail,
     log: { warn() {} },
   });
   assert.strictEqual(await sandbox.run('resolvePlexWebhookEmail(7)'), 'friend@example.com');
   assert.strictEqual(await sandbox.run('resolvePlexWebhookEmail(9)'), 'owner@example.com');
   assert.deepStrictEqual(calls, ['friends', '/api/v2/user'], 'the second lookup uses the cache');
+  // People's Last watched column uses the same cached mapping, with usernames for accounts whose
+  // email doesn't match a linked member.
+  const maps = await sandbox.run('plexAccountMaps()');
+  assert.strictEqual(maps.nameByAccount.get('7'), 'friendly');
+  assert.strictEqual(maps.emailByAccount.get('9'), 'owner@example.com');
+  assert.deepStrictEqual(calls, ['friends', '/api/v2/user'], 'still cached');
 });
 
 test('webhook-events: unknown source still produces a key rather than throwing', () => {
