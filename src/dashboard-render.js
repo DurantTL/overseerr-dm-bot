@@ -827,6 +827,29 @@ function renderServicesPanel({ needs = '' } = {}) {
 .svc-sheet-facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0 0 10px; padding: 12px 14px;
   border: 1px solid var(--svc-line); border-radius: 14px; background: rgba(255,255,255,.03); font-size: 13px; }
 .svc-sheet-facts[hidden] { display: none; }
+.svc-uptime { margin: 0 0 10px; padding: 12px 14px; border: 1px solid var(--svc-line); border-radius: 14px; background: rgba(255,255,255,.03); }
+.svc-uptime[hidden] { display: none; }
+.svc-uptime-head { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--svc-ink2); margin-bottom: 8px; }
+.svc-uptime-head strong { color: var(--svc-ink); font-weight: 650; }
+.svc-uptime-strip { display: grid; grid-template-columns: repeat(48, 1fr); gap: 2px; height: 26px; }
+.svc-uptime-strip i { border-radius: 2px; background: var(--ok, #5fd39a); opacity: .85; }
+.svc-uptime-strip i.down { background: var(--svc-red, #ff8a80); opacity: 1; }
+.svc-uptime-strip i.mixed { background: var(--warn, #f2b94b); opacity: 1; }
+.svc-uptime-strip i.none { background: rgba(255,255,255,.08); }
+.svc-uptime-axis { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10.5px; color: var(--svc-ink2); margin-top: 6px; }
+/* Tiles: the whole board on one screen; tap a tile for its sheet. */
+#svcBoard.dense .svc-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-bottom: 18px; }
+#svcBoard.dense .svc-grid > [data-nosheet] { grid-column: 1 / -1; }
+#svcBoard.dense .svc-card.mini { min-height: 44px; padding: 8px 30px 8px 10px; gap: 8px; border-radius: 10px; }
+#svcBoard.dense .svc-card.mini .svc-icon { width: 24px; height: 24px; border-radius: 7px; flex: none; }
+#svcBoard.dense .svc-card.mini .svc-icon svg { width: 14px; height: 14px; }
+#svcBoard.dense .svc-card.mini .svc-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+#svcBoard.dense .svc-card.mini .svc-more { display: none; }
+#svcBoard.dense .svc-card.mini .svc-dot { right: 10px; }
+#svcBoard.dense .svc-qbadge { top: -6px; right: -4px; }
+@media (max-width: 720px) { #svcBoard.dense .svc-card.mini .svc-icon { display: none; } #svcBoard.dense .svc-card.mini { padding-left: 12px; } }
+@media (min-width: 721px) { #svcBoard.dense .svc-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; } #svcBoard.dense .svc-grid > [data-nosheet] { grid-column: span 2; } }
+@media (min-width: 1100px) { #svcBoard.dense .svc-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
 .svc-sheet-facts dt { color: var(--svc-ink2); }
 .svc-sheet-facts dd { margin: 0; color: var(--svc-ink); text-align: right; min-width: 0; overflow-wrap: anywhere; }
 .svc-sheet-facts dd.mono { font-family: var(--mono); font-size: 12px; }
@@ -978,6 +1001,17 @@ function renderServicesPanel({ needs = '' } = {}) {
 .svc-action .a-ic svg { width: 17px; height: 17px; color: var(--svc-ink2); vertical-align: -3px; }
 .svc-action.danger .a-ic svg { color: currentColor; }
 @media (min-width: 721px) { .svc-sheet { align-items: center; } .svc-sheet .svc-sheet-panel { border-bottom: 1px solid var(--svc-line); border-radius: 20px; } }
+/* Wide screens: the sheet is a detail panel docked on the right, the board still visible beside it. */
+@media (min-width: 1100px) {
+  .svc-sheet { align-items: stretch; justify-content: flex-end; }
+  .svc-sheet .scrim { background: rgba(0,0,0,.25); backdrop-filter: none; }
+  .svc-sheet .svc-sheet-panel { max-width: 420px; height: 100%; overflow-y: auto; border-radius: 0; border: none; border-left: 1px solid var(--svc-line); padding: 22px 20px 28px; animation: svcSlideIn .28s cubic-bezier(.2,.9,.25,1); }
+  .svc-sheet .svc-sheet-panel.logs { max-width: 760px; height: 100%; }
+  .svc-sheet .grab { display: none; }
+  .svc-sheet .stitle, .svc-sheet .ssub { text-align: left; }
+  .svc-sheet .stitle { font-size: 20px; }
+}
+@keyframes svcSlideIn { from { transform: translateX(40px); opacity: 0; } }
 .svc-jump { display: inline-flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 10px 0 12px; border: 1px solid var(--line-strong); border-radius: 10px; background: none; color: var(--svc-ink2); font-size: 13px; cursor: pointer; }
 .svc-jump svg { width: 15px; height: 15px; }
 .svc-jump kbd { padding: 1px 6px; border: 1px solid var(--svc-line); border-radius: 5px; font: 400 11px/1.6 var(--mono); color: var(--svc-ink3); }
@@ -1028,6 +1062,7 @@ function renderServicesPanel({ needs = '' } = {}) {
   <div class="svc-filter" role="search">
     <label class="svc-find" for="svcFind"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg><input id="svcFind" type="search" placeholder="Find a service" autocomplete="off" enterkeyhint="search" aria-label="Find a service by name"></label>
     <button type="button" class="svc-downonly" id="svcDownOnly" aria-pressed="false"><span class="dot" aria-hidden="true"></span>Down only</button>
+    <button type="button" class="svc-downonly svc-dense" id="svcDense" aria-pressed="true" title="Show services as small tiles or full cards"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg>Tiles</button>
   </div>
   <div id="svcBoard"><div class="svc-loading">Loading services…</div></div>
 </div>
@@ -1039,6 +1074,7 @@ function renderServicesPanel({ needs = '' } = {}) {
     <div class="ssub" id="svcSheetSub"></div>
     <div id="svcSheetMain">
     <dl class="svc-sheet-facts" id="svcSheetFacts" hidden></dl>
+    <div class="svc-uptime" id="svcSheetUptime" hidden></div>
     <button class="svc-action" id="svcOpen"><span class="a-ic" data-icon="open"></span><span>Open</span></button>
     <button class="svc-action" id="svcCopy"><span class="a-ic" data-icon="copy"></span><span>Copy link</span></button>
     <button class="svc-action" id="svcPin"><span class="a-ic" data-icon="pin"></span><span id="svcPinLabel">Pin to top of group</span></button>
@@ -1083,6 +1119,9 @@ function renderServicesPanel({ needs = '' } = {}) {
   // the Down only filter opens every group so a match is never hidden inside a collapsed one.
   var findTerm = '';
   var downOnly = false;
+  // Tiles (dot, icon, name; the whole board on one screen) or full cards. Tiles by default.
+  var dense = true;
+  try { dense = localStorage.getItem('svcDense') !== '0'; } catch (e) {}
   var collapsed = [];
   try { collapsed = JSON.parse(localStorage.getItem('svcCollapsed') || '[]'); if (!Array.isArray(collapsed)) collapsed = []; } catch (e) { collapsed = []; }
   function saveCollapsed() { try { localStorage.setItem('svcCollapsed', JSON.stringify(collapsed)); } catch (e) {} }
@@ -1223,12 +1262,12 @@ function renderServicesPanel({ needs = '' } = {}) {
     var more = '<button class="svc-more" type="button" aria-haspopup="dialog" aria-label="Actions for ' + esc(s.name) + '">' + svg('more') + '</button>';
     var attrs = ' data-key="' + esc(s.key) + '"' + (url ? ' data-url="' + esc(url) + '"' : '') +
       ' data-name="' + esc(s.name) + '" data-container="' + esc(s.container || '') + '" data-canrestart="' + (s.canRestart ? '1' : '') + '"';
-    if (s.compact) {
+    var qbadge = s.queue ? '<div class="svc-qbadge">' + s.queue + '</div>' : '';
+    if (s.compact || dense) {
       // Mini card: icon + name only, like the mockup's background-services row.
-      return '<a class="svc-card mini' + cls + '"' + attrs + '><div class="svc-dot ' + dot + '"></div>' + more +
+      return '<a class="svc-card mini' + cls + '"' + attrs + '>' + (dense ? qbadge : '') + '<div class="svc-dot ' + dot + '"></div>' + more +
         '<div class="svc-icon">' + iconFor(s.icon) + '</div><div class="svc-name">' + esc(s.name) + '</div></a>';
     }
-    var qbadge = s.queue ? '<div class="svc-qbadge">' + s.queue + '</div>' : '';
     var desc = s.detail ? esc(s.detail) : esc(s.desc || '');
     return '<a class="svc-card' + cls + '"' + attrs + '>' + qbadge +
       '<div class="svc-dot ' + dot + '"></div>' + more +
@@ -1634,6 +1673,16 @@ function renderServicesPanel({ needs = '' } = {}) {
       return '<dt>' + esc(r[0]) + '</dt><dd' + (r[2] ? ' class="' + r[2] + '"' : '') + '>' + esc(r[1]) + '</dd>';
     }).join('');
   }
+  // Last 24 hours from the stored service checks: share up, down spells and a 48-slot strip.
+  function uptimeHtml(u) {
+    if (!u || !u.checks) return '';
+    var spells = u.spells ? ' · ' + u.spells + ' down spell' + (u.spells === 1 ? '' : 's') : '';
+    var from = u.coversMs < 23 * 3600000 ? upFor(new Date(Date.now() - u.coversMs).toISOString()) + ' ago' : '24 h ago';
+    return '<div class="svc-uptime-head"><span>Last 24 hours</span><strong>' + esc(String(u.pct)) + '% up' + esc(spells) + '</strong></div>' +
+      '<div class="svc-uptime-strip" role="img" aria-label="' + esc(u.pct + '% up over the last 24 hours' + spells) + '">' +
+      u.slots.map(function (x) { return '<i class="' + (x || 'none') + '"></i>'; }).join('') + '</div>' +
+      '<div class="svc-uptime-axis"><span>' + esc(from) + '</span><span>now</span></div>';
+  }
   function showSheetMain() {
     logSeq++;
     logView.hidden = true; sheetMain.hidden = false;
@@ -1686,6 +1735,9 @@ function renderServicesPanel({ needs = '' } = {}) {
     var factsEl = document.getElementById('svcSheetFacts');
     factsEl.innerHTML = sheetFactsHtml(rec);
     factsEl.hidden = !factsEl.innerHTML;
+    var upEl = document.getElementById('svcSheetUptime');
+    upEl.innerHTML = uptimeHtml(lastData && lastData.uptime && lastData.uptime[sheetKey]);
+    upEl.hidden = !upEl.innerHTML;
     document.getElementById('svcSheetTitle').textContent = sheetName;
     document.getElementById('svcSheetSub').textContent = sheetUrl || (sheetContainer ? 'container: ' + sheetContainer : '');
     document.getElementById('svcOpen').disabled = !sheetUrl;
@@ -1792,6 +1844,17 @@ function renderServicesPanel({ needs = '' } = {}) {
     downEl.setAttribute('aria-pressed', String(downOnly));
     rerender();
   });
+  var denseEl = document.getElementById('svcDense');
+  function syncDense() { denseEl.setAttribute('aria-pressed', String(dense)); board.classList.toggle('dense', dense); }
+  syncDense();
+  denseEl.addEventListener('click', function () {
+    dense = !dense;
+    try { localStorage.setItem('svcDense', dense ? '1' : '0'); } catch (e) {}
+    syncDense();
+    // Cards and tiles are different markup, so replace the board rather than morph it.
+    board.innerHTML = '';
+    rerender();
+  });
   board.addEventListener('click', function (e) {
     var toggle = e.target.closest('.svc-group-toggle');
     if (toggle && !toggle.disabled) {
@@ -1852,7 +1915,8 @@ function renderServicesPanel({ needs = '' } = {}) {
         // does not also open.
         if (suppressClick) { suppressClick = false; return; }
         var url = card.dataset.url;
-        if (!url) { openSheet(card); return; }
+        // A tile is too small for a ⋯ button, so tapping it opens the sheet (Open is the first action there).
+        if (!url || dense) { openSheet(card); return; }
         window.open(url, '_blank', 'noopener');
       });
     });

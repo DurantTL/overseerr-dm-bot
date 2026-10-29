@@ -5,6 +5,7 @@ const { readCookie, SETUP_NUDGE_COOKIE } = require('./dashboard-auth');
 const { parseScriptConfig } = require('../europe-sync');
 const { HEALTH_KEYS, healthLabel } = require('../health');
 const { INBOX_ACTIONS, alertInbox } = require('../service-alerts');
+const { uptimeSummary } = require('../service-uptime');
 const { renderAlertInbox, renderRecentlyAdded, renderQuickActions, renderQuickActionSheet } = require('../dashboard-render');
 const tautulliRecent = require('../tautulli');
 const { buildFleetSync } = require('../fleet-sync');
@@ -1364,7 +1365,10 @@ function registerDashboardReadRoutes(app, deps) {
         canRestart: dockerAccess,
         containers: containersEntry.value || {},
       });
-      res.json({ ok: true, ageSeconds: Math.max(0, Math.round((Date.now() - now) / 1000)), ...board });
+      // 24-hour history from the service-down sweep's stored checks; absent until it has run.
+      let uptime = {};
+      try { uptime = uptimeSummary(db); } catch (_err) { uptime = {}; }
+      res.json({ ok: true, ageSeconds: Math.max(0, Math.round((Date.now() - now) / 1000)), ...board, uptime });
     } catch (_err) {
       res.status(500).json({ ok: false, error: 'Services board unavailable.' });
     }

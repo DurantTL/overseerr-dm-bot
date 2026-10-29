@@ -137,9 +137,10 @@ const SHELL_CSS = `
   body.shell .container { max-width:1280px; padding:18px 16px; }
   @media (min-width:721px) { body.shell .container { padding:22px 28px; } }
   /* Live updates: new rows rise in; changed numbers count; panels cross-fade when switching. */
-  .live-enter { animation:liveIn .55s cubic-bezier(.2,.75,.25,1) both; }
+  .live-enter { animation:liveIn .55s cubic-bezier(.2,.75,.25,1) backwards; }
   @keyframes liveIn { from { opacity:0; transform:translateY(10px); } }
-  .panel:not([hidden]) { animation:panelIn .35s cubic-bezier(.2,.75,.25,1) both; }
+  .panel:not([hidden]) { animation:panelIn .35s cubic-bezier(.2,.75,.25,1) backwards; }
+  /* backwards, not both: a transform left on the panel would trap every position:fixed sheet inside it. */
   @keyframes panelIn { from { opacity:0; transform:translateY(8px); } }
   .card { transition:transform .25s cubic-bezier(.2,.75,.25,1), border-color .25s; }
   @media (hover:hover) { .card:hover { border-color:color-mix(in srgb, var(--accent) 35%, var(--edge)); } }

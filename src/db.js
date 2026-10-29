@@ -692,6 +692,22 @@ const MIGRATIONS = [
       ensureColumn('tier_nodes', 'monitor_only', 'INTEGER');
     },
   },
+  // Service uptime history for the Services board (src/service-uptime.js): one row per service
+  // per service-down sweep, pruned to eight days.
+  {
+    version: 8,
+    run(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS service_samples (
+          service TEXT NOT NULL,
+          state TEXT NOT NULL,
+          sampled_at INTEGER NOT NULL,
+          PRIMARY KEY (service, sampled_at)
+        );
+        CREATE INDEX IF NOT EXISTS idx_service_samples_time ON service_samples(sampled_at);
+      `);
+    },
+  },
 ];
 
 // The highest version this build's ledger knows about — what an up-to-date database's
