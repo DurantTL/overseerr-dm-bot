@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { createDashboardSession, readCookie } = require('../../src/routes/dashboard-auth');
+const crypto = require('node:crypto');
+const { createDashboardSession, createSessionGeneration, SESSION_GENERATION_KEY, SESSION_CREDENTIALS_KEY, readCookie } = require('../../src/routes/dashboard-auth');
 
 function makeSession(secret, now = Date.now, cookieSecure = false) {
   return createDashboardSession({ secret, ttlHours: 1, now, cookieSecure });
@@ -83,4 +84,51 @@ test('dashboard session: setCookie marks `; Secure` from cookieSecure config (L2
     /^dm_session=[^;]+; HttpOnly; SameSite=Strict; Path=\/admin; Max-Age=3600$/,
     'the insecure cookie keeps every other attribute',
   );
+});
+
+function memoryStore() {
+  const map = new Map();
+  return { map, get: k => (map.has(k) ? map.get(k) : null), set: (k, v) => map.set(k, String(v)) };
+}
+
+test('dashboard session: a token from before session generations (no g) is rejected', () => {
+  const secret = 's';
+  const payload = Buffer.from(JSON.stringify({ exp: Date.now() + 3600000 })).toString('base64url');
+  const signature = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
+  assert.strictEqual(makeSession(secret).verify(`${payload}.${signature}`), false);
+});
+
+test('session generation: a bump rejects every older token and new tokens verify', () => {
+  const store = memoryStore();
+  const gen = createSessionGeneration({ store, secret: 's' });
+  const session = createDashboardSession({ secret: 's', ttlHours: 1, generation: gen.current });
+  const before = session.sign();
+  assert.strictEqual(session.verify(before), true);
+  assert.strictEqual(gen.bump(), 1);
+  assert.strictEqual(store.get(SESSION_GENERATION_KEY), '1', 'stored in app_settings');
+  assert.strictEqual(session.verify(before), false, 'old generation rejected');
+  assert.strictEqual(session.verify(session.sign()), true, 'current generation accepted');
+});
+
+test('session generation: survives a restart (read back from the store)', () => {
+  const store = memoryStore();
+  const first = createSessionGeneration({ store, secret: 's' });
+  first.bump(); first.bump();
+  const token = createDashboardSession({ secret: 's', ttlHours: 1, generation: first.current }).sign();
+  const after = createSessionGeneration({ store, secret: 's' });
+  assert.strictEqual(after.current(), 2);
+  assert.strictEqual(createDashboardSession({ secret: 's', ttlHours: 1, generation: after.current }).verify(token), true);
+});
+
+test('session generation: a changed admin password or token bumps once; unchanged does not', () => {
+  const store = memoryStore();
+  const gen = createSessionGeneration({ store, secret: 's' });
+  assert.deepStrictEqual(gen.syncCredentials({ password: 'pw', token: 'tk' }), { changed: false, recorded: true }, 'first run only records');
+  assert.strictEqual(gen.current(), 0);
+  assert.deepStrictEqual(gen.syncCredentials({ password: 'pw', token: 'tk' }), { changed: false });
+  assert.deepStrictEqual(gen.syncCredentials({ password: 'pw2', token: 'tk' }), { changed: true, generation: 1 }, 'password changed');
+  assert.deepStrictEqual(gen.syncCredentials({ password: 'pw2', token: 'tk2' }), { changed: true, generation: 2 }, 'token changed');
+  assert.deepStrictEqual(gen.syncCredentials({ password: 'pw2', token: 'tk2' }), { changed: false });
+  const stored = store.get(SESSION_CREDENTIALS_KEY);
+  assert.ok(!stored.includes('pw2') && !stored.includes('tk2'), 'stores a keyed fingerprint, never the values');
 });
