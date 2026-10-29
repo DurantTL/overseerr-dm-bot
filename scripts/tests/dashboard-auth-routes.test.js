@@ -7,6 +7,7 @@ const { rateLimit } = require('express-rate-limit');
 const { createApp, listen, close } = require('../../src/app');
 const {
   createDashboardSession,
+  createSessionGeneration,
   createHeaderAuthThrottle,
   createDashboardAuth,
   registerDashboardAuthRoutes,
@@ -38,7 +39,9 @@ function createFixture(overrides = {}) {
     STRICT_DASHBOARD_POST_AUTH: true,
     ...overrides.config,
   };
-  const session = createDashboardSession({ secret: 'test-session-secret', ttlHours: 1, cookieSecure: config.COOKIE_SECURE !== false });
+  const settings = new Map();
+  const sessionGeneration = createSessionGeneration({ store: { get: k => settings.get(k) ?? null, set: (k, v) => settings.set(k, v) }, secret: 'test-session-secret' });
+  const session = createDashboardSession({ secret: 'test-session-secret', ttlHours: 1, cookieSecure: config.COOKIE_SECURE !== false, generation: sessionGeneration.current });
   const dashboardAuth = createDashboardAuth({ config, session, safeEqual: (a, b) => a === b });
   const passkeys = overrides.passkeys || [];
   const audits = [];
@@ -62,10 +65,11 @@ function createFixture(overrides = {}) {
     revokePasskey: overrides.revokePasskey || (() => false),
     passkeyClientPath: path.join(__dirname, '..', '..', 'src', 'passkey-client.js'),
     webauthnBrowserPath: require.resolve('@simplewebauthn/browser'),
+    sessionGeneration,
   });
   app.get('/admin', rateLimit({ windowMs: 60000, limit: 120 }), dashboardAuth, (_req, res) => res.send('dashboard'));
   app.post('/admin/protected', rateLimit({ windowMs: 60000, limit: 120 }), dashboardAuth, (_req, res) => res.json({ ok: true }));
-  return { app, session, audits };
+  return { app, session, audits, sessionGeneration, settings };
 }
 
 test('dashboard auth routes preserve password login, secure cookie, redirect, and logout contracts', async () => {
@@ -277,6 +281,110 @@ test('wrong admin headers are throttled per client without affecting cookie sess
     clock += 60001;
     const reopened = await request(port, { path: '/admin/x', headers: { 'x-admin-password': 'correct-password' } });
     assert.strictEqual(reopened.statusCode, 200);
+  } finally {
+    await close(server);
+  }
+});
+
+const sessionCookieFrom = res => (res.headers['set-cookie'] || []).find(c => c.startsWith('dm_session='));
+const cookiePair = header => header.split(';')[0];
+
+test('sign out everywhere: needs auth, ends every session, clears this cookie, and is audited', async () => {
+  const { app, session, audits, sessionGeneration } = createFixture();
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const path = '/admin/sessions/sign-out-everywhere';
+    assert.strictEqual((await request(port, { method: 'POST', path, body: {} })).statusCode, 401, 'unauthenticated');
+    assert.strictEqual(sessionGeneration.current(), 0, 'a refused request bumps nothing');
+
+    const mine = `dm_session=${session.sign()}`;
+    const other = `dm_session=${session.sign()}`;
+    assert.strictEqual((await request(port, { path: '/admin', headers: { cookie: other } })).statusCode, 200, 'other browser signed in');
+
+    const out = await request(port, { method: 'POST', path, body: {}, headers: { cookie: mine } });
+    assert.strictEqual(out.statusCode, 200);
+    assert.deepStrictEqual(JSON.parse(out.body), { ok: true, redirect: '/admin/login' });
+    assert.match(sessionCookieFrom(out), /^dm_session=; HttpOnly; SameSite=Strict; Path=\/admin; Max-Age=0$/);
+    assert.strictEqual(sessionGeneration.current(), 1);
+    assert.deepStrictEqual(audits.filter(a => a.event === 'dashboard_sign_out_everywhere').map(a => a.metadata.generation), [1]);
+
+    for (const cookie of [mine, other]) {
+      assert.strictEqual((await request(port, { path: '/admin', headers: { cookie } })).statusCode, 401, 'old-generation cookie rejected');
+    }
+
+    // A fresh password login works afterwards and the new cookie is accepted.
+    const login = await request(port, { method: 'POST', path: '/admin/login', form: { password: 'correct-password' } });
+    assert.strictEqual(login.statusCode, 302);
+    assert.strictEqual(login.headers.location, '/admin');
+    const fresh = cookiePair(sessionCookieFrom(login));
+    assert.strictEqual((await request(port, { path: '/admin', headers: { cookie: fresh } })).statusCode, 200);
+
+    // Header auth isn't a session and keeps working.
+    assert.strictEqual((await request(port, { path: '/admin', headers: { 'x-admin-token': 'header-token' } })).statusCode, 200);
+  } finally {
+    await close(server);
+  }
+});
+
+test('passkey login after a bump issues a current-generation session', async () => {
+  const { app, sessionGeneration } = createFixture({ passkeys: [{ credential_id: 'a' }] });
+  sessionGeneration.bump();
+  sessionGeneration.bump();
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const options = await request(port, { path: '/admin/passkey/authentication-options' });
+    const binding = cookiePair(options.headers['set-cookie'].find(c => c.startsWith('dm_webauthn=')));
+    const verified = await request(port, { method: 'POST', path: '/admin/passkey/authenticate', body: { answer: 'valid' }, headers: { cookie: binding } });
+    assert.strictEqual(verified.statusCode, 200);
+    const cookie = cookiePair(sessionCookieFrom(verified));
+    assert.strictEqual((await request(port, { path: '/admin', headers: { cookie } })).statusCode, 200);
+  } finally {
+    await close(server);
+  }
+});
+
+test('passkey revoke ends every other session, keeps the revoking browser signed in, and is audited', async () => {
+  const { app, session, audits, sessionGeneration } = createFixture({ passkeys: [{ credential_id: 'a' }, { credential_id: 'b' }], revokePasskey: () => true });
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const mine = `dm_session=${session.sign()}`;
+    const other = `dm_session=${session.sign()}`;
+    const revoked = await request(port, { method: 'POST', path: '/admin/passkey/revoke', body: { credentialId: 'b' }, headers: { cookie: mine } });
+    assert.strictEqual(revoked.statusCode, 200);
+    assert.strictEqual(sessionGeneration.current(), 1);
+    assert.deepStrictEqual(audits.filter(a => a.event === 'dashboard_session_generation_bumped').map(a => a.metadata.reason), ['passkey_revoked']);
+    assert.ok(audits.some(a => a.event === 'dashboard_passkey_revoked'), 'the revoke itself is still audited');
+
+    const replaced = sessionCookieFrom(revoked);
+    assert.match(replaced, /; HttpOnly; SameSite=Strict; Path=\/admin; Max-Age=3600; Secure$/, 'same cookie flags as a login');
+    assert.strictEqual((await request(port, { path: '/admin', headers: { cookie: cookiePair(replaced) } })).statusCode, 200, 'revoking browser stays in');
+    for (const cookie of [mine, other]) {
+      assert.strictEqual((await request(port, { path: '/admin', headers: { cookie } })).statusCode, 401, 'every earlier session ends');
+    }
+
+    // Header-authenticated revoke: bumped too, but no cookie is handed out.
+    const viaHeader = await request(port, { method: 'POST', path: '/admin/passkey/revoke', body: { credentialId: 'a' }, headers: { 'x-admin-token': 'header-token' } });
+    assert.strictEqual(viaHeader.statusCode, 200);
+    assert.strictEqual(sessionGeneration.current(), 2);
+    assert.strictEqual(sessionCookieFrom(viaHeader), undefined);
+  } finally {
+    await close(server);
+  }
+});
+
+test('logout still only clears the browser cookie', async () => {
+  const { app, session, sessionGeneration } = createFixture();
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const out = await request(port, { method: 'POST', path: '/admin/logout', headers: { cookie: `dm_session=${session.sign()}` } });
+    assert.strictEqual(out.statusCode, 302);
+    assert.strictEqual(out.headers.location, '/admin/login');
+    assert.match(sessionCookieFrom(out), /^dm_session=; HttpOnly; SameSite=Strict; Path=\/admin; Max-Age=0$/);
+    assert.strictEqual(sessionGeneration.current(), 0, 'logout does not end other sessions');
   } finally {
     await close(server);
   }

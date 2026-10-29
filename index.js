@@ -70,7 +70,7 @@ const { inventory: backupInventory, verifyBackups, backupTransitions } = require
 const { fetchIndexerHealth, evaluateIndexerFlips } = require('./src/indexer-health');
 const { auditConfigured: tailscaleAuditConfigured, listDevices: listTailscaleDevices, auditDevices: auditTailscaleDevices, newWarnings: newTailscaleKeyWarnings } = require('./src/tailscale-audit');
 const { provisionConfig: tailscaleProvisionConfig } = require('./src/tailscale-provision');
-const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderDirectorPanel, renderServicesPanel, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement, renderPasskeySetupBanner, renderAgentApiTokens, DASHBOARD_CSS } = require('./src/dashboard-render');
+const { escapeHtml, renderPage, sqliteUtcMs, fmtAgo, renderItemList, renderLogin, renderStat, renderHealthBadges, renderSettingsGroup, renderAutomationRegistry, renderDirectorPanel, renderServicesPanel, renderTable, tierInstallCommand, tierNodeStatus, renderTierNodeSetup, renderPasskeyManagement, renderSessionManagement, renderPasskeySetupBanner, renderAgentApiTokens, DASHBOARD_CSS } = require('./src/dashboard-render');
 const { grabConfigured, grabTransferPreflight, grabImportTarget, findAvistazIndexer, findAnimezIndexer, searchAvistaz, fetchTorrentFile, normalizeTitle, splitTitleYear, parseReleaseName, seriesToken, extractReleaseGroup, releaseContentClaim, contentClaimsOverlap, describeContentClaim, planSeriesGrab, describeGrabPlan, rankAvistazResults, grabAllowance, decideGrabJobAction, seriesAliasMatch } = require('./src/grab');
 const { rtorrentConfigured, computeInfoHash, addTorrentToRtorrent, getRtorrentStatus, listRtorrentTorrents, eraseTorrent, getRtorrentVersion, getRtorrentPaths, rtorrentCall } = require('./src/rtorrent');
 const { decideRatioRemoval, describeDeletionSafety } = require('./src/ratio-cleanup');
@@ -90,7 +90,7 @@ const { registerUserAdminRoutes } = require('./src/routes/dashboard-users');
 const { registerEuropeSyncRoutes } = require('./src/routes/dashboard-europe');
 const { registerMemberRoutes } = require('./src/routes/member');
 const { createTtlCache } = require('./src/dashboard-cache');
-const { createDashboardSession, createDashboardAuth, createDashboardGateActor, dashboardActor, registerDashboardAuthRoutes } = require('./src/routes/dashboard-auth');
+const { createDashboardSession, createSessionGeneration, createDashboardAuth, createDashboardGateActor, dashboardActor, registerDashboardAuthRoutes } = require('./src/routes/dashboard-auth');
 const { createApp } = require('./src/app');
 const { createRuntimeLifecycle, createDiscordReadyGuard } = require('./src/runtime-lifecycle');
 const { createAutomationRegistry } = require('./src/automation-registry');
@@ -146,10 +146,17 @@ EmbedBuilder.prototype.setDescription = function (text) {
   return _origSetDescription.call(this, desc4096(text));
 };
 
+// Session generation (app_settings): bumping it ends every dashboard session. Bumped by passkey
+// revoke, "Sign out everywhere", and at startup when the admin password or token has changed.
+const dashboardSessionGeneration = createSessionGeneration({
+  store: { get: getSetting, set: setSetting },
+  secret: CONFIG.SESSION_SECRET,
+});
 const dashboardSession = createDashboardSession({
   secret: CONFIG.SESSION_SECRET,
   ttlHours: CONFIG.SESSION_TTL_HOURS,
   cookieSecure: CONFIG.COOKIE_SECURE,
+  generation: dashboardSessionGeneration.current,
 });
 const dashboardAuth = createDashboardAuth({
   config: CONFIG,
@@ -11052,7 +11059,16 @@ function startExpressServer() {
       revokePasskey,
       passkeyClientPath,
       webauthnBrowserPath,
+      sessionGeneration: dashboardSessionGeneration,
     });
+    // A changed admin password or token ends every session signed under the old one.
+    const credentialSync = dashboardSessionGeneration.syncCredentials({
+      password: CONFIG.DASHBOARD_ADMIN_PASSWORD,
+      token: CONFIG.DASHBOARD_ADMIN_TOKEN,
+    });
+    if (credentialSync.changed) {
+      audit('dashboard_session_generation_bumped', { actor: 'system', reason: 'credentials_changed', generation: credentialSync.generation });
+    }
 
     registerDashboardReadRoutes(app, {
       CONFIG,
@@ -11110,6 +11126,7 @@ function startExpressServer() {
       renderItemList,
       renderPage,
       renderPasskeyManagement,
+      renderSessionManagement,
       renderPasskeySetupBanner,
       renderSettingsGroup,
       renderStat,
