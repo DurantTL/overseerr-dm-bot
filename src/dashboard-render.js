@@ -1072,7 +1072,7 @@ function renderServicesPanel() {
     if (s.self) return './'; // the dashboard itself
     if (!s.port) return null;
     var host = mode === 'lan' ? LAN : TAIL;
-    return 'http://' + host + ':' + s.port + (s.path || '');
+    return (s.key === 'portainer' ? 'https://' : 'http://') + host + ':' + s.port + (s.path || '');
   }
 
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
