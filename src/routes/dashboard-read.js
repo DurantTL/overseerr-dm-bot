@@ -246,6 +246,8 @@ function registerDashboardReadRoutes(app, deps) {
       const azAvailable = canEscalate(pending);
       const createdAt = typeof pending.createdAt === 'number' ? pending.createdAt : sqliteUtcMs(pending.createdAt);
       return {
+        key: `req-${pending.nonce}`,
+        pick: `req:${pending.nonce}`,
         state: quota.error || quota.warning ? 'warn' : 'ok',
         title: pending.label,
         sub: `${memberNames.get(pending.discordId) || pending.discordId} · ${mediaTypeLabel(pending.mediaType, pending.is4k)} · quota: ${quota.error ? `unavailable (${quota.error})` : (quota.warning || 'within limit')} · AvistaZ pre-auth ${azAvailable ? 'available' : 'unavailable'}`,
@@ -500,7 +502,8 @@ function registerDashboardReadRoutes(app, deps) {
     const body = `
       <section class="panel" data-panel="home" data-label="Home">
         ${servicesPanelHtml.includes('data-live="home-needs"') ? servicesPanelHtml : homeNeedsHtml + servicesPanelHtml}
-        <div data-live="home-more" class="home-more"><!--live:home-more-->
+        <div class="home-more-head"><span>More on Home</span><span class="hm-hint">Swipe for more</span></div>
+        <div data-live="home-more" class="home-more" tabindex="0" aria-label="More on Home: downloads, activity, storage, trends, recently added, alerts"><!--live:home-more-->
         <div class="card" data-home="downloading" data-home-label="Downloading">
           <h2>Downloading</h2>
           ${renderQuickActions(quickActions.overview)}
@@ -548,9 +551,15 @@ function registerDashboardReadRoutes(app, deps) {
           <button type="button" class="seg-btn" data-seg-btn="pinned">Pinned<span class="seg-n" data-count>${priorityItems.length}</span></button>
           <button type="button" class="seg-btn" data-seg-btn="recent">Recent</button>
         </div>
-        <div class="card" data-seg-panel="pending" data-rows-open>
-          <h2>Pending approval<span class="sub">Tap a request for its details and buttons. Quota changes are warnings and do not block approval.</span></h2>
+        <div class="card" data-seg-panel="pending" data-rows-open data-picks>
+          <h2>Pending approval<span class="sub">Tap a request for its details and buttons, or tick several to approve or deny them together. Quota changes are warnings and do not block approval.</span></h2>
           ${renderQuickActions(quickActions.operations)}
+          ${approvalItems.length ? `<div class="picks-bar" data-picks-bar>
+            <label class="pick pick-all"><input type="checkbox" data-pick-all aria-label="Select every pending request"><span>Select all</span></label>
+            <span class="picks-n" data-picks-count>None selected</span>
+            <button type="button" class="btn primary" data-bulk="approve-pending" data-bulk-picked data-title="Approve selected" disabled>Approve</button>
+            <button type="button" class="btn danger" data-bulk="deny-pending" data-bulk-picked data-title="Deny selected" disabled>Deny</button>
+          </div>` : ''}
           ${renderItemList(approvalItems, 'No requests are waiting for approval.')}
         </div>
         <div class="card" data-seg-panel="incomplete" data-rows-open>

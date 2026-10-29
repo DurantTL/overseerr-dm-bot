@@ -476,7 +476,8 @@ function renderBar(pct, label = '') {
 function renderItemList(items, emptyText = 'Nothing right now.') {
   if (!items || !items.length) return `<p class="muted">${escapeHtml(emptyText)}</p>`;
   return `<div class="items">${items.map(i => `
-    <div class="item">
+    <div class="item"${i.key ? ` data-key="${escapeHtml(i.key)}"` : ''}>
+      ${i.pick ? `<label class="pick"><input type="checkbox" data-pick="${escapeHtml(i.pick)}" aria-label="Select ${escapeHtml(i.title || '')}"></label>` : ''}
       <span class="dot ${['ok', 'warn', 'down', 'skip'].includes(i.state) ? i.state : 'skip'}"></span>
       <div class="item-main">
         <div class="item-title">${escapeHtml(i.title || '')}</div>
@@ -2577,13 +2578,17 @@ function renderAutomationRegistry(items, { heartbeatIssues = [], settingGroups =
         <p>${escapeHtml(item.enabled ? cadenceText : `Disabled: ${item.disabledReason} · ${cadenceText}`)}</p>
         <p>Last run: ${escapeHtml(timing)}</p>${state.finishedAt || state.status === 'failed' ? `<p>${escapeHtml(outcome)}</p>` : ''}<p>${escapeHtml(next)} · ${escapeHtml(manual)}</p>${item.heartbeat ? `<p>${escapeHtml(deadmanLine(item))}</p>` : ''}${groups.length ? '<p class="muted">Its settings are below.</p>' : ''}</div>
       ${action}</div>
+      <span class="job-col">${escapeHtml(cadence.minutes > 0 ? `every ${cadence.minutes} min` : 'off')}</span>
+      <span class="job-col">${escapeHtml(state.finishedAt ? fmtAgo(state.finishedAt) : 'not run yet')}</span>
+      <span class="job-col job-result${state.status === 'failed' ? ' bad' : ''}" title="${escapeHtml(state.finishedAt || state.status === 'failed' ? outcome : '')}">${escapeHtml(state.finishedAt || state.status === 'failed' ? outcome : 'no result yet')}</span>
+      <span class="job-col">${escapeHtml(state.nextRunAt && item.enabled ? fmtAgo(state.nextRunAt) : 'not scheduled')}</span>
       <div class="item-right">${escapeHtml(status)}</div>
     </div>`;
   }).join('');
   const issues = heartbeatIssues.length
     ? `<p class="muted">DEADMAN_PING_URLS has entries that were ignored: ${escapeHtml(heartbeatIssues.join(', '))}. Each entry is job-id=https://… using a job id from this list.</p>`
     : '';
-  return `<div class="card" id="automation-registry" data-rows-open><h2>Jobs<span class="sub">Every scheduled worker. Tap one for its last run, Run now and its settings.</span></h2>${issues}${rows ? `<div class="items">${rows}</div>` : '<p class="muted">Registry is starting.</p>'}</div>`;
+  return `<div class="card" id="automation-registry" data-rows-open><h2>Jobs<span class="sub">Every scheduled worker. Tap one for its last run, Run now and its settings.</span></h2>${issues}${rows ? `<div class="items job-table"><div class="job-headrow" aria-hidden="true"><span></span><span>Job</span><span>Cadence</span><span>Last run</span><span>Result</span><span>Next run</span><span>Status</span><span></span></div>${rows}</div>` : '<p class="muted">Registry is starting.</p>'}</div>`;
 }
 
 // F14 Quick Actions bar for one tab. Each action is one of:
@@ -2666,22 +2671,25 @@ function renderQuickActionSheet() {
     if (plan.skipped.length) body.appendChild(list('Left alone', plan.skipped.map(function (s) { return { label: s.label, detail: s.reason }; })));
     go.hidden = !n; go.textContent = plan.verb + ' ' + n;
   }
-  async function preview(kind) {
+  // A [data-bulk] button inside a [data-picks] card acts on the ticked rows only.
+  async function preview(kind, only) {
     try {
-      var res = await post({ kind: kind });
+      var res = await post(only ? { kind: kind, only: only } : { kind: kind });
       if (!res.data.ok) { sub.textContent = ''; msg(res.data.error || 'Could not load the list (' + res.status + ').', false); return; }
-      showPlan(Object.assign({ verb: verbs[kind] || 'Run' }, res.data.plan));
+      showPlan(Object.assign({ verb: verbs[kind] || 'Run', only: only || null }, res.data.plan));
     } catch (err) { sub.textContent = ''; msg(String(err && err.message || err), false); }
   }
-  var verbs = ${JSON.stringify({ 'approve-pending': 'Approve', 'pause-downloads': 'Pause', 'resume-downloads': 'Resume', 'clear-imported': 'Clear' })};
+  var verbs = ${JSON.stringify({ 'approve-pending': 'Approve', 'deny-pending': 'Deny', 'pause-downloads': 'Pause', 'resume-downloads': 'Resume', 'clear-imported': 'Clear' })};
   go.addEventListener('click', async function () {
     if (!current) return;
     go.disabled = true; cancel.disabled = true; go.dataset.busy = '1'; go.textContent = 'Working…';
     try {
-      var res = await post({ kind: current.kind, listKey: current.listKey });
+      var payload = { kind: current.kind, listKey: current.listKey };
+      if (current.only) payload.only = current.only;
+      var res = await post(payload);
       delete go.dataset.busy; cancel.disabled = false;
       if (res.status === 409 && res.data.plan) {
-        showPlan(Object.assign({ verb: current.verb }, res.data.plan)); go.disabled = false;
+        showPlan(Object.assign({ verb: current.verb, only: current.only }, res.data.plan)); go.disabled = false;
         msg(res.data.error, false); return;
       }
       var result = res.data.result;
@@ -2710,7 +2718,12 @@ function renderQuickActionSheet() {
   // Delegated, so buttons a live refresh swaps in work the same as the ones on first load.
   document.addEventListener('click', function (e) {
     var bulk = e.target.closest('[data-bulk]');
-    if (bulk && !bulk.disabled) { open(bulk.dataset.title, bulk); preview(bulk.dataset.bulk); return; }
+    if (bulk && !bulk.disabled) {
+      var scope = bulk.hasAttribute('data-bulk-picked') ? bulk.closest('[data-picks]') : null;
+      var only = scope ? [].map.call(scope.querySelectorAll('input[data-pick]:checked'), function (c) { return c.getAttribute('data-pick'); }) : null;
+      if (scope && !only.length) return;
+      open(bulk.dataset.title, bulk); preview(bulk.dataset.bulk, only); return;
+    }
     var doc = e.target.closest('[data-doctor]');
     if (doc && !doc.disabled) { open('Doctor', doc); cancel.textContent = 'Close'; doctor(); }
   });

@@ -186,6 +186,28 @@ const SHELL_CSS = `
   details.set-group > summary .tag { flex:none; }
   details.set-group[open] > summary { margin-bottom:10px; }
   .seg-btn .seg-n { font-family:var(--mono); font-size:12px; margin-left:4px; opacity:.8; }
+  /* ---- Automation jobs: one line on the phone, a table on wide screens ---- */
+  .job-col, .job-headrow { display:none; }
+  #detailBody .job-col { display:none; }
+  @media (min-width:1100px) {
+    .job-table .job-headrow, .job-table .job-row { display:grid; grid-template-columns:12px minmax(150px,1.3fr) 110px 120px minmax(0,1.8fr) 110px 84px 14px; gap:12px; align-items:center; }
+    .job-table .job-headrow { font-family:var(--mono); font-size:10.5px; letter-spacing:1px; text-transform:uppercase; color:var(--faint); padding:0 4px 8px; border-bottom:1px solid var(--border); }
+    .job-table .job-row .item-sub { display:none; }
+    .job-table .job-row .job-col { display:block; font-size:13px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+    .job-table .job-row .job-result.bad { color:var(--down); }
+    .job-table .job-row .item-right { max-width:none; text-align:left; margin:0; }
+    .job-table .job-row .item-main { min-width:0; }
+  }
+  /* ---- Tick several ---- */
+  .pick { display:inline-flex; align-items:center; justify-content:center; min-width:32px; min-height:44px; margin:-10px 0 -10px -4px; cursor:pointer; flex:none; }
+  .pick input { width:18px; height:18px; accent-color:var(--accent); cursor:pointer; }
+  .picks-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:6px 0 4px; padding:6px 8px; border:1px solid var(--border); border-radius:12px; }
+  .picks-bar .pick-all { margin:0; gap:8px; font-size:14px; }
+  .picks-n { flex:1; min-width:0; font-size:13px; color:var(--muted); white-space:nowrap; }
+  .picks-bar .btn { min-height:40px; padding:0 14px; }
+  @media (max-width:480px) { .picks-bar { flex-wrap:nowrap; } .picks-bar .pick-all span { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); } }
+  [data-picks].picking .picks-bar { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 8%, transparent); }
+  #detailBody .pick { display:none; }
   /* ---- Activity ---- */
   .activity { list-style:none; margin:0; padding:0; }
   .act-row { display:grid; grid-template-columns:96px minmax(0,1fr); gap:2px 12px; padding:9px 0; border-top:1px solid var(--border); font-size:14px; }
@@ -232,6 +254,30 @@ const SHELL_CSS = `
   @keyframes detailIn { from { transform:translateX(40px); opacity:0; } }
   /* ---- Make Home yours ---- */
   .home-more { display:flex; flex-direction:column; }
+  /* Below the board: a sideways strip on the phone, a grid on wider screens (order and hiding from
+     Make Home yours apply to both). */
+  .home-more-head { display:flex; justify-content:space-between; align-items:baseline; margin:18px 2px 8px; font-family:var(--mono); font-size:11px; letter-spacing:1.4px; text-transform:uppercase; color:var(--faint); }
+  .home-more > [data-home] { min-width:0; }
+  .home-more > [data-home] > .card:last-child, .home-more > .card[data-home] { margin-bottom:0; }
+  @media (max-width:720px) {
+    .home-more { display:grid; grid-auto-flow:column; grid-auto-columns:88%; gap:12px; overflow-x:auto; scroll-snap-type:x mandatory; overscroll-behavior-x:contain; align-items:start; padding-bottom:8px; scrollbar-width:none; }
+    .home-more::-webkit-scrollbar { display:none; }
+    .home-more { align-items:stretch; }
+    .home-more > [data-home] { scroll-snap-align:start; margin:0; }
+    .home-more > [data-home]:not(.card) { display:flex; flex-direction:column; gap:12px; }
+    .home-more > [data-home] > .card, .home-more > .card[data-home] { margin:0; }
+    .home-more > [data-home] > .card:last-child { flex:1; }
+  }
+  .home-more .d-grid { grid-template-columns:1fr; gap:0; }
+  .home-more .d-card-head { flex-wrap:wrap; }
+  @media (min-width:721px) {
+    .hm-hint { display:none; }
+    /* Masonry: 8px rows, each card spans its own height (set by the shell script). */
+    .home-more { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); grid-auto-rows:8px; gap:0 16px; align-items:start; }
+    .home-more > [data-home] { margin:0; }
+    .home-more > [data-home="recent"] { grid-column:1 / -1; }
+  }
+  @media (min-width:1100px) { .home-more { grid-template-columns:repeat(3, minmax(0,1fr)); } }
   .home-sheet { position:fixed; inset:0; z-index:62; display:flex; align-items:flex-end; }
   .home-sheet[hidden] { display:none; }
   .home-sheet .more-panel { padding:8px 16px calc(18px + env(safe-area-inset-bottom)); }
@@ -378,6 +424,29 @@ const SHELL_SCRIPT = `
     if (window.DashLive) window.DashLive.refreshVisible();
   });
   document.addEventListener('dash:refreshed', syncSegs);
+
+  // ---- Tick several ([data-picks]): count, enable the bar's buttons, Select all ----
+  function syncPicks() {
+    [].forEach.call(document.querySelectorAll('[data-picks]'), function (card) {
+      var boxes = [].slice.call(card.querySelectorAll('input[data-pick]'));
+      var n = boxes.filter(function (b) { return b.checked; }).length;
+      var count = card.querySelector('[data-picks-count]');
+      if (count) count.textContent = n ? n + ' selected' : 'None selected';
+      [].forEach.call(card.querySelectorAll('[data-bulk-picked]'), function (b) { b.disabled = !n; });
+      var all = card.querySelector('[data-pick-all]');
+      if (all) { all.checked = n > 0 && n === boxes.length; all.indeterminate = n > 0 && n < boxes.length; }
+      card.classList.toggle('picking', n > 0);
+    });
+  }
+  document.addEventListener('change', function (e) {
+    var t = e.target;
+    if (t.matches && t.matches('[data-pick-all]')) {
+      var card = t.closest('[data-picks]');
+      [].forEach.call(card.querySelectorAll('input[data-pick]'), function (b) { b.checked = t.checked; });
+    }
+    if (t.matches && (t.matches('[data-pick-all]') || t.matches('input[data-pick]'))) syncPicks();
+  });
+  document.addEventListener('dash:refreshed', syncPicks);
   document.addEventListener('click', function (e) {
     var f = e.target.closest('[data-filter-btn]'), m = e.target.closest('[data-more-btn]');
     if (!f && !m) return;
@@ -447,6 +516,7 @@ const SHELL_SCRIPT = `
   // A finished action that is not an inline one has done its job; close and show the updated list.
   document.addEventListener('dash:action', function (e) { if (e.detail && e.detail.ok && !e.detail.inline && detail && !detail.hidden) closeDetail(); });
   syncSegs();
+  syncPicks();
 
   // ---- Make Home yours: theme, and which Home cards show in what order (this browser only) ----
   var homeSheet = document.getElementById('homeSheet'), homeReturn = null;
@@ -465,8 +535,11 @@ const SHELL_SCRIPT = `
   function applyHome() {
     var p = homePrefs(), css = '';
     p.hidden.forEach(function (k) { css += '[data-panel="home"] [data-home="' + k + '"]{display:none !important}'; });
+    // Cards missing from a saved order (new ones) go after the ordered ones, as in the editor.
+    if (p.order.length) css += '.home-more > [data-home]{order:999}';
     p.order.forEach(function (k, i) { css += '.home-more > [data-home="' + k + '"]{order:' + (i + 1) + '}'; });
     homeStyle.textContent = css;
+    document.dispatchEvent(new CustomEvent('dash:home-prefs'));
   }
   function homeSections(group) {
     var home = document.querySelector('[data-panel="home"]');
@@ -541,6 +614,35 @@ const SHELL_SCRIPT = `
   });
   applyHome();
   syncThemeColor();
+
+  // Home's lower cards on wide screens: each spans as many 8px rows as it is tall, so short cards
+  // pack under each other instead of leaving gaps (CSS order from Make Home yours still applies).
+  var masonryQueued = false;
+  function masonry() {
+    masonryQueued = false;
+    var hm = document.querySelector('.home-more');
+    if (!hm) return;
+    var cs = getComputedStyle(hm);
+    var on = cs.display === 'grid' && cs.gridAutoFlow.indexOf('column') === -1 && cs.gridTemplateColumns.split(' ').length > 1;
+    [].forEach.call(hm.children, function (el) {
+      if (!on) { el.style.gridRowEnd = ''; return; }
+      var inner = el.scrollHeight || el.getBoundingClientRect().height;
+      el.style.gridRowEnd = inner ? 'span ' + Math.ceil((inner + 16) / 8) : '';
+    });
+  }
+  function queueMasonry() { if (!masonryQueued) { masonryQueued = true; requestAnimationFrame(masonry); } }
+  var masonryObserver = window.ResizeObserver ? new ResizeObserver(queueMasonry) : null;
+  function watchMasonry() {
+    var hm = document.querySelector('.home-more');
+    if (!hm || !masonryObserver) return;
+    masonryObserver.disconnect();
+    [].forEach.call(hm.children, function (el) { masonryObserver.observe(el); });
+  }
+  window.addEventListener('resize', queueMasonry);
+  document.addEventListener('dash:refreshed', function () { masonry(); watchMasonry(); });
+  document.addEventListener('dash:home-prefs', queueMasonry);
+  watchMasonry();
+  queueMasonry();
   if (window.matchMedia) { var mq = matchMedia('(prefers-color-scheme: light)'); if (mq.addEventListener) mq.addEventListener('change', syncThemeColor); }
   panels.forEach(function (p) { p.setAttribute('role', 'region'); p.setAttribute('aria-label', p.dataset.label || p.dataset.panel); });
 
