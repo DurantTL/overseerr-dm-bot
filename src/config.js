@@ -459,6 +459,9 @@ const CONFIG = (() => {
   // Only the hash is ever kept: the raw token is hashed here at startup and the plaintext
   // is never stored on CONFIG. Empty disables the agent API entirely (routes are not mounted).
   AGENT_API_TOKEN_HASH: process.env.AGENT_API_TOKEN ? sha256(process.env.AGENT_API_TOKEN) : '',
+  // Shared secret the RackNerd reachability checker sends as a Bearer token when it posts each run
+  // to /api/uptime/ingest. Only the hash is kept; empty leaves the ingest endpoint answering 503.
+  UPTIME_INGEST_TOKEN_HASH: process.env.UPTIME_INGEST_TOKEN ? sha256(process.env.UPTIME_INGEST_TOKEN) : '',
   // Optional per-topic notification channels; anything unset falls back to ADMIN_CHANNEL_ID.
   REQUESTS_CHANNEL_ID: parseId(process.env.REQUESTS_CHANNEL_ID),
   SYSTEM_ALERTS_CHANNEL_ID: parseId(process.env.SYSTEM_ALERTS_CHANNEL_ID),
@@ -777,6 +780,9 @@ function validateConfig() {
   }
   if (CONFIG.TUNNEL_DOMAIN && !CONFIG.TAUTULLI_WEBHOOK_SECRET) {
     throw new Error('TAUTULLI_WEBHOOK_SECRET is required whenever TUNNEL_DOMAIN is set; the Tautulli webhook endpoint would otherwise be reachable from the internet without authentication');
+  }
+  if (process.env.UPTIME_INGEST_TOKEN && process.env.UPTIME_INGEST_TOKEN.length < 32) {
+    throw new Error('UPTIME_INGEST_TOKEN must be at least 32 characters (generate one with `openssl rand -hex 32`); it guards an internet-reachable endpoint');
   }
   if (process.env.AGENT_API_TOKEN && process.env.AGENT_API_TOKEN.length < 32) {
     throw new Error('AGENT_API_TOKEN must be at least 32 characters (generate one with `openssl rand -hex 32`); a short internet-reachable API token is worse than none');

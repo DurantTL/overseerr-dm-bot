@@ -708,6 +708,23 @@ const MIGRATIONS = [
       `);
     },
   },
+  // Outside-in uptime history (src/uptime-monitor.js): one row per public endpoint per run of the
+  // RackNerd reachability checker, posted to /api/uptime/ingest. Append-only, pruned to 30 days.
+  {
+    version: 9,
+    run(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS uptime_samples (
+          endpoint TEXT NOT NULL,
+          checked_at INTEGER NOT NULL,
+          up INTEGER NOT NULL,
+          detail TEXT,
+          PRIMARY KEY (endpoint, checked_at)
+        );
+        CREATE INDEX IF NOT EXISTS idx_uptime_samples_time ON uptime_samples(checked_at);
+      `);
+    },
+  },
 ];
 
 // The highest version this build's ledger knows about — what an up-to-date database's

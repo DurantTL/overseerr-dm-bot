@@ -919,6 +919,49 @@ function renderServicesPanel({ needs = '' } = {}) {
 .svc-sheet-facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0 0 10px; padding: 12px 14px;
   border: 1px solid var(--svc-line); border-radius: 14px; background: rgb(var(--tint) / .03); font-size: 13px; }
 .svc-sheet-facts[hidden] { display: none; }
+/* Edit order: drag tiles (touch, pen or mouse) or arrow keys. */
+.svc-edit svg { width: 16px; height: 16px; flex: none; }
+.svc-edit[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text); }
+/* Phone: Tiles and Edit show only their icons so Find keeps its width. */
+@media (max-width: 480px) { .svc-dense .lbl, .svc-edit .lbl { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); } .svc-dense, .svc-edit { padding: 0 12px; } }
+.svc-editbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin: 0 0 14px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 14px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent); font-size: 13px; color: var(--svc-ink2); }
+.svc-editbar[hidden] { display: none; }
+.svc-editbar span { flex: 1 1 200px; }
+.svc-editbar .svc-clear { min-height: 40px; margin: 0; }
+.svc-editbar .svc-clear.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+#svcBoard.editing .svc-grid > .svc-card[data-key] { touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none;
+  outline: 1px dashed color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: 2px; }
+#svcBoard.editing .svc-card:hover { transform: none; }
+#svcBoard.editing .svc-more { display: none; }
+#svcBoard.editing .svc-card.dragging { position: relative; z-index: 6; cursor: grabbing; transition: none; box-shadow: 0 18px 40px rgba(0,0,0,.45); opacity: .95; }
+#svcBoard.editing .svc-card:focus-visible { outline: 3px solid var(--accent); }
+.ut-list { display: grid; gap: 8px; margin-bottom: 28px; }
+.ut-list[hidden] { display: none; }
+.ut-note { margin: 0 2px 2px; font-size: 12.5px; color: var(--svc-ink2); }
+.ut-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name state" "pct pct" "out out" "hours hours"; gap: 6px 12px;
+  padding: 12px 14px; border: 1px solid var(--svc-line); border-radius: 14px; background: var(--glass); }
+.ut-state { grid-area: state; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 650; white-space: nowrap; }
+.ut-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--skip); }
+.ut-state.up .ut-dot { background: var(--ok); } .ut-state.down .ut-dot { background: var(--down); }
+.ut-state.down { color: var(--down-ink); }
+.ut-name { grid-area: name; min-width: 0; }
+.ut-name b { display: block; font-size: 15px; }
+.ut-name small { display: block; font-size: 12px; color: var(--svc-ink2); overflow-wrap: anywhere; }
+.ut-pct { grid-area: pct; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--svc-ink2); }
+.ut-pct b { color: var(--svc-ink); font-family: var(--mono); font-weight: 400; }
+.ut-collect { color: var(--svc-ink2); }
+.ut-outage { grid-area: out; font-size: 13px; color: var(--svc-ink2); overflow-wrap: anywhere; }
+.ut-outage code { font-size: 11.5px; }
+.ut-hours { grid-area: hours; min-width: 0; }
+.ut-strip { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 2px; height: 22px; }
+.ut-strip i { border-radius: 2px; background: var(--ok); }
+.ut-strip i.down { background: var(--down); }
+.ut-strip i.none { background: rgb(var(--tint) / .1); }
+.ut-axis { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10.5px; color: var(--svc-ink2); margin-top: 4px; }
+@media (min-width: 1100px) {
+  .ut-row { grid-template-columns: 92px minmax(0, 1.2fr) minmax(0, .9fr) minmax(0, 1.2fr) 240px; grid-template-areas: "state name pct out hours"; align-items: center; }
+}
 .svc-uptime { margin: 0 0 10px; padding: 12px 14px; border: 1px solid var(--svc-line); border-radius: 14px; background: rgb(var(--tint) / .03); }
 .svc-uptime[hidden] { display: none; }
 .svc-uptime-head { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--svc-ink2); margin-bottom: 8px; }
@@ -1154,9 +1197,12 @@ function renderServicesPanel({ needs = '' } = {}) {
   <div class="svc-filter" role="search">
     <label class="svc-find" for="svcFind"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg><input id="svcFind" type="search" placeholder="Find a service" autocomplete="off" enterkeyhint="search" aria-label="Find a service by name"></label>
     <button type="button" class="svc-downonly" id="svcDownOnly" aria-pressed="false"><span class="dot" aria-hidden="true"></span>Down only</button>
-    <button type="button" class="svc-downonly svc-dense" id="svcDense" aria-pressed="true" title="Show services as small tiles or full cards"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg>Tiles</button>
+    <button type="button" class="svc-downonly svc-dense" id="svcDense" aria-pressed="true" title="Show services as small tiles or full cards"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg><span class="lbl">Tiles</span></button>
+    <button type="button" class="svc-downonly svc-edit" id="svcEdit" aria-pressed="false" title="Rearrange the tiles"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg><span class="lbl" id="svcEditLabel">Edit</span></button>
   </div>
+  <div class="svc-editbar" id="svcEditBar" hidden><span>Drag tiles to rearrange them. On a keyboard, focus a tile and use the arrow keys.</span><button type="button" class="svc-clear" id="svcEditReset">Reset order</button><button type="button" class="svc-clear primary" id="svcEditDone">Done</button></div>
   <div id="svcBoard"><div class="svc-loading">Loading services…</div></div>
+  <section id="svcUptime" aria-label="Uptime"></section>
 </div>
 <div class="svc-sheet" id="svcSheet" role="dialog" aria-modal="true" aria-labelledby="svcSheetTitle">
   <div class="scrim" id="svcScrim"></div>
@@ -1195,6 +1241,7 @@ function renderServicesPanel({ needs = '' } = {}) {
   var board = document.getElementById('svcBoard');
   var np = document.getElementById('svcNowPlaying');
   var netBoard = document.getElementById('netBoard');
+  var uptimeEl = document.getElementById('svcUptime');
   if (!board) return;
   var LAN = '', TAIL = '', mode = 'tail', manualMode = null;
   // Pinned services lead their group and stay put (replaces tap-count "smart sort",
@@ -1773,6 +1820,7 @@ function renderServicesPanel({ needs = '' } = {}) {
     // Patch, don't replace: only cards whose data changed are touched, so hover states, open
     // menus and the bars' fill animations survive each refresh.
     patchHtml(board, html || '<div class="svc-loading">No services configured yet.</div>');
+    applyOrder();
     if (netBoard) {
       var netHtml = (d.network || d.speedtest)
         ? '<div class="svc-head"><h2>Network</h2><span class="sum">UDR7 · live</span><div class="line"></div></div>' +
@@ -2029,19 +2077,127 @@ function renderServicesPanel({ needs = '' } = {}) {
     board.innerHTML = '';
     rerender();
   });
+  // ---- Edit: drag tiles into your own order (pencil). Saved per browser, per group ----
+  // Order is applied after each render by moving nodes, so it survives live refreshes; tiles not in
+  // a saved order (new services) keep their usual place after the ordered ones.
+  var editMode = false, drag = null;
+  var editEl = document.getElementById('svcEdit'), editBar = document.getElementById('svcEditBar');
+  var order = {};
+  try { order = JSON.parse(localStorage.getItem('svcOrder') || '{}') || {}; } catch (e) { order = {}; }
+  function saveOrder() { try { localStorage.setItem('svcOrder', JSON.stringify(order)); } catch (e) {} }
+  function tilesOf(grid) { return [].slice.call(grid.children).filter(function (c) { return c.matches('.svc-card[data-key]'); }); }
+  function applyOrder() {
+    [].forEach.call(board.querySelectorAll('.svc-grid'), function (grid) {
+      var saved = order[grid.id];
+      if (!Array.isArray(saved) || !saved.length) return;
+      var tiles = tilesOf(grid);
+      var rank = function (t) { var i = saved.indexOf(t.dataset.key); return i === -1 ? saved.length + tiles.indexOf(t) : i; };
+      var sorted = tiles.slice().sort(function (a, b) { return rank(a) - rank(b); });
+      if (sorted.every(function (t, i) { return t === tiles[i]; })) return;
+      sorted.forEach(function (t) { grid.appendChild(t); });
+    });
+  }
+  function rememberGrid(grid) { order[grid.id] = tilesOf(grid).map(function (t) { return t.dataset.key; }); saveOrder(); }
+  function setEdit(on) {
+    editMode = on;
+    board.classList.toggle('editing', on);
+    editEl.setAttribute('aria-pressed', String(on));
+    document.getElementById('svcEditLabel').textContent = on ? 'Done' : 'Edit';
+    editEl.title = on ? 'Finish rearranging' : 'Rearrange the tiles';
+    editBar.hidden = !on;
+    [].forEach.call(board.querySelectorAll('.svc-grid > .svc-card[data-key]'), function (t) {
+      if (on) { t.setAttribute('tabindex', '0'); t.setAttribute('aria-roledescription', 'movable tile'); }
+      else { t.removeAttribute('tabindex'); t.removeAttribute('aria-roledescription'); }
+    });
+    if (!on) load();
+  }
+  editEl.addEventListener('click', function () { setEdit(!editMode); });
+  document.getElementById('svcEditDone').addEventListener('click', function () { setEdit(false); editEl.focus(); });
+  document.getElementById('svcEditReset').addEventListener('click', function () {
+    order = {}; saveOrder(); setEdit(false); rerender(); setEdit(true);
+  });
+  // While editing, a tap never opens a tile, a link or a sheet.
+  board.addEventListener('click', function (e) {
+    if (editMode && e.target.closest('.svc-card')) { e.preventDefault(); e.stopPropagation(); }
+  }, true);
+  board.addEventListener('contextmenu', function (e) { if (editMode && e.target.closest('.svc-card')) { e.preventDefault(); e.stopPropagation(); } }, true);
+  board.addEventListener('pointerdown', function (e) {
+    if (!editMode || drag || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    var tile = e.target.closest('.svc-grid > .svc-card[data-key]');
+    if (!tile) return;
+    e.preventDefault();
+    drag = { tile: tile, grid: tile.parentElement, id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, dy: 0 };
+    try { tile.setPointerCapture(e.pointerId); } catch (err) {}
+    tile.classList.add('dragging');
+  });
+  board.addEventListener('pointermove', function (e) {
+    if (!drag || e.pointerId !== drag.id) return;
+    e.preventDefault();
+    var tile = drag.tile;
+    tile.style.transform = 'translate(' + (e.clientX - drag.x) + 'px,' + (e.clientY - drag.y) + 'px)';
+    // Which tile in this group is under the finger? Rects, not elementFromPoint, since the dragged
+    // tile itself is under the pointer.
+    var over = null;
+    tilesOf(drag.grid).forEach(function (t) {
+      if (t === tile) return;
+      var r = t.getBoundingClientRect();
+      if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) over = t;
+    });
+    if (over) {
+      var before = tile.getBoundingClientRect();
+      var tiles = tilesOf(drag.grid);
+      drag.grid.insertBefore(tile, tiles.indexOf(over) > tiles.indexOf(tile) ? over.nextSibling : over);
+      // Keep the tile under the finger: it was drawn at its old rect; its new slot is the new rect.
+      tile.style.transform = '';
+      var after = tile.getBoundingClientRect();
+      drag.x = e.clientX - (before.left - after.left);
+      drag.y = e.clientY - (before.top - after.top);
+      tile.style.transform = 'translate(' + (e.clientX - drag.x) + 'px,' + (e.clientY - drag.y) + 'px)';
+    }
+    // Near the screen edge, scroll so a tile can travel the whole board on a phone.
+    if (e.clientY < 90) window.scrollBy(0, -12); else if (e.clientY > window.innerHeight - 110) window.scrollBy(0, 12);
+  });
+  function endDrag(e) {
+    if (!drag || (e && e.pointerId !== drag.id)) return;
+    drag.tile.classList.remove('dragging');
+    drag.tile.style.transform = '';
+    rememberGrid(drag.grid);
+    drag = null;
+  }
+  board.addEventListener('pointerup', endDrag);
+  board.addEventListener('pointercancel', endDrag);
+  board.addEventListener('keydown', function (e) {
+    if (!editMode) return;
+    var tile = e.target.closest && e.target.closest('.svc-grid > .svc-card[data-key]');
+    if (!tile) return;
+    var step = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key];
+    if (e.key === 'Escape') { setEdit(false); editEl.focus(); return; }
+    if (!step) return;
+    e.preventDefault();
+    var tiles = tilesOf(tile.parentElement), i = tiles.indexOf(tile), j = i + step;
+    if (j < 0 || j >= tiles.length) return;
+    tile.parentElement.insertBefore(tile, step > 0 ? tiles[j].nextSibling : tiles[j]);
+    rememberGrid(tile.parentElement);
+    tile.focus();
+  });
+
+  function toggleGroup(toggle) {
+    var g = toggle.getAttribute('data-group');
+    var at = collapsed.indexOf(g);
+    if (at > -1) collapsed.splice(at, 1); else collapsed.push(g);
+    saveCollapsed();
+    var grid = document.getElementById(toggle.getAttribute('aria-controls'));
+    var open = at > -1;
+    toggle.setAttribute('aria-expanded', String(open));
+    if (grid) grid.hidden = !open;
+  }
+  uptimeEl.addEventListener('click', function (e) {
+    var toggle = e.target.closest('.svc-group-toggle');
+    if (toggle && !toggle.disabled) toggleGroup(toggle);
+  });
   board.addEventListener('click', function (e) {
     var toggle = e.target.closest('.svc-group-toggle');
-    if (toggle && !toggle.disabled) {
-      var g = toggle.getAttribute('data-group');
-      var at = collapsed.indexOf(g);
-      if (at > -1) collapsed.splice(at, 1); else collapsed.push(g);
-      saveCollapsed();
-      var grid = document.getElementById(toggle.getAttribute('aria-controls'));
-      var open = at > -1;
-      toggle.setAttribute('aria-expanded', String(open));
-      if (grid) grid.hidden = !open;
-      return;
-    }
+    if (toggle && !toggle.disabled) { toggleGroup(toggle); return; }
     if (e.target.closest('[data-clear-filter]')) {
       findTerm = ''; findEl.value = ''; downOnly = false; downEl.setAttribute('aria-pressed', 'false');
       rerender(); findEl.focus();
@@ -2158,13 +2314,105 @@ function renderServicesPanel({ needs = '' } = {}) {
   // Hidden tab, an open sheet or palette, or an action in flight: skip this beat rather than move
   // things under you.
   function blocked() {
-    return document.hidden || window.__actionsInFlight > 0 ||
+    return document.hidden || window.__actionsInFlight > 0 || editMode ||
       (sheet && sheet.classList.contains('open')) || pal.classList.contains('open') ||
       !!(window.__dashboardRefreshBlocked && window.__dashboardRefreshBlocked());
   }
+  // ---- Uptime: outside-in history from the reachability checker (/admin/api/uptime) ----
+  // Display only. Refreshed with the cards; on a failed fetch the last good rows stay and the
+  // same small "stale" marker shows. Grey hours are hours with no stored check, never green.
+  var lastUptime = null, uptimeMissed = 0, uptimeLoading = null;
+  function syncStale() {
+    var stale = document.getElementById('svcStale');
+    var want = (missed >= 2 || uptimeMissed >= 2) ? 'visible' : 'hidden';
+    if (stale.style.visibility !== want) stale.style.visibility = want;
+  }
+  function durWords(ms) {
+    var m = Math.max(1, Math.round(ms / 60000));
+    if (m < 60) return m + ' min';
+    var h = Math.floor(m / 60);
+    if (h < 48) return h + ' h' + (m % 60 ? ' ' + (m % 60) + ' min' : '');
+    return Math.floor(h / 24) + ' d' + (h % 24 ? ' ' + (h % 24) + ' h' : '');
+  }
+  function agoWords(at, now) { return durWords(Math.max(0, now - at)) + ' ago'; }
+  function pctText(p) { return (p >= 99.995 ? '100' : p.toFixed(2).replace(/0$/, '')) + '%'; }
+  function uptimeRowHtml(e, now) {
+    var cur = e.current;
+    var state = !cur ? 'none' : cur.up ? 'up' : 'down';
+    var stateText = state === 'up' ? 'Up' : state === 'down' ? 'Down' : 'No data';
+    var pcts = [];
+    ['24h', '7d', '30d'].forEach(function (k) {
+      var p = e.periods[k];
+      if (p.covered && p.pct != null) pcts.push('<span><b>' + pctText(p.pct) + '</b> ' + k + '</span>');
+    });
+    var collecting = '';
+    if (!e.periods['24h'].covered) {
+      var n = e.periods['24h'].samples;
+      collecting = !n ? 'Collecting history · no checks received yet'
+        : n < 4 ? 'Collecting history · ' + n + ' check' + (n === 1 ? '' : 's') + ' so far, first ' + agoWords(e.historySince, now)
+          : 'Collecting history · <b>' + pctText(e.periods['24h'].pct) + '</b> over the last ' + durWords(now - e.historySince);
+    } else if (e.collecting) {
+      collecting = 'Collecting history since ' + agoWords(e.historySince, now);
+    }
+    var outage;
+    if (e.ongoing) outage = 'Down now, for ' + durWords(e.ongoing.durationMs) + (e.lastOutage ? ' · previous outage ' + agoWords(e.lastOutage.end, now) + ', lasted ' + durWords(e.lastOutage.durationMs) : '');
+    else if (e.lastOutage) outage = 'Last outage ' + agoWords(e.lastOutage.end, now) + ', lasted ' + durWords(e.lastOutage.durationMs);
+    else if (cur) outage = 'No outages in stored history';
+    else outage = '';
+    var counts = { up: 0, down: 0, none: 0 };
+    e.blocks.forEach(function (b) { counts[b || 'none']++; });
+    var stripLabel = 'Last 24 hours: ' + counts.up + ' hours up, ' + counts.down + ' with downtime, ' + counts.none + ' with no data';
+    return '<div class="ut-row" data-key="ut-' + esc(e.key) + '">' +
+      '<div class="ut-state ' + state + '"><span class="ut-dot" aria-hidden="true"></span><span>' + stateText + '</span></div>' +
+      '<div class="ut-name"><b>' + esc(e.name) + '</b><small>' + esc(e.target) + (cur ? ' · checked ' + agoWords(cur.at, now) : '') + '</small></div>' +
+      '<div class="ut-pct">' + (pcts.join('') || '') + (collecting ? '<span class="ut-collect">' + collecting + '</span>' : '') + '</div>' +
+      '<div class="ut-outage">' + esc(outage) + (cur && !cur.up && cur.detail ? ' <code>' + esc(cur.detail) + '</code>' : '') + '</div>' +
+      '<div class="ut-hours"><div class="ut-strip" role="img" aria-label="' + esc(stripLabel) + '">' +
+        e.blocks.map(function (b) { return '<i class="' + (b || 'none') + '"></i>'; }).join('') + '</div>' +
+        '<div class="ut-axis"><span>24 h ago</span><span>now</span></div></div>' +
+      '</div>';
+  }
+  function renderUptime(d) {
+    var open = collapsed.indexOf('Uptime') === -1;
+    var down = d.endpoints.filter(function (e) { return e.current && !e.current.up; }).length;
+    var withData = d.endpoints.filter(function (e) { return e.current; }).length;
+    var sum = !withData ? 'collecting history' : down ? down + ' of ' + d.endpoints.length + ' down' : withData + ' of ' + d.endpoints.length + ' up';
+    patchHtml(uptimeEl, '<div class="svc-head" data-key="group:Uptime"><h2><button type="button" class="svc-group-toggle" data-group="Uptime" aria-expanded="' + open + '" aria-controls="svcg-uptime">Uptime' +
+      '<svg class="chev" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button></h2>' +
+      '<span class="sum">' + esc(sum) + '</span><div class="line"></div></div>' +
+      '<div class="ut-list" id="svcg-uptime"' + (open ? '' : ' hidden') + '>' +
+      '<p class="ut-note">Checked from outside every 5 minutes by the reachability checker. Grey hours have no stored check.</p>' +
+      d.endpoints.map(function (e) { return uptimeRowHtml(e, d.now); }).join('') + '</div>');
+  }
+  function loadUptime(scheduled) {
+    if (uptimeLoading) return uptimeLoading;
+    var controller = new AbortController();
+    var timeout = setTimeout(function () { controller.abort(); }, 15000);
+    uptimeLoading = fetch('/admin/api/uptime', { headers: { 'Accept': 'application/json' }, cache: 'no-store', signal: controller.signal })
+      .then(function (r) { if (!r.ok) throw new Error('Uptime request failed'); return r.json(); })
+      .then(function (d) {
+        if (!d.ok || !Array.isArray(d.endpoints)) throw new Error('Uptime response failed');
+        if (blocked()) return;
+        // "checked 3 min ago" moves every refresh, so render each time; patching keeps it cheap.
+        lastUptime = d;
+        renderUptime(d);
+        uptimeMissed = 0;
+        syncStale();
+      })
+      .catch(function () {
+        if (blocked()) return;
+        if (scheduled) uptimeMissed++;
+        if (!lastUptime) uptimeEl.innerHTML = '';
+        syncStale();
+      })
+      .finally(function () { clearTimeout(timeout); uptimeLoading = null; });
+    return uptimeLoading;
+  }
+
   function load(scheduled) {
     if (loading) return loading;
     if (blocked()) return Promise.resolve();
+    loadUptime(scheduled);
     var controller = new AbortController();
     var timeout = setTimeout(function () { controller.abort(); }, 15000);
     loading = fetch('/admin/api/services', { headers: { 'Accept': 'application/json' }, cache: 'no-store', signal: controller.signal })
@@ -2179,16 +2427,14 @@ function renderServicesPanel({ needs = '' } = {}) {
         if (changed) render(next, true);
         missed = 0;
         if (window.DashLive) window.DashLive.ok();
-        var stale = document.getElementById('svcStale');
-        if (stale.style.visibility !== 'hidden') stale.style.visibility = 'hidden';
+        syncStale();
       })
       .catch(function () {
         if (blocked()) return;
         if (scheduled) missed++;
         if (!lastData) board.innerHTML = '<div class="svc-loading">Could not reach the services API.</div>';
         if (window.DashLive) window.DashLive.fail();
-        var stale = document.getElementById('svcStale');
-        if (missed >= 2 && stale.style.visibility !== 'visible') stale.style.visibility = 'visible';
+        syncStale();
       })
       .finally(function () { clearTimeout(timeout); loading = null; });
     return loading;
