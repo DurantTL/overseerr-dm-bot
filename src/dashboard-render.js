@@ -919,6 +919,32 @@ function renderServicesPanel({ needs = '' } = {}) {
 .svc-sheet-facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0 0 10px; padding: 12px 14px;
   border: 1px solid var(--svc-line); border-radius: 14px; background: rgb(var(--tint) / .03); font-size: 13px; }
 .svc-sheet-facts[hidden] { display: none; }
+.ut-list { display: grid; gap: 8px; margin-bottom: 28px; }
+.ut-list[hidden] { display: none; }
+.ut-note { margin: 0 2px 2px; font-size: 12.5px; color: var(--svc-ink2); }
+.ut-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name state" "pct pct" "out out" "hours hours"; gap: 6px 12px;
+  padding: 12px 14px; border: 1px solid var(--svc-line); border-radius: 14px; background: var(--glass); }
+.ut-state { grid-area: state; display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 650; white-space: nowrap; }
+.ut-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--skip); }
+.ut-state.up .ut-dot { background: var(--ok); } .ut-state.down .ut-dot { background: var(--down); }
+.ut-state.down { color: var(--down-ink); }
+.ut-name { grid-area: name; min-width: 0; }
+.ut-name b { display: block; font-size: 15px; }
+.ut-name small { display: block; font-size: 12px; color: var(--svc-ink2); overflow-wrap: anywhere; }
+.ut-pct { grid-area: pct; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--svc-ink2); }
+.ut-pct b { color: var(--svc-ink); font-family: var(--mono); font-weight: 400; }
+.ut-collect { color: var(--svc-ink2); }
+.ut-outage { grid-area: out; font-size: 13px; color: var(--svc-ink2); overflow-wrap: anywhere; }
+.ut-outage code { font-size: 11.5px; }
+.ut-hours { grid-area: hours; min-width: 0; }
+.ut-strip { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 2px; height: 22px; }
+.ut-strip i { border-radius: 2px; background: var(--ok); }
+.ut-strip i.down { background: var(--down); }
+.ut-strip i.none { background: rgb(var(--tint) / .1); }
+.ut-axis { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10.5px; color: var(--svc-ink2); margin-top: 4px; }
+@media (min-width: 1100px) {
+  .ut-row { grid-template-columns: 92px minmax(0, 1.2fr) minmax(0, .9fr) minmax(0, 1.2fr) 240px; grid-template-areas: "state name pct out hours"; align-items: center; }
+}
 .svc-uptime { margin: 0 0 10px; padding: 12px 14px; border: 1px solid var(--svc-line); border-radius: 14px; background: rgb(var(--tint) / .03); }
 .svc-uptime[hidden] { display: none; }
 .svc-uptime-head { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--svc-ink2); margin-bottom: 8px; }
@@ -1157,6 +1183,7 @@ function renderServicesPanel({ needs = '' } = {}) {
     <button type="button" class="svc-downonly svc-dense" id="svcDense" aria-pressed="true" title="Show services as small tiles or full cards"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg>Tiles</button>
   </div>
   <div id="svcBoard"><div class="svc-loading">Loading services…</div></div>
+  <section id="svcUptime" aria-label="Uptime"></section>
 </div>
 <div class="svc-sheet" id="svcSheet" role="dialog" aria-modal="true" aria-labelledby="svcSheetTitle">
   <div class="scrim" id="svcScrim"></div>
@@ -1195,6 +1222,7 @@ function renderServicesPanel({ needs = '' } = {}) {
   var board = document.getElementById('svcBoard');
   var np = document.getElementById('svcNowPlaying');
   var netBoard = document.getElementById('netBoard');
+  var uptimeEl = document.getElementById('svcUptime');
   if (!board) return;
   var LAN = '', TAIL = '', mode = 'tail', manualMode = null;
   // Pinned services lead their group and stay put (replaces tap-count "smart sort",
@@ -2029,19 +2057,23 @@ function renderServicesPanel({ needs = '' } = {}) {
     board.innerHTML = '';
     rerender();
   });
+  function toggleGroup(toggle) {
+    var g = toggle.getAttribute('data-group');
+    var at = collapsed.indexOf(g);
+    if (at > -1) collapsed.splice(at, 1); else collapsed.push(g);
+    saveCollapsed();
+    var grid = document.getElementById(toggle.getAttribute('aria-controls'));
+    var open = at > -1;
+    toggle.setAttribute('aria-expanded', String(open));
+    if (grid) grid.hidden = !open;
+  }
+  uptimeEl.addEventListener('click', function (e) {
+    var toggle = e.target.closest('.svc-group-toggle');
+    if (toggle && !toggle.disabled) toggleGroup(toggle);
+  });
   board.addEventListener('click', function (e) {
     var toggle = e.target.closest('.svc-group-toggle');
-    if (toggle && !toggle.disabled) {
-      var g = toggle.getAttribute('data-group');
-      var at = collapsed.indexOf(g);
-      if (at > -1) collapsed.splice(at, 1); else collapsed.push(g);
-      saveCollapsed();
-      var grid = document.getElementById(toggle.getAttribute('aria-controls'));
-      var open = at > -1;
-      toggle.setAttribute('aria-expanded', String(open));
-      if (grid) grid.hidden = !open;
-      return;
-    }
+    if (toggle && !toggle.disabled) { toggleGroup(toggle); return; }
     if (e.target.closest('[data-clear-filter]')) {
       findTerm = ''; findEl.value = ''; downOnly = false; downEl.setAttribute('aria-pressed', 'false');
       rerender(); findEl.focus();
@@ -2162,9 +2194,101 @@ function renderServicesPanel({ needs = '' } = {}) {
       (sheet && sheet.classList.contains('open')) || pal.classList.contains('open') ||
       !!(window.__dashboardRefreshBlocked && window.__dashboardRefreshBlocked());
   }
+  // ---- Uptime: outside-in history from the reachability checker (/admin/api/uptime) ----
+  // Display only. Refreshed with the cards; on a failed fetch the last good rows stay and the
+  // same small "stale" marker shows. Grey hours are hours with no stored check, never green.
+  var lastUptime = null, uptimeMissed = 0, uptimeLoading = null;
+  function syncStale() {
+    var stale = document.getElementById('svcStale');
+    var want = (missed >= 2 || uptimeMissed >= 2) ? 'visible' : 'hidden';
+    if (stale.style.visibility !== want) stale.style.visibility = want;
+  }
+  function durWords(ms) {
+    var m = Math.max(1, Math.round(ms / 60000));
+    if (m < 60) return m + ' min';
+    var h = Math.floor(m / 60);
+    if (h < 48) return h + ' h' + (m % 60 ? ' ' + (m % 60) + ' min' : '');
+    return Math.floor(h / 24) + ' d' + (h % 24 ? ' ' + (h % 24) + ' h' : '');
+  }
+  function agoWords(at, now) { return durWords(Math.max(0, now - at)) + ' ago'; }
+  function pctText(p) { return (p >= 99.995 ? '100' : p.toFixed(2).replace(/0$/, '')) + '%'; }
+  function uptimeRowHtml(e, now) {
+    var cur = e.current;
+    var state = !cur ? 'none' : cur.up ? 'up' : 'down';
+    var stateText = state === 'up' ? 'Up' : state === 'down' ? 'Down' : 'No data';
+    var pcts = [];
+    ['24h', '7d', '30d'].forEach(function (k) {
+      var p = e.periods[k];
+      if (p.covered && p.pct != null) pcts.push('<span><b>' + pctText(p.pct) + '</b> ' + k + '</span>');
+    });
+    var collecting = '';
+    if (!e.periods['24h'].covered) {
+      var n = e.periods['24h'].samples;
+      collecting = !n ? 'Collecting history · no checks received yet'
+        : n < 4 ? 'Collecting history · ' + n + ' check' + (n === 1 ? '' : 's') + ' so far, first ' + agoWords(e.historySince, now)
+          : 'Collecting history · <b>' + pctText(e.periods['24h'].pct) + '</b> over the last ' + durWords(now - e.historySince);
+    } else if (e.collecting) {
+      collecting = 'Collecting history since ' + agoWords(e.historySince, now);
+    }
+    var outage;
+    if (e.ongoing) outage = 'Down now, for ' + durWords(e.ongoing.durationMs) + (e.lastOutage ? ' · previous outage ' + agoWords(e.lastOutage.end, now) + ', lasted ' + durWords(e.lastOutage.durationMs) : '');
+    else if (e.lastOutage) outage = 'Last outage ' + agoWords(e.lastOutage.end, now) + ', lasted ' + durWords(e.lastOutage.durationMs);
+    else if (cur) outage = 'No outages in stored history';
+    else outage = '';
+    var counts = { up: 0, down: 0, none: 0 };
+    e.blocks.forEach(function (b) { counts[b || 'none']++; });
+    var stripLabel = 'Last 24 hours: ' + counts.up + ' hours up, ' + counts.down + ' with downtime, ' + counts.none + ' with no data';
+    return '<div class="ut-row" data-key="ut-' + esc(e.key) + '">' +
+      '<div class="ut-state ' + state + '"><span class="ut-dot" aria-hidden="true"></span><span>' + stateText + '</span></div>' +
+      '<div class="ut-name"><b>' + esc(e.name) + '</b><small>' + esc(e.target) + (cur ? ' · checked ' + agoWords(cur.at, now) : '') + '</small></div>' +
+      '<div class="ut-pct">' + (pcts.join('') || '') + (collecting ? '<span class="ut-collect">' + collecting + '</span>' : '') + '</div>' +
+      '<div class="ut-outage">' + esc(outage) + (cur && !cur.up && cur.detail ? ' <code>' + esc(cur.detail) + '</code>' : '') + '</div>' +
+      '<div class="ut-hours"><div class="ut-strip" role="img" aria-label="' + esc(stripLabel) + '">' +
+        e.blocks.map(function (b) { return '<i class="' + (b || 'none') + '"></i>'; }).join('') + '</div>' +
+        '<div class="ut-axis"><span>24 h ago</span><span>now</span></div></div>' +
+      '</div>';
+  }
+  function renderUptime(d) {
+    var open = collapsed.indexOf('Uptime') === -1;
+    var down = d.endpoints.filter(function (e) { return e.current && !e.current.up; }).length;
+    var withData = d.endpoints.filter(function (e) { return e.current; }).length;
+    var sum = !withData ? 'collecting history' : down ? down + ' of ' + d.endpoints.length + ' down' : withData + ' of ' + d.endpoints.length + ' up';
+    patchHtml(uptimeEl, '<div class="svc-head" data-key="group:Uptime"><h2><button type="button" class="svc-group-toggle" data-group="Uptime" aria-expanded="' + open + '" aria-controls="svcg-uptime">Uptime' +
+      '<svg class="chev" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button></h2>' +
+      '<span class="sum">' + esc(sum) + '</span><div class="line"></div></div>' +
+      '<div class="ut-list" id="svcg-uptime"' + (open ? '' : ' hidden') + '>' +
+      '<p class="ut-note">Checked from outside every 5 minutes by the reachability checker. Grey hours have no stored check.</p>' +
+      d.endpoints.map(function (e) { return uptimeRowHtml(e, d.now); }).join('') + '</div>');
+  }
+  function loadUptime(scheduled) {
+    if (uptimeLoading) return uptimeLoading;
+    var controller = new AbortController();
+    var timeout = setTimeout(function () { controller.abort(); }, 15000);
+    uptimeLoading = fetch('/admin/api/uptime', { headers: { 'Accept': 'application/json' }, cache: 'no-store', signal: controller.signal })
+      .then(function (r) { if (!r.ok) throw new Error('Uptime request failed'); return r.json(); })
+      .then(function (d) {
+        if (!d.ok || !Array.isArray(d.endpoints)) throw new Error('Uptime response failed');
+        if (blocked()) return;
+        // "checked 3 min ago" moves every refresh, so render each time; patching keeps it cheap.
+        lastUptime = d;
+        renderUptime(d);
+        uptimeMissed = 0;
+        syncStale();
+      })
+      .catch(function () {
+        if (blocked()) return;
+        if (scheduled) uptimeMissed++;
+        if (!lastUptime) uptimeEl.innerHTML = '';
+        syncStale();
+      })
+      .finally(function () { clearTimeout(timeout); uptimeLoading = null; });
+    return uptimeLoading;
+  }
+
   function load(scheduled) {
     if (loading) return loading;
     if (blocked()) return Promise.resolve();
+    loadUptime(scheduled);
     var controller = new AbortController();
     var timeout = setTimeout(function () { controller.abort(); }, 15000);
     loading = fetch('/admin/api/services', { headers: { 'Accept': 'application/json' }, cache: 'no-store', signal: controller.signal })
@@ -2179,16 +2303,14 @@ function renderServicesPanel({ needs = '' } = {}) {
         if (changed) render(next, true);
         missed = 0;
         if (window.DashLive) window.DashLive.ok();
-        var stale = document.getElementById('svcStale');
-        if (stale.style.visibility !== 'hidden') stale.style.visibility = 'hidden';
+        syncStale();
       })
       .catch(function () {
         if (blocked()) return;
         if (scheduled) missed++;
         if (!lastData) board.innerHTML = '<div class="svc-loading">Could not reach the services API.</div>';
         if (window.DashLive) window.DashLive.fail();
-        var stale = document.getElementById('svcStale');
-        if (missed >= 2 && stale.style.visibility !== 'visible') stale.style.visibility = 'visible';
+        syncStale();
       })
       .finally(function () { clearTimeout(timeout); loading = null; });
     return loading;
