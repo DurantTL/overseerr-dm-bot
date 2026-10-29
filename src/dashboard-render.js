@@ -314,7 +314,7 @@ const DASHBOARD_CSS = `
 // `tabs: true` turns the nav into panel switches rather than scroll anchors. The panels are all
 // server-rendered and present in the DOM; the script only toggles which one is visible, so the
 // page still works as one long document if scripting is unavailable (nothing is hidden until the
-// script runs). The active tab lives in location.hash so the 60s auto-refresh comes back to it.
+// script runs). The active tab lives in location.hash for links and browser navigation.
 // `shell` (the admin dashboard) swaps the tab strip for the app shell in src/dashboard-shell.js:
 // side rail, bottom bar, More sheet and the live layer, which replaces the 60s page reload.
 function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, searchQuery = '', nav = [], autoRefresh = false, tabs = false, shell = null } = {}) {
@@ -385,9 +385,19 @@ function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, s
         var el = document.activeElement;
         return !!el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName);
       }
-      function blocked() { return editing() || window.__dirtySettings || window.__actionsInFlight > 0; }
-      function arm() { t = setTimeout(function () { if (blocked()) arm(); else location.reload(); }, 60000); }
-      document.addEventListener('visibilitychange', function () { if (document.hidden) clearTimeout(t); else arm(); });
+      function blocked() {
+        return editing() || window.__dirtySettings || window.__actionsInFlight > 0 ||
+          !!document.querySelector('.svc-sheet.open, .svc-pal.open, .qa-sheet.open, [aria-busy="true"]');
+      }
+      window.__dashboardRefreshBlocked = blocked;
+      function arm() { clearTimeout(t); if (!document.hidden) t = setTimeout(refresh, 60000); }
+      function refresh() {
+        clearTimeout(t);
+        if (document.hidden) return;
+        if (blocked()) { arm(); return; }
+        window.__refreshServices(true).finally(arm);
+      }
+      document.addEventListener('visibilitychange', function () { if (document.hidden) clearTimeout(t); else refresh(); });
       if (!document.hidden) arm();
     })();
   </script>` : '';
@@ -1124,7 +1134,7 @@ function renderServicesPanel({ needs = '' } = {}) {
   <div class="svc-orb svc-orb-2"></div>
   <div class="svc-status">
     <div>
-      <p class="svc-kicker">Services · live</p>
+      <p class="svc-kicker">Services · live <span id="svcStale" style="visibility:hidden;color:var(--svc-ink2)" role="status">· stale</span></p>
       <h1 id="svcHeadline">Checking every service…</h1>
       <p class="sub" id="svcSub">Use ⋯ on a card (or long-press it) for actions. Links use your local or Tailscale address.</p>
     </div>
@@ -1185,11 +1195,6 @@ function renderServicesPanel({ needs = '' } = {}) {
   var np = document.getElementById('svcNowPlaying');
   var netBoard = document.getElementById('netBoard');
   if (!board) return;
-  // In place when the dashboard's live layer is on the page; plain replace otherwise.
-  function paint(el, html) {
-    if (!el) return;
-    if (window.DashLive) window.DashLive.morph(el, html); else el.innerHTML = html;
-  }
   var LAN = '', TAIL = '', mode = 'tail', manualMode = null;
   // Pinned services lead their group and stay put (replaces tap-count "smart sort",
   // which reordered cards under the user's thumb).
@@ -1215,6 +1220,74 @@ function renderServicesPanel({ needs = '' } = {}) {
 
   // A poster that fails to load leaves the film icon showing underneath.
   document.addEventListener('error', function (e) { var t = e.target; if (t && t.matches && t.matches('.np-poster img')) t.remove(); }, true);
+  // Omitted readings mean unavailable telemetry, not an empty queue or a recovered service.
+  function mergeData(previous, next) {
+    if (!previous || !next || typeof previous !== 'object' || typeof next !== 'object') return next;
+    if (Array.isArray(next)) {
+      return next.map(function (value, i) {
+        var old = previous[i];
+        if (value && typeof value === 'object' && (value.key != null || value.title != null)) {
+          old = previous.find(function (item) {
+            return item && (value.key != null ? item.key === value.key :
+              item.title === value.title && item.user === value.user && item.player === value.player);
+          });
+        }
+        return mergeData(old, value);
+      });
+    }
+    var result = Object.assign({}, previous);
+    Object.keys(next).forEach(function (key) { result[key] = mergeData(previous[key], next[key]); });
+    return result;
+  }
+
+  var unchangedCards = new Set();
+  // Reconcile keyed nodes so listeners, focus targets and running animations survive a refresh.
+  function patchHtml(target, html) {
+    var template = document.createElement('template');
+    template.innerHTML = html;
+    function key(node) {
+      if (node.nodeType !== 1) return String(node.nodeType);
+      return node.tagName + ':' + (node.getAttribute('data-key') || node.id ||
+        node.getAttribute('data-group') || node.classList[0] || '');
+    }
+    function patch(current, next) {
+      if (current.nodeType === 1 && current.matches('.svc-card[data-key]') && unchangedCards.has(current.dataset.key)) return;
+      if (current.isEqualNode(next)) return;
+      if (current.nodeType === 3) { current.nodeValue = next.nodeValue; return; }
+      if (current.nodeType === 1 && next.nodeType === 1) {
+        // Entrance styles belong to the existing node; polling must not restart that motion.
+        if (current.classList.contains('svc-enter')) {
+          next.classList.add('svc-enter');
+          if (current.style.animationDelay) next.style.animationDelay = current.style.animationDelay;
+        }
+        Array.from(current.attributes).forEach(function (a) {
+          if (!next.hasAttribute(a.name)) current.removeAttribute(a.name);
+        });
+        Array.from(next.attributes).forEach(function (a) {
+          if (current.getAttribute(a.name) !== a.value) current.setAttribute(a.name, a.value);
+        });
+      }
+      var remaining = Array.from(current.childNodes);
+      var cursor = current.firstChild;
+      Array.from(next.childNodes).forEach(function (wanted) {
+        var found = remaining.find(function (node) { return key(node) === key(wanted); });
+        if (found) {
+          remaining.splice(remaining.indexOf(found), 1);
+          if (found !== cursor) current.insertBefore(found, cursor);
+          patch(found, wanted);
+        } else {
+          found = wanted.cloneNode(true);
+          // Something new on a live refresh (a card, a stream, a down service) eases in.
+          if (!firstRender && found.nodeType === 1) found.classList.add('live-enter');
+          current.insertBefore(found, cursor);
+        }
+        cursor = found.nextSibling;
+      });
+      remaining.forEach(function (node) { node.remove(); });
+    }
+    patch(target, template.content);
+  }
+
   function toast(msg) {
     var t = document.getElementById('svcToast');
     t.textContent = msg; t.classList.add('show');
@@ -1255,7 +1328,7 @@ function renderServicesPanel({ needs = '' } = {}) {
     if (s.self) return './'; // the dashboard itself
     if (!s.port) return null;
     var host = mode === 'lan' ? LAN : TAIL;
-    return 'http://' + host + ':' + s.port + (s.path || '');
+    return (s.key === 'portainer' ? 'https://' : 'http://') + host + ':' + s.port + (s.path || '');
   }
 
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -1569,7 +1642,21 @@ function renderServicesPanel({ needs = '' } = {}) {
   }
 
   var firstRender = true;
-  function render(d) {
+  function render(d, polling) {
+    var focus = document.activeElement;
+    var scrollX = window.scrollX, scrollY = window.scrollY;
+    unchangedCards.clear();
+    if (polling && lastData) {
+      d.services.forEach(function (s) {
+        var old = lastData.services.find(function (x) { return x.key === s.key; });
+        if (JSON.stringify(old) === JSON.stringify(s)) unchangedCards.add(s.key);
+      });
+      [['ups', 'ups'], ['zfs', 'zfs'], ['speedtest', 'speedtest'], ['ssd', 'ssdTemp'],
+        ['internet', 'network'], ['unifi', 'network'], ['unifi-wan', 'network'],
+        ['unifi-tput', 'network'], ['unifi-clients', 'network'], ['unifi-talkers', 'network']].forEach(function (p) {
+        if (JSON.stringify(lastData[p[1]]) === JSON.stringify(d[p[1]])) unchangedCards.add(p[0]);
+      });
+    }
     lastData = d;
     LAN = d.netHosts.lan; TAIL = d.netHosts.tail;
     var entCls = firstRender ? ' svc-enter' : '';
@@ -1591,35 +1678,35 @@ function renderServicesPanel({ needs = '' } = {}) {
     var downs = all.filter(function (x) { return x.state === 'down'; });
     var head = document.getElementById('svcHeadline');
     if (head) {
-      paint(head, '<span data-count>' + up + '</span> of ' + all.length + ' running. <em>' +
+      patchHtml(head, esc(up + ' of ' + all.length + ' running.') + ' <em>' +
         (downs.length ? (downs.length === 1 ? 'One needs you.' : downs.length + ' need you.') : 'All clear.') + '</em>');
     }
     var subEl = document.getElementById('svcSub');
     if (subEl) {
-      subEl.textContent = ['Checked ' + (d.ageSeconds != null ? d.ageSeconds + 's' : 'just now') + ' ago',
+      patchHtml(subEl, esc(['Checked ' + (d.ageSeconds != null ? d.ageSeconds + 's' : 'just now') + ' ago',
         d.ups ? (d.ups.onBattery ? 'UPS on battery' : 'UPS on mains') : '',
         d.hidden && d.hidden.length ? d.hidden.length + ' not on the board' : '',
-        'links use ' + (mode === 'lan' ? 'your local network' : 'Tailscale')].filter(Boolean).join(' · ');
+        'links use ' + (mode === 'lan' ? 'your local network' : 'Tailscale')].filter(Boolean).join(' · ')));
     }
     var sp = d.speedtest && !d.speedtest.error ? d.speedtest : {};
-    var streams = (d.nowPlaying || []).length;
+    var streams = Array.isArray(d.nowPlaying) ? d.nowPlaying.length : null;
     var vit = document.getElementById('svcVitals');
     if (vit) {
-      paint(vit, '<div class="svc-vitals">' +
+      patchHtml(vit, '<div class="svc-vitals">' +
         '<div class="svc-vital"><b>' + up + '<small>/' + all.length + '</small></b><span>Services up</span></div>' +
-        // Only readings that exist: an unknown speed or ping is left out, not shown as a dash.
+        // Only readings that exist: an unknown speed, ping or stream count is left out, not shown as a dash.
         (sp.downloadMbps != null ? '<div class="svc-vital"><b>' + Math.round(sp.downloadMbps) + '<small> Mbps</small></b><span>Download</span></div>' : '') +
         (sp.uploadMbps != null ? '<div class="svc-vital"><b>' + Math.round(sp.uploadMbps * 10) / 10 + '<small> Mbps</small></b><span>Upload</span></div>' : '') +
         (sp.pingMs != null ? '<div class="svc-vital"><b>' + Number(sp.pingMs).toFixed(1) + '<small> ms</small></b><span>Ping</span></div>' : '') +
-        '<div class="svc-vital"><b>' + streams + '<small> stream' + (streams === 1 ? '' : 's') + '</small></b><span>On Plex now</span></div>' +
+        (streams != null ? '<div class="svc-vital"><b>' + streams + '<small> stream' + (streams === 1 ? '' : 's') + '</small></b><span>On Plex now</span></div>' : '') +
         '</div>');
     }
     // The one thing that needs you, pinned on top with its fix in reach.
     var attn = document.getElementById('svcAttention');
     if (attn) {
-      paint(attn, downs.map(function (x) {
+      patchHtml(attn, downs.map(function (x) {
         var u = svcUrl(x);
-        return '<div class="svc-attn' + entCls + '" role="alert"><div class="ai">' + svg('alert') + '</div>' +
+        return '<div class="svc-attn' + entCls + '" data-key="' + esc(x.key) + '" role="alert"><div class="ai">' + svg('alert') + '</div>' +
           '<div><h2>' + esc(x.name) + ' stopped responding</h2><p>' + (x.detail ? '<code>' + esc(x.detail) + '</code>' : esc(x.desc || 'Health check failed')) + '</p></div>' +
           '<div class="acts">' +
           (x.canRestart && x.container ? '<button class="btn primary" type="button" data-attn-restart="' + esc(x.container) + '" data-name="' + esc(x.name) + '">' + svg('restart') + '<span>Restart container</span></button>' : '') +
@@ -1644,8 +1731,8 @@ function renderServicesPanel({ needs = '' } = {}) {
         ? groupUp + ' of ' + (items.length - groupOff) + ' up' + (groupOff ? ' · ' + groupOff + ' not set up' : '')
         : (specialCount + netCount) + (specialCount + netCount === 1 ? ' reading' : ' readings');
       var isOpen = filtering() || collapsed.indexOf(g) === -1;
-      var gridId = 'svcg-' + gi;
-      html += '<div class="svc-head' + entCls + '"><h2><button type="button" class="svc-group-toggle" data-group="' + esc(g) + '" aria-expanded="' + isOpen + '" aria-controls="' + gridId + '"' + (filtering() ? ' disabled' : '') + '>' + esc(g) +
+      var gridId = 'svcg-' + g.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      html += '<div class="svc-head' + entCls + '" data-key="group:' + esc(g) + '"><h2><button type="button" class="svc-group-toggle" data-group="' + esc(g) + '" aria-expanded="' + isOpen + '" aria-controls="' + gridId + '"' + (filtering() ? ' disabled' : '') + '>' + esc(g) +
         '<svg class="chev" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button></h2>' +
         '<span class="sum">' + summary + '</span><div class="line"></div></div>';
       html += '<div class="svc-grid' + entCls + '" id="' + gridId + '"' + (isOpen ? '' : ' hidden') + '>' + special + items.map(cardHtml).join('') + '</div>';
@@ -1682,30 +1769,30 @@ function renderServicesPanel({ needs = '' } = {}) {
       html = '<div class="svc-empty"><p>' + (downOnly && !findTerm ? 'Nothing is down.' : 'No service matches that.') + '</p>' +
         '<button type="button" class="svc-clear" data-clear-filter="1">Clear filter</button></div>';
     }
-    // Morph, don't replace: only cards whose data changed are touched, so hover states, open
+    // Patch, don't replace: only cards whose data changed are touched, so hover states, open
     // menus and the bars' fill animations survive each refresh.
-    paint(board, html || '<div class="svc-loading">No services configured yet.</div>');
+    patchHtml(board, html || '<div class="svc-loading">No services configured yet.</div>');
     if (netBoard) {
       var netHtml = (d.network || d.speedtest)
         ? '<div class="svc-head"><h2>Network</h2><span class="sum">UDR7 · live</span><div class="line"></div></div>' +
           '<div class="svc-grid">' + networkCards(d) + specialCards(d, 'net') + '</div>'
         : '<div class="svc-loading">No network source is configured. Set the UniFi (UDR7) or Speedtest Tracker variables to show it here.</div>';
-      paint(netBoard, netHtml);
+      patchHtml(netBoard, netHtml);
     }
     var spark = document.getElementById('netSpark');
-    if (spark && d.network && d.network.history && d.network.history.length > 1) {
+    if (spark && !unchangedCards.has('unifi-tput') && d.network && d.network.history && d.network.history.length > 1) {
       drawSparkline(spark, d.network.history);
     }
     // Entrance motion: staggered fade-up on banner, hero stats, and groups.
     var ents = board.querySelectorAll('.svc-enter');
-    for (var ei = 0; ei < ents.length; ei++) {
+    for (var ei = 0; firstRender && ei < ents.length; ei++) {
       ents[ei].style.animationDelay = Math.min(ei * 60, 600) + 'ms';
     }
     if (d.nowPlaying && d.nowPlaying.length) {
-      paint(np, '<div class="svc-head"><h2>Now playing</h2><span class="sum">' + d.nowPlaying.length + ' stream' + (d.nowPlaying.length === 1 ? '' : 's') + '</span><div class="line"></div></div><div class="svc-np-list">' + d.nowPlaying.map(function (s) {
+      patchHtml(np, '<div class="svc-head"><h2>Now playing</h2><span class="sum">' + d.nowPlaying.length + ' stream' + (d.nowPlaying.length === 1 ? '' : 's') + '</span><div class="line"></div></div><div class="svc-np-list">' + d.nowPlaying.map(function (s) {
         var pct = s.duration > 0 ? Math.min(100, Math.round(s.viewOffset / s.duration * 100)) : 0;
         var rem = s.duration > s.viewOffset ? fmtHMS(s.duration - s.viewOffset) + ' remaining' : '';
-        return '<div class="svc-np" data-key="np-' + esc(s.posterKey || s.title) + '"><div class="np-poster">' + iconFor('film') +
+        return '<div class="svc-np" data-key="' + esc(JSON.stringify([s.user, s.player, s.title])) + '"><div class="np-poster">' + iconFor('film') +
           (s.posterKey ? '<img src="/admin/api/poster/' + encodeURIComponent(s.posterKey) + '" alt="" loading="lazy" decoding="async">' : '') + '</div><div class="np-info">' +
           '<div class="np-kicker"><span class="eq"><i></i><i></i><i></i></span>' + (s.state === 'paused' ? 'PAUSED' : 'PLAYING') + '</div>' +
           '<div class="np-title">' + esc(s.title) + '</div>' +
@@ -1717,8 +1804,10 @@ function renderServicesPanel({ needs = '' } = {}) {
             (rem ? '<div class="np-time">' + rem + '</div>' : '') : '') +
           '</div></div>';
       }).join('') + '</div>');
-    } else { paint(np, ''); }
+    } else { patchHtml(np, ''); }
     wireCards();
+    if (focus && focus.isConnected && document.activeElement !== focus) focus.focus({ preventScroll: true });
+    if (window.scrollX !== scrollX || window.scrollY !== scrollY) window.scrollTo(scrollX, scrollY);
     firstRender = false;
   }
 
@@ -1974,9 +2063,10 @@ function renderServicesPanel({ needs = '' } = {}) {
   function wireCards() {
     // Special cards (UPS/ZFS/Speedtest) carry data-nosheet: they have no
     // actions, so a long-press must not open an empty action sheet.
-    board.querySelectorAll('.svc-card[data-key]:not([data-nosheet]):not([data-wired])').forEach(function (card) {
-      // Morphing keeps cards between refreshes, so wire each one once.
-      card.setAttribute('data-wired', '1');
+    board.querySelectorAll('.svc-card[data-key]:not([data-nosheet])').forEach(function (card) {
+      // Patching keeps cards between refreshes, so wire each one once.
+      if (card.__wired) return;
+      card.__wired = true;
       var sx = 0, sy = 0;
       card.addEventListener('touchstart', function (e) {
         var t = e.touches[0]; sx = t.clientX; sy = t.clientY;
@@ -2063,25 +2153,51 @@ function renderServicesPanel({ needs = '' } = {}) {
     if ((e.key === 'k' && (e.metaKey || e.ctrlKey)) || (e.key === '/' && !typing)) { e.preventDefault(); if (pal.classList.contains('open')) closePal(); else openPal(); }
   });
 
-  var loading = false;
-  function load() {
-    // Hidden tab or a sheet/edit in progress: skip this beat rather than move things under you.
-    if (loading || document.hidden || window.__actionsInFlight > 0 || (sheet && sheet.classList.contains('open'))) return;
-    loading = true;
-    fetch('/admin/api/services', { headers: { 'Accept': 'application/json' }, cache: 'no-store' })
-      .then(function (r) { return r.json(); })
-      .then(function (d) {
-        if (d.ok) { render(d); if (window.DashLive) window.DashLive.ok(); }
-        else { if (!lastData) board.innerHTML = '<div class="svc-loading">Services unavailable.</div>'; if (window.DashLive) window.DashLive.fail(); }
-      })
-      .catch(function () { if (!lastData) board.innerHTML = '<div class="svc-loading">Could not reach the services API.</div>'; if (window.DashLive) window.DashLive.fail(); })
-      .then(function () { loading = false; });
+  var loading = null, missed = 0;
+  // Hidden tab, an open sheet or palette, or an action in flight: skip this beat rather than move
+  // things under you.
+  function blocked() {
+    return document.hidden || window.__actionsInFlight > 0 ||
+      (sheet && sheet.classList.contains('open')) || pal.classList.contains('open') ||
+      !!(window.__dashboardRefreshBlocked && window.__dashboardRefreshBlocked());
   }
+  function load(scheduled) {
+    if (loading) return loading;
+    if (blocked()) return Promise.resolve();
+    var controller = new AbortController();
+    var timeout = setTimeout(function () { controller.abort(); }, 15000);
+    loading = fetch('/admin/api/services', { headers: { 'Accept': 'application/json' }, cache: 'no-store', signal: controller.signal })
+      .then(function (r) { if (!r.ok) throw new Error('Services request failed'); return r.json(); })
+      .then(function (d) {
+        if (!d.ok) throw new Error('Services response failed');
+        if (blocked()) return;
+        var next = mergeData(lastData, d);
+        var changed = !lastData || Object.keys(next).some(function (key) {
+          return key !== 'fetchedAt' && key !== 'ageSeconds' && JSON.stringify(next[key]) !== JSON.stringify(lastData[key]);
+        });
+        if (changed) render(next, true);
+        missed = 0;
+        if (window.DashLive) window.DashLive.ok();
+        var stale = document.getElementById('svcStale');
+        if (stale.style.visibility !== 'hidden') stale.style.visibility = 'hidden';
+      })
+      .catch(function () {
+        if (blocked()) return;
+        if (scheduled) missed++;
+        if (!lastData) board.innerHTML = '<div class="svc-loading">Could not reach the services API.</div>';
+        if (window.DashLive) window.DashLive.fail();
+        var stale = document.getElementById('svcStale');
+        if (missed >= 2 && stale.style.visibility !== 'visible') stale.style.visibility = 'visible';
+      })
+      .finally(function () { clearTimeout(timeout); loading = null; });
+    return loading;
+  }
+  window.__refreshServices = load;
   setMode(mode);
   detectNetwork();
   load();
   // Every 15 seconds while the page is visible; each service updates in its own card.
-  setInterval(load, 15000);
+  setInterval(function () { load(true); }, 15000);
   document.addEventListener('visibilitychange', function () { if (!document.hidden) load(); });
 })();
 </script>`;
