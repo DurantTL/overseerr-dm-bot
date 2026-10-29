@@ -106,7 +106,8 @@ test('dashboard-render: passkey management escapes credential metadata', () => {
 });
 
 test('dashboard-render: renderStat', () => {
-  assert.match(renderStat('Label', 42), /<div class="n">42<\/div><div class="l">Label<\/div>/);
+  assert.match(renderStat('Label', 42), /<div class="n" data-count>42<\/div><div class="l">Label<\/div>/);
+  assert.match(renderStat('Tier nodes', '1/2'), /<div class="n">1\/2<\/div>/, 'only plain numbers count up');
 });
 
 test('dashboard-render: healthClass', () => {

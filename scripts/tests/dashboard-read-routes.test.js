@@ -9,7 +9,7 @@ const { rateLimit } = require('express-rate-limit');
 const { createApp, listen, close } = require('../../src/app');
 const { escapeHtml, sqliteUtcMs, fmtAgo, renderItemList, renderDirectorPanel, renderPasskeySetupBanner } = require('../../src/dashboard-render');
 const { normalizeSearchQuery } = require('../../src/search');
-const { registerDashboardReadRoutes } = require('../../src/routes/dashboard-read');
+const { registerDashboardReadRoutes, extractLiveFragment } = require('../../src/routes/dashboard-read');
 const { createTtlCache } = require('../../src/dashboard-cache');
 
 function request(port, requestPath, headers = {}) {
@@ -382,7 +382,7 @@ test('overview renders the agent API token card', async () => {
   } finally { await close(server); }
 });
 
-test('director tab renders the prototype panel through the real render wiring', async () => {
+test('Home renders the director storage cards through the real render wiring', async () => {
   // Regression: Sep 19, 2026 — index.js never passed renderDirectorPanel into
   // registerDashboardReadRoutes, so the route's () => '' default silently rendered
   // an empty Director panel on the live server. Render with the real functions
@@ -393,9 +393,12 @@ test('director tab renders the prototype panel through the real render wiring', 
   try {
     const res = await request(server.address().port, '/admin', headers);
     assert.strictEqual(res.statusCode, 200);
-    assert.match(res.body, /FLEET \/ LIVE/);
-    assert.match(res.body, /The whole stack, one glance\./);
-    assert.match(res.body, /d-panel/);
+    // Home is the Services board now; the director render contributes storage and fleet sync
+    // under it, without its own page heading (the board already has one).
+    assert.match(res.body, /data-panel="home"/);
+    assert.match(res.body, /<h2>Disk space<\/h2>/);
+    assert.match(res.body, /<h2>Fleet sync<\/h2>/);
+    assert.doesNotMatch(res.body, /The whole stack, one glance\./);
   } finally { await close(server); }
 });
 
@@ -513,4 +516,12 @@ test('director tab: Fleet sync card per node and folder, stale node marked, node
     assert.ok(!res.body.includes('<b>retired</b>'), 'disabled nodes are left out');
     assert.ok(!/TAUTULLI-SECRET|PLEX-SECRET/.test(res.body), 'node credentials never reach the page');
   } finally { await close(server); }
+});
+
+test('extractLiveFragment returns only the named live region, or null when it is missing', () => {
+  const page = '<main><!--live:a--><p>A</p><!--/live:a--><!--live:ab--><p>AB</p><!--/live:ab--></main>';
+  assert.strictEqual(extractLiveFragment(page, 'a'), '<p>A</p>');
+  assert.strictEqual(extractLiveFragment(page, 'ab'), '<p>AB</p>');
+  assert.strictEqual(extractLiveFragment(page, 'b'), null);
+  assert.strictEqual(extractLiveFragment('<!--live:x--><p>open</p>', 'x'), null);
 });

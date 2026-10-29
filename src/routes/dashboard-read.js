@@ -9,6 +9,16 @@ const { renderAlertInbox, renderRecentlyAdded, renderQuickActions, renderQuickAc
 const tautulliRecent = require('../tautulli');
 const { buildFleetSync } = require('../fleet-sync');
 
+// The HTML between <!--live:name--> and <!--/live:name--> in a rendered page, or null.
+function extractLiveFragment(page, name) {
+  const open = `<!--live:${name}-->`;
+  const start = page.indexOf(open);
+  if (start === -1) return null;
+  const end = page.indexOf(`<!--/live:${name}-->`, start);
+  if (end === -1) return null;
+  return page.slice(start + open.length, end);
+}
+
 const RECENT_TTL_MS = 5 * 60000;
 
 function registerDashboardReadRoutes(app, deps) {
@@ -86,14 +96,10 @@ function registerDashboardReadRoutes(app, deps) {
     tierNodeStatus,
     tunable,
   } = deps;
-  app.get('/admin', rateLimit({
-    windowMs: 15 * 60000,
-    limit: 300,
-    keyGenerator: httpRateLimitKey,
-    standardHeaders: 'draft-8',
-    legacyHeaders: false,
-    handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many dashboard requests. Wait a moment and try again.' }),
-  }), dashboardAuth, async (req, res) => {
+  // The whole dashboard page. /admin sends it; /admin/fragment/:name returns one live-refreshed
+  // part of it (marked <!--live:name--> … <!--/live:name-->) so the page can update a card in
+  // place instead of reloading. One render path means a fragment can never drift from the page.
+  async function renderAdmin(req) {
     const now = Date.now();
     const pendingApprovals = listPendingRequests();
     const passkeys = listPasskeys();
@@ -246,14 +252,6 @@ function registerDashboardReadRoutes(app, deps) {
       renderStat('Download links', activeLinks),
     ].join('');
 
-    const decisionLabel = s => (s.transcode_decision === 'transcode' || s.video_decision === 'transcode' ? '🔥 transcoding'
-      : s.transcode_decision === 'copy' ? '📼 direct stream' : '▶️ direct play');
-    const nowPlayingItems = (sessions || []).map(s => ({
-      state: (s.transcode_decision === 'transcode' || s.video_decision === 'transcode') ? 'warn' : 'ok',
-      title: s.full_title || 'Unknown',
-      sub: `${s.friendly_name || s.user || 'Unknown'} · ${decisionLabel(s)}${s.stream_video_full_resolution ? ` · ${s.stream_video_full_resolution}` : ''}${s.player ? ` · ${s.player}` : ''}`,
-      pct: Number(s.progress_percent) || 0,
-    }));
 
     const queueItems = (queue || []).map(q => ({
       state: queueItemLooksUnhealthy(q) ? 'warn' : 'ok',
@@ -336,6 +334,8 @@ function registerDashboardReadRoutes(app, deps) {
       ],
       operations: [
         { label: 'Approve all pending', bulk: 'approve-pending', count: pendingApprovals.length, disabled: !pendingApprovals.length, reason: pendingApprovals.length ? null : 'Nothing is waiting for approval.' },
+      ],
+      automation: [
         runNow('episode-recovery', 'Run episode recovery'),
         runNow('stuck', 'Check stuck downloads'),
       ],
@@ -454,37 +454,50 @@ function registerDashboardReadRoutes(app, deps) {
       return { state, title: healthLabel(k), sub, right: String(value) };
     });
 
-    const nav = [['director', 'Director'], ['services', 'Services'], ['overview', 'Overview'], ['operations', 'Operations', approvalItems.length || 0], ['automation', 'Automation'], ['edge', 'Edge'], ['people', 'People'], ['logs', 'Logs']];
+    const navItems = [
+      { id: 'home', label: 'Home', icon: 'home' },
+      { id: 'requests', label: 'Requests', icon: 'requests', count: approvalItems.length || 0 },
+      { id: 'network', label: 'Network', icon: 'network' },
+      { id: 'automation', label: 'Automation', icon: 'automation' },
+      { id: 'fleet', label: 'Fleet', icon: 'fleet', more: true, sub: 'Tier nodes and sync' },
+      { id: 'people', label: 'People', icon: 'people', more: true, sub: 'Members, invites, download links' },
+      { id: 'activity', label: 'Activity', icon: 'activity', more: true, sub: 'Everything that happened' },
+      { id: 'home', label: 'All services', icon: 'services', more: true, sub: 'The full list, by group', scrollTo: 'svcBoard' },
+      { id: 'settings', label: 'Settings', icon: 'settings', more: true, sub: 'Passkeys, API tokens, integrations' },
+    ];
     const settingsGroups = runtimeSettings.describeRuntimeSettings({ config: CONFIG, store: settingsStore });
     const overriddenCount = settingsGroups.reduce((n, g) => n + g.settings.filter(x => x.overridden).length, 0);
 
-    const body = `
-      <div class="overall ${health.overall === 'ok' ? 'ok' : 'warn'}">
-        <span>Overall: <strong>${escapeHtml(String(health.overall).toUpperCase())}</strong></span>
-        <span class="updated">rendered ${new Date(now).toISOString().slice(11, 19)} UTC${dataAsOf < now ? ` · data as of ${fmtAgo(dataAsOf)}` : ''}${dataStale ? ' · <strong>stale</strong> (an integration refresh failed; showing the last good value)' : ''} · auto-refreshes</span>
-      </div>
-      <div class="stats">${stats}</div>
-
-      <section class="panel d-panel" data-panel="director">
+    // Home's "needs you" block: a live fragment the Services board places under its alerts.
+    const homeNeedsHtml = `
+        <div data-live="home-needs"><!--live:home-needs-->
+        <span hidden data-nav-count="requests" data-value="${approvalItems.length || 0}"></span>
+        <div class="overall-line ${health.overall === 'ok' ? 'ok' : 'warn'}"><span class="needs-dot" aria-hidden="true"></span>Overall: <strong>${escapeHtml(String(health.overall).toUpperCase())}</strong>${dataStale ? ' · <strong>stale</strong> (an integration refresh failed; showing the last good value)' : ''}</div>
+        ${approvalItems.length ? `<a class="card needs-card" href="#requests" data-tab="requests"><span class="needs-dot" aria-hidden="true"></span><span><b data-count>${approvalItems.length}</b> request${approvalItems.length === 1 ? '' : 's'} waiting for approval</span><span class="needs-chev" aria-hidden="true">›</span></a>` : ''}
         ${renderQuickActions(quickActions.director)}
+        <!--/live:home-needs--></div>
+`;
+
+    const servicesPanelHtml = renderServicesPanel({ needs: homeNeedsHtml });
+    const body = `
+      <section class="panel" data-panel="home" data-label="Home">
+        ${servicesPanelHtml.includes('data-live="home-needs"') ? servicesPanelHtml : homeNeedsHtml + servicesPanelHtml}
+        <div data-live="home-more"><!--live:home-more-->
+        <div class="card">
+          <h2>Downloading</h2>
+          ${renderQuickActions(quickActions.overview)}
+          ${queue === null ? unavailable('Radarr/Sonarr') : renderItemList(queueItems, 'Nothing in the download queues.')}
+        </div>
+      
         ${renderDirectorPanel({
           overall: health.overall,
           services: directorItems,
           disks: disks === null ? null : diskItems,
           totalFreeLabel: (disks === null || (disks || []).length === 0) ? null : fmtSpace(disks.reduce((n, d) => n + (d.freeSpace || 0), 0)),
           fleetSync: buildFleetSync(tierNodes, { getTierPlan, listTierNodeFolders }),
+          compact: true,
         })}
-      </section>
-
-      <section class="panel" data-panel="services">
-        ${renderServicesPanel()}
-      </section>
-
-      <section class="panel" data-panel="overview">
-        ${renderQuickActions(quickActions.overview)}
-        ${showPasskeySetupBanner ? renderPasskeySetupBanner() : ''}
-        ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID, PASSKEY_RP.origin)}
-        ${renderAgentApiTokens(agentApiTokens, { legacyConfigured: !!CONFIG.AGENT_API_TOKEN_HASH })}
+      
         <div class="card">
           <h2>Recently added<span class="sub">From Tautulli, newest first.</span></h2>
           ${recentEntry.value === null ? unavailable('Tautulli') : renderRecentlyAdded(recentEntry.value)}
@@ -493,22 +506,12 @@ function registerDashboardReadRoutes(app, deps) {
           <h2>Alert inbox<span class="sub">Service-down alerts, last 20. Read from the audit log the alert sweep already writes.</span></h2>
           ${alertIncidents === null ? unavailable('Audit log') : renderAlertInbox(alertIncidents)}
         </div>
-        <div class="card">
-          <h2>Integrations</h2>
-          <div class="badges">${renderHealthBadges(health)}</div>
-          ${Object.keys(health.errors || {}).length ? renderItemList(Object.entries(health.errors).map(([name, error]) => ({ state: 'down', title: name, sub: error })), '') : ''}
-        </div>
-        <div class="card">
-          <h2>Now Streaming</h2>
-          ${sessions === null ? unavailable('Tautulli') : renderItemList(nowPlayingItems, 'Nobody is streaming right now.')}
-        </div>
-        <div class="card">
-          <h2>Downloading</h2>
-          ${queue === null ? unavailable('Radarr/Sonarr') : renderItemList(queueItems, 'Nothing in the download queues.')}
-        </div>
+        <div class="card glance"><h2>At a glance<span class="sub">Data as of ${dataAsOf < now ? fmtAgo(dataAsOf) : 'just now'}.</span></h2><div class="stats">${stats}</div></div>
+        <!--/live:home-more--></div>
       </section>
 
-      <section class="panel" data-panel="operations">
+      <section class="panel" data-panel="requests" data-label="Requests">
+        <div data-live="requests"><!--live:requests-->
         ${renderQuickActions(quickActions.operations)}
         <div class="card">
           <h2>Pending Approval<span class="sub">Requests waiting for an administrator. Quota changes are warnings and do not block approval.</span></h2>
@@ -534,6 +537,25 @@ function registerDashboardReadRoutes(app, deps) {
           <h2>Recent Media Requests</h2>
           ${renderTable(requestRows)}
         </div>
+        <!--/live:requests--></div>
+      </section>
+
+      <section class="panel" data-panel="network" data-label="Network">
+        <div class="svc-wrap" id="netBoard" aria-live="polite"><div class="svc-loading">Loading network…</div></div>
+      </section>
+
+      <section class="panel" data-panel="automation" data-label="Automation">
+        <p class="panel-intro">These take effect on the next sweep — no redeploy. Compose stays the default:
+          <strong>Reset to compose</strong> drops the override and the stack file's value applies again.
+          ${overriddenCount ? `<strong>${overriddenCount}</strong> setting${overriddenCount === 1 ? ' is' : 's are'} currently overridden here.` : 'Nothing is overridden right now.'}</p>
+        ${renderQuickActions(quickActions.automation)}
+        <div data-live="automation-jobs"><!--live:automation-jobs-->
+        <div class="card">
+          <h2>Season-search alert stand-downs<span class="sub">Searches still run. Only repeated identical no-release messages are muted.</span></h2>
+          ${renderItemList(seasonAlertItems, 'No season-search alerts are stood down.')}
+        </div>
+        ${renderAutomationRegistry(automationInventory, { heartbeatIssues: getAutomationRegistry()?.heartbeatIssues?.() || [] })}
+        <!--/live:automation-jobs--></div>
         <div class="card">
           <h2>Manual Actions</h2>
           ${renderItemList(sweepItems, '')}
@@ -545,21 +567,10 @@ function registerDashboardReadRoutes(app, deps) {
             <button class="btn danger" type="button" onclick="revokeAll()">Revoke All Download Links</button>
           </div>
         </div>
+              ${settingsGroups.map(renderSettingsGroup).join('')}
       </section>
 
-      <section class="panel" data-panel="automation">
-        <p class="panel-intro">These take effect on the next sweep — no redeploy. Compose stays the default:
-          <strong>Reset to compose</strong> drops the override and the stack file's value applies again.
-          ${overriddenCount ? `<strong>${overriddenCount}</strong> setting${overriddenCount === 1 ? ' is' : 's are'} currently overridden here.` : 'Nothing is overridden right now.'}</p>
-        <div class="card">
-          <h2>Season-search alert stand-downs<span class="sub">Searches still run. Only repeated identical no-release messages are muted.</span></h2>
-          ${renderItemList(seasonAlertItems, 'No season-search alerts are stood down.')}
-        </div>
-        ${renderAutomationRegistry(automationInventory, { heartbeatIssues: getAutomationRegistry()?.heartbeatIssues?.() || [] })}
-        ${settingsGroups.map(renderSettingsGroup).join('')}
-      </section>
-
-      <section class="panel" data-panel="edge">
+      <section class="panel" data-panel="fleet" data-label="Fleet">
         <div class="card">
           <h2>Tier Nodes</h2>
           ${renderItemList(tierItems, 'No tier nodes registered yet.')}
@@ -605,7 +616,7 @@ function registerDashboardReadRoutes(app, deps) {
         </div>
       </section>
 
-      <section class="panel" data-panel="people">
+      <section class="panel" data-panel="people" data-label="People">
         <div class="card">
           <h2>Add User<span class="sub">Runs the real /link and /invite commands — same Plex + Seerr chain, same audits.</span></h2>
           <div class="setup-grid">
@@ -642,16 +653,29 @@ function registerDashboardReadRoutes(app, deps) {
           <button class="btn danger" type="button" data-post="/admin/action/reshare-all" data-body='{"mode":"apply"}' data-inline="true" data-confirm="Re-push the Plex share to EVERY invited user?">Apply</button>
           <span class="action-result" aria-live="polite"></span>
         </div>
-      </section>
-
-      <section class="panel" data-panel="logs">
-        <div class="card">
+              <div class="card">
           <h2>Recent Downloads</h2>
           ${renderTable(downloadRows)}
         </div>
+      </section>
+
+      <section class="panel" data-panel="activity" data-label="Activity">
+        <div data-live="activity"><!--live:activity-->
         <div class="card">
           <h2>Recent Audit Log</h2>
           ${renderTable(auditTableRows)}
+        </div>
+        <!--/live:activity--></div>
+      </section>
+
+      <section class="panel" data-panel="settings" data-label="Settings">
+        ${showPasskeySetupBanner ? renderPasskeySetupBanner() : ''}
+        ${renderPasskeyManagement(passkeys, PASSKEY_RP.rpID, PASSKEY_RP.origin)}
+        ${renderAgentApiTokens(agentApiTokens, { legacyConfigured: !!CONFIG.AGENT_API_TOKEN_HASH })}
+        <div class="card">
+          <h2>Integrations</h2>
+          <div class="badges">${renderHealthBadges(health)}</div>
+          ${Object.keys(health.errors || {}).length ? renderItemList(Object.entries(health.errors).map(([name, error]) => ({ state: 'down', title: name, sub: error })), '') : ''}
         </div>
       </section>
 
@@ -665,8 +689,10 @@ function registerDashboardReadRoutes(app, deps) {
           alert(r.ok ? 'All active download links revoked.' : 'Failed: ' + r.status);
           if (r.ok) location.reload();
         }
-        document.querySelectorAll('[data-post]').forEach(function (btn) {
-          btn.addEventListener('click', async function () {
+        // One listener for every [data-post] button, including ones a live refresh adds later.
+        document.addEventListener('click', async function (event) {
+            var btn = event.target.closest('[data-post]');
+            if (!btn || btn.disabled) return;
             var prompt = btn.dataset.confirm;
             if (prompt && !confirm(prompt)) return;
             var body = JSON.parse(btn.dataset.body || '{}');
@@ -704,8 +730,8 @@ function registerDashboardReadRoutes(app, deps) {
                 note.className = 'action-result ' + (ok ? 'ok' : 'bad');
                 if (!ok && result.retryable) buttonStates.forEach(function (state) { state.button.disabled = state.disabled; });
               } else {
+                // The page refreshes the changed parts in place (finally below), not a full reload.
                 alert(message);
-                if (ok) location.reload();
               }
             } catch (err) {
               var message = String(err && err.message || err);
@@ -714,8 +740,8 @@ function registerDashboardReadRoutes(app, deps) {
               buttonStates.forEach(function (state) { state.button.disabled = state.disabled; });
             } finally {
               window.__actionsInFlight = Math.max(0, (window.__actionsInFlight || 0) - 1);
+              if (ok && window.DashLive) window.DashLive.refreshVisible();
             }
-          });
         });
         (function () {
           var enroll = document.getElementById('passkey-enroll');
@@ -741,7 +767,7 @@ function registerDashboardReadRoutes(app, deps) {
               var optionsJSON = await post('/admin/passkey/registration-options', { label: label });
               var response = await SimpleWebAuthnBrowser.startRegistration({ optionsJSON: optionsJSON });
               await post('/admin/passkey/register', response);
-              location.hash = 'overview';
+              location.hash = 'settings';
               location.reload();
             } catch (error) {
               note.textContent = window.PasskeyClient ? window.PasskeyClient.passkeyErrorMessage(error, window, expectedOrigin) : (error.message || String(error));
@@ -917,7 +943,7 @@ function registerDashboardReadRoutes(app, deps) {
             var result = await r.json().catch(function () { return {}; });
             if (!r.ok || result.ok === false) { note.textContent = result.error || 'Registration failed.'; note.className = 'save-note bad'; return; }
             window.__dirtySettings = false;
-            location.hash = 'edge';
+            location.hash = 'fleet';
             location.reload();
           });
           if (installForm) installForm.addEventListener('submit', async function (event) {
@@ -1084,7 +1110,7 @@ function registerDashboardReadRoutes(app, deps) {
                 var body = await r.json().catch(function () { return {}; });
                 if (!r.ok || body.ok === false) { say(body.error || 'Failed: ' + r.status, 'bad'); return; }
                 say(body.message || 'Saved.', 'ok');
-                setTimeout(function () { location.hash = 'edge'; location.reload(); }, 800);
+                setTimeout(function () { location.hash = 'fleet'; location.reload(); }, 800);
               } catch (err) { say(String(err && err.message || err), 'bad'); }
             });
           };
@@ -1187,7 +1213,40 @@ function registerDashboardReadRoutes(app, deps) {
           });
         })();
       </script>`;
-    res.type('html').send(renderPage('Dashboard', body, { showLogout: true, showSearch: true, nav, autoRefresh: true, tabs: true }));
+    return renderPage('Dashboard', body, { showLogout: true, shell: { items: navItems } });
+  }
+  const adminPageLimiter = rateLimit({
+    windowMs: 15 * 60000,
+    limit: 300,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many dashboard requests. Wait a moment and try again.' }),
+  });
+  app.get('/admin', adminPageLimiter, dashboardAuth, async (req, res) => {
+    res.type('html').send(await renderAdmin(req));
+  });
+  // Live refresh of one part of the page. A separate limiter: every open tab polls a few of
+  // these every 30 seconds, which the page limiter (300 per 15 min) was never sized for.
+  const fragmentLimiter = rateLimit({
+    windowMs: 60000,
+    limit: 120,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many refreshes. Slowing down.' }),
+  });
+  app.get('/admin/fragment/:name', fragmentLimiter, dashboardAuth, async (req, res) => {
+    const name = String(req.params.name || '');
+    if (!/^[a-z][a-z0-9-]{0,40}$/.test(name)) return res.status(400).json({ ok: false, error: 'Unknown fragment.' });
+    try {
+      const html = extractLiveFragment(await renderAdmin(req), name);
+      if (html == null) return res.status(404).json({ ok: false, error: 'Unknown fragment.' });
+      res.set('Cache-Control', 'no-store');
+      return res.json({ ok: true, html });
+    } catch (_err) {
+      return res.status(500).json({ ok: false, error: 'Could not refresh this part of the page.' });
+    }
   });
 
   app.get('/admin/search', rateLimit({
@@ -1343,4 +1402,4 @@ function registerDashboardReadRoutes(app, deps) {
   });
 }
 
-module.exports = { registerDashboardReadRoutes };
+module.exports = { registerDashboardReadRoutes, extractLiveFragment };

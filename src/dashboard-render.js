@@ -5,6 +5,8 @@ const { normalizeTierFolders, serializeTierFolders } = require('./tier-node-setu
 const { HEALTH_KEYS, healthLabel } = require('./health');
 const { telemetrySummary } = require('./node-telemetry');
 
+const { renderShellNav, SHELL_CSS, SHELL_SCRIPT, icon: shellIcon } = require('./dashboard-shell');
+
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, s => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s]));
 }
@@ -312,7 +314,10 @@ const DASHBOARD_CSS = `
 // server-rendered and present in the DOM; the script only toggles which one is visible, so the
 // page still works as one long document if scripting is unavailable (nothing is hidden until the
 // script runs). The active tab lives in location.hash so the 60s auto-refresh comes back to it.
-function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, searchQuery = '', nav = [], autoRefresh = false, tabs = false } = {}) {
+// `shell` (the admin dashboard) swaps the tab strip for the app shell in src/dashboard-shell.js:
+// side rail, bottom bar, More sheet and the live layer, which replaces the 60s page reload.
+function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, searchQuery = '', nav = [], autoRefresh = false, tabs = false, shell = null } = {}) {
+  if (shell) return renderShellPage(title, bodyHtml, { showLogout, searchQuery, items: shell.items });
   const navHtml = nav.length
     ? `<nav class="nav" aria-label="Dashboard sections"${tabs ? ' role="tablist"' : ''}>${nav.map(([id, label, count]) => (tabs
       ? `<button class="chip tab" role="tab" type="button" data-tab="${escapeHtml(id)}" aria-selected="false">${escapeHtml(label)}${count ? ` <span class="tab-count" aria-label="${escapeHtml(String(count))} need attention">${escapeHtml(String(count))}</span>` : ''}</button>`
@@ -402,6 +407,30 @@ function renderPage(title, bodyHtml, { showLogout = false, showSearch = false, s
   <main class="container" id="main-content" tabindex="-1">${bodyHtml}</main>
   ${tabScript}
   ${refreshScript}
+  </body></html>`;
+}
+
+function renderShellPage(title, bodyHtml, { showLogout, searchQuery, items }) {
+  const { rail, bar, sheet } = renderShellNav(items, { escapeHtml, showLogout });
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#10232f">
+  <title>${escapeHtml(title)} — Durant Media Server</title>
+  <style>${DASHBOARD_CSS}${SHELL_CSS}</style></head><body class="shell">
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  ${rail}
+  <header class="hdr">
+    <div class="topbar">
+      <h1><span class="brand-mark" aria-hidden="true">d<span>l</span>.</span><span><span class="brand">Durant</span> Media Server</span></h1>
+      <div class="hdr-live live-status" data-live-status role="status"><span class="live-dot"></span><span class="live-text">Live</span></div>
+      <button type="button" class="btn hdr-search-toggle" data-search-toggle aria-label="Search">${shellIcon('search', 18)}</button>
+      <form class="topbar-search" method="get" action="/admin/search"><input type="search" name="q" value="${escapeHtml(searchQuery)}" minlength="2" placeholder="Search requests, users, library, audit" aria-label="Search requests, users, library, audit"><button class="btn" type="submit">Search</button></form>
+    </div>
+  </header>
+  <main class="container" id="main-content" tabindex="-1">${bodyHtml}</main>
+  ${bar}
+  ${sheet}
+  <script>${SHELL_SCRIPT}</script>
   </body></html>`;
 }
 
@@ -540,7 +569,9 @@ function renderFleetSync(fleet) {
   }).join('');
 }
 
-function renderDirectorPanel({ overall, services, disks, totalFreeLabel, fleetSync }) {
+// `compact` (Home, under the Services board): no page heading or service list, which the board
+// already shows; just storage, fleet sync, and any integration that isn't healthy.
+function renderDirectorPanel({ overall, services, disks, totalFreeLabel, fleetSync, compact = false }) {
   const list = Array.isArray(services) ? services : [];
   const counts = { ok: 0, down: 0, warn: 0, skip: 0 };
   for (const s of list) counts[Object.hasOwn(counts, s.state) ? s.state : 'warn']++;
@@ -585,6 +616,33 @@ function renderDirectorPanel({ overall, services, disks, totalFreeLabel, fleetSy
             ${typeof d.pct === 'number' ? `<div class="d-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.max(0, Math.min(100, d.pct))}" aria-label="${escapeHtml(d.title || 'disk')} usage"><span class="${dotClass(d.state)}" style="width:${Math.max(0, Math.min(100, d.pct))}%"></span></div>` : ''}</div>
           <div class="d-node-right">${escapeHtml(d.right || '')}</div>
         </div>`).join('') : '<p class="d-lead-copy" style="padding:12px 0">No disks reported.</p>');
+  const fleetSyncCard = fleetSync === undefined ? '' : `
+      <div class="card d-card d-wide">
+        <div class="d-card-head">
+          <div><h2>Fleet sync</h2><p>What each tier node still has to pull, per folder. Read only, from the agents’ own reports.</p></div>
+        </div>
+        <div class="d-card-body">${renderFleetSync(fleetSync)}</div>
+      </div>`;
+  if (compact) {
+    return `
+      <div class="d-grid">
+      ${exceptions.length ? `<div class="card d-card">
+        <div class="d-card-head">
+          <div><h2>Integrations needing a look</h2><p>From the health check: the bot’s own view of each integration.</p></div>
+          <span class="d-status ${status}">${escapeHtml(statusText)}</span>
+        </div>
+        <div class="d-card-body">${exceptions.map(serviceRow).join('')}</div>
+      </div>` : ''}
+      <div class="card d-card">
+        <div class="d-card-head">
+          <div><h2>Disk space</h2><p>Free space and usage per volume.</p></div>
+          <div class="d-metric"><strong>${totalFreeLabel ? escapeHtml(totalFreeLabel) : '—'}</strong><span>Disk free · all volumes</span></div>
+        </div>
+        <div class="d-card-body">${diskRows}</div>
+      </div>
+      ${fleetSyncCard}
+      </div>`;
+  }
   return `
       <div class="d-page-lead">
         <div>
@@ -616,17 +674,12 @@ function renderDirectorPanel({ overall, services, disks, totalFreeLabel, fleetSy
         </div>
         <div class="d-card-body">${diskRows}</div>
       </div>
-      ${fleetSync === undefined ? '' : `
-      <div class="card d-card d-wide">
-        <div class="d-card-head">
-          <div><h2>Fleet sync</h2><p>What each tier node still has to pull, per folder. Read only, from the agents’ own reports.</p></div>
-        </div>
-        <div class="d-card-body">${renderFleetSync(fleetSync)}</div>
-      </div>`}
+      ${fleetSyncCard}
       </div>`;
 }
 
-function renderServicesPanel() {
+// `needs` (Home): server-rendered "needs you" content, placed right under the board's alerts.
+function renderServicesPanel({ needs = '' } = {}) {
   // Client-rendered Services board. The server ships the shell; the browser
   // fetches /admin/api/services and renders cards from live data. Scoped
   // styles use the svc- prefix to avoid colliding with dashboard CSS.
@@ -929,6 +982,7 @@ function renderServicesPanel() {
 .svc-jump svg { width: 15px; height: 15px; }
 .svc-jump kbd { padding: 1px 6px; border: 1px solid var(--svc-line); border-radius: 5px; font: 400 11px/1.6 var(--mono); color: var(--svc-ink3); }
 .svc-tools { display: grid; justify-items: end; gap: 10px; }
+@media (max-width: 720px) { .svc-tools { display: flex; align-items: center; gap: 8px; } }
 .svc-pal { position: fixed; inset: 0; z-index: 65; display: none; align-items: flex-start; justify-content: center; padding: 12vh 16px 16px; background: rgba(0,0,0,.45); }
 .svc-pal.open { display: flex; }
 .svc-pal-box { width: min(560px, 100%); padding: 8px; border: 1px solid var(--svc-line); border-radius: 18px; }
@@ -969,6 +1023,7 @@ function renderServicesPanel() {
   </div>
   <div id="svcVitals"></div>
   <div id="svcAttention"></div>
+  ${needs}
   <div id="svcNowPlaying"></div>
   <div class="svc-filter" role="search">
     <label class="svc-find" for="svcFind"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg><input id="svcFind" type="search" placeholder="Find a service" autocomplete="off" enterkeyhint="search" aria-label="Find a service by name"></label>
@@ -1011,7 +1066,13 @@ function renderServicesPanel() {
 (function () {
   var board = document.getElementById('svcBoard');
   var np = document.getElementById('svcNowPlaying');
+  var netBoard = document.getElementById('netBoard');
   if (!board) return;
+  // In place when the dashboard's live layer is on the page; plain replace otherwise.
+  function paint(el, html) {
+    if (!el) return;
+    if (window.DashLive) window.DashLive.morph(el, html); else el.innerHTML = html;
+  }
   var LAN = '', TAIL = '', mode = 'tail', manualMode = null;
   // Pinned services lead their group and stay put (replaces tap-count "smart sort",
   // which reordered cards under the user's thumb).
@@ -1175,9 +1236,10 @@ function renderServicesPanel() {
       (desc ? '<div class="svc-desc">' + desc + '</div>' : '') + factsHtml(s) + downloadsHtml(s) + '</a>';
   }
 
-  function specialCards(d) {
+  // which: 'system' (Home: UPS, ZFS, SSD) or 'net' (Network tab: speedtest, internet health).
+  function specialCards(d, which) {
     var out = '';
-    if (d.ups) {
+    if (d.ups && which !== 'net') {
       var u = d.ups;
       var dot = u.lowBattery ? 'down' : '';
       var onBatt = !!u.onBattery;
@@ -1193,7 +1255,7 @@ function renderServicesPanel() {
         '</div>' +
         '<div class="svc-mains' + (onBatt ? ' amber' : '') + '"><span class="mdot"></span>' + (onBatt ? 'ON BATTERY' : 'ON MAINS POWER') + '</div></div>';
     }
-    if (d.zfs) {
+    if (d.zfs && which !== 'net') {
       var z = d.zfs;
       if (z.error) {
         // Exporter unreachable: a deployment/networking problem, not a pool
@@ -1217,7 +1279,7 @@ function renderServicesPanel() {
         (z.issueCount ? '<span class="svc-badge">' + z.issueCount + ' issues</span>' : '') + '</div>';
       }
     }
-    if (d.speedtest) {
+    if (d.speedtest && which !== 'system') {
       var sp = d.speedtest;
       if (sp.error) {
         out += '<div class="svc-card" data-key="speedtest" data-nosheet="1"><div class="svc-dot skip"></div>' +
@@ -1235,7 +1297,7 @@ function renderServicesPanel() {
           '<div class="svc-widget"><div class="metric"><div class="mv">' + (sp.pingMs != null ? Number(sp.pingMs).toFixed(1) + '<small style="font-size:10px;color:var(--svc-ink2)"> ms</small>' : '—') + '</div><div class="ml">Ping</div></div></div></div>';
       }
     }
-    if (d.network && !d.network.error && d.network.wan) {
+    if (d.network && !d.network.error && d.network.wan && which !== 'system') {
       var w = d.network.wan;
       var wUp = w.up !== false;
       out += '<div class="svc-card" data-key="internet" data-nosheet="1"><div class="svc-dot' + (wUp ? '' : ' down') + '"></div>' +
@@ -1246,7 +1308,7 @@ function renderServicesPanel() {
         '<div class="metric"><div class="mv">' + (w.latencyMs != null ? Math.round(w.latencyMs) + '<small style="font-size:10px;color:var(--svc-ink2)"> ms</small>' : '—') + '</div><div class="ml">Latency</div></div>' +
         '</div></div>';
     }
-    if (d.ssdTemp) {
+    if (d.ssdTemp && which !== 'net') {
       var st = d.ssdTemp;
       if (st.error) {
         out += '<div class="svc-card" data-key="ssd" data-nosheet="1"><div class="svc-dot skip"></div>' +
@@ -1263,6 +1325,26 @@ function renderServicesPanel() {
     return out;
   }
 
+  // Home's one-card summary of the Network tab: internet state, live throughput, devices.
+  function netSummaryCard(d) {
+    var n = d.network;
+    if (!n) return '';
+    if (n.error) {
+      return '<a class="svc-card" data-key="net-summary" data-nosheet="1" href="#network" data-tab="network"><div class="svc-dot skip"></div>' +
+        '<div class="svc-top"><div class="svc-icon">' + iconFor('wifi') + '</div><div class="svc-name">Network</div></div>' +
+        '<div class="svc-desc">UDR7 unreachable: ' + esc(n.error) + '</div></a>';
+    }
+    var w = n.wan || {}, t = n.throughput || {}, c = n.clients || {};
+    var wUp = w.up !== false;
+    return '<a class="svc-card" data-key="net-summary" data-nosheet="1" href="#network" data-tab="network"><div class="svc-dot' + (wUp ? '' : ' down') + '"></div>' +
+      '<div class="svc-top"><div class="svc-icon green">' + iconFor('globe') + '</div><div class="svc-name">Network</div></div>' +
+      '<div class="svc-desc">' + (wUp ? 'Internet up' : 'Internet down') + (w.latencyMs != null ? ' · ' + Math.round(w.latencyMs) + ' ms' : '') + (w.isp ? ' · ' + esc(w.isp) : '') + '</div>' +
+      '<div class="svc-widget">' +
+      '<div class="metric"><div class="mv"><span data-count>' + (t.downMbps != null ? Math.round(t.downMbps) : '—') + '</span><small style="font-size:10px;color:var(--svc-ink2)"> ↓ Mb/s</small></div><div class="ml">Down</div></div>' +
+      '<div class="metric"><div class="mv"><span data-count>' + (t.upMbps != null ? Math.round(t.upMbps) : '—') + '</span><small style="font-size:10px;color:var(--svc-ink2)"> ↑ Mb/s</small></div><div class="ml">Up</div></div>' +
+      '<div class="metric"><div class="mv"><span data-count>' + (c.total || 0) + '</span></div><div class="ml">Devices</div></div>' +
+      '</div></a>';
+  }
   function fmtMbps(v) {
     if (v == null) return '—';
     return (Math.round(v * 10) / 10) + '<small> Mb/s</small>';
@@ -1387,8 +1469,8 @@ function renderServicesPanel() {
     var downs = all.filter(function (x) { return x.state === 'down'; });
     var head = document.getElementById('svcHeadline');
     if (head) {
-      head.innerHTML = esc(up + ' of ' + all.length + ' running.') + ' <em>' +
-        (downs.length ? (downs.length === 1 ? 'One needs you.' : downs.length + ' need you.') : 'All clear.') + '</em>';
+      paint(head, '<span data-count>' + up + '</span> of ' + all.length + ' running. <em>' +
+        (downs.length ? (downs.length === 1 ? 'One needs you.' : downs.length + ' need you.') : 'All clear.') + '</em>');
     }
     var subEl = document.getElementById('svcSub');
     if (subEl) {
@@ -1401,18 +1483,19 @@ function renderServicesPanel() {
     var streams = (d.nowPlaying || []).length;
     var vit = document.getElementById('svcVitals');
     if (vit) {
-      vit.innerHTML = '<div class="svc-vitals">' +
+      paint(vit, '<div class="svc-vitals">' +
         '<div class="svc-vital"><b>' + up + '<small>/' + all.length + '</small></b><span>Services up</span></div>' +
-        '<div class="svc-vital"><b>' + (sp.downloadMbps != null ? Math.round(sp.downloadMbps) : '—') + '<small> Mbps</small></b><span>Download</span></div>' +
-        '<div class="svc-vital"><b>' + (sp.uploadMbps != null ? Math.round(sp.uploadMbps * 10) / 10 : '—') + '<small> Mbps</small></b><span>Upload</span></div>' +
-        '<div class="svc-vital"><b>' + (sp.pingMs != null ? Number(sp.pingMs).toFixed(1) : '—') + '<small> ms</small></b><span>Ping</span></div>' +
+        // Only readings that exist: an unknown speed or ping is left out, not shown as a dash.
+        (sp.downloadMbps != null ? '<div class="svc-vital"><b>' + Math.round(sp.downloadMbps) + '<small> Mbps</small></b><span>Download</span></div>' : '') +
+        (sp.uploadMbps != null ? '<div class="svc-vital"><b>' + Math.round(sp.uploadMbps * 10) / 10 + '<small> Mbps</small></b><span>Upload</span></div>' : '') +
+        (sp.pingMs != null ? '<div class="svc-vital"><b>' + Number(sp.pingMs).toFixed(1) + '<small> ms</small></b><span>Ping</span></div>' : '') +
         '<div class="svc-vital"><b>' + streams + '<small> stream' + (streams === 1 ? '' : 's') + '</small></b><span>On Plex now</span></div>' +
-        '</div>';
+        '</div>');
     }
     // The one thing that needs you, pinned on top with its fix in reach.
     var attn = document.getElementById('svcAttention');
     if (attn) {
-      attn.innerHTML = downs.map(function (x) {
+      paint(attn, downs.map(function (x) {
         var u = svcUrl(x);
         return '<div class="svc-attn' + entCls + '" role="alert"><div class="ai">' + svg('alert') + '</div>' +
           '<div><h2>' + esc(x.name) + ' stopped responding</h2><p>' + (x.detail ? '<code>' + esc(x.detail) + '</code>' : esc(x.desc || 'Health check failed')) + '</p></div>' +
@@ -1420,13 +1503,15 @@ function renderServicesPanel() {
           (x.canRestart && x.container ? '<button class="btn primary" type="button" data-attn-restart="' + esc(x.container) + '" data-name="' + esc(x.name) + '">' + svg('restart') + '<span>Restart container</span></button>' : '') +
           (u ? '<a class="btn" href="' + esc(u) + '" target="_blank" rel="noopener">' + svg('open') + '<span>Open</span></a>' : '') +
           '</div></div>';
-      }).join('');
+      }).join(''));
     }
     var shownCount = 0;
     (d.groups || []).forEach(function (g, gi) {
       var items = (byGroup[g] || []).filter(matches);
       // Readings (UPS, ZFS, speed, network) aren't services, so a filter leaves them out.
-      var special = filtering() ? '' : (g === 'System Health' ? specialCards(d) : (g === 'Network' ? networkCards(d) : ''));
+      // Network lives on its own tab now; Home keeps a one-card summary in System Health.
+      if (g === 'Network' && netBoard) return;
+      var special = filtering() ? '' : (g === 'System Health' ? specialCards(d, netBoard ? 'system' : null) + (netBoard ? netSummaryCard(d) : '') : (g === 'Network' ? networkCards(d) : ''));
       if (!items.length && !special) return;
       shownCount += items.length + (special ? 1 : 0);
       var specialCount = (d.ups ? 1 : 0) + (d.zfs ? 1 : 0) + (d.speedtest ? 1 : 0);
@@ -1475,7 +1560,16 @@ function renderServicesPanel() {
       html = '<div class="svc-empty"><p>' + (downOnly && !findTerm ? 'Nothing is down.' : 'No service matches that.') + '</p>' +
         '<button type="button" class="svc-clear" data-clear-filter="1">Clear filter</button></div>';
     }
-    board.innerHTML = html || '<div class="svc-loading">No services configured yet.</div>';
+    // Morph, don't replace: only cards whose data changed are touched, so hover states, open
+    // menus and the bars' fill animations survive each refresh.
+    paint(board, html || '<div class="svc-loading">No services configured yet.</div>');
+    if (netBoard) {
+      var netHtml = (d.network || d.speedtest)
+        ? '<div class="svc-head"><h2>Network</h2><span class="sum">UDR7 · live</span><div class="line"></div></div>' +
+          '<div class="svc-grid">' + networkCards(d) + specialCards(d, 'net') + '</div>'
+        : '<div class="svc-loading">No network source is configured. Set the UniFi (UDR7) or Speedtest Tracker variables to show it here.</div>';
+      paint(netBoard, netHtml);
+    }
     var spark = document.getElementById('netSpark');
     if (spark && d.network && d.network.history && d.network.history.length > 1) {
       drawSparkline(spark, d.network.history);
@@ -1486,7 +1580,7 @@ function renderServicesPanel() {
       ents[ei].style.animationDelay = Math.min(ei * 60, 600) + 'ms';
     }
     if (d.nowPlaying && d.nowPlaying.length) {
-      np.innerHTML = '<div class="svc-head"><h2>Now playing</h2><span class="sum">' + d.nowPlaying.length + ' stream' + (d.nowPlaying.length === 1 ? '' : 's') + '</span><div class="line"></div></div><div class="svc-np-list">' + d.nowPlaying.map(function (s) {
+      paint(np, '<div class="svc-head"><h2>Now playing</h2><span class="sum">' + d.nowPlaying.length + ' stream' + (d.nowPlaying.length === 1 ? '' : 's') + '</span><div class="line"></div></div><div class="svc-np-list">' + d.nowPlaying.map(function (s) {
         var pct = s.duration > 0 ? Math.min(100, Math.round(s.viewOffset / s.duration * 100)) : 0;
         var rem = s.duration > s.viewOffset ? fmtHMS(s.duration - s.viewOffset) + ' remaining' : '';
         return '<div class="svc-np"><div class="np-poster">' + iconFor('film') + '</div><div class="np-info">' +
@@ -1499,8 +1593,8 @@ function renderServicesPanel() {
           (s.duration > 0 ? '<div class="np-progress"><i style="width:' + pct + '%"></i></div>' +
             (rem ? '<div class="np-time">' + rem + '</div>' : '') : '') +
           '</div></div>';
-      }).join('') + '</div>';
-    } else { np.innerHTML = ''; }
+      }).join('') + '</div>');
+    } else { paint(np, ''); }
     wireCards();
     firstRender = false;
   }
@@ -1733,7 +1827,9 @@ function renderServicesPanel() {
   function wireCards() {
     // Special cards (UPS/ZFS/Speedtest) carry data-nosheet: they have no
     // actions, so a long-press must not open an empty action sheet.
-    board.querySelectorAll('.svc-card[data-key]:not([data-nosheet])').forEach(function (card) {
+    board.querySelectorAll('.svc-card[data-key]:not([data-nosheet]):not([data-wired])').forEach(function (card) {
+      // Morphing keeps cards between refreshes, so wire each one once.
+      card.setAttribute('data-wired', '1');
       var sx = 0, sy = 0;
       card.addEventListener('touchstart', function (e) {
         var t = e.touches[0]; sx = t.clientX; sy = t.clientY;
@@ -1800,16 +1896,26 @@ function renderServicesPanel() {
     if ((e.key === 'k' && (e.metaKey || e.ctrlKey)) || (e.key === '/' && !typing)) { e.preventDefault(); if (pal.classList.contains('open')) closePal(); else openPal(); }
   });
 
+  var loading = false;
   function load() {
-    fetch('/admin/api/services', { headers: { 'Accept': 'application/json' } })
+    // Hidden tab or a sheet/edit in progress: skip this beat rather than move things under you.
+    if (loading || document.hidden || window.__actionsInFlight > 0 || (sheet && sheet.classList.contains('open'))) return;
+    loading = true;
+    fetch('/admin/api/services', { headers: { 'Accept': 'application/json' }, cache: 'no-store' })
       .then(function (r) { return r.json(); })
-      .then(function (d) { if (d.ok) render(d); else board.innerHTML = '<div class="svc-loading">Services unavailable.</div>'; })
-      .catch(function () { board.innerHTML = '<div class="svc-loading">Could not reach the services API.</div>'; });
+      .then(function (d) {
+        if (d.ok) { render(d); if (window.DashLive) window.DashLive.ok(); }
+        else { if (!lastData) board.innerHTML = '<div class="svc-loading">Services unavailable.</div>'; if (window.DashLive) window.DashLive.fail(); }
+      })
+      .catch(function () { if (!lastData) board.innerHTML = '<div class="svc-loading">Could not reach the services API.</div>'; if (window.DashLive) window.DashLive.fail(); })
+      .then(function () { loading = false; });
   }
   setMode(mode);
   detectNetwork();
   load();
-  setInterval(load, 30000);
+  // Every 15 seconds while the page is visible; each service updates in its own card.
+  setInterval(load, 15000);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) load(); });
 })();
 </script>`;
 }
@@ -2045,7 +2151,9 @@ function renderAgentApiTokens(tokens, { legacyConfigured = false } = {}) {
 }
 
 function renderStat(label, value) {
-  return `<div class="stat"><div class="n">${escapeHtml(String(value))}</div><div class="l">${escapeHtml(label)}</div></div>`;
+  // A plain number counts to its new value when the live layer refreshes it.
+  const counts = /^\d+$/.test(String(value)) ? ' data-count' : '';
+  return `<div class="stat" data-key="stat-${escapeHtml(label.toLowerCase().replace(/\s+/g, '-'))}"><div class="n"${counts}>${escapeHtml(String(value))}</div><div class="l">${escapeHtml(label)}</div></div>`;
 }
 
 function healthClass(v) {
@@ -2228,7 +2336,8 @@ function renderQuickActionSheet() {
     if (go.dataset.busy) return;
     sheet.classList.remove('open');
     if (isOpen) { window.__actionsInFlight = Math.max(0, (window.__actionsInFlight || 0) - 1); isOpen = false; }
-    if (done) { location.reload(); return; }
+    // Something changed: refresh the affected parts in place instead of reloading the page.
+    if (done) { if (window.DashLive) window.DashLive.refreshVisible(); else location.reload(); return; }
     if (opener) opener.focus();
   }
   async function post(payload) {
@@ -2286,11 +2395,12 @@ function renderQuickActionSheet() {
       body.appendChild(list('', rows));
     } catch (err) { sub.textContent = ''; msg(String(err && err.message || err), false); }
   }
-  document.querySelectorAll('[data-bulk]').forEach(function (btn) {
-    btn.addEventListener('click', function () { open(btn.dataset.title, btn); preview(btn.dataset.bulk); });
-  });
-  document.querySelectorAll('[data-doctor]').forEach(function (btn) {
-    btn.addEventListener('click', function () { open('Doctor', btn); cancel.textContent = 'Close'; doctor(); });
+  // Delegated, so buttons a live refresh swaps in work the same as the ones on first load.
+  document.addEventListener('click', function (e) {
+    var bulk = e.target.closest('[data-bulk]');
+    if (bulk && !bulk.disabled) { open(bulk.dataset.title, bulk); preview(bulk.dataset.bulk); return; }
+    var doc = e.target.closest('[data-doctor]');
+    if (doc && !doc.disabled) { open('Doctor', doc); cancel.textContent = 'Close'; doctor(); }
   });
   cancel.addEventListener('click', close);
   document.getElementById('qaScrim').addEventListener('click', close);
