@@ -399,3 +399,18 @@ test('services-board: cards carry Docker restart count and last start for their 
   assert.strictEqual(radarr.image, 'radarr:5', 'image reference for the action sheet');
   assert.ok(!('restarts' in board.services.find(s => s.key === 'tautulli')), 'no container, no facts');
 });
+
+test('services-board: networkSource tells the Network page off / empty / error / ok apart', async () => {
+  const base = { health: {}, queues: [], sessions: [], canRestart: false };
+  const HEALTH = { data: [{ subsystem: 'wan', up: true, wan_ip: '203.0.113.44' }] };
+  const off = await gatherServicesBoard({ ...base, config: {}, http: { get: async () => ({ data: {} }) } });
+  assert.strictEqual(off.networkSource, 'off', 'no UniFi settings');
+  const keyless = await gatherServicesBoard({ ...base, config: { UNIFI_HOST: '192.168.50.1' }, http: { get: async () => ({ data: {} }) } });
+  assert.strictEqual(keyless.networkSource, 'off', 'host without a key or login is not configured');
+  const empty = await gatherServicesBoard({ ...base, config: { UNIFI_HOST: '192.168.50.1', UNIFI_API_KEY: 'k' }, http: { get: async () => ({ data: { data: [] } }) } });
+  assert.deepStrictEqual([empty.networkSource, empty.network], ['empty', null]);
+  const error = await gatherServicesBoard({ ...base, config: { UNIFI_HOST: '192.168.50.1', UNIFI_API_KEY: 'k' }, http: { get: async () => { throw Object.assign(new Error('x'), { code: 'ECONNREFUSED' }); } } });
+  assert.deepStrictEqual([error.networkSource, error.network], ['error', { error: 'ECONNREFUSED' }]);
+  const ok = await gatherServicesBoard({ ...base, config: { UNIFI_HOST: '192.168.50.1', UNIFI_API_KEY: 'k' }, http: { get: async url => ({ data: url.endsWith('/stat/health') ? HEALTH : { data: [] } }) } });
+  assert.strictEqual(ok.networkSource, 'ok');
+});

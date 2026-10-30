@@ -20,8 +20,13 @@
 
 const axios = require('axios');
 const https = require('https');
+const { log } = require('./log');
 
 const HISTORY_MAX = 60;
+// Per request to the console. axios's `timeout` only measures socket inactivity, so a console that
+// accepts the connection and then trickles (or never finishes) a response could hold the dashboard's
+// request open; the AbortSignal caps the whole request at the same 8 s.
+const UNIFI_TIMEOUT_MS = 8000;
 const history = []; // [{ t, downMbps, upMbps }], oldest -> newest
 let sessionCookie = null;
 
@@ -35,11 +40,15 @@ function baseUrl(config) {
   return `https://${config.UNIFI_HOST}/proxy/network`;
 }
 
+function requestOpts(config, headers) {
+  return { headers, timeout: UNIFI_TIMEOUT_MS, signal: AbortSignal.timeout(UNIFI_TIMEOUT_MS), httpsAgent: agent(config) };
+}
+
 async function login(config, http) {
   const res = await http.post(
     `https://${config.UNIFI_HOST}/api/login`,
     { username: config.UNIFI_USER, password: config.UNIFI_PASSWORD },
-    { timeout: 8000, httpsAgent: agent(config) }
+    requestOpts(config, {})
   );
   const setCookie = (res.headers && res.headers['set-cookie']) || [];
   const token = setCookie.map((c) => String(c).split(';')[0]).find((c) => /^TOKEN=/.test(c));
@@ -51,23 +60,52 @@ async function apiGet(config, path, http = axios) {
   const headers = {};
   if (config.UNIFI_API_KEY) headers['X-API-KEY'] = config.UNIFI_API_KEY;
   if (sessionCookie) headers.Cookie = sessionCookie;
-  const opts = { headers, timeout: 8000, httpsAgent: agent(config) };
   try {
-    const res = await http.get(baseUrl(config) + path, opts);
-    return res.data;
+    const res = await http.get(baseUrl(config) + path, requestOpts(config, headers));
+    return expectJson(res.data, path);
   } catch (err) {
     const status = err.response && err.response.status;
     if (!sessionCookie && (status === 401 || status === 403) && config.UNIFI_USER && config.UNIFI_PASSWORD) {
       await login(config, http);
-      const retry = await http.get(baseUrl(config) + path, {
-        headers: { ...headers, Cookie: sessionCookie },
-        timeout: 8000,
-        httpsAgent: agent(config),
-      });
-      return retry.data;
+      const retry = await http.get(baseUrl(config) + path, requestOpts(config, { ...headers, Cookie: sessionCookie }));
+      return expectJson(retry.data, path);
     }
+    if (!err.unifiPath) err.unifiPath = path;
     throw err;
   }
+}
+
+// The console answers a sign-in page (HTML) instead of JSON when a request isn't authorised on some
+// firmware, with a 200. Treat anything that isn't a JSON object as a failure rather than "no data".
+function expectJson(data, path) {
+  if (data && typeof data === 'object') return data;
+  const err = new Error('unexpected_response_not_json');
+  err.code = 'unexpected_response_not_json';
+  err.unifiPath = path;
+  throw err;
+}
+
+// Why a read failed, as a short stable code the page turns into plain words. Never includes the key.
+function failureReason(err) {
+  const status = err.response && err.response.status;
+  if (status === 401 || status === 403) return 'auth_rejected_check_key';
+  if (status) return `http_${status}`;
+  if (err.code === 'ECONNABORTED' || err.code === 'ERR_CANCELED' || err.name === 'AbortError' || err.name === 'CanceledError' || /timeout/i.test(String(err.message))) return 'timeout';
+  return String(err.code || err.message || 'fetch_failed').slice(0, 80);
+}
+
+// Log only when the outcome changes (failing -> a different failure, failing -> ok), not on every
+// dashboard poll: the page polls every 15 s per open tab. Endpoint path and status/code only.
+let lastLoggedState = null;
+function logOutcome(state, detail) {
+  if (state === lastLoggedState) return;
+  const previous = lastLoggedState;
+  lastLoggedState = state;
+  if (state === 'ok') {
+    if (previous) log.info(`unifi: reads recovered (was ${previous})`);
+    return;
+  }
+  log.warn(`unifi: ${detail}`);
 }
 
 function num(v) {
@@ -150,6 +188,8 @@ async function fetchUnifiNetwork(config, http = axios) {
     ]);
     const wan = parseHealth(health);
     const clients = parseClients(sta);
+    logOutcome(hasNetworkData({ wan, clients }) ? 'ok' : 'empty',
+      `stat/health and stat/sta answered but carried no WAN or client data (site ${site})`);
     const sample = { t: Date.now(), downMbps: clients.downMbps, upMbps: clients.upMbps };
     history.push(sample);
     while (history.length > HISTORY_MAX) history.shift();
@@ -160,13 +200,16 @@ async function fetchUnifiNetwork(config, http = axios) {
       history: history.slice(),
     };
   } catch (err) {
+    const reason = failureReason(err);
     const status = err.response && err.response.status;
-    const reason =
-      status === 401 || status === 403
-        ? 'auth_rejected_check_key'
-        : String(err.code || err.message || 'fetch_failed').slice(0, 80);
+    logOutcome(`error:${reason}`, `GET ${err.unifiPath || `/api/s/${site}/stat/*`} failed: ${status ? `HTTP ${status}` : (err.code || err.name || 'error')} (${reason})`);
     return { error: reason };
   }
+}
+
+// Whether the bot has what it needs to ask the console at all (host plus a key or a login).
+function unifiConfigured(config) {
+  return !!(config.UNIFI_HOST && (config.UNIFI_API_KEY || (config.UNIFI_USER && config.UNIFI_PASSWORD)));
 }
 
 // True when a successful UniFi read carries at least one real value. A console that answers with
@@ -182,4 +225,4 @@ function hasNetworkData(network) {
     || Number(clients.total) > 0);
 }
 
-module.exports = { fetchUnifiNetwork, parseHealth, parseClients, hasNetworkData };
+module.exports = { fetchUnifiNetwork, parseHealth, parseClients, hasNetworkData, unifiConfigured, failureReason, UNIFI_TIMEOUT_MS };

@@ -906,6 +906,11 @@ function renderServicesPanel({ needs = '' } = {}) {
   color: var(--svc-ink2); cursor: pointer; margin-bottom: 16px; }
 .svc-netmode .mdot { width: 7px; height: 7px; border-radius: 50%; background: var(--svc-cool); box-shadow: 0 0 8px color-mix(in srgb, var(--svc-cool) 90%, transparent); }
 .svc-loading { color: var(--svc-ink2); font-size: 13px; padding: 24px; text-align: center; }
+.net-state { margin: 0 0 14px; padding: 18px 16px; border-radius: 18px; background: var(--panel); border: 1px solid var(--edge); display: grid; gap: 8px; justify-items: start; }
+.net-state.error { border-color: color-mix(in srgb, var(--bad, #e5484d) 55%, var(--edge)); }
+.net-state-title { font-weight: 700; font-size: 15px; }
+.net-state-detail { margin: 0; font-size: 13.5px; color: var(--muted); max-width: 62ch; overflow-wrap: anywhere; }
+.net-retry { min-height: 44px; padding: 0 18px; }
 .svc-sheet { position: fixed; inset: 0; z-index: 60; display: none; align-items: flex-end; justify-content: center; }
 .svc-sheet.open { display: flex; }
 .svc-sheet .scrim { position: absolute; inset: 0; background: rgba(0,0,0,.55); backdrop-filter: blur(4px); }
@@ -1249,7 +1254,10 @@ function renderServicesPanel({ needs = '' } = {}) {
 (function () {
   var board = document.getElementById('svcBoard');
   var np = document.getElementById('svcNowPlaying');
-  var netBoard = document.getElementById('netBoard');
+  // The Network page's container sits in a later panel than this script, so it doesn't exist yet
+  // while the page is still being parsed. Look it up when rendering, never once up front: a lookup
+  // here always got null, and the page sat on "Loading network…" forever.
+  function netBoardEl() { return document.getElementById('netBoard'); }
   var uptimeEl = document.getElementById('svcUptime');
   if (!board) return;
   var LAN = '', TAIL = '', mode = 'tail', manualMode = null;
@@ -1282,6 +1290,60 @@ function renderServicesPanel({ needs = '' } = {}) {
     return !findTerm || String(x.name || '').toLowerCase().indexOf(findTerm) > -1;
   }
   var lastData = null;
+
+  // ---- Network page states: data, not configured, empty, router error, page load error ----
+  // Every one of them ends the "Loading network…" placeholder; the error ones carry a Retry button.
+  var NET_REASONS = {
+    auth_rejected_check_key: 'the router rejected the UniFi API key (HTTP 401/403). Check UNIFI_API_KEY in UniFi OS.',
+    timeout: 'the router did not answer within 8 seconds.',
+    unexpected_response_not_json: 'the router answered with a page instead of data (often a sign-in page): the API key may not be accepted.',
+    ECONNREFUSED: 'the router refused the connection.',
+    EHOSTUNREACH: 'the router could not be reached on the network.',
+    ENETUNREACH: 'the router could not be reached on the network.',
+    ENOTFOUND: 'the router address could not be resolved.',
+    ECONNRESET: 'the connection to the router was reset.',
+  };
+  function netReason(code) {
+    var c = String(code || '');
+    if (NET_REASONS[c]) return NET_REASONS[c];
+    if (/^http_[0-9]+$/.test(c)) return 'the router answered HTTP ' + c.slice(5) + '.';
+    return 'the read failed (' + c + ').';
+  }
+  function netState(kind, title, detail, retry) {
+    return '<div class="net-state ' + kind + '" role="' + (kind === 'error' ? 'alert' : 'status') + '">' +
+      '<div class="net-state-title">' + esc(title) + '</div>' +
+      (detail ? '<p class="net-state-detail">' + esc(detail) + '</p>' : '') +
+      (retry ? '<button type="button" class="btn net-retry" data-net-retry="1">Retry</button>' : '') + '</div>';
+  }
+  function netPageHtml(d) {
+    var source = d.networkSource;
+    var head = '<div class="svc-head"><h2>Network</h2><span class="sum">UDR7' + (d.network && !d.network.error ? ' · live' : '') + '</span><div class="line"></div></div>';
+    var extra = specialCards(d, 'net');
+    var extraGrid = extra ? '<div class="svc-grid">' + extra + '</div>' : '';
+    if (d.network && !d.network.error) return head + '<div class="svc-grid">' + networkCards(d) + extra + '</div>';
+    if (d.network && d.network.error) {
+      return head + netState('error', 'Can’t read the router right now', 'The bot asked the UDR7 for its status and ' + netReason(d.network.error) + ' Retry, or check the router.', true) + extraGrid;
+    }
+    if (source === 'error') return head + netState('error', 'Can’t read the router right now', 'The network read failed unexpectedly on the bot. Retry; if it keeps failing, the bot log has a line starting with "unifi:".', true) + extraGrid;
+    if (source === 'empty') return head + netState('error', 'The router answered, but with no data', 'stat/health and stat/sta came back without any WAN or client information. Retry; if it stays empty, check the UniFi site name (UNIFI_SITE).', true) + extraGrid;
+    return head + netState('info', 'UniFi isn’t configured', 'Set UNIFI_HOST and UNIFI_API_KEY in the bot’s environment to show the router here.' + (extra ? '' : ' Speedtest Tracker isn’t configured either.'), false) + extraGrid;
+  }
+  function netLoadErrorHtml(err) {
+    var why = err && err.netReason ? err.netReason : 'the dashboard couldn’t be reached.';
+    return '<div class="svc-head"><h2>Network</h2><span class="sum">UDR7</span><div class="line"></div></div>' +
+      netState('error', 'Couldn’t load the network page', 'Loading it failed: ' + why, true);
+  }
+  function netFail(reason) { var e = new Error(reason); e.netReason = reason; return e; }
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest && e.target.closest('[data-net-retry]');
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = 'Retrying…';
+    load().finally(function () {
+      // The render replaces the button on success; on a repeat failure the error state is redrawn.
+      if (document.body.contains(btn)) { btn.disabled = false; btn.textContent = 'Retry'; }
+    });
+  });
 
   // A poster that fails to load leaves the film icon showing underneath.
   document.addEventListener('error', function (e) { var t = e.target; if (t && t.matches && t.matches('.np-poster img')) t.remove(); }, true);
@@ -1708,6 +1770,7 @@ function renderServicesPanel({ needs = '' } = {}) {
 
   var firstRender = true;
   function render(d, polling) {
+    var netBoard = netBoardEl();
     var focus = document.activeElement;
     var scrollX = window.scrollX, scrollY = window.scrollY;
     unchangedCards.clear();
@@ -1849,13 +1912,7 @@ function renderServicesPanel({ needs = '' } = {}) {
     // menus and the bars' fill animations survive each refresh.
     patchHtml(board, html || '<div class="svc-loading">No services configured yet.</div>');
     applyOrder();
-    if (netBoard) {
-      var netHtml = (d.network || d.speedtest)
-        ? '<div class="svc-head"><h2>Network</h2><span class="sum">UDR7 · live</span><div class="line"></div></div>' +
-          '<div class="svc-grid">' + networkCards(d) + specialCards(d, 'net') + '</div>'
-        : '<div class="svc-loading">No network source is configured. Set the UniFi (UDR7) or Speedtest Tracker variables to show it here.</div>';
-      patchHtml(netBoard, netHtml);
-    }
+    if (netBoard) patchHtml(netBoard, netPageHtml(d));
     var spark = document.getElementById('netSpark');
     if (spark && !unchangedCards.has('unifi-tput') && d.network && d.network.history && d.network.history.length > 1) {
       drawSparkline(spark, d.network.history);
@@ -2459,10 +2516,20 @@ function renderServicesPanel({ needs = '' } = {}) {
     loadUptime(scheduled);
     var controller = new AbortController();
     var timeout = setTimeout(function () { controller.abort(); }, 15000);
-    loading = fetch('/admin/api/services', { headers: { 'Accept': 'application/json' }, cache: 'no-store', signal: controller.signal })
-      .then(function (r) { if (!r.ok) throw new Error('Services request failed'); return r.json(); })
+    // 15 s, the bot's usual: the router reads give up at 8 s on the server, so a slow router comes
+    // back as an error card well inside it; this only trips if the dashboard itself doesn't answer.
+    loading = fetch('/admin/api/services', { headers: { 'Accept': 'application/json' }, cache: 'no-store', credentials: 'same-origin', signal: controller.signal })
+      .then(function (r) {
+        if (r.status === 401 || r.status === 403) throw netFail('your sign-in has ended (HTTP ' + r.status + '). Reload the page to sign in again.');
+        if (!r.ok) throw netFail('the dashboard answered HTTP ' + r.status + '.');
+        var type = r.headers.get('content-type') || '';
+        if (type.indexOf('json') === -1) throw netFail(r.redirected ? 'the dashboard sent the sign-in page instead of data. Reload the page to sign in again.' : 'the dashboard sent a web page instead of data. Reload the page; your sign-in may have ended.');
+        return r.json().catch(function () { throw netFail('the dashboard sent data that couldn’t be read.'); });
+      }, function (err) {
+        throw netFail(err && err.name === 'AbortError' ? 'the dashboard didn’t answer within 15 seconds.' : 'the dashboard couldn’t be reached (network error).');
+      })
       .then(function (d) {
-        if (!d.ok) throw new Error('Services response failed');
+        if (!d || !d.ok) throw netFail((d && d.error) ? String(d.error) : 'the dashboard reported an error.');
         if (blocked()) return;
         var next = mergeData(lastData, d);
         var changed = !lastData || Object.keys(next).some(function (key) {
@@ -2473,10 +2540,15 @@ function renderServicesPanel({ needs = '' } = {}) {
         if (window.DashLive) window.DashLive.ok();
         syncStale();
       })
-      .catch(function () {
+      .catch(function (err) {
         if (blocked()) return;
         if (scheduled) missed++;
-        if (!lastData) board.innerHTML = '<div class="svc-loading">Could not reach the services API.</div>';
+        if (!lastData) {
+          board.innerHTML = '<div class="svc-loading">Could not reach the services API.</div>';
+          // With nothing to show yet, the Network page says why instead of "Loading network…".
+          var nb = netBoardEl();
+          if (nb) nb.innerHTML = netLoadErrorHtml(err);
+        }
         if (window.DashLive) window.DashLive.fail();
         syncStale();
       })
