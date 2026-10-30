@@ -115,7 +115,15 @@ function createDashboardGateActor({ sha256 }) {
 // admin secret at full speed and bypass /admin/login's 5-per-15-minutes limit. Failed header
 // attempts are counted per client; once a client hits the limit, every header attempt from it
 // (right or wrong) gets 429 until the window ends. Cookie sessions are never throttled here.
-function createHeaderAuthThrottle({ limit = 10, windowMs = 15 * 60000, now = Date.now } = {}) {
+// With a `store` (a SqliteRollingWindowStore) the failures are kept in SQLite and survive a
+// restart; without one they are counted in memory.
+function createHeaderAuthThrottle({ limit = 10, windowMs = 15 * 60000, now = Date.now, store = null } = {}) {
+  if (store) {
+    return {
+      blocked: key => store.get(key).totalHits >= limit,
+      fail: key => store.increment(key).totalHits,
+    };
+  }
   const failures = new Map();
   function current(key) {
     const entry = failures.get(key);
@@ -189,6 +197,9 @@ function registerDashboardAuthRoutes(app, {
   passkeyClientPath,
   webauthnBrowserPath,
   sessionGeneration,
+  // ({ scope, limit, windowMs }) => an express-rate-limit store for the sign-in limiters (the
+  // password form and passkey authenticate), so their counts survive restarts. Unset = in memory.
+  loginStore = () => undefined,
 }) {
   const adminForm = express.urlencoded({ extended: false, limit: '16kb' });
 
@@ -245,6 +256,7 @@ function registerDashboardAuthRoutes(app, {
     windowMs: 15 * 60000,
     limit: 10,
     keyGenerator: httpRateLimitKey,
+    store: loginStore({ scope: 'dashboard-passkey-authenticate', limit: 10, windowMs: 15 * 60000 }),
     standardHeaders: 'draft-8',
     legacyHeaders: false,
     handler: (_req, res) => res.status(429).json({ error: 'Too many attempts. Try again in a few minutes.' }),
@@ -267,6 +279,7 @@ function registerDashboardAuthRoutes(app, {
     windowMs: 15 * 60000,
     limit: 5,
     keyGenerator: httpRateLimitKey,
+    store: loginStore({ scope: 'dashboard-login', limit: 5, windowMs: 15 * 60000 }),
     standardHeaders: 'draft-8',
     legacyHeaders: false,
     handler: (_req, res) => res.status(429).type('html').send(renderLogin(
