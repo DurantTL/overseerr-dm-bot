@@ -321,3 +321,16 @@ test('config: disk alert thresholds default sanely and validate the urgent < war
   const custom = run({ DISK_WARN_FREE_PCT: '20', DISK_URGENT_FREE_PCT: '10', DISK_CLEAR_MARGIN_PCT: '5', DISK_CHECK_MINUTES: '15' });
   assert.match(custom.stdout, /VALID/, 'sane overrides pass');
 });
+
+test('config: DASHBOARD_PASSWORD_LOGIN is on unless explicitly turned off', () => {
+  const { execFileSync } = require('child_process');
+  const read = value => {
+    const env = { ...process.env };
+    delete env.DASHBOARD_PASSWORD_LOGIN;
+    if (value !== undefined) env.DASHBOARD_PASSWORD_LOGIN = value;
+    return execFileSync(process.execPath, ['-e', "process.stdout.write(String(require('./src/config').CONFIG.DASHBOARD_PASSWORD_LOGIN))"], { env, cwd: path.join(__dirname, '..', '..') }).toString();
+  };
+  assert.strictEqual(read(undefined), 'true', 'unset = today\'s behaviour');
+  for (const on of ['1', 'on', 'true', 'yes', '', 'typo']) assert.strictEqual(read(on), 'true', `${JSON.stringify(on)} keeps password sign-in on`);
+  for (const off of ['0', 'off', 'OFF', 'false', 'no', ' off ']) assert.strictEqual(read(off), 'false', `${JSON.stringify(off)} turns it off`);
+});

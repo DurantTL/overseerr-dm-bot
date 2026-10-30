@@ -38,14 +38,14 @@ const TOKENS = {
 };
 const LEGACY_ENV = 'tok-legacy-env-0000000000000000000000';
 
-function setup() {
+function setup(extraConfig = {}) {
   const byHash = {};
   for (const [name, t] of Object.entries(TOKENS)) byHash[sha256(t.raw)] = { name, ...t };
   const audits = [];
   const dispatched = { commands: [], buttons: [] };
   const app = createApp();
   registerAgentApiRoutes(app, {
-    config: { AGENT_API_READ_MAX_PER_MINUTE: 1000, AGENT_API_WRITE_MAX_PER_MINUTE: 1000 },
+    config: { AGENT_API_READ_MAX_PER_MINUTE: 1000, AGENT_API_WRITE_MAX_PER_MINUTE: 1000, ...extraConfig },
     getAgentApiTokenHashes: () => Object.keys(byHash),
     getAgentApiTokenLabel: hash => byHash[hash]?.name || null,
     getAgentApiTokenGrants: hash => (byHash[hash] ? { scopes: byHash[hash].scopes, discordActions: byHash[hash].discordActions } : null),
@@ -235,5 +235,14 @@ test('every route is scoped: no endpoint is reachable with the wrong scope', asy
         `${path} admits a read-only token`,
       );
     }
+  });
+});
+
+test('DASHBOARD_PASSWORD_LOGIN=off does not touch Agent API bearer tokens', async () => {
+  const fixture = setup({ DASHBOARD_PASSWORD_LOGIN: false });
+  await withServer(fixture, async port => {
+    assert.strictEqual((await call(port, { token: TOKENS.observer.raw, path: '/api/v1/health' })).statusCode, 200, 'dashboard-minted token');
+    assert.strictEqual((await call(port, { token: LEGACY_ENV, path: '/api/v1/health' })).statusCode, 200, 'legacy env token');
+    assert.strictEqual((await call(port, { token: 'not-a-token-000000000000000000000000', path: '/api/v1/health' })).statusCode, 401, 'a wrong token is still refused');
   });
 });

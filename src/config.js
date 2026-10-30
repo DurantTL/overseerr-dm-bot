@@ -475,6 +475,12 @@ const CONFIG = (() => {
   DASHBOARD_ENABLED: parseBool(process.env.DASHBOARD_ENABLED, true),
   DASHBOARD_ADMIN_PASSWORD: process.env.DASHBOARD_ADMIN_PASSWORD || '',
   DASHBOARD_ADMIN_TOKEN: process.env.DASHBOARD_ADMIN_TOKEN || '',
+  // Password sign-in for the /admin dashboard: the login form's password/token field and the
+  // x-admin-password / x-admin-token headers. On unless explicitly turned off (0/false/no/off),
+  // so a typo can never lock anyone out. Off makes passkeys the only dashboard sign-in, but only
+  // while at least one passkey is enrolled; with none, password sign-in stays on (index.js).
+  // The Agent API's bearer tokens are separate and unaffected.
+  DASHBOARD_PASSWORD_LOGIN: !['0', 'false', 'no', 'off'].includes(String(process.env.DASHBOARD_PASSWORD_LOGIN ?? '').trim().toLowerCase()),
   STRICT_DASHBOARD_POST_AUTH: parseBool(process.env.STRICT_DASHBOARD_POST_AUTH, true),
   SESSION_SECRET: process.env.SESSION_SECRET || '',
   SESSION_TTL_HOURS: Number.parseInt(process.env.SESSION_TTL_HOURS || '12', 10),
