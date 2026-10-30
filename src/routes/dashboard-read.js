@@ -9,6 +9,7 @@ const { uptimeSummary } = require('../service-uptime');
 const { activityForMembers } = require('../member-activity');
 const { FEED_ACTION_NAMES, feedItems } = require('../dashboard-feed');
 const { gatherTrends } = require('../dashboard-trends');
+const { redactEdgeChecksForHttp } = require('../diagnostic-redaction');
 const { renderAlertInbox, renderRecentlyAdded, renderQuickActions, renderQuickActionSheet, renderFeed, renderTrends, renderActivity } = require('../dashboard-render');
 const tautulliRecent = require('../tautulli');
 const { buildFleetSync } = require('../fleet-sync');
@@ -631,7 +632,8 @@ function registerDashboardReadRoutes(app, deps) {
           ${renderItemList(sweepItems, '')}
           <div class="actions">
             <a class="btn" href="/admin/health">Health JSON</a>
-            <a class="btn" href="/admin/doctor">Edge Doctor JSON</a>
+            <a class="btn" href="/admin/doctor">Doctor JSON</a>
+            <a class="btn" href="/admin/doctor/edge">Edge Doctor JSON</a>
             <a class="btn" href="/admin/action/sync-preview">Sync Preview</a>
             <a class="btn" href="/admin/action/cleanup-preview">Cleanup Preview</a>
             <button class="btn danger" type="button" onclick="revokeAll()">Revoke All Download Links</button>
@@ -1518,8 +1520,23 @@ function registerDashboardReadRoutes(app, deps) {
     legacyHeaders: false,
     handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many dashboard requests. Wait a moment and try again.' }),
   }), dashboardAuth, async (_req, res) => {
-    const [edgeChecks, originChecks] = await Promise.all([runEdgeDiagnostics({ live: true }), checkPublicOriginReadiness()]);
-    res.json({ checks: [...originChecks, ...edgeChecks], tierNodes: listTierNodes().map(n => ({ name: n.name, enabled: !!n.enabled, full: !!n.full, usableBytes: n.usable_bytes })) });
+    // Only whether the dashboard is reachable and trusted: liveness, public HTTPS origin, TLS
+    // certificate, proxy trust and the forwarded-proto cookie check. Edge and tier detail is at
+    // /admin/doctor/edge.
+    res.json({ checks: await checkPublicOriginReadiness() });
+  });
+  app.get('/admin/doctor/edge', rateLimit({
+    windowMs: 15 * 60000,
+    limit: 300,
+    keyGenerator: httpRateLimitKey,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    handler: (_req, res) => res.status(429).json({ ok: false, error: 'Too many dashboard requests. Wait a moment and try again.' }),
+  }), dashboardAuth, async (_req, res) => {
+    // Main → Philippines transfer, cache and tier checks. Raw rclone stderr is cut to its first
+    // line with URLs and user@host redacted (src/diagnostic-redaction.js).
+    const edgeChecks = redactEdgeChecksForHttp(await runEdgeDiagnostics({ live: true }));
+    res.json({ checks: edgeChecks, tierNodes: listTierNodes().map(n => ({ name: n.name, enabled: !!n.enabled, full: !!n.full, usableBytes: n.usable_bytes })) });
   });
   app.get('/admin/action/sync-preview', rateLimit({
     windowMs: 15 * 60000,

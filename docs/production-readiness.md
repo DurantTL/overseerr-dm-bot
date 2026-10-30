@@ -52,7 +52,7 @@ recognized full Main identity may reach the existing cleanup/deletion decision p
 4. Remove unnecessary `seccomp=unconfined`, oversized PID limits, and oversized ulimits from the
    bot service. The repository compose file does not require them.
 5. Run the test suite, deploy with deletion/copying disabled, then run `/status`, `/doctor`, and
-   the authenticated `/admin/doctor` endpoint.
+   the authenticated `/admin/doctor` and `/admin/doctor/edge` endpoints.
 6. Require Plex, Seerr, Radarr, Radarr 4K, Sonarr, Prowlarr, storage, identities, rclone, tunnel,
    and both edge agents to pass. Byparr may be disabled/unset if it is intentionally unused.
 

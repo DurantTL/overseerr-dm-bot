@@ -47,23 +47,47 @@ async function start(overrides = {}) {
   };
 }
 
-test('public health redacts errors and coalesces the cached result', async () => {
+test('public health returns only overall and timestamp, and coalesces the cached result', async () => {
   let calls = 0;
   const http = await start({
     gatherHealth: async () => {
       calls += 1;
-      return { overall: 'warn', errors: ['private host failed'], services: { discord: 'down' } };
+      return { overall: 'warn', timestamp: '2026-10-29T12:00:00.000Z', errors: ['private host failed'], sonarr: 'down', discordReadyAt: '2026-10-29T11:00:00.000Z', backup: 'ok' };
     },
   });
   try {
     const first = await fetch(`${http.url}/health`);
     const second = await fetch(`${http.url}/health`);
-    assert.strictEqual(first.status, 503);
-    assert.deepStrictEqual(await first.json(), { overall: 'warn', services: { discord: 'down' } });
+    assert.strictEqual(first.status, 503, 'status code semantics unchanged');
+    assert.deepStrictEqual(await first.json(), { overall: 'warn', timestamp: '2026-10-29T12:00:00.000Z' });
     assert.strictEqual(second.status, 503);
     assert.strictEqual(calls, 1);
   } finally {
     await http.close();
+  }
+});
+
+test('public health: healthy answers 200 with only overall and timestamp; a failure leaks no error text', async () => {
+  const ok = await start({ gatherHealth: async () => ({ overall: 'ok', timestamp: '2026-10-29T12:00:00.000Z', plex: 'ok', rtorrent: 'ok' }) });
+  try {
+    const res = await fetch(`${ok.url}/health`);
+    assert.strictEqual(res.status, 200);
+    assert.deepStrictEqual(await res.json(), { overall: 'ok', timestamp: '2026-10-29T12:00:00.000Z' });
+    const live = await fetch(`${ok.url}/live`);
+    assert.strictEqual(live.status, 200);
+    assert.deepStrictEqual(Object.keys(await live.json()), ['overall', 'timestamp'], '/live unchanged');
+  } finally {
+    await ok.close();
+  }
+  const broken = await start({ gatherHealth: async () => { throw new Error('connect ECONNREFUSED 10.0.0.5:8989'); } });
+  try {
+    const res = await fetch(`${broken.url}/health`);
+    assert.strictEqual(res.status, 503);
+    const body = await res.json();
+    assert.deepStrictEqual(Object.keys(body), ['overall', 'timestamp']);
+    assert.strictEqual(body.overall, 'down');
+  } finally {
+    await broken.close();
   }
 });
 

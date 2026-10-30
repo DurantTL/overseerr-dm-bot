@@ -302,7 +302,7 @@ Compose defaults:
 - Service name + container: `overseerr-dm-bot`
 - SQLite persisted in named volume `durant_bot_data`
 - Media mounted read-only: `${MEDIA_HOST_PATH:-/mnt/raid}:/mnt/raid:ro`
-- Liveness endpoint: `http://127.0.0.1:3000/live`; readiness and integration status: `http://127.0.0.1:3000/health`
+- Liveness endpoint: `http://127.0.0.1:3000/live`; readiness: `http://127.0.0.1:3000/health` (overall state only); per-integration status: `/admin/health` (dashboard sign-in)
 
 ## Portainer Setup (first deployment)
 1. In Portainer, create a new stack and paste `docker-compose.yml`.
@@ -471,7 +471,7 @@ Slash commands are registered automatically on bot startup using `DISCORD_CLIENT
 - [ ] Container `overseerr-dm-bot` is running and healthy.
 - [ ] Discord bot appears online in your server.
 - [ ] Slash commands appear in the configured guild.
-- [ ] `GET /health` returns `overall: ok` or `degraded` only for expected unavailable services; optional integrations may show `skipped`.
+- [ ] `GET /health` returns `overall: ok`, and the signed-in `GET /admin/health` shows `degraded` only for expected unavailable services; optional integrations may show `skipped`.
 - [ ] `GET /admin` without auth: API/curl callers get HTTP `401`; a browser is redirected to `/admin/login`.
 - [ ] `POST /webhook/plex` with invalid secret returns HTTP `401` (when `WEBHOOK_SECRET` is set).
 - [ ] `/download` creates links that work and only hashed tokens are stored in `download_tokens`.
@@ -536,8 +536,9 @@ Recommended cron (host):
 ```
 
 ## Health Checks
-- Public JSON: `GET /health`
-- Authenticated JSON: `GET /admin/health`
+- Public JSON: `GET /health` — only `{ overall, timestamp }` (200 when ok, 503 otherwise)
+- Authenticated JSON: `GET /admin/health` — the per-integration detail
+- Authenticated doctor: `GET /admin/doctor` (liveness, public HTTPS origin, TLS certificate, proxy trust) and `GET /admin/doctor/edge` (transfer, cache and tier checks; rclone error text cut to one line with URLs and user@host redacted)
 
 Checks include Discord, SQLite, backups, the Plex.tv account and friends-list capabilities
 separately, Seerr service and request-inventory endpoints separately, Radarr, Radarr-4K, Sonarr,

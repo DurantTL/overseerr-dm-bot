@@ -85,7 +85,11 @@ function fixture(overrides = {}) {
     renderStat: (label, value) => `${label}:${value}`,
     renderTable: rows => `rows:${rows.length}`,
     renderTierNodeSetup: () => 'tier-setup',
-    runEdgeDiagnostics: async options => { calls.doctor.push(options); return [{ name: 'edge', ok: true }]; },
+    runEdgeDiagnostics: async options => {
+      calls.doctor.push(options);
+      return [{ name: 'edge', ok: true }, { name: 'Philippines cache read', status: 'fail', detail: 'ssh: handshake failed for caleb@ph.example.net via sftp://ph.example.net:22/mnt\nsecond line with more' }];
+    },
+    checkPublicOriginReadiness: async () => [{ name: 'Public HTTPS origin', status: 'ok', detail: 'https://admin.example/live answered HTTP 200' }],
     runtimeSettings: { describeRuntimeSettings: () => [] },
     searchDashboard: () => ({ requests: [], users: [], library: [], audit: [] }),
     seasonAlertDashboardItems: () => [],
@@ -115,10 +119,24 @@ test('dashboard read routes authenticate before health work and preserve JSON co
     assert.strictEqual(health.statusCode, 200);
     assert.deepStrictEqual(JSON.parse(health.body), { overall: 'ok', errors: {} });
 
+    for (const path of ['/admin/doctor', '/admin/doctor/edge']) {
+      assert.strictEqual((await request(port, path)).statusCode, 401, `${path} needs auth`);
+    }
+    assert.deepStrictEqual(calls.doctor, [], 'nothing runs before auth');
+
     const doctor = await request(port, '/admin/doctor', headers);
     assert.strictEqual(doctor.statusCode, 200);
-    assert.deepStrictEqual(JSON.parse(doctor.body), {
-      checks: [{ name: 'edge', ok: true }],
+    assert.deepStrictEqual(JSON.parse(doctor.body), { checks: [{ name: 'Public HTTPS origin', status: 'ok', detail: 'https://admin.example/live answered HTTP 200' }] },
+      'origin, TLS, proxy and liveness checks only');
+    assert.deepStrictEqual(calls.doctor, [], 'the edge checks no longer run for /admin/doctor');
+
+    const edge = await request(port, '/admin/doctor/edge', headers);
+    assert.strictEqual(edge.statusCode, 200);
+    assert.deepStrictEqual(JSON.parse(edge.body), {
+      checks: [
+        { name: 'edge', ok: true },
+        { name: 'Philippines cache read', status: 'fail', detail: 'ssh: handshake failed for <user@host> via <url>' },
+      ],
       tierNodes: [{ name: 'ph', enabled: true, full: false, usableBytes: 42 }],
     });
     assert.deepStrictEqual(calls.doctor, [{ live: true }]);

@@ -3003,9 +3003,14 @@ function renderQuickActionSheet() {
   });
   async function doctor() {
     try {
-      var r = await fetch('/admin/doctor', { headers: { Accept: 'application/json' } });
-      var data = await r.json().catch(function () { return {}; });
-      if (!r.ok || !Array.isArray(data.checks)) { sub.textContent = ''; msg(data.error || 'Doctor failed (' + r.status + ').', false); return; }
+      // Origin checks first, then edge and tier checks: the same list as before the split.
+      var res = await Promise.all(['/admin/doctor', '/admin/doctor/edge'].map(async function (url) {
+        var r = await fetch(url, { headers: { Accept: 'application/json' } });
+        return { r: r, data: await r.json().catch(function () { return {}; }) };
+      }));
+      var failed = res.filter(function (x) { return !x.r.ok || !Array.isArray(x.data.checks); })[0];
+      if (failed) { sub.textContent = ''; msg(failed.data.error || 'Doctor failed (' + failed.r.status + ').', false); return; }
+      var data = { checks: res[0].data.checks.concat(res[1].data.checks) };
       var bad = data.checks.filter(function (c) { return c.status !== 'ok'; }).length;
       sub.textContent = data.checks.length + ' checks · ' + (bad ? bad + ' need a look' : 'all passing');
       var order = { fail: 0, warn: 1 };
