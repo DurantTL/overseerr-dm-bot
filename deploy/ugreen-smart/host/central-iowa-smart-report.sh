@@ -12,7 +12,11 @@
 #   2. One `smartctl -i -H -A -j` per disk (identity, health, attributes). It never starts a
 #      self-test (-t) and never changes a setting.
 #   3. Optional: total/free bytes of DATA_PATH (the Syncthing data volume). Empty = skipped.
-#   4. Prints one JSON object on stdout. smartctl's own JSON is embedded per disk.
+#   4. Host temperatures, best effort: the raw readings from /sys/class/thermal zones and
+#      /sys/class/hwmon temp*_input (with their zone type / hwmon name / label). The container
+#      filters and classifies them exactly as the tier agent does. A failure here only means no
+#      temperature; it never affects the disk readings or the exit status.
+#   5. Prints one JSON object on stdout. smartctl's own JSON is embedded per disk.
 #
 # Exit status: 0 ok; 3 smartctl is not installed (JSON still printed with smartctlMissing and the
 # mdstat disks, each without a reading);
@@ -30,11 +34,13 @@ export PATH LC_ALL=C
 # Leave empty to report SMART only. Example (confirm the real path in the UGOS UI): /volume1
 DATA_PATH="${DATA_PATH:-}"
 SMARTCTL="${SMARTCTL:-smartctl}"
+# SYSFS is only overridable for tests; over the forced-command SSH path the client can't set it.
+SYSFS="${SYSFS:-/sys}"
 WRAPPER_VERSION=1
 
 json_str() {
-  # Minimal JSON string escaping for device names and paths (no control characters expected).
-  printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  # Minimal JSON string escaping for device names, sensor labels and paths (control characters dropped).
+  printf '"%s"' "$(printf '%s' "$1" | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g')"
 }
 
 # Parent disk of an md member: sda3 -> sda, nvme0n1p3 -> nvme0n1, mmcblk0p2 -> mmcblk0.
@@ -103,6 +109,36 @@ for d in $disks; do
     \{*) printf '{"device":%s,"exit":%s,"smart":%s}' "$(json_str "$d")" "$status" "$out" ;;
     *) printf '{"device":%s,"exit":%s,"smart":null}' "$(json_str "$d")" "$status" ;;
   esac
+done
+printf ']'
+
+# Host temperatures (raw). Integer millidegree values only; anything else is skipped. At most 64.
+printf ',"sensors":['
+first=1
+count=0
+emit_sensor() {
+  # $1 source path, $2 device (zone type / hwmon name), $3 label, $4 raw value
+  printf '%s' "$4" | grep -Eq '^-?[0-9]+$' || return 0
+  [ "$count" -lt 64 ] || return 0
+  [ "$first" -eq 1 ] || printf ','
+  first=0
+  count=$((count + 1))
+  printf '{"source":%s,"device":%s,"label":%s,"raw":%s}' "$(json_str "$1")" "$(json_str "$2")" "$(json_str "$3")" "$4"
+}
+for zone in "$SYSFS"/class/thermal/thermal_zone*; do
+  [ -r "$zone/temp" ] || continue
+  emit_sensor "thermal/${zone##*/}/temp" "$(cat "$zone/type" 2>/dev/null | head -n 1)" "" "$(cat "$zone/temp" 2>/dev/null | head -n 1)"
+done
+for hw in "$SYSFS"/class/hwmon/hwmon*; do
+  [ -d "$hw" ] || continue
+  name=$(cat "$hw/name" 2>/dev/null | head -n 1)
+  for input in "$hw"/temp*_input; do
+    [ -r "$input" ] || continue
+    labelfile="${input%_input}_label"
+    label=""
+    [ -r "$labelfile" ] && label=$(cat "$labelfile" 2>/dev/null | head -n 1)
+    emit_sensor "hwmon/${hw##*/}/${input##*/}" "$name" "$label" "$(cat "$input" 2>/dev/null | head -n 1)"
+  done
 done
 printf ']'
 

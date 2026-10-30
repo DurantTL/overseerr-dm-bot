@@ -23,6 +23,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -198,6 +199,39 @@ def parse_disk(entry):
     return row
 
 
+# Host CPU temperature, best effort. The wrapper sends raw sysfs readings; this applies the tier
+# agent's rules exactly (agent/agent.js collectSystemTelemetry): values above 1000 are
+# millidegrees; keep only finite readings from -20 to 150°C; a sensor is CPU-kind when its device
+# or label names a CPU (same pattern); CPU sensors first, then hottest; the first is the headline.
+CPU_SENSOR_RE = re.compile(r"(?:cpu|core|package|x86_pkg_temp|coretemp|k10temp|zenpower|soc)", re.I)
+
+
+def parse_host_temperatures(raw):
+    if not isinstance(raw, list):
+        return None
+    out = []
+    for entry in raw[:64]:
+        if not isinstance(entry, dict):
+            continue
+        value = entry.get("raw")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        temperature = value / 1000 if value > 1000 else value
+        if temperature != temperature or temperature < -20 or temperature > 150:  # NaN or out of range
+            continue
+        source_path = str(entry.get("source") or "")[:120]
+        device = str(entry.get("device") or "")[:60]
+        label = str(entry.get("label") or "")[:60] or source_path
+        identity = " ".join(x for x in (device, label) if x)
+        if label == source_path:
+            source = f"{device} ({source_path})" if device else source_path
+        else:
+            source = f"{label} ({device + '/' if device else ''}{source_path})"
+        out.append({"label": source[:80], "kind": "cpu" if CPU_SENSOR_RE.search(identity) else "unclassified", "temperatureC": temperature})
+    out.sort(key=lambda t: (t["kind"] != "cpu", -t["temperatureC"]))
+    return out
+
+
 def parse_wrapper_output(text, status):
     """Wrapper stdout -> {source, disks, filesystem, smartctlMissing}. Raises on bad output."""
     try:
@@ -214,6 +248,12 @@ def parse_wrapper_output(text, status):
     disks = [parse_disk(d) for d in data["disks"] if isinstance(d, dict)]
     if not disks:
         raise ReportError("no disks discovered on the host (/proc/mdstat and smartctl --scan both empty)")
+    # Temperature is best effort and never blocks the SMART report: any problem here is just "no
+    # temperature" (an older wrapper without "sensors" included).
+    try:
+        temperatures = parse_host_temperatures(data.get("sensors"))
+    except Exception:  # noqa: BLE001 - deliberately broad: temperature must not fail the run
+        temperatures = None
     fs = data.get("filesystem") if isinstance(data.get("filesystem"), dict) else None
     filesystem = None
     if fs:
@@ -222,7 +262,7 @@ def parse_wrapper_output(text, status):
             filesystem = {"path": str(fs.get("path") or "")[:200], "totalBytes": total, "freeBytes": free}
         else:
             filesystem = {"path": str(fs.get("path") or "")[:200], "error": str(fs.get("error") or "unusable df result")[:120]}
-    return {"smartctlMissing": False, "source": data.get("source"), "disks": disks, "filesystem": filesystem}
+    return {"smartctlMissing": False, "source": data.get("source"), "disks": disks, "filesystem": filesystem, "temperatures": temperatures}
 
 
 def device_label(row):
@@ -251,6 +291,15 @@ def build_payload(parsed, collected_at_ms):
             for r in parsed["disks"][:BOT_MAX_DRIVES]
         ],
     }
+    # Host temperature, same field names as the tier agent. None when unavailable (best effort).
+    temps = parsed.get("temperatures") or []
+    if temps:
+        telemetry["temperatureC"] = temps[0]["temperatureC"]
+        telemetry["temperatureSource"] = temps[0]["label"]
+        telemetry["temperatureKind"] = temps[0]["kind"]
+        telemetry["temperatures"] = temps[:32]
+    else:
+        telemetry["temperatureC"] = None
     fs = parsed.get("filesystem")
     if fs and "totalBytes" in fs:
         telemetry["filesystemTotalBytes"] = fs["totalBytes"]
@@ -328,6 +377,12 @@ def run_once(cfg, dry_run=False, ssh=run_ssh, post=post_report, clock=time.time)
                 f" temp={r['temperatureC']} realloc={r['reallocatedSectors']} pending={r['pendingSectors']}"
                 f" offline_unc={r['offlineUncorrectable']} hours={r['powerOnHours']}")
         log(f"{len(parsed['disks'])} disk(s) found via {parsed['source']}")
+        temps = parsed.get("temperatures") or []
+        report["temperatures"] = temps
+        if temps:
+            log(f"host temperature {temps[0]['temperatureC']:.1f}°C {temps[0]['kind']} ({temps[0]['label']}); {len(temps)} sensor(s)")
+        else:
+            log("host temperature unavailable (no readable sensor); reporting SMART without it")
         unknown = [r["device"] for r in parsed["disks"] if r["health"] == "UNKNOWN"]
         if unknown:
             # The bot can only hold ok/failing; a missing drive would read as a recovery. Fail closed.

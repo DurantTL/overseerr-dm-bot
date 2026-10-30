@@ -98,6 +98,7 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(payload["telemetry"], {
             "collectedAt": 1730000000000,
             "smartHealth": [{"device": "/dev/sda · WDC WD40EFPX", "health": "ok"}, {"device": "/dev/sdb · WDC WD40EFPX", "health": "failing"}],
+            "temperatureC": None,
             "filesystemTotalBytes": 4000, "filesystemFreeBytes": 1000,
         })
         self.assertNotIn("SECRET", json.dumps(payload))
@@ -237,12 +238,103 @@ esac
         self.assertTrue(out["smartctlMissing"])
         self.assertEqual([d["device"] for d in out["disks"]], ["/dev/sdb", "/dev/sda"])
 
+    def test_host_sensors_are_read_from_sysfs(self):
+        sysfs = os.path.join(self.dir, "sys")
+        files = {
+            "class/thermal/thermal_zone0/type": "acpitz\n", "class/thermal/thermal_zone0/temp": "-263200\n",
+            "class/thermal/thermal_zone1/type": "x86_pkg_temp\n", "class/thermal/thermal_zone1/temp": "51000\n",
+            "class/hwmon/hwmon2/name": "coretemp\n", "class/hwmon/hwmon2/temp1_input": "52000\n", "class/hwmon/hwmon2/temp1_label": "Package id 0\n",
+            "class/hwmon/hwmon2/temp2_input": "not-a-number\n", "class/hwmon/hwmon3/name": 'odd"name\n', "class/hwmon/hwmon3/temp1_input": "47000\n",
+        }
+        for rel, body in files.items():
+            path = os.path.join(sysfs, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as fh:
+                fh.write(body)
+        status, out = self.run_wrapper("md1 : active raid1 sda3[0]\n", {"SYSFS": sysfs})
+        self.assertEqual(status, 0)
+        self.assertEqual(sorted((s["source"], s["raw"]) for s in out["sensors"]), [
+            ("hwmon/hwmon2/temp1_input", 52000), ("hwmon/hwmon3/temp1_input", 47000),
+            ("thermal/thermal_zone0/temp", -263200), ("thermal/thermal_zone1/temp", 51000)], "non-numeric value skipped")
+        self.assertEqual(sr.parse_host_temperatures(out["sensors"])[0]["temperatureC"], 52)
+
+    def test_no_sysfs_means_an_empty_sensor_list_and_disks_unaffected(self):
+        status, out = self.run_wrapper("md1 : active raid1 sda3[0]\n", {"SYSFS": os.path.join(self.dir, "nothing")})
+        self.assertEqual((status, out["sensors"], [d["device"] for d in out["disks"]]), (0, [], ["/dev/sda"]))
+
     def test_data_path_free_and_total(self):
         status, out = self.run_wrapper("md1 : active raid1 sda3[0]\n", {"DATA_PATH": self.dir})
         fs = out["filesystem"]
         self.assertEqual(fs["path"], self.dir)
         self.assertGreater(fs["totalBytes"], 0)
         self.assertLessEqual(fs["freeBytes"], fs["totalBytes"])
+
+
+# Raw host readings as the wrapper sends them: a bogus acpitz zone, an x86_pkg_temp zone, coretemp
+# package + core (millidegrees), an over-range core, a PCH sensor and a plain-degrees value.
+RAW_SENSORS = [
+    {"source": "thermal/thermal_zone0/temp", "device": "acpitz", "label": "", "raw": -263200},
+    {"source": "thermal/thermal_zone1/temp", "device": "x86_pkg_temp", "label": "", "raw": 51000},
+    {"source": "hwmon/hwmon2/temp1_input", "device": "coretemp", "label": "Package id 0", "raw": 52000},
+    {"source": "hwmon/hwmon2/temp2_input", "device": "coretemp", "label": "Core 0", "raw": 49000},
+    {"source": "hwmon/hwmon2/temp3_input", "device": "coretemp", "label": "Core 1", "raw": 200000},
+    {"source": "hwmon/hwmon3/temp1_input", "device": "pch_jasperlake", "label": "", "raw": 47000},
+    {"source": "hwmon/hwmon4/temp1_input", "device": "nvme", "label": "Composite", "raw": 38},
+    {"source": "hwmon/hwmon5/temp1_input", "device": "x", "label": "", "raw": float("inf")},
+]
+
+
+class TemperatureTests(unittest.TestCase):
+    def test_same_filtering_and_order_as_the_agent(self):
+        temps = sr.parse_host_temperatures(RAW_SENSORS)
+        self.assertEqual([(t["temperatureC"], t["kind"]) for t in temps],
+                         [(52, "cpu"), (51, "cpu"), (49, "cpu"), (47, "unclassified"), (38, "unclassified")],
+                         "-263 and 200 dropped, non-finite dropped, CPU first then hottest")
+        self.assertEqual(temps[0]["label"], "Package id 0 (coretemp/hwmon/hwmon2/temp1_input)")
+        self.assertEqual(temps[1]["label"], "x86_pkg_temp (thermal/thermal_zone1/temp)")
+
+    def test_payload_carries_the_headline_and_the_list(self):
+        parsed = sr.parse_wrapper_output(json.dumps({"smartctlMissing": False, "source": "mdstat", "sensors": RAW_SENSORS,
+                                                     "disks": [{"device": "/dev/sda", "exit": 0, "smart": ata("WDC", True)}]}), 0)
+        t = sr.build_payload(parsed, 1)["telemetry"]
+        self.assertEqual((t["temperatureC"], t["temperatureKind"]), (52, "cpu"))
+        self.assertEqual(t["temperatureSource"], "Package id 0 (coretemp/hwmon/hwmon2/temp1_input)")
+        self.assertEqual(len(t["temperatures"]), 5)
+
+    def test_bad_or_missing_sensors_mean_null_temperature_not_a_failure(self):
+        for sensors in (None, [], "garbage", [{"raw": "x"}], [{"raw": -263200}], [{"raw": True}]):
+            body = {"smartctlMissing": False, "source": "mdstat", "disks": [{"device": "/dev/sda", "exit": 0, "smart": ata("WDC", True)}]}
+            if sensors is not None:
+                body["sensors"] = sensors
+            parsed = sr.parse_wrapper_output(json.dumps(body), 0)
+            t = sr.build_payload(parsed, 1)["telemetry"]
+            self.assertIsNone(t["temperatureC"], f"sensors={sensors!r}")
+            self.assertNotIn("temperatures", t)
+
+
+class TemperatureRunTests(unittest.TestCase):
+    # Same harness as RunOnceTests, without re-running its tests.
+    setUp, tearDown, post, run_with, report = RunOnceTests.setUp, RunOnceTests.tearDown, RunOnceTests.post, RunOnceTests.run_with, RunOnceTests.report
+
+    def test_temperature_failure_still_posts_the_smart_report(self):
+        text = json.dumps({"smartctlMissing": False, "source": "mdstat", "sensors": [{"raw": "unreadable"}],
+                           "disks": [{"device": "/dev/sda", "exit": 0, "smart": ata("WDC", True)}]})
+        self.assertEqual(self.run_with(text), 0)
+        self.assertEqual(len(self.posts), 1)
+        self.assertIsNone(self.posts[0]["telemetry"]["temperatureC"])
+        self.assertEqual(self.posts[0]["telemetry"]["smartHealth"], [{"device": "/dev/sda · WDC", "health": "ok"}])
+
+    def test_an_unknown_disk_still_blocks_the_post_even_with_a_good_temperature(self):
+        text = json.dumps({"smartctlMissing": False, "source": "mdstat", "sensors": RAW_SENSORS, "disks": [
+            {"device": "/dev/sda", "exit": 0, "smart": ata("WDC", True)}, {"device": "/dev/sdz", "exit": 2, "smart": OPEN_FAILED}]})
+        self.assertEqual(self.run_with(text), 2)
+        self.assertEqual(self.posts, [])
+
+    def test_the_temperature_lands_in_the_local_report(self):
+        text = json.dumps({"smartctlMissing": False, "source": "mdstat", "sensors": RAW_SENSORS,
+                           "disks": [{"device": "/dev/sda", "exit": 0, "smart": ata("WDC", True)}]})
+        self.assertEqual(self.run_with(text), 0)
+        self.assertEqual(self.report()[1]["temperatures"][0]["temperatureC"], 52)
 
 
 class ScheduleTests(unittest.TestCase):

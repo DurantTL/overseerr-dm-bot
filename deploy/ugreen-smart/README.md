@@ -28,9 +28,9 @@ per disk.
 
 | Where | What |
 |---|---|
-| **Bot** (fleet-disks view, SMART alerts) | Per disk: `device · model` (for example `/dev/sda · WDC WD40EFPX-68C6CN0`) and `ok` / `failing`. Free/total bytes of the data volume **only if `DATA_PATH` is set** on the host (see below). No serial numbers. |
+| **Bot** (fleet-disks view, SMART alerts) | Per disk: `device · model` (for example `/dev/sda · WDC WD40EFPX-68C6CN0`) and `ok` / `failing`. Free/total bytes of the data volume **only if `DATA_PATH` is set** on the host (see below). The host CPU temperature (`temperatureC`, `temperatureSource`, `temperatureKind`, plus every sensor in `temperatures`) when the host exposes one; otherwise `temperatureC` is null. No serial numbers. |
 | **`/reports/smart-YYYY-MM-DD.json`** (kept 60 days) | Every disk found: device, model, health PASSED / FAILED / UNKNOWN, temperature, reallocated sectors, current pending sectors, offline uncorrectable, power-on hours, error text. No serial numbers. |
-| **`docker logs`** | One line per disk with the same fields, the disk count and source, and the outcome. |
+| **`docker logs`** | One line per disk with the same fields, the disk count and source, the host temperature (or "host temperature unavailable"), and the outcome. |
 
 ### Free/total space
 
@@ -39,6 +39,21 @@ size; without one, the SMART alerts still work but there is no row. The wrapper 
 free/total only for an explicit path: set `DATA_PATH` in the wrapper on the host to the
 Syncthing data volume (for example `/volume1`; confirm it in the UGOS UI). Left empty, it
 reports SMART only.
+
+### Host CPU temperature
+
+The wrapper also reads the host's `/sys/class/thermal` zones and `/sys/class/hwmon` `temp*_input`
+sensors (raw values only). The container applies the tier agent's exact rules: readings outside
+-20..150°C or not numbers are dropped (so a bogus `acpitz` zone at -263°C never shows), CPU
+sensors (package, cores, `x86_pkg_temp`, coretemp…) come first, then hottest, and the first one
+is the headline temperature. It is **best effort**: if no sensor can be read, `temperatureC` is
+null, a log line says so, and the SMART report still posts. The temperature never decides whether
+a report is sent. An older wrapper on the host (without the sensor section) works the same way:
+no temperature, SMART as before.
+
+Once the bot's sustained temperature alerting is in (#434), it alerts on node temperature only
+after two reports in a row at or above the warning line, so with this once-a-day reporter a hot
+reading needs two consecutive days to alert. Without #434, one hot report alerts.
 
 ## Failure rules (strict)
 
