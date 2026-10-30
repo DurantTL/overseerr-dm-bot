@@ -393,7 +393,7 @@ function registerDashboardReadRoutes(app, deps) {
     const tierItems = tierNodes.map(n => {
       const plan = getTierPlan(n.name);
       const rep = lastReportByNode[n.name];
-      const status = tierNodeStatus(plan, rep, now, CONFIG.TIER_PLAN_STALE_DAYS);
+      const status = tierNodeStatus(plan, rep, now, CONFIG.TIER_PLAN_STALE_DAYS, { warnC: CONFIG.NODE_TEMP_WARN_C, criticalC: CONFIG.NODE_TEMP_CRITICAL_C });
       return {
         state: !n.enabled ? 'skip' : status.state,
         title: `${n.name}${n.full ? ' · full master' : ''}${n.sticky ? ' · sticky' : ''}`,

@@ -279,3 +279,41 @@ test('tier-agent report: new Syncthing conflict copies in the inventory ping onc
     assert.ok(settings.has('sync_conflicts_seen:edge'));
   } finally { await close(server); }
 });
+
+test('tier-agent report: fuller telemetry is stored, and a hot node alerts only on the second report in a row', async () => {
+  const { app, calls, plans } = setup({
+    // Stand-in for db.recordTierAgentHeartbeat: stores what the route hands it, like the real one.
+    recordTierAgentHeartbeat: (node, value) => {
+      calls.heartbeats.push({ node, value });
+      plans.set(node, { ...(plans.get(node) || {}), lastTelemetry: value.telemetry, lastTelemetryLevel: value.telemetryLevel, lastTelemetryStreak: value.telemetryStreak });
+    },
+  });
+  const server = await listen(app, 0);
+  const port = server.address().port;
+  const report = temperatureC => request(port, { method: 'POST', path: '/agent/report/edge', token: 'valid', body: {
+    heartbeat: true, planHash: 'current',
+    telemetry: {
+      collectedAt: Date.now(), temperatureC, temperatureSource: 'Package id 0 (coretemp/hwmon/hwmon2/temp1_input)', temperatureKind: 'cpu',
+      temperatures: [{ label: 'Package id 0 (coretemp/hwmon/hwmon2/temp1_input)', kind: 'cpu', temperatureC }, { label: 'pch (hwmon/hwmon3/temp1_input)', kind: 'unclassified', temperatureC: 50 }],
+      fans: [], driveTemperatures: [{ device: '/dev/sda', temperatureC: 38 }],
+    },
+  } });
+  try {
+    await report(85);
+    const stored = plans.get('edge');
+    assert.deepStrictEqual(stored.lastTelemetry.temperatures.map(t => t.temperatureC), [85, 50], 'sensor list stored');
+    assert.deepStrictEqual(stored.lastTelemetry.fans, [], 'no-fan answer stored as []');
+    assert.deepStrictEqual(stored.lastTelemetry.driveTemperatures, [{ device: '/dev/sda', temperatureC: 38 }]);
+    assert.strictEqual(stored.lastTelemetry.temperatureC, 85, 'the spike is recorded and visible');
+    assert.strictEqual(stored.lastTelemetryLevel, 'unknown', 'but not alerted: level unchanged after one hot report');
+    assert.deepStrictEqual(calls.telemetryTransitions.map(t => t.telemetryHealth.level), ['unknown']);
+
+    await report(86);
+    assert.strictEqual(plans.get('edge').lastTelemetryLevel, 'warn', 'second hot report in a row confirms warn');
+    const last = calls.telemetryTransitions.at(-1);
+    assert.deepStrictEqual([last.previousTelemetryLevel, last.telemetryHealth.level], ['unknown', 'warn']);
+
+    await report(60);
+    assert.strictEqual(plans.get('edge').lastTelemetryLevel, 'ok', 'a cool report clears at once (existing hysteresis)');
+  } finally { await close(server); }
+});

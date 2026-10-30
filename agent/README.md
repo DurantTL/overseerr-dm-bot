@@ -215,11 +215,15 @@ and the watched path (no `SYNCTHING_API_KEY`, no folder IDs).
 
 What the agent does each cycle in monitor-only mode:
 
-- Reports heartbeat + full system telemetry (load, temps, RAM, uptime).
+- Reports heartbeat + full system telemetry (load, temps, RAM, uptime). Temperature: the hottest
+  CPU sensor as before (`temperatureC`), plus every sensor kept after filtering (`temperatures`),
+  fan speeds where the host exposes them (`fans`; empty when it exposes none, as on the PH NUC)
+  and per-drive temperatures from the SMART read (`driveTemperatures`).
 - Reports free/total bytes of the watched filesystem (`TIER_FOLDER_ROOT`) — this is what
   feeds the fleet `/api/v1/disks` endpoint and the low-space alerts.
 - Reports SMART health (`TIER_SMART_DEVICES`, or best-effort derivation from the watched
-  filesystem's block device) — this feeds the drive-health alerts.
+  filesystem's block device) — this feeds the drive-health alerts. One `smartctl -H -A -j` per
+  drive (health plus attributes, which carry the drive temperature); never a self-test.
 - Skips everything else: no manifest fetch, no mount guard, no inventory walk, no
   `.stignore` writes, no pruning.
 - Runs hardened: the watched filesystem is mounted read-only into the unit

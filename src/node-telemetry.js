@@ -30,6 +30,49 @@ function sanitizeSmartHealth(raw) {
   return out.length ? out : null;
 }
 
+// The agent's full sensor list (additive alongside temperatureC): at most 32 entries, each with
+// a label, kind and a temperature inside the same -20..150°C window the agent applies. Kept in the
+// order sent (CPU first, then hottest). Not an array = not reported (null, an older agent).
+function sanitizeTemperatures(raw) {
+  if (!Array.isArray(raw)) return null;
+  const out = [];
+  for (const entry of raw.slice(0, 32)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const temperatureC = boundedNumber(entry.temperatureC, { min: -20, max: 150 });
+    if (temperatureC == null) continue;
+    const label = String(entry.label || '').slice(0, 80) || null;
+    out.push({ label, kind: temperatureKind(entry.kind, label), temperatureC });
+  }
+  return out;
+}
+
+// Fan speeds as the host exposes them. An empty list is a real answer (no fan exposed, e.g. the
+// PH NUC) and is kept as []; not an array = not reported.
+function sanitizeFans(raw) {
+  if (!Array.isArray(raw)) return null;
+  const out = [];
+  for (const entry of raw.slice(0, 16)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const rpm = boundedNumber(entry.rpm, { min: 0, max: 100000 });
+    if (rpm == null) continue;
+    out.push({ label: String(entry.label || '').slice(0, 80) || null, rpm: Math.round(rpm) });
+  }
+  return out;
+}
+
+// One entry per drive read; temperatureC null when that drive gave no reading.
+function sanitizeDriveTemperatures(raw) {
+  if (!Array.isArray(raw)) return null;
+  const out = [];
+  for (const entry of raw.slice(0, 8)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const device = String(entry.device || '').slice(0, 80);
+    if (!device) continue;
+    out.push({ device, temperatureC: boundedNumber(entry.temperatureC, { min: -20, max: 150 }) });
+  }
+  return out;
+}
+
 function sanitizeNodeTelemetry(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const value = {
@@ -47,6 +90,9 @@ function sanitizeNodeTelemetry(raw) {
     filesystemTotalBytes: boundedNumber(raw.filesystemTotalBytes),
     filesystemFreeBytes: boundedNumber(raw.filesystemFreeBytes),
     smartHealth: sanitizeSmartHealth(raw.smartHealth),
+    temperatures: sanitizeTemperatures(raw.temperatures),
+    fans: sanitizeFans(raw.fans),
+    driveTemperatures: sanitizeDriveTemperatures(raw.driveTemperatures),
   };
   value.temperatureKind = value.temperatureC == null ? null : temperatureKind(raw.temperatureKind, value.temperatureSource);
   return Object.values(value).some(item => item !== null) ? value : null;
@@ -95,6 +141,52 @@ function assessNodeTelemetry(telemetry, {
     return { level: 'warn', reason: `${label} ${temp.toFixed(1)}°C is still elevated (below ${warnC}°C but above the ${warnClearC}°C clear point)` };
   }
   return { level: 'ok', reason: `${label} ${temp.toFixed(1)}°C` };
+}
+
+// Sustained confirmation for temperature alerts. assessNodeTelemetry judges one sample; a node only
+// moves UP a level (ok -> warn, warn -> critical) once this many consecutive samples are at or
+// above that level's line. At the agent's ~15-minute cadence, 2 samples is about 30 minutes, so
+// a single spike is recorded and shown but never alerts. Moving down (clearing, or critical ->
+// warn) is unchanged: immediate, using assessNodeTelemetry's hysteresis clear points.
+const SUSTAINED_TEMPERATURE_SAMPLES = 2;
+
+const LEVEL_RANK = { unknown: 0, ok: 0, warn: 1, critical: 2 };
+
+// raw = assessNodeTelemetry(telemetry, { previousLevel }) for this sample. previousLevel is the
+// node's confirmed (alerted) level; previousStreak counts consecutive samples at/above each line.
+// Returns the confirmed { level, reason } plus the streak to store and, while an escalation is
+// waiting for confirmation, pendingLevel.
+function confirmTelemetryLevel(telemetry, raw, {
+  previousLevel = 'unknown',
+  previousStreak = null,
+  warnC = 80,
+  required = SUSTAINED_TEMPERATURE_SAMPLES,
+} = {}) {
+  const rank = LEVEL_RANK[raw.level] ?? 0;
+  const prev = previousStreak && typeof previousStreak === 'object' ? previousStreak : {};
+  const streak = {
+    warn: rank >= 1 ? (Number(prev.warn) || 0) + 1 : 0,
+    critical: rank >= 2 ? (Number(prev.critical) || 0) + 1 : 0,
+  };
+  const prevRank = LEVEL_RANK[previousLevel] ?? 0;
+  if (rank <= prevRank) return { level: raw.level, reason: raw.reason, streak, pendingLevel: null };
+  if (raw.level === 'critical' && streak.critical >= required) {
+    return { level: 'critical', reason: `${raw.reason} (${streak.critical} readings in a row)`, streak, pendingLevel: null };
+  }
+  if (prevRank < 1 && streak.warn >= required) {
+    const temp = telemetry?.temperatureC;
+    const reason = raw.level === 'warn'
+      ? `${raw.reason} (${streak.warn} readings in a row)`
+      : `${temperatureLabel(telemetry)} ${Number(temp).toFixed(1)}°C — at or above ${warnC}°C for ${streak.warn} readings in a row`;
+    return { level: 'warn', reason, streak, pendingLevel: raw.level === 'critical' ? 'critical' : null };
+  }
+  const needed = raw.level === 'critical' ? streak.critical : streak.warn;
+  return {
+    level: previousLevel,
+    reason: `${raw.reason} — reading ${needed} of ${required} needed before it alerts`,
+    streak,
+    pendingLevel: raw.level,
+  };
 }
 
 function formatTelemetryAge(ageMs) {
@@ -157,6 +249,41 @@ function telemetrySummary(telemetry, fmtSpace = value => `${value} B`, { now = D
   ].filter(Boolean).join(' · ');
 }
 
+// The fuller readings for a node's detail line: every kept sensor (short label, no sysfs path),
+// fans and drive temperatures, each only when the node reported them. null when there is nothing
+// beyond the summary. Plain text, so it reads the same on a phone.
+function shortSensorLabel(label) {
+  return String(label || 'sensor').replace(/\s*\([^)]*\)\s*$/, '').trim() || String(label || 'sensor');
+}
+
+function telemetryDetail(telemetry, { maxSensors = 8 } = {}) {
+  if (!telemetry) return null;
+  const parts = [];
+  const temps = Array.isArray(telemetry.temperatures) ? telemetry.temperatures : [];
+  if (temps.length) {
+    const shown = temps.slice(0, maxSensors).map(t => `${shortSensorLabel(t.label)} ${t.temperatureC.toFixed(1)}°C`);
+    parts.push(`sensors: ${shown.join(', ')}${temps.length > maxSensors ? ` +${temps.length - maxSensors} more` : ''}`);
+  }
+  if (Array.isArray(telemetry.fans) && telemetry.fans.length) {
+    parts.push(`fans: ${telemetry.fans.map(f => `${shortSensorLabel(f.label)} ${f.rpm} RPM`).join(', ')}`);
+  }
+  if (Array.isArray(telemetry.driveTemperatures) && telemetry.driveTemperatures.length) {
+    parts.push(`drives: ${telemetry.driveTemperatures.map(d => `${d.device} ${d.temperatureC == null ? 'n/a' : `${d.temperatureC}°C`}`).join(', ')}`);
+  }
+  return parts.length ? parts.join(' · ') : null;
+}
+
+// While a temperature escalation waits for confirmation, say so: the reading is real and shown,
+// it just hasn't alerted yet. null when nothing is pending.
+function pendingTemperatureNote(plan, { warnC = 80, criticalC = 90, required = SUSTAINED_TEMPERATURE_SAMPLES } = {}) {
+  const streak = plan?.lastTelemetryStreak;
+  const level = plan?.lastTelemetryLevel || 'unknown';
+  if (!streak) return null;
+  if (level !== 'critical' && streak.critical > 0 && streak.critical < required) return `at or above ${criticalC}°C for ${streak.critical} reading(s); alerts after ${required} in a row`;
+  if (level !== 'warn' && level !== 'critical' && streak.warn > 0 && streak.warn < required) return `at or above ${warnC}°C for ${streak.warn} reading(s); alerts after ${required} in a row`;
+  return null;
+}
+
 const REBUILD_UPTIME_THRESHOLD_SECONDS = 3 * 3600;
 
 // A freshly (re)built node or one still catching up on its first Syncthing sync runs hot and slow
@@ -171,11 +298,15 @@ function nodeUptimeHint(telemetry) {
 
 module.exports = {
   TELEMETRY_STALE_AFTER_MS,
+  SUSTAINED_TEMPERATURE_SAMPLES,
+  confirmTelemetryLevel,
   sanitizeNodeTelemetry,
   sanitizeSmartHealth,
   assessNodeTelemetry,
   assessDiskLevel,
   telemetrySummary,
+  telemetryDetail,
+  pendingTemperatureNote,
   telemetryAge,
   nodeUptimeHint,
 };
