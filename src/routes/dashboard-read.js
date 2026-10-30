@@ -13,6 +13,7 @@ const { redactEdgeChecksForHttp } = require('../diagnostic-redaction');
 const { renderAlertInbox, renderRecentlyAdded, renderQuickActions, renderQuickActionSheet, renderFeed, renderTrends, renderActivity } = require('../dashboard-render');
 const tautulliRecent = require('../tautulli');
 const { buildFleetSync } = require('../fleet-sync');
+const fleetHost = require('../fleet-host');
 
 // The HTML between <!--live:name--> and <!--/live:name--> in a rendered page, or null.
 function extractLiveFragment(page, name) {
@@ -355,6 +356,16 @@ function registerDashboardReadRoutes(app, deps) {
     }));
     const seasonAlertItems = seasonAlertDashboardItems(listSeasonAlertStates({ stoodDownOnly: true }));
     const automationInventory = getAutomationRegistry()?.list() || [];
+    // Automation → Fleet and host: tier nodes, the RackNerd feeds, heartbeats and listed-only
+    // rows, read from the bot's stores on this render (src/fleet-host.js). Each group fails on its
+    // own into an error line; nothing here is fetched from the browser.
+    const fleetHostModel = fleetHost.buildModel({
+      db,
+      tierNodes: tierNodesEarly,
+      getTierPlan,
+      lastReportAt: node => (lastReportByNode[node] ? sqliteUtcMs(lastReportByNode[node].at) : null),
+      now,
+    });
     // F14: each tab's own Quick Actions. Run-now buttons only appear for registry jobs that allow
     // a manual run and are enabled; bulk actions open the confirm sheet (renderQuickActionSheet).
     const runNow = (id, label) => {
@@ -617,6 +628,7 @@ function registerDashboardReadRoutes(app, deps) {
         ${renderQuickActions(quickActions.automation)}
         <div class="segs" data-segs role="group" aria-label="Automation views">
           <button type="button" class="seg-btn" data-seg-btn="jobs">Jobs<span class="seg-n">${automationInventory.length}</span></button>
+          <button type="button" class="seg-btn" data-seg-btn="fleet-host">Fleet and host<span class="seg-n">${fleetHost.countRows(fleetHostModel)}</span></button>
           <button type="button" class="seg-btn" data-seg-btn="settings">Settings<span class="seg-n">${settingsGroups.length}</span></button>
           <button type="button" class="seg-btn" data-seg-btn="manual">Manual</button>
           <button type="button" class="seg-btn" data-seg-btn="muted">Muted alerts<span class="seg-n">${seasonAlertItems.length}</span></button>
@@ -624,6 +636,10 @@ function registerDashboardReadRoutes(app, deps) {
         <div data-live="automation-jobs" data-seg-panel="jobs"><!--live:automation-jobs-->
         ${renderAutomationRegistry(automationInventory, { heartbeatIssues: getAutomationRegistry()?.heartbeatIssues?.() || [], settingGroups: settingsGroups.map(g => g.id) })}
         <!--/live:automation-jobs--></div>
+        <style>${fleetHost.FLEET_HOST_CSS}</style>
+        <div data-live="automation-fleet-host" data-seg-panel="fleet-host"><!--live:automation-fleet-host-->
+        ${fleetHost.renderSection(fleetHostModel, { escapeHtml, fmtAgo })}
+        <!--/live:automation-fleet-host--></div>
         <div data-live="automation-settings" data-seg-panel="settings"><!--live:automation-settings-->
         ${settingsGroups.map(renderSettingsGroup).join('')}
         <!--/live:automation-settings--></div>

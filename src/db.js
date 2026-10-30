@@ -746,6 +746,27 @@ const MIGRATIONS = [
       `);
     },
   },
+  // Automation → Fleet and host (src/fleet-host.js): one row per heartbeat from an allowlisted
+  // host cron, Edith watch or fleet script, posted to /api/automation/heartbeat. Append-only,
+  // pruned to 30 days.
+  {
+    version: 11,
+    run(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS automation_heartbeats (
+          name TEXT NOT NULL,
+          reported_at INTEGER NOT NULL,
+          received_at INTEGER NOT NULL,
+          ok INTEGER NOT NULL,
+          source TEXT,
+          summary TEXT,
+          counts TEXT,
+          PRIMARY KEY (name, reported_at)
+        );
+        CREATE INDEX IF NOT EXISTS idx_automation_heartbeats_time ON automation_heartbeats(reported_at);
+      `);
+    },
+  },
 ];
 
 // The highest version this build's ledger knows about — what an up-to-date database's

@@ -81,6 +81,7 @@ const { createWebhookHandlers, requireWebhookSecret, requireGitHubSignature } = 
 const { registerTierAgentRoutes } = require('./src/routes/tier-agent');
 const { registerAgentApiRoutes } = require('./src/routes/agent-api');
 const { registerUptimeRoutes } = require('./src/routes/uptime');
+const { registerAutomationHeartbeatRoutes } = require('./src/routes/automation-heartbeat');
 const { createRtorrentControl } = require('./src/rtorrent-control');
 const { createDiscordExec, createDiscordInteract } = require('./src/discord-exec');
 const { registerHealthAndDownloadRoutes } = require('./src/routes/health-download');
@@ -11052,6 +11053,8 @@ function startExpressServer() {
   if (CONFIG.DASHBOARD_ENABLED) {
     // Outside-in uptime history: the checker's ingest endpoint and the dashboard's read API.
     registerUptimeRoutes(app, { config: CONFIG, db, dashboardAuth, httpRateLimitKey, sha256, safeEqual, audit });
+    // Automation → Fleet and host: heartbeats from host crons, Edith watches and fleet scripts.
+    registerAutomationHeartbeatRoutes(app, { config: CONFIG, db, httpRateLimitKey, sha256, safeEqual, audit });
     const webauthnBrowserPath = path.join(path.dirname(require.resolve('@simplewebauthn/browser')), '..', 'dist', 'bundle', 'index.es5.umd.min.js');
     const passkeyClientPath = path.join(__dirname, 'src', 'passkey-client.js');
     registerDashboardAuthRoutes(app, {
