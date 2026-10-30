@@ -202,3 +202,6 @@ python3 /opt/reachability-check/check.py
 
 Then open the dashboard: Services → Uptime should show "checked 1 min ago" on the four path rows,
 and on the four fleet-node rows once the monitor has run with the post step.
+
+Automation → Fleet and host rolls these two feeds up into one row each; see
+[fleet-host-automation.md](fleet-host-automation.md).
