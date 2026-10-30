@@ -559,3 +559,21 @@ test('dashboard-render: renderLogin with password sign-in turned off shows only 
   assert.match(on, /password fallback/);
   assert.doesNotMatch(on, /password-off-note/);
 });
+
+test('renderServicesPanel: the Network page container is looked up when rendering, and every state ends "Loading network…"', () => {
+  // The board script sits in the Home panel, above the Network panel in the page, so a lookup made
+  // when the script first runs always found nothing and the Network page never left its loading
+  // placeholder (Oct 29, 2026). Guard against that coming back.
+  const html = renderServicesPanel();
+  assert.doesNotMatch(html, /var netBoard = document\.getElementById\('netBoard'\);/, 'no one-time lookup at script start');
+  assert.match(html, /function netBoardEl\(\) \{ return document\.getElementById\('netBoard'\); \}/);
+  assert.match(html, /function render\(d, polling\) \{\s*var netBoard = netBoardEl\(\);/);
+  // Every state the page can be in has words of its own, and the error ones have Retry.
+  for (const text of ['UniFi isn’t configured', 'Can’t read the router right now', 'The router answered, but with no data', 'Couldn’t load the network page', 'data-net-retry']) {
+    assert.ok(html.includes(text), `missing: ${text}`);
+  }
+  // The page fetch fails in plain words, including the 15 s timeout and a signed-out session.
+  for (const text of ['didn’t answer within 15 seconds', 'your sign-in has ended', 'the dashboard answered HTTP ', 'setTimeout(function () { controller.abort(); }, 15000)']) {
+    assert.ok(html.includes(text), `missing: ${text}`);
+  }
+});

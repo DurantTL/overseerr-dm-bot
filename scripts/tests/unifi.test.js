@@ -79,3 +79,66 @@ test('unifi: hasNetworkData is true only when the console sent a real value', ()
   assert.strictEqual(hasNetworkData({ wan: { latencyMs: 9 }, clients: { total: 0 } }), true);
   assert.strictEqual(hasNetworkData({ wan: {}, clients: { total: 3 } }), true);
 });
+
+const { failureReason, UNIFI_TIMEOUT_MS } = require('../../src/unifi');
+const { log } = require('../../src/log');
+const CFG = { UNIFI_HOST: '192.168.50.1', UNIFI_API_KEY: 'secret-key-value' };
+
+test('unifi: every read is capped at 8 s overall (socket timeout plus an AbortSignal)', async () => {
+  const seen = [];
+  const http = { get: async (url, opts) => { seen.push(opts); return { data: url.endsWith('/stat/health') ? HEALTH : STA }; } };
+  await fetchUnifiNetwork(CFG, http);
+  assert.strictEqual(UNIFI_TIMEOUT_MS, 8000);
+  assert.strictEqual(seen.length, 2);
+  for (const opts of seen) {
+    assert.strictEqual(opts.timeout, 8000);
+    assert.ok(opts.signal instanceof AbortSignal, 'a total-request abort signal is passed');
+  }
+});
+
+test('unifi: failures come back as plain, stable reasons (never the key)', async () => {
+  const fail = make => ({ get: async () => { throw make(); } });
+  const withStatus = s => () => Object.assign(new Error(`Request failed with status code ${s}`), { response: { status: s } });
+  const withCode = c => () => Object.assign(new Error(c), { code: c });
+  const cases = [
+    [withStatus(401), 'auth_rejected_check_key'],
+    [withStatus(403), 'auth_rejected_check_key'],
+    [withStatus(500), 'http_500'],
+    [withCode('ECONNABORTED'), 'timeout'],
+    [() => Object.assign(new Error('canceled'), { code: 'ERR_CANCELED', name: 'CanceledError' }), 'timeout'],
+    [withCode('ECONNREFUSED'), 'ECONNREFUSED'],
+  ];
+  for (const [make, reason] of cases) {
+    const out = await fetchUnifiNetwork(CFG, fail(make));
+    assert.deepStrictEqual(out, { error: reason });
+    assert.ok(!JSON.stringify(out).includes('secret-key-value'));
+  }
+  // A sign-in page (HTML with a 200) is a failure, not "no data".
+  const html = { get: async () => ({ data: '<html>login</html>' }) };
+  assert.deepStrictEqual(await fetchUnifiNetwork(CFG, html), { error: 'unexpected_response_not_json' });
+  assert.strictEqual(failureReason(new Error('timeout of 8000ms exceeded')), 'timeout');
+});
+
+test('unifi: logs a failure once per change of state, with the endpoint and status only', async () => {
+  const lines = [];
+  const orig = { warn: log.warn, info: log.info };
+  log.warn = msg => lines.push(['warn', msg]);
+  log.info = msg => lines.push(['info', msg]);
+  try {
+    const status500 = { get: async () => { throw Object.assign(new Error('x'), { response: { status: 500 } }); } };
+    const ok = { get: async url => ({ data: url.endsWith('/stat/health') ? HEALTH : STA }) };
+    await fetchUnifiNetwork(CFG, ok);
+    lines.length = 0;
+    await fetchUnifiNetwork(CFG, status500);
+    await fetchUnifiNetwork(CFG, status500);
+    await fetchUnifiNetwork(CFG, status500);
+    await fetchUnifiNetwork(CFG, ok);
+    await fetchUnifiNetwork(CFG, ok);
+    assert.strictEqual(lines.length, 2, 'one line for the failure, one for the recovery');
+    assert.deepStrictEqual(lines[0], ['warn', 'unifi: GET /api/s/default/stat/health failed: HTTP 500 (http_500)']);
+    assert.match(lines[1][1], /^unifi: reads recovered \(was error:http_500\)$/);
+    assert.ok(!lines.some(([, m]) => m.includes('secret-key-value')));
+  } finally {
+    Object.assign(log, orig);
+  }
+});

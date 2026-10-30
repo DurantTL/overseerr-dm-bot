@@ -7,7 +7,7 @@
 
 const axios = require('axios');
 const { fetchUpsStatus, nutConfigured } = require('./nut');
-const { fetchUnifiNetwork, hasNetworkData } = require('./unifi');
+const { fetchUnifiNetwork, hasNetworkData, unifiConfigured } = require('./unifi');
 const { queuePercent } = require('./util');
 
 // Groups in display order.
@@ -298,6 +298,9 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
   ]);
   // Network shows real UniFi numbers or an honest unreachable card, never an empty shell.
   const network = networkRead && (networkRead.error || hasNetworkData(networkRead)) ? networkRead : null;
+  // What the Network page should say when `network` is null: 'off' (no UniFi settings) versus
+  // 'empty' (the console answered with nothing usable). 'error' and 'ok' carry `network` itself.
+  const networkSource = !unifiConfigured(config) ? 'off' : !networkRead ? 'error' : networkRead.error ? 'error' : network ? 'ok' : 'empty';
 
   const services = [];
   // Services the board can't check because their URL variable isn't set. They used to vanish
@@ -380,6 +383,7 @@ async function gatherServicesBoard({ config, health, queues, sessions, canRestar
     zfs,
     speedtest,
     network,
+    networkSource,
     ssdTemp,
     nowPlaying,
     // Smart-network hosts for the client: it picks LAN vs Tailscale via WebRTC.
