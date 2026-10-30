@@ -1,0 +1,26 @@
+# Example service for the UGOS box (Portainer stack or `docker compose`). Values in <> are yours.
+# The SSH private key and the bot node token are mounted as files: never put them in this file,
+# in the image, or in git.
+services:
+  central-iowa-smart:
+    build: .
+    image: central-iowa-smart:latest
+    container_name: central-iowa-smart
+    restart: unless-stopped
+    environment:
+      TZ: America/Chicago
+      SMART_SCHEDULE: "03:17"            # daily, local time; it also runs once on container start
+      SMART_SSH_HOST: <ugos-host-or-ip>  # the UGOS host as seen from this container
+      SMART_SSH_USER: <ssh-user>         # the UGOS account whose authorized_keys has the forced command
+      SMART_SSH_PORT: "22"
+      SMART_SSH_KEY: /run/secrets/smart_ssh_key
+      SMART_KNOWN_HOSTS: /config/known_hosts
+      SMART_MODE: wrapper                # or "remote" for the fallback design (see README)
+      BOT_URL: https://media.durantlogic.com
+      TIER_NODE: central-iowa
+      TIER_NODE_TOKEN_FILE: /run/secrets/tier_node_token
+    volumes:
+      - <host-dir>/smart_ssh_key:/run/secrets/smart_ssh_key:ro
+      - <host-dir>/tier_node_token:/run/secrets/tier_node_token:ro
+      - <host-dir>/known_hosts:/config/known_hosts:ro
+      - <host-dir>/reports:/reports
