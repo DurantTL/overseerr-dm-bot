@@ -3,7 +3,7 @@
 const { fmtDuration, fmtSpace } = require('./util');
 const { normalizeTierFolders, serializeTierFolders } = require('./tier-node-setup');
 const { HEALTH_KEYS, healthLabel } = require('./health');
-const { telemetrySummary } = require('./node-telemetry');
+const { telemetrySummary, telemetryDetail, pendingTemperatureNote } = require('./node-telemetry');
 
 const { renderShellNav, SHELL_CSS, SHELL_SCRIPT, THEME_HEAD_SCRIPT, icon: shellIcon } = require('./dashboard-shell');
 
@@ -2527,7 +2527,7 @@ function tierInstallCommand({ botUrl, node, token, folders, folderRoot, syncthin
   ].join('\n');
 }
 
-function tierNodeStatus(plan, report, now = Date.now(), staleDays = 14) {
+function tierNodeStatus(plan, report, now = Date.now(), staleDays = 14, { warnC = 80, criticalC = 90 } = {}) {
   const checkIn = plan?.lastHeartbeatAt || (report ? sqliteUtcMs(report.at) : null);
   const publishedHash = plan?.published?.planHash || null;
   const convergedHash = plan?.converged?.planHash || null;
@@ -2550,6 +2550,8 @@ function tierNodeStatus(plan, report, now = Date.now(), staleDays = 14) {
     plan?.errorAlert?.stoodDown ? `alerts stood down after ${plan.errorAlert.attemptCount} identical error report(s)` : null,
     plan?.lastAgentVersion ? `agent ${plan.lastAgentVersion}` : 'agent version unknown (pre-upgrade)',
     plan?.lastTelemetry ? telemetrySummary(plan.lastTelemetry, fmtSpace, { now }) : 'hardware telemetry unavailable',
+    plan?.lastTelemetry ? telemetryDetail(plan.lastTelemetry) : null,
+    pendingTemperatureNote(plan, { warnC, criticalC }),
   ].filter(Boolean).join(' · ');
   if (!checkIn) return { state: 'warn', status: 'never reported', details, setup: true };
   if (matches && now - checkIn > 45 * 60 * 1000) return { state: 'down', status: 'stale', details };

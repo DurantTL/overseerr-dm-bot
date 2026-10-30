@@ -4,7 +4,7 @@ const bodyParser = require('body-parser');
 const { createBodyConcurrencyLimiter } = require('./body-concurrency-limit');
 const { createTierAgentAuth } = require('./tier-agent-auth');
 const { createTierAgentReportLimiter, createTierAgentReadLimiter } = require('./tier-agent-report-limit');
-const { sanitizeNodeTelemetry, assessNodeTelemetry } = require('../node-telemetry');
+const { sanitizeNodeTelemetry, assessNodeTelemetry, confirmTelemetryLevel } = require('../node-telemetry');
 const { nextRepeatAlert } = require('../repeat-alert');
 const { findConflicts, diffConflicts } = require('../sync-conflicts');
 
@@ -67,9 +67,17 @@ function registerTierAgentRoutes(app, deps) {
   app.post('/agent/report/:node', auth, reportLimiter, bodyLimiter, jsonParser, (req, res) => {
     const node = String(req.params.node).toLowerCase();
     const body = req.body || {};
-    const previousTelemetryLevel = getTierPlan(node)?.lastTelemetryLevel || 'unknown';
+    const previousPlan = getTierPlan(node);
+    const previousTelemetryLevel = previousPlan?.lastTelemetryLevel || 'unknown';
     const telemetry = sanitizeNodeTelemetry(body.telemetry);
-    const telemetryHealth = assessNodeTelemetry(telemetry, { warnC: config.NODE_TEMP_WARN_C, criticalC: config.NODE_TEMP_CRITICAL_C, previousLevel: previousTelemetryLevel });
+    // One sample's verdict, then sustained confirmation: a node only moves up a level after
+    // SUSTAINED_TEMPERATURE_SAMPLES consecutive readings at/above the line (src/node-telemetry.js).
+    const sampleHealth = assessNodeTelemetry(telemetry, { warnC: config.NODE_TEMP_WARN_C, criticalC: config.NODE_TEMP_CRITICAL_C, previousLevel: previousTelemetryLevel });
+    const telemetryHealth = confirmTelemetryLevel(telemetry, sampleHealth, {
+      previousLevel: previousTelemetryLevel,
+      previousStreak: previousPlan?.lastTelemetryStreak || null,
+      warnC: config.NODE_TEMP_WARN_C,
+    });
     const emitTelemetry = () => notifyTelemetryTransition({ node, telemetry, telemetryHealth, previousTelemetryLevel });
     // Short self-reported hash of the agent's own source (see agent/agent.js's agentVersion()) —
     // the only way the bot (or an admin reading /tier-node list / the dashboard) can tell what a
@@ -98,7 +106,7 @@ function registerTierAgentRoutes(app, deps) {
     if (folderCompletion) recordTierFolderCompletion(node, { at: Date.now(), folders: folderCompletion });
 
     if (body.heartbeat && !body.driveMissing) {
-      recordTierAgentHeartbeat(node, { errors: [], telemetry, telemetryLevel: telemetryHealth.level, agentVersion });
+      recordTierAgentHeartbeat(node, { errors: [], telemetry, telemetryLevel: telemetryHealth.level, telemetryStreak: telemetryHealth.streak, agentVersion });
       emitTelemetry();
       audit('tier_agent_heartbeat', { node, planHash: body.planHash || null });
       return res.json({ ok: true, heartbeat: true });
@@ -111,7 +119,7 @@ function registerTierAgentRoutes(app, deps) {
       const previousMountState = getSetting(mountKey);
       setSetting(mountKey, 'missing');
       const mountErrors = (Array.isArray(body.mountErrors) ? body.mountErrors : []).slice(0, 8).map(e => String(e).slice(0, 300));
-      recordTierAgentHeartbeat(node, { errors: mountErrors.length ? mountErrors : ['media drive missing'], telemetry, telemetryLevel: telemetryHealth.level, agentVersion });
+      recordTierAgentHeartbeat(node, { errors: mountErrors.length ? mountErrors : ['media drive missing'], telemetry, telemetryLevel: telemetryHealth.level, telemetryStreak: telemetryHealth.streak, agentVersion });
       emitTelemetry();
       audit('tier_agent_drive_missing', { node, mountErrors: mountErrors.join('; ').slice(0, 500) || undefined });
       if (previousMountState !== 'missing') notifyDriveMissing({ node, mountErrors });
@@ -164,7 +172,7 @@ function registerTierAgentRoutes(app, deps) {
     const recoveredFromSkips = !skipFingerprint && !!priorSkipAlert;
     recordTierSkipAlertState(node, skipAlert);
 
-    recordTierAgentReport(node, { inventoryStored, errors, telemetry, telemetryLevel: telemetryHealth.level, agentVersion });
+    recordTierAgentReport(node, { inventoryStored, errors, telemetry, telemetryLevel: telemetryHealth.level, telemetryStreak: telemetryHealth.streak, agentVersion });
     emitTelemetry();
     const publishedHash = getTierPlan(node)?.published?.planHash || null;
     const converged = body.converged === true && errors.length === 0 && !!body.planHash && body.planHash === publishedHash;

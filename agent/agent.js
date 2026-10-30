@@ -86,18 +86,49 @@ function parseSmartHealthOutput(output) {
   return null;
 }
 
-function smartHealthForDevice(device, execImpl) {
+// Drive temperature from the same smartctl JSON. Prefers smartctl's own normalised
+// `temperature.current` (ATA and NVMe), then the NVMe health log, then ATA attribute 194
+// (Temperature_Celsius) or 190 (Airflow_Temperature_Cel), whose raw value can pack min/max into
+// its high bytes, so the leading number of its string form is used. Anything outside -20..150°C,
+// or no reading at all, is null: never a guess.
+function parseDriveTemperature(output) {
+  let parsed;
+  try { parsed = JSON.parse(String(output || '')); } catch (_e) { return null; }
+  const bounded = v => (typeof v === 'number' && Number.isFinite(v) && v >= -20 && v <= 150 ? v : null);
+  const current = bounded(parsed?.temperature?.current);
+  if (current != null) return current;
+  const nvme = bounded(parsed?.nvme_smart_health_information_log?.temperature);
+  if (nvme != null) return nvme;
+  const table = parsed?.ata_smart_attributes?.table;
+  for (const id of [194, 190]) {
+    const row = Array.isArray(table) ? table.find(r => r && r.id === id) : null;
+    if (!row) continue;
+    const fromString = /^\s*(-?\d+)/.exec(String(row.raw?.string ?? ''));
+    const value = bounded(fromString ? Number(fromString[1]) : row.raw?.value);
+    if (value != null) return value;
+  }
+  return null;
+}
+
+// One smartctl call per device, as before: -H (overall health) plus -A (attributes, which is
+// where ATA drives report temperature). Same single invocation, so no extra disk wake-up, and
+// never a self-test.
+function smartReadingForDevice(device, execImpl) {
   let output;
   try {
-    output = String(execImpl('smartctl', ['-H', '-j', device], { timeout: 15000 }) || '');
+    output = String(execImpl('smartctl', ['-H', '-A', '-j', device], { timeout: 15000 }) || '');
   } catch (err) {
     output = String((err && err.stdout) || '');
   }
-  return parseSmartHealthOutput(output);
+  return { health: parseSmartHealthOutput(output), temperatureC: parseDriveTemperature(output) };
 }
 
-function collectSmartHealth(ctx, statPath, { execImpl = defaultExecFile } = {}) {
+// SMART health and drive temperatures from one pass over the devices. driveTemperatures has one
+// entry per device read (temperatureC null when that drive didn't report one); null overall when
+// no device was read.
+function collectSmartReadings(ctx, statPath, { execImpl = defaultExecFile } = {}) {
   const results = [];
+  const temperatures = [];
   const seen = new Set();
   let devices = String(ctx.smartDevices || '').split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
   if (!devices.length && statPath) {
@@ -112,14 +143,22 @@ function collectSmartHealth(ctx, statPath, { execImpl = defaultExecFile } = {}) 
     const device = String(raw).slice(0, 80);
     if (!device || seen.has(device)) continue;
     seen.add(device);
-    const health = smartHealthForDevice(device, execImpl);
-    if (health) results.push({ device, health });
+    const reading = smartReadingForDevice(device, execImpl);
+    if (reading.health) results.push({ device, health: reading.health });
+    temperatures.push({ device, temperatureC: reading.temperatureC });
   }
-  return results.length ? results : null;
+  return { smartHealth: results.length ? results : null, driveTemperatures: temperatures.length ? temperatures : null };
+}
+
+function collectSmartHealth(ctx, statPath, { execImpl = defaultExecFile } = {}) {
+  return collectSmartReadings(ctx, statPath, { execImpl }).smartHealth;
 }
 
 function collectSystemTelemetry(ctx, { fsImpl = fs, osImpl = os, execImpl = defaultExecFile } = {}) {
   const sensors = [];
+  // Fan speeds from hwmon fan*_input (RPM). Only fans the host exposes: none means an empty
+  // list, never an invented 0. Many small PCs (the PH NUC among them) expose no fan at all.
+  const fans = [];
   const safeRead = file => {
     try {
       const value = fsImpl.readFileSync(file, 'utf8');
@@ -153,6 +192,17 @@ function collectSystemTelemetry(ctx, { fsImpl = fs, osImpl = os, execImpl = defa
           });
         } catch (_e) { /* sensor disappeared or is unreadable */ }
       }
+      if (prefix !== 'hwmon') continue;
+      for (const file of files.filter(name => /^fan\d+_input$/.test(name)).slice(0, 16)) {
+        try {
+          const rpm = Number(fsImpl.readFileSync(path.join(dir, file), 'utf8').trim());
+          if (!Number.isFinite(rpm) || rpm < 0 || rpm > 100000) continue;
+          const labelFile = file.replace(/_input$/, '_label');
+          const fanLabel = files.includes(labelFile) ? safeRead(path.join(dir, labelFile)) : '';
+          const sourcePath = `hwmon/${entry}/${file}`;
+          fans.push({ label: String(fanLabel ? `${fanLabel} (${deviceName ? `${deviceName}/` : ''}${sourcePath})` : (deviceName ? `${deviceName} (${sourcePath})` : sourcePath)).slice(0, 80), rpm: Math.round(rpm) });
+        } catch (_e) { /* fan disappeared or is unreadable */ }
+      }
     }
   };
   try { readSensors('/sys/class/thermal', fsImpl.readdirSync('/sys/class/thermal').filter(name => name.startsWith('thermal_zone')), 'thermal'); } catch (_e) {}
@@ -170,8 +220,9 @@ function collectSystemTelemetry(ctx, { fsImpl = fs, osImpl = os, execImpl = defa
   // SMART is best-effort and independent of the statfs result: even when the watched path
   // is unreachable, a drive health reading is still useful. Never throws.
   let smartHealth = null;
+  let driveTemperatures = null;
   try {
-    smartHealth = collectSmartHealth(ctx, statPath, { execImpl });
+    ({ smartHealth, driveTemperatures } = collectSmartReadings(ctx, statPath, { execImpl }));
   } catch (_e) { /* SMART is optional */ }
   const load = osImpl.loadavg();
   return {
@@ -187,6 +238,11 @@ function collectSystemTelemetry(ctx, { fsImpl = fs, osImpl = os, execImpl = defa
     filesystemTotalBytes,
     filesystemFreeBytes,
     smartHealth,
+    // Additive (older bots ignore them): every sensor kept after the filtering above, in the same
+    // order (CPU first, then hottest); fans as exposed; drive temperatures from the SMART read.
+    temperatures: sensors.slice(0, 32),
+    fans,
+    driveTemperatures,
   };
 }
 
@@ -1045,4 +1101,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, checkMergedMount, readMountOptions, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, collectFolderCompletion, collectSystemTelemetry, collectSmartHealth, parentDiskDevice, parseSmartHealthOutput, escapeStignore, loadState, saveState, writeStignore, agentVersion, readLegacyIgnoreLines, mergeLegacyIgnores, renderMergedStignore, applyLegacyIgnoreOverlay };
+module.exports = { buildCtx, parseFolders, runOnce, checkMountGuard, checkMergedMount, readMountOptions, resolveFolderPlans, assertReceiveOnly, rescanAndConfirmIgnores, pruneDrops, collectInventory, collectFolderCompletion, collectSystemTelemetry, collectSmartHealth, collectSmartReadings, parseDriveTemperature, parentDiskDevice, parseSmartHealthOutput, escapeStignore, loadState, saveState, writeStignore, agentVersion, readLegacyIgnoreLines, mergeLegacyIgnores, renderMergedStignore, applyLegacyIgnoreOverlay };
