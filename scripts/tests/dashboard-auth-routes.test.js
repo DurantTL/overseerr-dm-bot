@@ -10,6 +10,8 @@ const { SqliteRollingWindowStore } = require('../../src/rate-limit');
 const {
   createDashboardSession,
   createSessionGeneration,
+  createPasswordLoginGate,
+  describePasswordLoginState,
   createHeaderAuthThrottle,
   createDashboardAuth,
   registerDashboardAuthRoutes,
@@ -45,19 +47,20 @@ function createFixture(overrides = {}) {
   const sessionGeneration = createSessionGeneration({ store: { get: k => settings.get(k) ?? null, set: (k, v) => settings.set(k, v) }, secret: 'test-session-secret' });
   const session = createDashboardSession({ secret: 'test-session-secret', ttlHours: 1, cookieSecure: config.COOKIE_SECURE !== false, generation: sessionGeneration.current });
   const audits = [];
+  const passkeys = overrides.passkeys || [];
+  const passwordLoginEnabled = createPasswordLoginGate({ config, listPasskeys: () => passkeys });
   const dashboardAuth = createDashboardAuth({
-    config, session, safeEqual: (a, b) => a === b,
+    config, session, safeEqual: (a, b) => a === b, passwordLoginEnabled,
     ...(overrides.headerThrottle ? { headerThrottle: overrides.headerThrottle, clientKey: () => 'test-client' } : {}),
     onHeaderAuthFailure: failure => audits.push({ event: 'dashboard_header_auth_failed', metadata: failure }),
   });
-  const passkeys = overrides.passkeys || [];
   const app = createApp({ trustProxy: true });
   registerDashboardAuthRoutes(app, {
     config,
     session,
     dashboardAuth,
     httpRateLimitKey: () => 'test-client',
-    renderLogin: (error, message, options) => `login:${error}:${message || ''}:${options.passkeyEnabled}`,
+    renderLogin: (error, message, options) => `login:${error}:${message || ''}:${options.passkeyEnabled}${options.passwordEnabled === false ? ':password-off' : ''}`,
     listPasskeys: () => passkeys,
     passkeyService: overrides.passkeyService || {
       authenticationOptions: async binding => ({ challenge: `challenge:${binding}` }),
@@ -72,11 +75,12 @@ function createFixture(overrides = {}) {
     passkeyClientPath: path.join(__dirname, '..', '..', 'src', 'passkey-client.js'),
     webauthnBrowserPath: require.resolve('@simplewebauthn/browser'),
     sessionGeneration,
+    passwordLoginEnabled,
     ...(overrides.loginStore ? { loginStore: overrides.loginStore } : {}),
   });
   app.get('/admin', rateLimit({ windowMs: 60000, limit: 120 }), dashboardAuth, (_req, res) => res.send('dashboard'));
   app.post('/admin/protected', rateLimit({ windowMs: 60000, limit: 120 }), dashboardAuth, (_req, res) => res.json({ ok: true }));
-  return { app, session, audits, sessionGeneration, settings };
+  return { app, session, audits, sessionGeneration, settings, passkeys };
 }
 
 test('dashboard auth routes preserve password login, secure cookie, redirect, and logout contracts', async () => {
@@ -503,5 +507,110 @@ test('logout still only clears the browser cookie', async () => {
     assert.strictEqual(sessionGeneration.current(), 0, 'logout does not end other sessions');
   } finally {
     await close(server);
+  }
+});
+
+// DASHBOARD_PASSWORD_LOGIN
+const OFF = { DASHBOARD_PASSWORD_LOGIN: false };
+
+test('password login off (with a passkey enrolled): the form and admin headers are refused, passkey sign-in works', async () => {
+  const { app, session, audits } = createFixture({ config: OFF, passkeys: [{ credential_id: 'a' }] });
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    const page = await request(port, { path: '/admin/login' });
+    assert.strictEqual(page.body, 'login:false::true:password-off', 'login page hides the password form');
+
+    const form = await request(port, { method: 'POST', path: '/admin/login', form: { password: 'correct-password' } });
+    assert.strictEqual(form.statusCode, 403, 'right password refused');
+    assert.match(form.body, /Password sign-in is turned off/);
+    assert.ok(!(form.headers['set-cookie'] || []).some(c => c.startsWith('dm_session=')), 'no session issued');
+    const tokenInForm = await request(port, { method: 'POST', path: '/admin/login', form: { password: 'header-token' } });
+    assert.strictEqual(tokenInForm.statusCode, 403, 'admin token in the form refused too');
+    assert.deepStrictEqual(audits.filter(a => a.event === 'dashboard_login_failed').map(a => a.metadata.reason), ['password_login_disabled', 'password_login_disabled']);
+
+    for (const headers of [{ 'x-admin-password': 'correct-password' }, { 'x-admin-token': 'header-token' }]) {
+      assert.strictEqual((await request(port, { path: '/admin', headers })).statusCode, 401, `${Object.keys(headers)[0]} refused`);
+      assert.strictEqual((await request(port, { method: 'POST', path: '/admin/protected', body: {}, headers })).statusCode, 401);
+    }
+    assert.strictEqual(audits.filter(a => a.event === 'dashboard_header_auth_failed').length, 0, 'ignored headers are not counted as guesses');
+
+    const options = await request(port, { path: '/admin/passkey/authentication-options' });
+    const binding = options.headers['set-cookie'].find(c => c.startsWith('dm_webauthn=')).split(';')[0];
+    const passkey = await request(port, { method: 'POST', path: '/admin/passkey/authenticate', body: { answer: 'valid' }, headers: { cookie: binding } });
+    assert.strictEqual(passkey.statusCode, 200);
+    const cookie = passkey.headers['set-cookie'].find(c => c.startsWith('dm_session=')).split(';')[0];
+    assert.strictEqual((await request(port, { path: '/admin', headers: { cookie } })).statusCode, 200, 'passkey session gets in');
+    assert.strictEqual((await request(port, { path: '/admin', headers: { cookie: `dm_session=${session.sign()}` } })).statusCode, 200, 'existing sessions keep working');
+  } finally {
+    await close(server);
+  }
+});
+
+test('password login off but no passkey enrolled: the flag is ignored and password sign-in still works', async () => {
+  const { app } = createFixture({ config: OFF });
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    assert.strictEqual((await request(port, { path: '/admin/login' })).body, 'login:false::false', 'normal login page');
+    const form = await request(port, { method: 'POST', path: '/admin/login', form: { password: 'correct-password' } });
+    assert.strictEqual(form.statusCode, 302);
+    assert.strictEqual(form.headers.location, '/admin');
+    assert.strictEqual((await request(port, { path: '/admin', headers: { 'x-admin-token': 'header-token' } })).statusCode, 200);
+  } finally {
+    await close(server);
+  }
+  assert.deepStrictEqual(describePasswordLoginState({ config: OFF, listPasskeys: () => [] }).level, 'warn');
+  assert.match(describePasswordLoginState({ config: OFF, listPasskeys: () => [] }).message, /no passkey is enrolled, so it is ignored/);
+  assert.match(describePasswordLoginState({ config: OFF, listPasskeys: () => [{}, {}] }).message, /passkey-only \(2 passkeys enrolled\).*DASHBOARD_PASSWORD_LOGIN=on and recreate the bot container/);
+  assert.strictEqual(describePasswordLoginState({ config: { DASHBOARD_PASSWORD_LOGIN: true }, listPasskeys: () => [{}] }), null, 'on: nothing to log');
+});
+
+test('password login off: revoking the last passkey brings password sign-in back; the last-passkey guard is unchanged', async () => {
+  const passkeys = [{ credential_id: 'a' }, { credential_id: 'b' }];
+  const { app, session } = createFixture({
+    config: OFF, passkeys,
+    revokePasskey: id => { const i = passkeys.findIndex(p => p.credential_id === id); if (i < 0) return false; passkeys.splice(i, 1); return true; },
+  });
+  const server = await listen(app, 0);
+  try {
+    const port = server.address().port;
+    let cookie = `dm_session=${session.sign()}`;
+    assert.strictEqual((await request(port, { method: 'POST', path: '/admin/login', form: { password: 'correct-password' } })).statusCode, 403, 'two passkeys: password off');
+    const first = await request(port, { method: 'POST', path: '/admin/passkey/revoke', body: { credentialId: 'b' }, headers: { cookie } });
+    assert.strictEqual(first.statusCode, 200);
+    cookie = first.headers['set-cookie'].find(c => c.startsWith('dm_session=')).split(';')[0];
+    assert.strictEqual((await request(port, { method: 'POST', path: '/admin/login', form: { password: 'correct-password' } })).statusCode, 403, 'one passkey left: still off');
+    const last = await request(port, { method: 'POST', path: '/admin/passkey/revoke', body: { credentialId: 'a' }, headers: { cookie } });
+    assert.strictEqual(last.statusCode, 200, 'a password fallback exists, so the last passkey may go');
+    assert.strictEqual((await request(port, { method: 'POST', path: '/admin/login', form: { password: 'correct-password' } })).statusCode, 302, 'no passkeys left: password sign-in is back');
+  } finally {
+    await close(server);
+  }
+
+  // No fallback configured: the last passkey still cannot be revoked, flag or no flag.
+  const guarded = createFixture({ config: { ...OFF, DASHBOARD_ADMIN_PASSWORD: '', DASHBOARD_ADMIN_TOKEN: '' }, passkeys: [{ credential_id: 'only' }], revokePasskey: () => true });
+  const guardedServer = await listen(guarded.app, 0);
+  try {
+    const res = await request(guardedServer.address().port, { method: 'POST', path: '/admin/passkey/revoke', body: { credentialId: 'only' }, headers: { cookie: `dm_session=${guarded.session.sign()}` } });
+    assert.strictEqual(res.statusCode, 409);
+  } finally {
+    await close(guardedServer);
+  }
+});
+
+test('password login on (the default): form and admin headers behave exactly as before, passkeys enrolled or not', async () => {
+  for (const passkeys of [[], [{ credential_id: 'a' }]]) {
+    const { app } = createFixture({ passkeys });
+    const server = await listen(app, 0);
+    try {
+      const port = server.address().port;
+      assert.strictEqual((await request(port, { path: '/admin/login' })).body, `login:false::${passkeys.length > 0}`);
+      assert.strictEqual((await request(port, { method: 'POST', path: '/admin/login', form: { password: 'correct-password' } })).headers.location, '/admin');
+      assert.strictEqual((await request(port, { path: '/admin', headers: { 'x-admin-password': 'correct-password' } })).statusCode, 200);
+      assert.strictEqual((await request(port, { path: '/admin', headers: { 'x-admin-token': 'header-token' } })).statusCode, 200);
+    } finally {
+      await close(server);
+    }
   }
 });

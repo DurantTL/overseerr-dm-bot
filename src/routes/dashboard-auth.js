@@ -147,6 +147,27 @@ function createHeaderAuthThrottle({ limit = 10, windowMs = 15 * 60000, now = Dat
   };
 }
 
+// DASHBOARD_PASSWORD_LOGIN: whether the password form and the x-admin-password / x-admin-token
+// headers may sign in to the dashboard. Off only takes effect while at least one passkey is
+// enrolled; with none it is ignored, so the dashboard can never be left with no way in. Evaluated
+// per request, so enrolling the first passkey or revoking the last one takes effect at once.
+function createPasswordLoginGate({ config, listPasskeys }) {
+  return () => config.DASHBOARD_PASSWORD_LOGIN !== false || listPasskeys().length === 0;
+}
+
+// The startup log line for the flag: null when it is on (nothing to say).
+function describePasswordLoginState({ config, listPasskeys }) {
+  if (config.DASHBOARD_PASSWORD_LOGIN !== false) return null;
+  const enrolled = listPasskeys().length;
+  if (!enrolled) {
+    return { level: 'warn', message: 'DASHBOARD_PASSWORD_LOGIN is off, but no passkey is enrolled, so it is ignored: password and admin-header sign-in stay on until a passkey is enrolled.' };
+  }
+  return {
+    level: 'info',
+    message: `DASHBOARD_PASSWORD_LOGIN is off: dashboard sign-in is passkey-only (${enrolled} passkey${enrolled === 1 ? '' : 's'} enrolled). The password form and the x-admin-password / x-admin-token headers are refused; the Agent API is unaffected. To recover, set DASHBOARD_PASSWORD_LOGIN=on and recreate the bot container.`,
+  };
+}
+
 function createDashboardAuth({
   config,
   session,
@@ -154,11 +175,15 @@ function createDashboardAuth({
   clientKey = req => req.ip || req.socket?.remoteAddress || 'unknown',
   headerThrottle = createHeaderAuthThrottle(),
   onHeaderAuthFailure = () => {},
+  // False when DASHBOARD_PASSWORD_LOGIN is off and a passkey is enrolled: the admin headers are
+  // then ignored entirely (not checked, not counted), so only a passkey-signed session gets in.
+  passwordLoginEnabled = () => true,
 }) {
   return function dashboardAuth(req, res, next) {
     const sessionOk = session.verify(session.readCookie(req, 'dm_session'));
-    const password = req.headers['x-admin-password'];
-    const token = req.headers['x-admin-token'];
+    const headersAllowed = passwordLoginEnabled();
+    const password = headersAllowed ? req.headers['x-admin-password'] : undefined;
+    const token = headersAllowed ? req.headers['x-admin-token'] : undefined;
     const headerAttempt = password !== undefined || token !== undefined;
     const key = headerAttempt && !sessionOk ? clientKey(req) : null;
     if (key && headerThrottle.blocked(key)) return res.status(429).send('Too many failed attempts. Try again later.');
@@ -197,6 +222,8 @@ function registerDashboardAuthRoutes(app, {
   passkeyClientPath,
   webauthnBrowserPath,
   sessionGeneration,
+  // See createDashboardAuth: false = the password form refuses every submission (passkey only).
+  passwordLoginEnabled = () => true,
   // ({ scope, limit, windowMs }) => an express-rate-limit store for the sign-in limiters (the
   // password form and passkey authenticate), so their counts survive restarts. Unset = in memory.
   loginStore = () => undefined,
@@ -226,7 +253,7 @@ function registerDashboardAuthRoutes(app, {
     legacyHeaders: false,
   }), (req, res) => {
     if (session.verify(session.readCookie(req, 'dm_session'))) return res.redirect('/admin');
-    return res.type('html').send(renderLogin(!!req.query.error, null, { passkeyEnabled: listPasskeys().length > 0, expectedOrigin: passkeyOrigin }));
+    return res.type('html').send(renderLogin(!!req.query.error, null, { passkeyEnabled: listPasskeys().length > 0, expectedOrigin: passkeyOrigin, passwordEnabled: passwordLoginEnabled() }));
   });
 
   app.get('/admin/passkey/authentication-options', rateLimit({
@@ -285,10 +312,16 @@ function registerDashboardAuthRoutes(app, {
     handler: (_req, res) => res.status(429).type('html').send(renderLogin(
       false,
       'Too many attempts. Try again in a few minutes.',
-      { passkeyEnabled: listPasskeys().length > 0, expectedOrigin: passkeyOrigin },
+      { passkeyEnabled: listPasskeys().length > 0, expectedOrigin: passkeyOrigin, passwordEnabled: passwordLoginEnabled() },
     )),
   }), (req, res) => {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!passwordLoginEnabled()) {
+      audit('dashboard_login_failed', { ip, reason: 'password_login_disabled' });
+      return res.status(403).type('html').send(renderLogin(false, 'Password sign-in is turned off for this dashboard. Sign in with your passkey.', {
+        passkeyEnabled: listPasskeys().length > 0, expectedOrigin: passkeyOrigin, passwordEnabled: false,
+      }));
+    }
     const submitted = req.body?.password || '';
     const passwordOk = config.DASHBOARD_ADMIN_PASSWORD && safeEqual(submitted, config.DASHBOARD_ADMIN_PASSWORD);
     const tokenOk = config.DASHBOARD_ADMIN_TOKEN && safeEqual(submitted, config.DASHBOARD_ADMIN_TOKEN);
@@ -403,6 +436,8 @@ function registerDashboardAuthRoutes(app, {
 module.exports = {
   createDashboardSession,
   createSessionGeneration,
+  createPasswordLoginGate,
+  describePasswordLoginState,
   SESSION_GENERATION_KEY,
   SESSION_CREDENTIALS_KEY,
   createHeaderAuthThrottle,

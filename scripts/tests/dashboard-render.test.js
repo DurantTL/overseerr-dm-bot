@@ -546,3 +546,16 @@ test('dashboard-render: activity rows carry a category for the filter chips', ()
   assert.doesNotMatch(html, /data-filter-btn="fleet"/);
   assert.match(html, /data-page="15"/);
 });
+
+test('dashboard-render: renderLogin with password sign-in turned off shows only the passkey', () => {
+  const off = renderLogin(false, null, { passkeyEnabled: true, passwordEnabled: false });
+  assert.match(off, /id="passkey-login"/);
+  assert.match(off, /<form method="post" action="\/admin\/login" hidden>/, 'password form hidden');
+  assert.match(off, /Password sign-in is turned off for this dashboard\./);
+  assert.doesNotMatch(off, /password fallback/);
+  assert.doesNotMatch(off, /Password login still works below/);
+  const on = renderLogin(false, null, { passkeyEnabled: true });
+  assert.match(on, /<form method="post" action="\/admin\/login">/, 'default: form shown');
+  assert.match(on, /password fallback/);
+  assert.doesNotMatch(on, /password-off-note/);
+});

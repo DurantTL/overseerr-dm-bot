@@ -2602,7 +2602,7 @@ function renderTierNodeSetup(nodes) {
   </div>`;
 }
 
-function renderLogin(isError, message, { passkeyEnabled = false, expectedOrigin = '' } = {}) {
+function renderLogin(isError, message, { passkeyEnabled = false, expectedOrigin = '', passwordEnabled = true } = {}) {
   const banner = message ? `<div class="error" id="login-error">${escapeHtml(message)}</div>`
     : (isError ? '<div class="error" id="login-error">Incorrect password. Please try again.</div>' : '');
   const body = `<div class="login-wrap" data-expected-origin="${escapeHtml(expectedOrigin)}"><div class="login-card">
@@ -2610,8 +2610,9 @@ function renderLogin(isError, message, { passkeyEnabled = false, expectedOrigin 
     <p>Admin dashboard login</p>
     ${banner}
     <div class="error" id="insecure-context-warning" role="alert" hidden>This page is not loaded over a secure connection (HTTPS). Do not enter your password here — it would be sent unencrypted. Open the dashboard at its HTTPS URL instead.</div>
-    ${passkeyEnabled ? '<button class="btn primary passkey" type="button" id="passkey-login" aria-describedby="passkey-support">Sign in with a passkey</button><div class="error" id="passkey-support" role="status" hidden></div><div class="login-divider">password fallback</div>' : ''}
-    <form method="post" action="/admin/login">
+    ${passkeyEnabled ? `<button class="btn primary passkey" type="button" id="passkey-login" aria-describedby="passkey-support">Sign in with a passkey</button><div class="error" id="passkey-support" role="status" hidden></div>${passwordEnabled ? '<div class="login-divider">password fallback</div>' : ''}` : ''}
+    ${passwordEnabled || message ? '' : '<p class="muted" id="password-off-note">Password sign-in is turned off for this dashboard.</p>'}
+    <form method="post" action="/admin/login"${passwordEnabled ? '' : ' hidden'}>
       <label for="password">Password</label>
       <input type="password" id="password" name="password"${passkeyEnabled ? '' : ' autofocus'} autocomplete="current-password webauthn" required>
       <button class="btn primary" type="submit">Log in</button>
@@ -2623,17 +2624,18 @@ function renderLogin(isError, message, { passkeyEnabled = false, expectedOrigin 
     if (!window.isSecureContext) {
       var warning = document.getElementById('insecure-context-warning');
       warning.hidden = false;
-      document.querySelector('form[action="/admin/login"] button[type="submit"]').disabled = true;
+      var submit = document.querySelector('form[action="/admin/login"] button[type="submit"]');
+      if (submit) submit.disabled = true;
     }
   </script>${passkeyEnabled ? `<script src="/admin/passkey-client.js"></script><script src="/admin/webauthn-browser.js"></script><script>
     var passkeyButton = document.getElementById('passkey-login');
     var supportNote = document.getElementById('passkey-support');
     var expectedOrigin = document.querySelector('.login-wrap').dataset.expectedOrigin || '';
-    var passkeyReady = !!window.PasskeyClient && window.PasskeyClient.preparePasskeyAction(passkeyButton, supportNote, window, ' Password login still works below.', expectedOrigin);
+    var passkeyReady = !!window.PasskeyClient && window.PasskeyClient.preparePasskeyAction(passkeyButton, supportNote, window, ${passwordEnabled ? "' Password login still works below.'" : "''"}, expectedOrigin);
     if (!window.PasskeyClient) {
       passkeyButton.disabled = true;
       supportNote.hidden = false;
-      supportNote.textContent = 'Passkey support could not be checked. Open this HTTPS dashboard in Safari, Chrome, Edge, or another WebAuthn-capable browser. Password login still works below.';
+      supportNote.textContent = 'Passkey support could not be checked. Open this HTTPS dashboard in Safari, Chrome, Edge, or another WebAuthn-capable browser.${passwordEnabled ? ' Password login still works below.' : ''}';
     }
     if (passkeyReady) passkeyButton.addEventListener('click', async function () {
       var button = this;

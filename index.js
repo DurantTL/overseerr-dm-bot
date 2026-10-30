@@ -90,7 +90,7 @@ const { registerUserAdminRoutes } = require('./src/routes/dashboard-users');
 const { registerEuropeSyncRoutes } = require('./src/routes/dashboard-europe');
 const { registerMemberRoutes } = require('./src/routes/member');
 const { createTtlCache } = require('./src/dashboard-cache');
-const { createDashboardSession, createSessionGeneration, createHeaderAuthThrottle, createDashboardAuth, createDashboardGateActor, dashboardActor, registerDashboardAuthRoutes } = require('./src/routes/dashboard-auth');
+const { createDashboardSession, createSessionGeneration, createPasswordLoginGate, describePasswordLoginState, createHeaderAuthThrottle, createDashboardAuth, createDashboardGateActor, dashboardActor, registerDashboardAuthRoutes } = require('./src/routes/dashboard-auth');
 const { SqliteRollingWindowStore } = require('./src/rate-limit');
 const { createApp } = require('./src/app');
 const { createRuntimeLifecycle, createDiscordReadyGuard } = require('./src/runtime-lifecycle');
@@ -159,8 +159,11 @@ const dashboardSession = createDashboardSession({
   cookieSecure: CONFIG.COOKIE_SECURE,
   generation: dashboardSessionGeneration.current,
 });
+// DASHBOARD_PASSWORD_LOGIN=off: passkey-only dashboard sign-in while a passkey is enrolled.
+const dashboardPasswordLoginEnabled = createPasswordLoginGate({ config: CONFIG, listPasskeys });
 const dashboardAuth = createDashboardAuth({
   config: CONFIG,
+  passwordLoginEnabled: dashboardPasswordLoginEnabled,
   session: dashboardSession,
   safeEqual,
   clientKey: httpRateLimitKey,
@@ -11067,6 +11070,7 @@ function startExpressServer() {
       passkeyClientPath,
       webauthnBrowserPath,
       sessionGeneration: dashboardSessionGeneration,
+      passwordLoginEnabled: dashboardPasswordLoginEnabled,
       // Sign-in limiter counts live in SQLite so a restart doesn't reset them.
       loginStore: ({ scope, limit, windowMs }) => new SqliteRollingWindowStore({ db, scope, limit, windowMs }),
     });
@@ -11075,6 +11079,8 @@ function startExpressServer() {
       password: CONFIG.DASHBOARD_ADMIN_PASSWORD,
       token: CONFIG.DASHBOARD_ADMIN_TOKEN,
     });
+    const passwordLoginState = describePasswordLoginState({ config: CONFIG, listPasskeys });
+    if (passwordLoginState) log[passwordLoginState.level](passwordLoginState.message);
     if (credentialSync.changed) {
       audit('dashboard_session_generation_bumped', { actor: 'system', reason: 'credentials_changed', generation: credentialSync.generation });
     }
